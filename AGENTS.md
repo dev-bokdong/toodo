@@ -68,6 +68,8 @@ Layout:
 - `src-tauri/`: Rust crate `toodo` (library `toodo_lib`).
   - `src-tauri/src/lib.rs`: Tauri builder and tauri-specta command registration.
   - `src-tauri/src/commands.rs`: Tauri commands exposed to the frontend.
+  - `src-tauri/src/domain/`: core domain model and rules (task DAG, status transitions,
+    slugs, worktree paths and branch names). Pure logic: no I/O, Tauri, or storage.
 
 ## Commands
 

@@ -63,7 +63,10 @@ and checks out the task branch:
   titles repeat.
 - Workspace and task names are converted to slugs that are safe both as directory names
   (no path separators, no characters invalid on Windows, no trailing dots or spaces) and
-  as git ref components.
+  as git ref components: lowercase ASCII letters and digits joined by single hyphens,
+  at most 48 characters. Other characters, including non-ASCII letters, separate words.
+  An empty result falls back to `workspace` or `task`, and Windows device names such as
+  `con` get that word as a suffix (`con-workspace`).
 - Path and branch are passed to herdr explicitly:
   `herdr worktree create --path <path> --branch <branch>`.
 

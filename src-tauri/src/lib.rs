@@ -1,4 +1,5 @@
 mod commands;
+pub mod domain;
 
 use tauri_specta::{Builder, collect_commands};
 

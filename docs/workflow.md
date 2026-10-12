@@ -8,8 +8,10 @@ This document describes how a task moves from planning to a pull request.
 planned --> ready --> in_progress --> done
    ^          |            |
    |          +------------+--> cancelled
-   +-- (a dependency is reopened)
+   +-- (a dependency is added that is not done yet)
 ```
+
+A `planned` task can also be cancelled. `done` and `cancelled` are final states.
 
 | State | Meaning |
 | --- | --- |
