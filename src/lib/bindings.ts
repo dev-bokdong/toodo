@@ -7,6 +7,10 @@ export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	listWorkspaces: () => typedError<Workspace[], CommandError>(__TAURI_INVOKE("list_workspaces")),
 	getWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(__TAURI_INVOKE("get_workspace", { id })),
+	/**
+	 *  Clones the repository or checks the existing one, then saves the workspace. Git runs
+	 *  on a blocking thread because a clone can take minutes.
+	 */
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("create_workspace", { workspace })),
 	/**  Saves the name, location, and default base branch of an existing workspace. */
 	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("update_workspace", { workspace })),
@@ -56,6 +60,11 @@ export type CommandErrorKind =
 /**  A referenced workspace or task does not exist. */
 "notFound" | 
 /**
+ *  An external tool reported an error, e.g. git could not clone a repository or the
+ *  path is not inside a git repository.
+ */
+"external" | 
+/**
  *  The request is well-formed but breaks a rule, e.g. a dependency cycle or a
  *  forbidden status transition.
  */
@@ -93,7 +102,9 @@ export type NewTask = {
 export type NewWorkspace = {
 	name: string,
 	location: WorkspaceLocation,
-	defaultBaseBranch: string,
+	source: WorkspaceSource,
+	/**  Detected from the repository when empty or absent. */
+	defaultBaseBranch: string | null,
 };
 
 /**
@@ -152,6 +163,13 @@ export type WorkspaceLocation =
 { kind: "local"; path: string } | 
 /**  POSIX path of a repository on a saved herdr SSH machine. */
 { kind: "ssh"; machine: string; path: string };
+
+/**  How the repository of a new workspace gets to its location. */
+export type WorkspaceSource = 
+/**  The location already holds a cloned repository. */
+{ kind: "open" } | 
+/**  Clone `url` into the location, which must not exist or be empty. */
+{ kind: "clone"; url: string };
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

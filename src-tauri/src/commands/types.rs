@@ -138,22 +138,52 @@ impl TryFrom<Workspace> for model::Workspace {
     }
 }
 
+/// How the repository of a new workspace gets to its location.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkspaceSource {
+    /// The location already holds a cloned repository.
+    Open,
+    /// Clone `url` into the location, which must not exist or be empty.
+    Clone { url: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewWorkspace {
     pub name: String,
     pub location: WorkspaceLocation,
-    pub default_base_branch: String,
+    pub source: WorkspaceSource,
+    /// Detected from the repository when empty or absent.
+    pub default_base_branch: Option<String>,
 }
 
-impl TryFrom<NewWorkspace> for storage::NewWorkspace {
+/// A validated [`NewWorkspace`] whose repository has not been cloned or checked yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSetup {
+    pub name: String,
+    pub location: model::WorkspaceLocation,
+    pub source: WorkspaceSource,
+    pub default_base_branch: Option<String>,
+}
+
+impl TryFrom<NewWorkspace> for WorkspaceSetup {
     type Error = CommandError;
 
     fn try_from(new: NewWorkspace) -> CommandResult<Self> {
         Ok(Self {
             name: required("workspace name", new.name)?,
             location: new.location.try_into()?,
-            default_base_branch: required("default base branch", new.default_base_branch)?,
+            source: match new.source {
+                WorkspaceSource::Open => WorkspaceSource::Open,
+                WorkspaceSource::Clone { url } => WorkspaceSource::Clone {
+                    url: required("repository URL", url)?,
+                },
+            },
+            default_base_branch: new
+                .default_base_branch
+                .map(|branch| branch.trim().to_owned())
+                .filter(|branch| !branch.is_empty()),
         })
     }
 }
@@ -453,19 +483,32 @@ mod tests {
     }
 
     #[test]
-    fn new_workspace_requires_name_and_base_branch() {
-        let new = |name: &str, branch: &str| NewWorkspace {
+    fn new_workspace_requires_a_name_and_a_clone_url() {
+        let new = |name: &str, source: WorkspaceSource, branch: Option<&str>| NewWorkspace {
             name: name.to_owned(),
             location: WorkspaceLocation::Local {
                 path: r"C:\dev\toodo".to_owned(),
             },
-            default_base_branch: branch.to_owned(),
+            source,
+            default_base_branch: branch.map(str::to_owned),
         };
-        let parsed = storage::NewWorkspace::try_from(new(" toodo ", " main ")).unwrap();
+        let clone = |url: &str| WorkspaceSource::Clone {
+            url: url.to_owned(),
+        };
+        let parsed =
+            WorkspaceSetup::try_from(new(" toodo ", clone(" git@h:a.git "), Some(" main ")))
+                .unwrap();
         assert_eq!(parsed.name, "toodo");
-        assert_eq!(parsed.default_base_branch, "main");
-        for (name, branch) in [("  ", "main"), ("toodo", "")] {
-            let error = storage::NewWorkspace::try_from(new(name, branch)).unwrap_err();
+        assert_eq!(parsed.source, clone("git@h:a.git"));
+        assert_eq!(parsed.default_base_branch.as_deref(), Some("main"));
+        let blank_branch =
+            WorkspaceSetup::try_from(new("toodo", WorkspaceSource::Open, Some(" "))).unwrap();
+        assert_eq!(blank_branch.default_base_branch, None);
+        for invalid in [
+            new("  ", WorkspaceSource::Open, None),
+            new("toodo", clone(" "), None),
+        ] {
+            let error = WorkspaceSetup::try_from(invalid).unwrap_err();
             assert_eq!(error.kind, CommandErrorKind::InvalidInput);
         }
     }
@@ -517,5 +560,18 @@ mod tests {
         .unwrap();
         assert_eq!(edit.id, TaskId(7));
         assert_eq!(edit.task_type, TaskType::Refactor);
+        let new: NewWorkspace = serde_json::from_value(serde_json::json!({
+            "name": "toodo",
+            "location": { "kind": "local", "path": r"C:\dev\toodo" },
+            "source": { "kind": "clone", "url": "git@h:a.git" },
+            "defaultBaseBranch": null
+        }))
+        .unwrap();
+        assert_eq!(
+            new.source,
+            WorkspaceSource::Clone {
+                url: "git@h:a.git".to_owned()
+            }
+        );
     }
 }

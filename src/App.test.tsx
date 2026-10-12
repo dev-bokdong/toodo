@@ -104,6 +104,34 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
   });
 
+  it("clones a repository into a new workspace and selects it", async () => {
+    mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.createWorkspace.mockResolvedValue({ status: "ok", data: herdr });
+    renderApp();
+
+    await screen.findByText("No workspaces yet.");
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [herdr] });
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    expect(screen.queryByLabelText("Repository URL")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Clone" }));
+    fireEvent.change(screen.getByLabelText("Repository URL"), {
+      target: { value: "git@github.com:o/herdr.git" },
+    });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "herdr" } });
+    fireEvent.change(screen.getByLabelText("Path"), { target: { value: "/srv/herdr" } });
+    fireEvent.change(screen.getByLabelText("SSH machine"), { target: { value: "devbox" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clone workspace" }));
+
+    expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
+    expect(mocked.createWorkspace).toHaveBeenCalledWith({
+      name: "herdr",
+      location: { kind: "ssh", machine: "devbox", path: "/srv/herdr" },
+      source: { kind: "clone", url: "git@github.com:o/herdr.git" },
+      defaultBaseBranch: null,
+    });
+  });
+
   it("creates a task and reloads the task list", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [] });

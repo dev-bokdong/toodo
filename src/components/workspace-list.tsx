@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
-import type { Workspace, WorkspaceId, WorkspaceLocation } from "@/lib/bindings";
+import type { Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
 import { useCreateWorkspace, useWorkspaces } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
@@ -77,24 +77,59 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
 
 function NewWorkspaceForm({ onCreated }: { onCreated: (workspace: Workspace) => void }) {
   const createWorkspace = useCreateWorkspace();
+  const [mode, setMode] = useState<WorkspaceSource["kind"]>("open");
+  const [url, setUrl] = useState("");
   const [name, setName] = useState("");
   const [machine, setMachine] = useState("");
   const [path, setPath] = useState("");
-  const [baseBranch, setBaseBranch] = useState("main");
+  const [baseBranch, setBaseBranch] = useState("");
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const location: WorkspaceLocation = machine.trim()
       ? { kind: "ssh", machine: machine.trim(), path }
       : { kind: "local", path };
+    const source: WorkspaceSource = mode === "clone" ? { kind: "clone", url } : { kind: "open" };
     createWorkspace.mutate(
-      { name, location, defaultBaseBranch: baseBranch },
+      { name, location, source, defaultBaseBranch: baseBranch.trim() || null },
       { onSuccess: onCreated },
     );
   }
 
+  const cloning = mode === "clone";
+
   return (
     <form onSubmit={submit} aria-label="New workspace" className="flex flex-col gap-2 rounded-lg border p-2">
+      <div role="radiogroup" aria-label="Repository source" className="grid grid-cols-2 gap-1">
+        {(
+          [
+            ["open", "Open existing"],
+            ["clone", "Clone"],
+          ] as const
+        ).map(([value, label]) => (
+          <Button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={mode === value}
+            size="sm"
+            variant={mode === value ? "secondary" : "ghost"}
+            onClick={() => setMode(value)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+      {cloning && (
+        <input
+          className={inputClass}
+          placeholder="Repository URL"
+          aria-label="Repository URL"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          required
+        />
+      )}
       <input
         className={inputClass}
         placeholder="Name"
@@ -105,7 +140,7 @@ function NewWorkspaceForm({ onCreated }: { onCreated: (workspace: Workspace) => 
       />
       <input
         className={inputClass}
-        placeholder="Path"
+        placeholder={cloning ? "Clone into (empty or new directory)" : "Repository path"}
         aria-label="Path"
         value={path}
         onChange={(e) => setPath(e.target.value)}
@@ -120,11 +155,10 @@ function NewWorkspaceForm({ onCreated }: { onCreated: (workspace: Workspace) => 
       />
       <input
         className={inputClass}
-        placeholder="Base branch"
+        placeholder="Base branch (detected if empty)"
         aria-label="Base branch"
         value={baseBranch}
         onChange={(e) => setBaseBranch(e.target.value)}
-        required
       />
       {createWorkspace.isError && (
         <p role="alert" className="text-xs text-destructive">
@@ -132,7 +166,13 @@ function NewWorkspaceForm({ onCreated }: { onCreated: (workspace: Workspace) => 
         </p>
       )}
       <Button type="submit" size="sm" disabled={createWorkspace.isPending}>
-        Create workspace
+        {createWorkspace.isPending
+          ? cloning
+            ? "Cloning..."
+            : "Opening..."
+          : cloning
+            ? "Clone workspace"
+            : "Open workspace"}
       </Button>
     </form>
   );

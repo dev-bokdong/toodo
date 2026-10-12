@@ -1,8 +1,9 @@
+mod adapters;
 mod commands;
 pub mod domain;
 pub mod storage;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 use tauri_specta::{Builder, collect_commands};
@@ -54,6 +55,9 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;
             app.manage::<commands::StorageState>(Mutex::new(storage));
+            app.manage::<commands::GitState>(Arc::new(adapters::git::Git::new(Box::new(
+                adapters::git::ProcessRunner,
+            ))));
             Ok(())
         })
         .run(tauri::generate_context!())

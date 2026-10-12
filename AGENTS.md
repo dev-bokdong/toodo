@@ -26,8 +26,8 @@ Rules:
 
 Toodo is a task-planning app that turns a plan into implemented, reviewed code:
 
-1. Register a **workspace**: a local directory or a remote directory on a saved herdr
-   SSH machine.
+1. Register a **workspace**: clone a repository into, or open a repository already
+   cloned at, a local directory or a remote directory on a saved herdr SSH machine.
 2. **Plan** tasks inside a workspace. Tasks may depend on each other and form a DAG.
 3. **Prepare** a task for implementation: create a dedicated `git worktree` in a separate
    directory through the herdr API.
@@ -72,6 +72,8 @@ Layout:
     domain model itself stays free of serde and specta.
   - `src-tauri/src/domain/`: core domain model and rules (task DAG, status transitions,
     slugs, worktree paths and branch names). Pure logic: no I/O, Tauri, or storage.
+  - `src-tauri/src/adapters/`: thin wrappers around external tools (`git.rs` runs git
+    locally or over `ssh`), each behind a trait with a fake for tests.
   - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema
     changes go in a new entry appended to `migrations.rs`; never edit a released one.
 

@@ -7,7 +7,9 @@ starting point; refine it as implementation decisions are made.
 
 ### Workspace
 
-A root git repository that tasks are planned against.
+A root git repository that tasks are planned against. A workspace is created either by
+cloning a repository into a path or by opening a repository already cloned at a path; see
+[workflow.md](workflow.md#1-register-a-workspace).
 
 | Field | Description |
 | --- | --- |

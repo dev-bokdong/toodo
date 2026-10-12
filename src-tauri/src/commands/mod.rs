@@ -5,15 +5,18 @@ pub mod tasks;
 pub mod types;
 pub mod workspaces;
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 use specta::Type;
 
+use crate::adapters::git::{Git, GitError};
 use crate::domain::dag::DependencyError;
 use crate::storage::{Storage, StorageError};
 
 pub type StorageState = Mutex<Storage>;
+
+pub type GitState = Arc<Git>;
 
 pub type CommandResult<T> = Result<T, CommandError>;
 
@@ -24,6 +27,9 @@ pub enum CommandErrorKind {
     InvalidInput,
     /// A referenced workspace or task does not exist.
     NotFound,
+    /// An external tool reported an error, e.g. git could not clone a repository or the
+    /// path is not inside a git repository.
+    External,
     /// The request is well-formed but breaks a rule, e.g. a dependency cycle or a
     /// forbidden status transition.
     Rejected,
@@ -42,6 +48,28 @@ impl CommandError {
         Self {
             kind: CommandErrorKind::InvalidInput,
             message: message.into(),
+        }
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommandErrorKind::Internal,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<GitError> for CommandError {
+    fn from(error: GitError) -> Self {
+        let kind = match &error {
+            GitError::Failed { .. } => CommandErrorKind::External,
+            GitError::Spawn { .. } | GitError::UnexpectedOutput { .. } => {
+                CommandErrorKind::Internal
+            }
+        };
+        Self {
+            kind,
+            message: error.to_string(),
         }
     }
 }
