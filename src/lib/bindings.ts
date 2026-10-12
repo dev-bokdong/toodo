@@ -5,6 +5,38 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	listWorkspaces: () => typedError<Workspace[], CommandError>(__TAURI_INVOKE("list_workspaces")),
+	getWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(__TAURI_INVOKE("get_workspace", { id })),
+	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("create_workspace", { workspace })),
+	/**  Saves the name, location, and default base branch of an existing workspace. */
+	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("update_workspace", { workspace })),
+	/**  Deletes a workspace together with its tasks, dependencies, and commit records. */
+	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(__TAURI_INVOKE("delete_workspace", { id })),
+	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("get_machine_settings", { machine })),
+	saveMachineSettings: (settings: MachineSettings) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("save_machine_settings", { settings })),
+	/**  Tasks of a workspace ordered by ID, each with its dependencies. */
+	listTasks: (workspaceId: WorkspaceId) => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks", { workspaceId })),
+	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
+	/**  Creates a task without dependencies, so it starts out `ready`. */
+	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
+	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(__TAURI_INVOKE("update_task", { task })),
+	/**
+	 *  Moves a task to `in_progress`, `done`, or `cancelled` and returns the readiness
+	 *  changes this caused in other tasks.
+	 */
+	setTaskStatus: (id: TaskId, status: TaskStatus) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("set_task_status", { id, status })),
+	/**
+	 *  Deletes a task with its dependency edges and commit records and returns the
+	 *  readiness changes this caused in its dependents.
+	 */
+	deleteTask: (id: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("delete_task", { id })),
+	/**
+	 *  Makes `task_id` depend on `depends_on`. Rejects self, cross-workspace, and cyclic
+	 *  edges.
+	 */
+	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
+	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
+	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(__TAURI_INVOKE("list_commit_records", { taskId })),
 };
 
 /* Types */
@@ -12,4 +44,122 @@ export type AppInfo = {
 	name: string,
 	version: string,
 };
+
+export type CommandError = {
+	kind: CommandErrorKind,
+	message: string,
+};
+
+export type CommandErrorKind = 
+/**  An argument is malformed, e.g. a relative path or an empty title. */
+"invalidInput" | 
+/**  A referenced workspace or task does not exist. */
+"notFound" | 
+/**
+ *  The request is well-formed but breaks a rule, e.g. a dependency cycle or a
+ *  forbidden status transition.
+ */
+"rejected" | 
+/**  The database failed or holds data the app cannot read. */
+"internal";
+
+export type CommitRecord = {
+	taskId: TaskId,
+	sha: string,
+	message: string,
+	author: string,
+	/**  Commit timestamp in seconds since the Unix epoch. */
+	committedAt: number,
+};
+
+export type Machine = { kind: "local" } | { kind: "ssh"; label: string };
+
+export type MachineSettings = {
+	machine: Machine,
+	/**
+	 *  Directory that holds task worktrees; required before a task on this machine can
+	 *  be started.
+	 */
+	worktreeRoot: string | null,
+};
+
+export type NewTask = {
+	workspaceId: WorkspaceId,
+	taskType: TaskType,
+	title: string,
+	description: string,
+};
+
+export type NewWorkspace = {
+	name: string,
+	location: WorkspaceLocation,
+	defaultBaseBranch: string,
+};
+
+/**
+ *  A task whose status moved between `planned` and `ready` because of a change to
+ *  its dependencies.
+ */
+export type StatusChange = {
+	taskId: TaskId,
+	from: TaskStatus,
+	to: TaskStatus,
+};
+
+export type Task = {
+	id: TaskId,
+	workspaceId: WorkspaceId,
+	taskType: TaskType,
+	title: string,
+	description: string,
+	status: TaskStatus,
+	/**  Tasks this task depends on, in ascending ID order. */
+	dependsOn: TaskId[],
+	branch: string | null,
+	worktreePath: string | null,
+	herdrWorkspaceId: string | null,
+	pullRequestUrl: string | null,
+};
+
+/**
+ *  The fields of a task the user edits directly. Status, dependencies, and the
+ *  worktree, herdr, and pull request fields have their own commands or workflow steps.
+ */
+export type TaskEdit = {
+	id: TaskId,
+	taskType: TaskType,
+	title: string,
+	description: string,
+};
+
+export type TaskId = number;
+
+export type TaskStatus = "planned" | "ready" | "in_progress" | "done" | "cancelled";
+
+export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore";
+
+export type Workspace = {
+	id: WorkspaceId,
+	name: string,
+	location: WorkspaceLocation,
+	defaultBaseBranch: string,
+};
+
+export type WorkspaceId = number;
+
+export type WorkspaceLocation = 
+/**  Windows path of a repository on this machine. */
+{ kind: "local"; path: string } | 
+/**  POSIX path of a repository on a saved herdr SSH machine. */
+{ kind: "ssh"; machine: string; path: string };
+
+/* Tauri Specta runtime */
+async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
+    try {
+        return { status: "ok", data: await result };
+    } catch (e) {
+        if (e instanceof Error) throw e;
+        return { status: "error", error: e as any };
+    }
+}
 

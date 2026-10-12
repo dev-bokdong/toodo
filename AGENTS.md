@@ -67,7 +67,9 @@ Layout:
   - `src/components/ui/`: shadcn/ui components (add more with `npx shadcn@latest add <name>`).
 - `src-tauri/`: Rust crate `toodo` (library `toodo_lib`).
   - `src-tauri/src/lib.rs`: Tauri builder and tauri-specta command registration.
-  - `src-tauri/src/commands.rs`: Tauri commands exposed to the frontend.
+  - `src-tauri/src/commands/`: Tauri commands exposed to the frontend. `types.rs` holds
+    the serializable shapes sent over IPC and validates inputs at this boundary; the
+    domain model itself stays free of serde and specta.
   - `src-tauri/src/domain/`: core domain model and rules (task DAG, status transitions,
     slugs, worktree paths and branch names). Pure logic: no I/O, Tauri, or storage.
   - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema

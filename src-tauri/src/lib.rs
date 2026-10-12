@@ -12,7 +12,25 @@ const DATABASE_FILE: &str = "toodo.sqlite3";
 const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
 
 fn specta_builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![commands::app_info])
+    Builder::<tauri::Wry>::new().commands(collect_commands![
+        commands::app_info,
+        commands::workspaces::list_workspaces,
+        commands::workspaces::get_workspace,
+        commands::workspaces::create_workspace,
+        commands::workspaces::update_workspace,
+        commands::workspaces::delete_workspace,
+        commands::workspaces::get_machine_settings,
+        commands::workspaces::save_machine_settings,
+        commands::tasks::list_tasks,
+        commands::tasks::get_task,
+        commands::tasks::create_task,
+        commands::tasks::update_task,
+        commands::tasks::set_task_status,
+        commands::tasks::delete_task,
+        commands::tasks::add_dependency,
+        commands::tasks::remove_dependency,
+        commands::tasks::list_commit_records,
+    ])
 }
 
 fn export_bindings(builder: &Builder<tauri::Wry>) {
@@ -35,7 +53,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;
-            app.manage(Mutex::new(storage));
+            app.manage::<commands::StorageState>(Mutex::new(storage));
             Ok(())
         })
         .run(tauri::generate_context!())
