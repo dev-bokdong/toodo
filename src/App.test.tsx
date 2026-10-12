@@ -135,6 +135,24 @@ describe("App", () => {
     expect(mocked.listTasks).toHaveBeenLastCalledWith(2);
   });
 
+  it("shows the tasks of the selected workspace as a dependency graph", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add storage", { status: "done" }), task(2, 1, "Add UI", { status: "planned", dependsOn: [1] })],
+    });
+    renderApp();
+
+    await screen.findByRole("list", { name: "Tasks" });
+    fireEvent.click(screen.getByRole("button", { name: "Graph" }));
+
+    const graph = await screen.findByRole("region", { name: "Dependency graph" });
+    expect(await within(graph).findByText("Add UI")).toBeInTheDocument();
+    expect(within(graph).getByText("Add storage")).toBeInTheDocument();
+    expect(within(graph).getByText("Planned")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Tasks" })).not.toBeInTheDocument();
+  });
+
   it("shows command errors returned by the backend", async () => {
     mocked.listWorkspaces.mockResolvedValue({
       status: "error",

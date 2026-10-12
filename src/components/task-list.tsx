@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
+import { TaskGraph } from "@/components/task-graph";
 import { inputClass, describeLocation } from "@/components/workspace-list";
 import type { Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
 import {
@@ -47,6 +48,7 @@ const statusStyles: Record<TaskStatus, string> = {
 
 export function TaskList({ workspace }: { workspace: Workspace }) {
   const tasks = useTasks(workspace.id);
+  const [view, setView] = useState<"list" | "graph">("list");
 
   return (
     <section aria-labelledby="tasks-heading" className="flex flex-col gap-4">
@@ -73,11 +75,35 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
         <p className="text-sm text-muted-foreground">No tasks in this workspace yet.</p>
       )}
       {tasks.data && tasks.data.length > 0 && (
-        <ul aria-label="Tasks" className="flex flex-col divide-y rounded-lg border">
-          {tasks.data.map((task) => (
-            <TaskRow key={task.id} task={task} tasks={tasks.data} />
-          ))}
-        </ul>
+        <>
+          <div role="group" aria-label="Task view" className="flex gap-1">
+            {(["list", "graph"] as const).map((option) => (
+              <Button
+                key={option}
+                size="xs"
+                variant={view === option ? "secondary" : "ghost"}
+                aria-pressed={view === option}
+                onClick={() => setView(option)}
+              >
+                {option === "list" ? "List" : "Graph"}
+              </Button>
+            ))}
+          </div>
+          {view === "list" ? (
+            <ul aria-label="Tasks" className="flex flex-col divide-y rounded-lg border">
+              {tasks.data.map((task) => (
+                <TaskRow key={task.id} task={task} tasks={tasks.data} />
+              ))}
+            </ul>
+          ) : (
+            <TaskGraph
+              workspaceId={workspace.id}
+              tasks={tasks.data}
+              statusLabels={statusLabels}
+              statusStyles={statusStyles}
+            />
+          )}
+        </>
       )}
     </section>
   );
