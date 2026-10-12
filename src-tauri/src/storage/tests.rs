@@ -504,3 +504,65 @@ fn databases_from_a_newer_version_are_rejected() {
             if found == migrations::LATEST_VERSION + 1 && supported == migrations::LATEST_VERSION
     ));
 }
+
+fn checkout(path: HostPath, branch: &str) -> crate::domain::naming::TaskCheckout {
+    crate::domain::naming::TaskCheckout {
+        path,
+        branch: branch.to_owned(),
+    }
+}
+
+#[test]
+fn start_task_records_the_worktree_and_moves_to_in_progress() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+
+    let started = storage
+        .start_task(task.id, &checkout(path.clone(), "feat/add-login-1"), "w7")
+        .unwrap();
+
+    assert_eq!(started.status, InProgress);
+    assert_eq!(started.branch.as_deref(), Some("feat/add-login-1"));
+    assert_eq!(started.worktree_path, Some(path));
+    assert_eq!(started.herdr_workspace_id.as_deref(), Some("w7"));
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), started);
+}
+
+#[test]
+fn start_task_writes_nothing_when_it_is_rejected() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(
+        &mut storage,
+        "Server",
+        ssh_location("devbox", "/srv/server"),
+    );
+    let first = add_task(&mut storage, &workspace, "First");
+    let second = add_task(&mut storage, &workspace, "Second");
+    storage.add_dependency(second.id, first.id).unwrap();
+    let posix = HostPath::Posix(PosixPath::parse("/wt/server/x").unwrap());
+    let windows = HostPath::Windows(WindowsPath::parse(r"C:\wt\x").unwrap());
+
+    assert!(matches!(
+        storage.start_task(second.id, &checkout(posix, "feat/x"), "w1"),
+        Err(StorageError::Transition(_))
+    ));
+    assert!(matches!(
+        storage.start_task(first.id, &checkout(windows, "feat/x"), "w1"),
+        Err(StorageError::WorktreePathMismatch(_))
+    ));
+    for task in [&first, &second] {
+        let stored = storage.get_task(task.id).unwrap().unwrap();
+        assert_eq!(
+            (
+                stored.branch,
+                stored.worktree_path,
+                stored.herdr_workspace_id
+            ),
+            (None, None, None)
+        );
+    }
+    assert_eq!(status(&storage, &first), Ready);
+    assert_eq!(status(&storage, &second), Planned);
+}

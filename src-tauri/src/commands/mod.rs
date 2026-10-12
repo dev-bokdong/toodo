@@ -1,6 +1,7 @@
 //! Tauri commands exposed to the frontend. Arguments and results use the serializable
 //! shapes in [`types`]; failures are reported as a [`CommandError`].
 
+pub mod herdr;
 pub mod tasks;
 pub mod types;
 pub mod workspaces;
@@ -11,12 +12,16 @@ use serde::Serialize;
 use specta::Type;
 
 use crate::adapters::git::{Git, GitError};
+use crate::adapters::herdr::{Herdr, HerdrError};
 use crate::domain::dag::DependencyError;
+use crate::domain::naming::NamingError;
 use crate::storage::{Storage, StorageError};
 
 pub type StorageState = Mutex<Storage>;
 
 pub type GitState = Arc<Git>;
+
+pub type HerdrState = Arc<Herdr>;
 
 pub type CommandResult<T> = Result<T, CommandError>;
 
@@ -51,6 +56,13 @@ impl CommandError {
         }
     }
 
+    pub fn rejected(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommandErrorKind::Rejected,
+            message: message.into(),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             kind: CommandErrorKind::Internal,
@@ -64,6 +76,34 @@ impl From<GitError> for CommandError {
         let kind = match &error {
             GitError::Failed { .. } => CommandErrorKind::External,
             GitError::Spawn { .. } | GitError::UnexpectedOutput { .. } => {
+                CommandErrorKind::Internal
+            }
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<HerdrError> for CommandError {
+    fn from(error: HerdrError) -> Self {
+        let kind = match &error {
+            HerdrError::Spawn { .. } | HerdrError::Failed { .. } => CommandErrorKind::External,
+            HerdrError::UnexpectedOutput { .. } => CommandErrorKind::Internal,
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<NamingError> for CommandError {
+    fn from(error: NamingError) -> Self {
+        let kind = match &error {
+            NamingError::WorktreeRootNotSet(_) => CommandErrorKind::InvalidInput,
+            NamingError::TaskNotInWorkspace | NamingError::MachineMismatch { .. } => {
                 CommandErrorKind::Internal
             }
         };

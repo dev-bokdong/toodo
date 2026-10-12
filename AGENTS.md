@@ -107,8 +107,8 @@ updated `src/lib/bindings.ts` together with the Rust change.
 ## Integrations
 
 - **herdr** (required, preinstalled): terminal workspace manager for AI coding agents.
-  - On startup, check that `herdr` is on `PATH` and the server responds (`ping` /
-    `herdr status`); if not, ask the user to start herdr.
+  - On startup, check that `herdr` is on `PATH` and `herdr status --json` reports the
+    server as running; if not, ask the user to start herdr.
   - Commands go through the herdr CLI (`herdr worktree create|open|list|remove`,
     `herdr workspace focus`, `herdr agent prompt|wait`), which herdr recommends for
     portable Windows behavior. CLI output is the JSON `{"id", "result"}` envelope of the

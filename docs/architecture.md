@@ -142,7 +142,11 @@ Toodo owns planning, task state, commit records, and pull requests.
   for remote ones. Uses the user's `~/.ssh/config` and Windows ssh-agent, the same
   configuration herdr uses.
 - **herdr adapter**: wraps herdr, which is a required, preinstalled dependency.
-  - Startup health check: `herdr` on `PATH` and the server answers `ping`.
+  - Startup health check: `herdr` on `PATH` and `herdr status --json` reports
+    `server.running`. herdr 0.9.3 has no `ping` command.
+  - Commands for SSH workspaces run against the remote herdr server with
+    `herdr --machine <label> ...`.
+  - Failures exit non-zero and print `{"error": {"code", "message"}}` on stderr.
   - Commands use the herdr CLI (recommended by herdr for portable Windows behavior).
   - Events use the socket API: newline-delimited JSON over a Windows named pipe,
     `events.subscribe` for `worktree.created`, `worktree.removed`, and

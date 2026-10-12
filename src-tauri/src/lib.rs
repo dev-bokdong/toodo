@@ -31,6 +31,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::tasks::add_dependency,
         commands::tasks::remove_dependency,
         commands::tasks::list_commit_records,
+        commands::herdr::herdr_status,
+        commands::herdr::start_task,
+        commands::herdr::open_task_in_herdr,
     ])
 }
 
@@ -56,6 +59,9 @@ pub fn run() {
             let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;
             app.manage::<commands::StorageState>(Mutex::new(storage));
             app.manage::<commands::GitState>(Arc::new(adapters::git::Git::new(Box::new(
+                adapters::git::ProcessRunner,
+            ))));
+            app.manage::<commands::HerdrState>(Arc::new(adapters::herdr::Herdr::new(Box::new(
                 adapters::git::ProcessRunner,
             ))));
             Ok(())

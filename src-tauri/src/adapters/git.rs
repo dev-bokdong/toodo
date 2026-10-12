@@ -72,7 +72,7 @@ impl Runner for ProcessRunner {
     }
 }
 
-fn describe(invocation: &Invocation) -> String {
+pub(super) fn describe(invocation: &Invocation) -> String {
     std::iter::once(invocation.program)
         .chain(invocation.args.iter().map(String::as_str))
         .collect::<Vec<_>>()

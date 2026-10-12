@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { HerdrBanner } from "@/components/herdr-banner";
 import { TaskList } from "@/components/task-list";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
@@ -25,6 +26,7 @@ export default function App() {
         </p>
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto p-6">
+        <HerdrBanner />
         {selected ? (
           <TaskList key={selected.id} workspace={selected} />
         ) : (

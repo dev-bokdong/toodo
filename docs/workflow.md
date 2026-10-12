@@ -52,8 +52,10 @@ When the user starts a `ready` task, Toodo:
    [architecture.md](architecture.md#worktree-layout-and-branch-naming)). If the machine
    has no `worktreeRoot` yet, the user is asked to set it first.
 2. Derives the task branch as `<task-type>/<task-name>-<task-id>`.
-3. Calls `herdr worktree create --path <dir> --branch <branch> --base <baseBranch>` to
-   create the git worktree and open it as a herdr workspace.
+3. Calls `herdr worktree create --cwd <repository> --path <dir> --branch <branch>
+   --base <baseBranch> --no-focus` (prefixed with `--machine <label>` for SSH
+   workspaces) to create the git worktree and open it as a herdr workspace. If herdr
+   fails, the task stays `ready` and nothing is stored.
 4. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
    `in_progress`.
 

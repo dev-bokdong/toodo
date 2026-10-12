@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::dag::{self, DependencyError, StatusChange};
 use crate::domain::model::{HostPath, Task, TaskId, TaskType, WorkspaceId};
+use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
 
@@ -159,6 +160,21 @@ fn task_workspace(conn: &Connection, id: TaskId) -> Result<Option<WorkspaceId>> 
         .optional()?)
 }
 
+/// The stored form of a worktree path, which must belong to the machine kind of the
+/// task's workspace.
+fn stored_worktree_path<'a>(
+    task: TaskId,
+    workspace_kind: &str,
+    path: Option<&'a HostPath>,
+) -> Result<Option<&'a str>> {
+    match (path, workspace_kind) {
+        (None, _) => Ok(None),
+        (Some(HostPath::Windows(path)), "local") => Ok(Some(path.as_str())),
+        (Some(HostPath::Posix(path)), "ssh") => Ok(Some(path.as_str())),
+        (Some(_), _) => Err(StorageError::WorktreePathMismatch(task)),
+    }
+}
+
 /// Applies [`dag::readiness_changes`] to the tasks of `workspace` and returns them.
 fn sync_readiness(conn: &Connection, workspace: WorkspaceId) -> Result<Vec<StatusChange>> {
     let changes = dag::readiness_changes(&workspace_tasks(conn, workspace)?)?;
@@ -227,12 +243,8 @@ impl Storage {
             )
             .optional()?
             .ok_or(StorageError::TaskNotFound(task.id))?;
-        let worktree_path = match (&task.worktree_path, workspace_kind.as_str()) {
-            (None, _) => None,
-            (Some(HostPath::Windows(path)), "local") => Some(path.as_str()),
-            (Some(HostPath::Posix(path)), "ssh") => Some(path.as_str()),
-            (Some(_), _) => return Err(StorageError::WorktreePathMismatch(task.id)),
-        };
+        let worktree_path =
+            stored_worktree_path(task.id, &workspace_kind, task.worktree_path.as_ref())?;
         tx.execute(
             "UPDATE tasks
              SET type = ?2, title = ?3, description = ?4, branch = ?5, worktree_path = ?6,
@@ -251,6 +263,40 @@ impl Storage {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Records the worktree of a `ready` task and moves it to `in_progress` in one
+    /// transaction, so a task is never in progress without its worktree.
+    pub fn start_task(
+        &mut self,
+        id: TaskId,
+        checkout: &TaskCheckout,
+        herdr_workspace_id: &str,
+    ) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let status = task.status.transition_to(TaskStatus::InProgress)?;
+        let workspace_kind: String = tx.query_row(
+            "SELECT kind FROM workspaces WHERE id = ?1",
+            [task.workspace_id.0],
+            |row| row.get(0),
+        )?;
+        let worktree_path = stored_worktree_path(id, &workspace_kind, Some(&checkout.path))?;
+        tx.execute(
+            "UPDATE tasks
+             SET status = ?2, branch = ?3, worktree_path = ?4, herdr_workspace_id = ?5
+             WHERE id = ?1",
+            params![
+                id.0,
+                status.as_str(),
+                checkout.branch,
+                worktree_path,
+                herdr_workspace_id
+            ],
+        )?;
+        let started = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(started)
     }
 
     /// Moves a task to `in_progress`, `done`, or `cancelled` if its current status allows

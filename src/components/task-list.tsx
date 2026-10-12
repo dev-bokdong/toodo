@@ -2,7 +2,16 @@ import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { inputClass, describeLocation } from "@/components/workspace-list";
 import type { Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
-import { useCreateTask, useTasks } from "@/lib/queries";
+import {
+  machineOf,
+  useCreateTask,
+  useHerdrStatus,
+  useMachineSettings,
+  useOpenTaskInHerdr,
+  useSaveMachineSettings,
+  useStartTask,
+  useTasks,
+} from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore"];
@@ -37,6 +46,8 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
         </p>
       </header>
 
+      <WorktreeRootForm workspace={workspace} />
+
       <NewTaskForm workspace={workspace} />
 
       {tasks.isPending && <p className="text-sm text-muted-foreground">Loading tasks...</p>}
@@ -60,6 +71,12 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
 }
 
 function TaskRow({ task }: { task: Task }) {
+  const herdr = useHerdrStatus();
+  const startTask = useStartTask();
+  const openTask = useOpenTaskInHerdr();
+  const herdrRunning = herdr.data?.running === true;
+  const actionError = startTask.error ?? openTask.error;
+
   return (
     <li className="flex items-start gap-3 px-3 py-2">
       <span className="mt-0.5 w-8 shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
@@ -76,11 +93,89 @@ function TaskRow({ task }: { task: Task }) {
             Depends on {task.dependsOn.map((id) => `#${id}`).join(", ")}
           </p>
         )}
+        {task.branch && (
+          <p className="truncate font-mono text-xs text-muted-foreground" title={task.worktreePath ?? undefined}>
+            {task.branch}
+            {task.worktreePath && ` \u00b7 ${task.worktreePath}`}
+          </p>
+        )}
+        {actionError && (
+          <p role="alert" className="text-xs text-destructive">
+            {actionError.message}
+          </p>
+        )}
       </div>
+      {task.status === "ready" && (
+        <Button
+          size="xs"
+          aria-label={`Start #${task.id}`}
+          disabled={!herdrRunning || startTask.isPending}
+          onClick={() => startTask.mutate(task.id)}
+        >
+          {startTask.isPending ? "Starting..." : "Start"}
+        </Button>
+      )}
+      {task.status === "in_progress" && task.herdrWorkspaceId && (
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={`Open #${task.id} in herdr`}
+          disabled={!herdrRunning || openTask.isPending}
+          onClick={() => openTask.mutate(task.id)}
+        >
+          Open in herdr
+        </Button>
+      )}
       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", statusStyles[task.status])}>
         {statusLabels[task.status]}
       </span>
     </li>
+  );
+}
+
+function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
+  const machine = machineOf(workspace.location);
+  const settings = useMachineSettings(machine);
+  const saveSettings = useSaveMachineSettings();
+  const [draft, setDraft] = useState<string | null>(null);
+  const saved = settings.data?.worktreeRoot ?? "";
+  const machineName = machine.kind === "local" ? "this computer" : machine.label;
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    saveSettings.mutate(
+      { machine, worktreeRoot: (draft ?? saved).trim() || null },
+      { onSuccess: () => setDraft(null) },
+    );
+  }
+
+  return (
+    <form onSubmit={submit} aria-label="Worktree root" className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground">
+          Worktree root on {machineName}
+        </label>
+        <input
+          id="worktree-root"
+          className={cn(inputClass, "font-mono")}
+          placeholder={machine.kind === "local" ? "D:\\worktrees" : "/srv/worktrees"}
+          value={draft ?? saved}
+          onChange={(e) => setDraft(e.target.value)}
+          disabled={!settings.isSuccess}
+        />
+        <Button type="submit" size="sm" variant="outline" disabled={draft === null || saveSettings.isPending}>
+          Save
+        </Button>
+      </div>
+      {settings.isSuccess && !saved && (
+        <p className="text-xs text-muted-foreground">Set a worktree root to start tasks on this machine.</p>
+      )}
+      {(settings.error ?? saveSettings.error) && (
+        <p role="alert" className="text-xs text-destructive">
+          {(settings.error ?? saveSettings.error)?.message}
+        </p>
+      )}
+    </form>
   );
 }
 

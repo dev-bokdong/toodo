@@ -41,6 +41,13 @@ export const commands = {
 	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
 	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(__TAURI_INVOKE("list_commit_records", { taskId })),
+	herdrStatus: () => typedError<HerdrStatus, CommandError>(__TAURI_INVOKE("herdr_status")),
+	/**
+	 *  Creates the worktree of a `ready` task through herdr and moves the task to
+	 *  `in_progress`. Requires a worktree root for the machine of the task's workspace.
+	 */
+	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
+	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
 };
 
 /* Types */
@@ -79,6 +86,12 @@ export type CommitRecord = {
 	author: string,
 	/**  Commit timestamp in seconds since the Unix epoch. */
 	committedAt: number,
+};
+
+export type HerdrStatus = {
+	/**  Whether the herdr server on this machine is running. */
+	running: boolean,
+	version: string | null,
 };
 
 export type Machine = { kind: "local" } | { kind: "ssh"; label: string };

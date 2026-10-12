@@ -2,9 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   commands,
   type CommandError,
+  type Machine,
+  type MachineSettings,
   type NewTask,
   type NewWorkspace,
+  type TaskId,
   type WorkspaceId,
+  type WorkspaceLocation,
 } from "@/lib/bindings";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
@@ -30,7 +34,13 @@ async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
 export const queryKeys = {
   workspaces: ["workspaces"] as const,
   tasks: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "tasks"] as const,
+  herdrStatus: ["herdr-status"] as const,
+  machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
 };
+
+export function machineOf(location: WorkspaceLocation): Machine {
+  return location.kind === "local" ? { kind: "local" } : { kind: "ssh", label: location.machine };
+}
 
 export function useWorkspaces() {
   return useQuery({
@@ -51,6 +61,44 @@ export function useTasks(workspaceId: WorkspaceId) {
   return useQuery({
     queryKey: queryKeys.tasks(workspaceId),
     queryFn: () => unwrap(commands.listTasks(workspaceId)),
+  });
+}
+
+export function useHerdrStatus() {
+  return useQuery({
+    queryKey: queryKeys.herdrStatus,
+    queryFn: () => unwrap(commands.herdrStatus()),
+  });
+}
+
+export function useMachineSettings(machine: Machine) {
+  return useQuery({
+    queryKey: queryKeys.machineSettings(machine),
+    queryFn: () => unwrap(commands.getMachineSettings(machine)),
+  });
+}
+
+export function useSaveMachineSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: MachineSettings) => unwrap(commands.saveMachineSettings(settings)),
+    onSuccess: (settings) =>
+      queryClient.setQueryData(queryKeys.machineSettings(settings.machine), settings),
+  });
+}
+
+export function useStartTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: TaskId) => unwrap(commands.startTask(id)),
+    onSuccess: (task) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+  });
+}
+
+export function useOpenTaskInHerdr() {
+  return useMutation({
+    mutationFn: (id: TaskId) => unwrap(commands.openTaskInHerdr(id)),
   });
 }
 

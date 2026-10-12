@@ -6,6 +6,7 @@ use specta::Type;
 use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
+use crate::adapters::herdr;
 use crate::domain::{dag, model, path, status};
 use crate::storage;
 
@@ -434,6 +435,23 @@ impl From<&model::CommitRecord> for CommitRecord {
             message: record.message.clone(),
             author: record.author.clone(),
             committed_at: record.committed_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrStatus {
+    /// Whether the herdr server on this machine is running.
+    pub running: bool,
+    pub version: Option<String>,
+}
+
+impl From<&herdr::ServerStatus> for HerdrStatus {
+    fn from(status: &herdr::ServerStatus) -> Self {
+        Self {
+            running: status.running,
+            version: status.version.clone(),
         }
     }
 }
