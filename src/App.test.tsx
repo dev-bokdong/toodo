@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { commands, type CommitRecord, type Task, type Workspace } from "@/lib/bindings";
+import { commands, type CommitRecord, type HerdrMachine, type Task, type Workspace } from "@/lib/bindings";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
@@ -22,6 +22,8 @@ vi.mock("@/lib/bindings", () => ({
     listCommitRecords: vi.fn(),
     refreshCommitRecords: vi.fn(),
     completeTask: vi.fn(),
+    listHerdrMachines: vi.fn(),
+    addHerdrMachine: vi.fn(),
     listSshHosts: vi.fn(),
     addSshHost: vi.fn(),
     listRemoteDirectories: vi.fn(),
@@ -62,6 +64,10 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
   };
 }
 
+function savedMachine(target: string, enabled = true): HerdrMachine {
+  return { id: `m-${target}`, label: target, target, session: "default", enabled };
+}
+
 function commit(taskId: number, sha: string, message: string): CommitRecord {
   return { taskId, sha, message, author: "Ada <ada@example.com>", committedAt: 1700000000 };
 }
@@ -86,6 +92,7 @@ describe("App", () => {
     }));
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
     mocked.listSshHosts.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [] });
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -130,16 +137,26 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
   });
 
-  it("groups workspaces under Local and the hosts of the SSH config", async () => {
+  it("groups workspaces under Local and the machines saved in herdr", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
-    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["gpu"] });
+    mocked.listHerdrMachines.mockResolvedValue({
+      status: "ok",
+      data: [savedMachine("gpu"), savedMachine("lab", false)],
+    });
+    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["unsaved"] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
 
     const local = await screen.findByRole("region", { name: "Machine Local" });
     expect(within(local).getByText("toodo")).toBeInTheDocument();
-    expect(within(await screen.findByRole("region", { name: "Machine gpu" })).queryByRole("listitem")).toBeNull();
-    expect(within(screen.getByRole("region", { name: "Machine devbox" })).getByText("/srv/herdr")).toBeInTheDocument();
+    const gpu = await screen.findByRole("region", { name: "Machine gpu" });
+    expect(within(gpu).queryByRole("listitem")).toBeNull();
+    expect(within(gpu).queryByText(/in herdr/)).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Machine lab" })).getByText("Disabled in herdr")).toBeInTheDocument();
+    const devbox = screen.getByRole("region", { name: "Machine devbox" });
+    expect(within(devbox).getByText("/srv/herdr")).toBeInTheDocument();
+    expect(within(devbox).getByText("Not saved in herdr")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Machine unsaved" })).toBeNull();
   });
 
   it("opens a local repository picked in the folder dialog", async () => {
@@ -169,7 +186,7 @@ describe("App", () => {
 
   it("clones into a folder browsed on an SSH host and selects the workspace", async () => {
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
-    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["devbox"] });
+    mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [savedMachine("devbox")] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: herdr });
     mocked.listRemoteDirectories.mockImplementation(async (_machine, path) => ({
@@ -209,20 +226,48 @@ describe("App", () => {
     });
   });
 
-  it("adds an SSH host to the config and lists it as a machine", async () => {
+  it("adds a new SSH host to herdr and lists it as a machine", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
-    mocked.addSshHost.mockResolvedValue({ status: "ok", data: ["devbox"] });
+    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["gpu"] });
+    mocked.addSshHost.mockResolvedValue({ status: "ok", data: ["gpu", "devbox"] });
+    mocked.addHerdrMachine.mockResolvedValue({ status: "ok", data: [savedMachine("devbox")] });
     renderApp();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add SSH host" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
+    expect(screen.queryByRole("region", { name: "Machine gpu" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New host" }));
     fireEvent.change(screen.getByLabelText("Host alias"), { target: { value: "devbox" } });
     fireEvent.change(screen.getByLabelText("Host name"), { target: { value: "10.0.0.5" } });
     fireEvent.change(screen.getByLabelText("Port"), { target: { value: "2222" } });
     fireEvent.click(screen.getByRole("button", { name: "Add host" }));
 
-    expect(await screen.findByRole("region", { name: "Machine devbox" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("SSH host")).toHaveValue("devbox"));
     expect(screen.queryByLabelText("Host alias")).not.toBeInTheDocument();
     expect(mocked.addSshHost).toHaveBeenCalledWith({ alias: "devbox", hostName: "10.0.0.5", user: null, port: 2222 });
+    fireEvent.click(screen.getByRole("button", { name: "Add to herdr" }));
+
+    expect(await screen.findByRole("region", { name: "Machine devbox" })).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Add machine" })).not.toBeInTheDocument();
+    expect(mocked.addHerdrMachine).toHaveBeenCalledWith("devbox");
+  });
+
+  it("keeps the add machine form open when herdr saves nothing", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["gpu"] });
+    mocked.addHerdrMachine.mockResolvedValue({
+      status: "error",
+      error: { kind: "rejected", message: "herdr saved no machine for SSH host 'gpu'" },
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
+    const host = screen.getByLabelText("SSH host");
+    await within(host).findByRole("option", { name: "gpu" });
+    fireEvent.change(host, { target: { value: "gpu" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to herdr" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("herdr saved no machine for SSH host 'gpu'");
+    expect(screen.getByRole("form", { name: "Add machine" })).toBeInTheDocument();
   });
 
   it("creates a task and reloads the task list", async () => {

@@ -2,8 +2,9 @@
 //! envelope as JSON on stdout; failures print `{"error": {"code", "message"}}` on stderr.
 //! Commands for a workspace on an SSH host run against the herdr server of the saved herdr
 //! machine whose SSH target is that host, through `herdr --machine <profile-id>`. herdr only
-//! knows machines saved with `herdr machine add`, which needs an interactive terminal, so
-//! the app never adds them itself.
+//! knows machines saved with `herdr machine add`, which may ask to install or replace the
+//! remote herdr, so the app runs it in a terminal window the user answers and never
+//! installs herdr itself.
 //!
 //! Processes are started through the [`Runner`] of the git adapter, so tests can fake
 //! them the same way.
@@ -12,8 +13,8 @@ use std::fmt;
 
 use serde_json::Value;
 
-use super::git::{GitError, Invocation, Runner, describe};
-use crate::domain::model::Machine;
+use super::git::{GitError, Invocation, Runner, describe, is_plain_word};
+use crate::domain::model::{Machine, MachineLabel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HerdrError {
@@ -32,6 +33,8 @@ pub enum HerdrError {
     MachineNotSaved { host: String },
     /// Every saved herdr machine for the SSH host is disabled.
     MachineDisabled { host: String, profile_id: String },
+    /// The SSH host cannot be passed to `herdr machine add` safely.
+    InvalidHost { host: String },
 }
 
 impl fmt::Display for HerdrError {
@@ -56,6 +59,11 @@ impl fmt::Display for HerdrError {
                 f,
                 "the herdr machine for SSH host '{host}' is disabled; run \
                  `herdr machine enable {profile_id}`, then try again"
+            ),
+            Self::InvalidHost { host } => write!(
+                f,
+                "SSH host {host:?} must use only letters, digits, and . _ - @ : / = \
+                 and must not start with '-'"
             ),
         }
     }
@@ -173,6 +181,29 @@ impl Herdr {
         Ok(())
     }
 
+    /// Machines saved in herdr, in herdr's order.
+    pub fn list_machines(&self) -> Result<Vec<SavedMachine>, HerdrError> {
+        let invocation = invocation(None, &["machine", "list", "--json"]);
+        let output = self.runner.run(&invocation)?;
+        parse(&invocation, &output)?
+            .as_array()
+            .and_then(|rows| rows.iter().map(SavedMachine::parse).collect())
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// Runs `herdr machine add <host>` in a terminal window and waits for the user to
+    /// finish it. herdr asks there before installing or replacing the remote herdr, and
+    /// saves nothing when the user cancels.
+    pub fn add_machine(&self, host: &MachineLabel) -> Result<(), HerdrError> {
+        if !is_plain_word(host.as_str()) || host.as_str().starts_with('-') {
+            return Err(HerdrError::InvalidHost {
+                host: host.as_str().to_owned(),
+            });
+        }
+        let invocation = invocation(None, &["machine", "add", host.as_str()]);
+        Ok(self.runner.run_in_terminal(&invocation)?)
+    }
+
     /// ID of the saved herdr machine to target for `machine`, or `None` for this machine.
     /// Among enabled profiles whose SSH target is the host, the one on herdr's default
     /// session wins.
@@ -180,16 +211,7 @@ impl Herdr {
         let Machine::Ssh(host) = machine else {
             return Ok(None);
         };
-        let invocation = invocation(None, &["machine", "list", "--json"]);
-        let output = self.runner.run(&invocation)?;
-        let list = parse(&invocation, &output)?;
-        let profiles = list
-            .as_array()
-            .ok_or_else(|| unexpected(&invocation, &output))?
-            .iter()
-            .map(SavedMachine::parse)
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| unexpected(&invocation, &output))?;
+        let profiles = self.list_machines()?;
         let matching: Vec<_> = profiles
             .iter()
             .filter(|profile| profile.target == host.as_str())
@@ -200,10 +222,10 @@ impl Herdr {
             .find(|profile| profile.session == DEFAULT_SESSION)
             .or_else(|| enabled.next());
         match (chosen, matching.first()) {
-            (Some(profile), _) => Ok(Some(profile.id.to_owned())),
+            (Some(profile), _) => Ok(Some(profile.id.clone())),
             (None, Some(disabled)) => Err(HerdrError::MachineDisabled {
                 host: host.as_str().to_owned(),
-                profile_id: disabled.id.to_owned(),
+                profile_id: disabled.id.clone(),
             }),
             (None, None) => Err(HerdrError::MachineNotSaved {
                 host: host.as_str().to_owned(),
@@ -215,20 +237,28 @@ impl Herdr {
 /// Session herdr uses for a saved machine unless `--remote-session` names another.
 const DEFAULT_SESSION: &str = "default";
 
-/// One row of `herdr machine list --json`.
-struct SavedMachine<'a> {
-    id: &'a str,
-    target: &'a str,
-    session: &'a str,
-    enabled: bool,
+/// A machine saved with `herdr machine add`: one row of `herdr machine list --json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedMachine {
+    /// Opaque profile ID accepted by `herdr --machine`.
+    pub id: String,
+    /// Name shown in the herdr sidebar.
+    pub label: String,
+    /// SSH target, usually a host alias from the SSH config.
+    pub target: String,
+    /// herdr session on the remote machine.
+    pub session: String,
+    pub enabled: bool,
 }
 
-impl<'a> SavedMachine<'a> {
-    fn parse(row: &'a Value) -> Option<Self> {
+impl SavedMachine {
+    fn parse(row: &Value) -> Option<Self> {
+        let text = |key: &str| row.get(key)?.as_str().map(str::to_owned);
         Some(Self {
-            id: row.get("id")?.as_str()?,
-            target: row.get("target")?.as_str()?,
-            session: row.get("session")?.as_str()?,
+            id: text("id")?,
+            label: text("label")?,
+            target: text("target")?,
+            session: text("session")?,
             enabled: row.get("enabled")?.as_bool()?,
         })
     }
@@ -399,6 +429,65 @@ mod tests {
             })
         );
         assert_eq!(runner.invocations.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn saved_machines_are_listed_in_order() {
+        let (herdr, _) = herdr(vec![machine_list(&[
+            saved("m2", "devbox", "default", true),
+            saved("m1", "gpu", "agents", false),
+        ])]);
+        assert_eq!(
+            herdr.list_machines().unwrap(),
+            [
+                SavedMachine {
+                    id: "m2".to_owned(),
+                    label: "devbox".to_owned(),
+                    target: "devbox".to_owned(),
+                    session: "default".to_owned(),
+                    enabled: true,
+                },
+                SavedMachine {
+                    id: "m1".to_owned(),
+                    label: "gpu".to_owned(),
+                    target: "gpu".to_owned(),
+                    session: "agents".to_owned(),
+                    enabled: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn machines_are_added_in_a_terminal() {
+        let (herdr, runner) = herdr(vec![Ok(String::new())]);
+        herdr
+            .add_machine(&MachineLabel::parse("admin@analysis-server").unwrap())
+            .unwrap();
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0],
+            Invocation {
+                program: "herdr",
+                args: ["machine", "add", "admin@analysis-server"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn hosts_that_need_quoting_are_not_added() {
+        let (herdr, runner) = herdr(Vec::new());
+        for host in ["dev box", "devbox&calc", "-oProxyCommand=x", "dev\"box"] {
+            assert_eq!(
+                herdr.add_machine(&MachineLabel::parse(host).unwrap()),
+                Err(HerdrError::InvalidHost {
+                    host: host.to_owned()
+                }),
+                "{host}"
+            );
+        }
+        assert!(runner.invocations.lock().unwrap().is_empty());
     }
 
     #[test]

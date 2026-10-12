@@ -105,6 +105,7 @@ impl From<HerdrError> for CommandError {
             | HerdrError::Failed { .. }
             | HerdrError::MachineNotSaved { .. }
             | HerdrError::MachineDisabled { .. } => CommandErrorKind::External,
+            HerdrError::InvalidHost { .. } => CommandErrorKind::InvalidInput,
             HerdrError::UnexpectedOutput { .. } => CommandErrorKind::Internal,
         };
         Self {

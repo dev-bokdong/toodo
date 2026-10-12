@@ -18,6 +18,14 @@ export const commands = {
 	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(__TAURI_INVOKE("delete_workspace", { id })),
 	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("get_machine_settings", { machine })),
 	saveMachineSettings: (settings: MachineSettings) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("save_machine_settings", { settings })),
+	/**  Machines saved in herdr; remote workspaces can only live on these. */
+	listHerdrMachines: () => typedError<HerdrMachine[], CommandError>(__TAURI_INVOKE("list_herdr_machines")),
+	/**
+	 *  Runs `herdr machine add <host>` in a terminal window, where herdr asks before it
+	 *  installs or replaces the remote herdr, and returns the saved machines once the window
+	 *  closes. Fails when herdr saved no machine for the host.
+	 */
+	addHerdrMachine: (host: string) => typedError<HerdrMachine[], CommandError>(__TAURI_INVOKE("add_herdr_machine", { host })),
 	/**  Host aliases from `~/.ssh/config`, re-read on every call. */
 	listSshHosts: () => typedError<string[], CommandError>(__TAURI_INVOKE("list_ssh_hosts")),
 	/**  Appends a `Host` block to `~/.ssh/config` and returns the updated host aliases. */
@@ -105,6 +113,19 @@ export type CommitRecord = {
 	author: string,
 	/**  Commit timestamp in seconds since the Unix epoch. */
 	committedAt: number,
+};
+
+/**  A machine saved in herdr with `herdr machine add`. */
+export type HerdrMachine = {
+	/**  Opaque herdr profile ID. */
+	id: string,
+	/**  Name shown in the herdr sidebar. */
+	label: string,
+	/**  SSH target; workspaces on this machine store it as their `machine`. */
+	target: string,
+	/**  herdr session on the remote machine. */
+	session: string,
+	enabled: boolean,
 };
 
 export type HerdrStatus = {

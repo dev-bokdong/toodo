@@ -22,6 +22,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::workspaces::delete_workspace,
         commands::workspaces::get_machine_settings,
         commands::workspaces::save_machine_settings,
+        commands::machines::list_herdr_machines,
+        commands::machines::add_herdr_machine,
         commands::machines::list_ssh_hosts,
         commands::machines::add_ssh_host,
         commands::machines::list_remote_directories,

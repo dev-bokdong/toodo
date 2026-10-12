@@ -278,6 +278,33 @@ impl TryFrom<NewSshHost> for ssh_config::SshHost {
     }
 }
 
+/// A machine saved in herdr with `herdr machine add`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrMachine {
+    /// Opaque herdr profile ID.
+    pub id: String,
+    /// Name shown in the herdr sidebar.
+    pub label: String,
+    /// SSH target; workspaces on this machine store it as their `machine`.
+    pub target: String,
+    /// herdr session on the remote machine.
+    pub session: String,
+    pub enabled: bool,
+}
+
+impl From<&herdr::SavedMachine> for HerdrMachine {
+    fn from(machine: &herdr::SavedMachine) -> Self {
+        Self {
+            id: machine.id.clone(),
+            label: machine.label.clone(),
+            target: machine.target.clone(),
+            session: machine.session.clone(),
+            enabled: machine.enabled,
+        }
+    }
+}
+
 /// Subdirectories of a directory on a remote machine, for the folder browser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]

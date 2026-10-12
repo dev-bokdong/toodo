@@ -26,12 +26,16 @@ A `planned` task can also be cancelled. `done` and `cancelled` are final states.
 ### 1. Register a workspace
 
 The user picks a local Windows directory, or a remote directory on a saved herdr SSH
-machine (machine label plus POSIX path), and one of two sources:
+machine (its SSH target plus POSIX path), and one of two sources:
 
 - **Clone**: Toodo runs `git clone <url> <path>`. The path must not exist or must be an
   empty directory.
 - **Open**: the path already holds a cloned repository. Toodo checks it with
   `git rev-parse --show-toplevel` and records the repository root.
+
+A remote machine is added once from the sidebar: the user picks a host from `~/.ssh/config`
+(or adds a new `Host` entry) and Toodo runs `herdr machine add <host>` in a console window
+where the user answers herdr's setup prompts.
 
 Git runs locally as `git.exe` and remotely as `ssh.exe <machine> git ...`. The default
 base branch is the one the user enters, or else the branch `origin/HEAD` points to, or

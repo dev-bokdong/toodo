@@ -2,8 +2,15 @@ import { useState, type FormEvent } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
-import type { Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
-import { useAddSshHost, useCreateWorkspace, useSshHosts, useWorkspaces } from "@/lib/queries";
+import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
+import {
+  useAddHerdrMachine,
+  useAddSshHost,
+  useCreateWorkspace,
+  useHerdrMachines,
+  useSshHosts,
+  useWorkspaces,
+} from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 export const inputClass =
@@ -13,13 +20,20 @@ export function describeLocation(location: WorkspaceLocation): string {
   return location.kind === "local" ? location.path : `${location.machine}:${location.path}`;
 }
 
-/** SSH host alias, or `null` for this computer. */
+/** SSH host of a herdr machine, or `null` for this computer. */
 type MachineKey = string | null;
 
 type Mode = WorkspaceSource["kind"];
 
 function machineKeyOf(location: WorkspaceLocation): MachineKey {
   return location.kind === "local" ? null : location.machine;
+}
+
+/** Why herdr cannot run commands on `host`, or `null` when it can. */
+function herdrProblem(host: string, machines: HerdrMachine[]): string | null {
+  const saved = machines.filter((machine) => machine.target === host);
+  if (saved.length === 0) return "Not saved in herdr";
+  return saved.some((machine) => machine.enabled) ? null : "Disabled in herdr";
 }
 
 function joinLocal(base: string, name: string): string {
@@ -41,13 +55,14 @@ type WorkspaceListProps = {
 
 export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   const workspaces = useWorkspaces();
-  const sshHosts = useSshHosts();
+  const herdrMachines = useHerdrMachines();
   const [adding, setAdding] = useState<{ machine: MachineKey; mode: Mode } | null>(null);
-  const [addingHost, setAddingHost] = useState(false);
+  const [addingMachine, setAddingMachine] = useState(false);
 
+  const saved = herdrMachines.data ?? [];
   const remotes = [
     ...new Set([
-      ...(sshHosts.data ?? []),
+      ...saved.map((machine) => machine.target),
       ...(workspaces.data ?? []).flatMap((w) => (w.location.kind === "ssh" ? [w.location.machine] : [])),
     ]),
   ];
@@ -59,15 +74,17 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         <h2 id="workspaces-heading" className="text-xs font-medium uppercase text-muted-foreground">
           Workspaces
         </h2>
-        <Button variant="ghost" size="xs" onClick={() => setAddingHost((open) => !open)}>
-          {addingHost ? "Cancel" : "Add SSH host"}
+        <Button variant="ghost" size="xs" onClick={() => setAddingMachine((open) => !open)}>
+          {addingMachine ? "Cancel" : "Add machine"}
         </Button>
       </div>
 
-      {addingHost && <NewSshHostForm onAdded={() => setAddingHost(false)} />}
-      {sshHosts.isError && (
+      {addingMachine && (
+        <AddMachineForm saved={saved.map((machine) => machine.target)} onAdded={() => setAddingMachine(false)} />
+      )}
+      {herdrMachines.isError && (
         <p role="alert" className="text-xs text-destructive">
-          Failed to read the SSH config: {sshHosts.error.message}
+          Failed to list herdr machines: {herdrMachines.error.message}
         </p>
       )}
       {workspaces.isPending && <p className="text-sm text-muted-foreground">Loading workspaces...</p>}
@@ -86,10 +103,14 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
             const label = machine ?? "Local";
             const items = workspaces.data.filter((w) => machineKeyOf(w.location) === machine);
             const active = adding?.machine === machine ? adding.mode : null;
+            const problem = machine !== null && herdrMachines.isSuccess ? herdrProblem(machine, saved) : null;
             return (
               <section key={label} aria-label={`Machine ${label}`} className="flex flex-col gap-1">
                 <div className="flex items-center gap-1">
-                  <h3 className="min-w-0 flex-1 truncate px-1 text-xs font-semibold">{label}</h3>
+                  <h3 className="min-w-0 flex-1 truncate px-1 text-xs font-semibold">
+                    {label}
+                    {problem && <span className="ml-1.5 font-normal text-destructive">{problem}</span>}
+                  </h3>
                   {(["clone", "open"] as const).map((mode) => (
                     <Button
                       key={mode}
@@ -142,7 +163,80 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   );
 }
 
-function NewSshHostForm({ onAdded }: { onAdded: () => void }) {
+function AddMachineForm({ saved, onAdded }: { saved: string[]; onAdded: () => void }) {
+  const sshHosts = useSshHosts();
+  const addMachine = useAddHerdrMachine();
+  const [host, setHost] = useState("");
+  const [addingHost, setAddingHost] = useState(false);
+
+  const candidates = [...new Set([...(sshHosts.data ?? []), ...(host ? [host] : [])])].filter(
+    (alias) => !saved.includes(alias),
+  );
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    addMachine.mutate(host, { onSuccess: onAdded });
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <form onSubmit={submit} aria-label="Add machine" className="flex flex-col gap-2 rounded-lg border p-2">
+        <p className="text-xs text-muted-foreground">
+          Runs herdr machine add in a terminal window. Answer its prompts there; herdr offers to install itself on
+          the host when it is missing.
+        </p>
+        <div className="flex gap-1">
+          <select
+            className={inputClass}
+            aria-label="SSH host"
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+            required
+          >
+            <option value="">Choose an SSH host</option>
+            {candidates.map((alias) => (
+              <option key={alias} value={alias}>
+                {alias}
+              </option>
+            ))}
+          </select>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-expanded={addingHost}
+            onClick={() => setAddingHost((open) => !open)}
+          >
+            New host
+          </Button>
+        </div>
+        {sshHosts.isError && (
+          <p role="alert" className="text-xs text-destructive">
+            Failed to read the SSH config: {sshHosts.error.message}
+          </p>
+        )}
+        {addMachine.isError && (
+          <p role="alert" className="text-xs text-destructive">
+            {addMachine.error.message}
+          </p>
+        )}
+        <Button type="submit" size="sm" disabled={addMachine.isPending}>
+          {addMachine.isPending ? "Waiting for the herdr terminal..." : "Add to herdr"}
+        </Button>
+      </form>
+      {addingHost && (
+        <NewSshHostForm
+          onAdded={(alias) => {
+            setHost(alias);
+            setAddingHost(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function NewSshHostForm({ onAdded }: { onAdded: (alias: string) => void }) {
   const addHost = useAddSshHost();
   const [alias, setAlias] = useState("");
   const [hostName, setHostName] = useState("");
@@ -153,7 +247,7 @@ function NewSshHostForm({ onAdded }: { onAdded: () => void }) {
     event.preventDefault();
     addHost.mutate(
       { alias, hostName, user: user.trim() || null, port: port.trim() ? Number(port) : null },
-      { onSuccess: onAdded },
+      { onSuccess: () => onAdded(alias.trim()) },
     );
   }
 

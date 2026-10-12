@@ -38,10 +38,28 @@ export const queryKeys = {
   herdrStatus: ["herdr-status"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
+  herdrMachines: ["herdr-machines"] as const,
   sshHosts: ["ssh-hosts"] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
 };
+
+/** Machines saved in herdr; refetched when the window regains focus. */
+export function useHerdrMachines() {
+  return useQuery({
+    queryKey: queryKeys.herdrMachines,
+    queryFn: () => unwrap(commands.listHerdrMachines()),
+  });
+}
+
+/** Runs `herdr machine add <host>` in a terminal window; settles when that window closes. */
+export function useAddHerdrMachine() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (host: string) => unwrap(commands.addHerdrMachine(host)),
+    onSuccess: (machines) => queryClient.setQueryData(queryKeys.herdrMachines, machines),
+  });
+}
 
 /** Host aliases of the user's SSH config; refetched when the window regains focus. */
 export function useSshHosts() {

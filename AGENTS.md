@@ -117,7 +117,9 @@ updated `src/lib/bindings.ts` together with the Rust change.
     socket API; parse it as JSON, never scrape text.
   - Events come from the socket API (`events.subscribe`) over the Windows named pipe:
     `worktree.created`, `worktree.removed`, `pane.agent_status_changed`.
-  - Remote workspaces map to saved herdr SSH machines (`herdr machine ...`).
+  - Remote workspaces map to saved herdr SSH machines (`herdr machine ...`), found by
+    their SSH target. Toodo adds one by running `herdr machine add <host>` in a console
+    window the user answers; it never installs herdr on a remote host itself.
   - Implementation happens in herdr itself; Toodo does not embed a terminal.
 - **git**: run `git.exe` (not libgit2) for branches and commit history.
 - **ssh**: run Windows OpenSSH `ssh.exe` for git commands on remote workspaces, sharing

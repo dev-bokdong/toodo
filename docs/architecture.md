@@ -17,7 +17,7 @@ cloning a repository into a path or by opening a repository already cloned at a 
 | `name` | Display name. |
 | `kind` | `local` or `ssh`. |
 | `path` | Absolute path to the repository root: a Windows path for `local`, a POSIX path for `ssh`. Keep the two as distinct types. |
-| `herdrMachine` | For `ssh` workspaces: the saved herdr machine label; also used as the `ssh.exe` host. |
+| `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh.exe` host. |
 | `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). |
 
 ### Machine Settings
@@ -27,7 +27,7 @@ saved herdr SSH machine that hosts a workspace.
 
 | Field | Description |
 | --- | --- |
-| `machine` | `local` or the saved herdr machine label. |
+| `machine` | `local` or the SSH target of the saved herdr machine. |
 | `worktreeRoot` | Absolute directory under which task worktrees are created on that machine (Windows path for `local`, POSIX path for SSH machines). Required before a task on that machine can be started. |
 
 ### Task Types
@@ -145,7 +145,13 @@ Toodo owns planning, task state, commit records, and pull requests.
   - Startup health check: `herdr` on `PATH` and `herdr status --json` reports
     `server.running`. herdr 0.9.3 has no `ping` command.
   - Commands for SSH workspaces run against the remote herdr server with
-    `herdr --machine <label> ...`.
+    `herdr --machine <profile-id> ...`. `--machine` accepts only a saved profile ID or
+    label, so the profile is looked up in `herdr machine list --json` by its SSH target
+    on every call, preferring an enabled profile on the `default` session.
+  - The sidebar lists Local and the machines of `herdr machine list --json`. Adding a
+    machine runs `herdr machine add <host>` in a new console window and waits for it to
+    close; herdr asks there before installing or replacing the remote herdr. Toodo never
+    installs herdr itself.
   - Failures exit non-zero and print `{"error": {"code", "message"}}` on stderr.
   - Commands use the herdr CLI (recommended by herdr for portable Windows behavior).
   - Events use the socket API: newline-delimited JSON over a Windows named pipe,
