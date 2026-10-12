@@ -1,4 +1,4 @@
-//! Opens GitHub pull requests with the `gh` CLI, reusing its authentication. `gh` always
+//! Opens GitHub pull requests and reads their state with the `gh` CLI, reusing its authentication. `gh` always
 //! runs on this machine and names the repository with `--repo`, so it does not need a
 //! local checkout and works for workspaces on SSH machines too.
 //!
@@ -18,6 +18,14 @@ pub struct NewPullRequest<'a> {
     pub base: &'a str,
     pub title: &'a str,
     pub body: &'a str,
+}
+
+/// Lifecycle state of a pull request as reported by `gh`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestState {
+    Open,
+    Closed,
+    Merged,
 }
 
 pub struct GitHub {
@@ -93,6 +101,20 @@ impl GitHub {
             .rfind(|line| line.starts_with("https://") || line.starts_with("http://"))
             .map(str::to_owned)
             .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// State of the pull request at `url`.
+    pub fn pull_request_state(&self, url: &str) -> Result<PullRequestState, GitError> {
+        let invocation = invocation(&["pr", "view", url, "--json", "state"]);
+        let output = self.runner.run(&invocation)?;
+        let pull_request: Value =
+            serde_json::from_str(&output).map_err(|_| unexpected(&invocation, &output))?;
+        match pull_request.get("state").and_then(Value::as_str) {
+            Some("OPEN") => Ok(PullRequestState::Open),
+            Some("CLOSED") => Ok(PullRequestState::Closed),
+            Some("MERGED") => Ok(PullRequestState::Merged),
+            _ => Err(unexpected(&invocation, &output)),
+        }
     }
 }
 
@@ -171,6 +193,37 @@ mod tests {
             github.find_open_pull_request(&repository(), "feat/x-1"),
             Err(GitError::UnexpectedOutput { .. })
         ));
+    }
+
+    #[test]
+    fn pull_request_state_reads_the_state_field() {
+        let url = "https://github.com/acme/toodo/pull/7";
+        let (github, runner) = github(vec![
+            Ok(r#"{"state":"MERGED"}"#.to_owned()),
+            Ok(r#"{"state":"OPEN"}"#.to_owned()),
+            Ok(r#"{"state":"CLOSED"}"#.to_owned()),
+            Ok(r#"{"state":"DRAFT"}"#.to_owned()),
+        ]);
+        assert_eq!(
+            github.pull_request_state(url).unwrap(),
+            PullRequestState::Merged
+        );
+        assert_eq!(
+            github.pull_request_state(url).unwrap(),
+            PullRequestState::Open
+        );
+        assert_eq!(
+            github.pull_request_state(url).unwrap(),
+            PullRequestState::Closed
+        );
+        assert!(matches!(
+            github.pull_request_state(url),
+            Err(GitError::UnexpectedOutput { .. })
+        ));
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0],
+            invocation(&["pr", "view", url, "--json", "state"])
+        );
     }
 
     #[test]

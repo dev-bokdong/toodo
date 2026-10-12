@@ -5,9 +5,9 @@ This document describes how a task moves from planning to a pull request.
 ## Task States
 
 ```
-planned --> ready --> in_progress --> done
-   ^          |            |
-   |          +------------+--> cancelled
+planned --> ready --> in_progress --> in_review --> done
+   ^          |            |              |
+   |          +------------+--------------+--> cancelled
    +-- (a dependency is added that is not done yet)
 ```
 
@@ -18,7 +18,8 @@ A `planned` task can also be cancelled. `done` and `cancelled` are final states.
 | `planned` | Task exists; one or more dependencies are not `done` yet. |
 | `ready` | All dependencies are `done`; the task can be started. |
 | `in_progress` | A worktree exists and implementation is happening in herdr. |
-| `done` | Task completed; commits recorded and a pull request opened. |
+| `in_review` | The task branch is pushed and its pull request is open, waiting to be merged. |
+| `done` | The pull request is merged; dependents can start from the updated base branch. |
 | `cancelled` | Task abandoned; its worktree may be removed. |
 
 ## Lifecycle
@@ -80,9 +81,9 @@ oldest first, replacing the previous records. This runs automatically when the t
 completed; while the task is in progress, the user can trigger it manually ("Refresh
 commits") to refresh the list.
 
-### 6. Complete the task and open a PR
+### 6. Open a pull request
 
-When the user marks an `in_progress` task complete, Toodo:
+When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo:
 
 1. Reads the commits of the task branch. A branch without commits ahead of the base
    branch is rejected, because there is nothing to open a pull request for.
@@ -96,11 +97,23 @@ When the user marks an `in_progress` task complete, Toodo:
    title and described with the task description. `gh` always runs on this machine, so
    SSH machines do not need it.
 5. In one transaction, stores the commit records and the pull request URL and moves the
-   task to `done`, which may make dependent tasks `ready`.
+   task to `in_review`. Dependent tasks keep waiting: their worktrees start from the base
+   branch, which does not contain this work until the pull request is merged.
 
-If any step fails, the task stays `in_progress` with its previous commit records and the
-error is shown; completing it again is safe, because pushing is repeatable and an open
-pull request is reused instead of created twice.
+If any step fails, the task keeps its status and previous commit records and the error is
+shown; opening it again is safe, because pushing is repeatable and an open pull request
+is reused instead of created twice. The same action on an `in_review` task ("Push to
+PR") pushes commits added after review feedback and refreshes the commit records.
+
+Review and merging happen on GitHub; Toodo never merges a pull request itself.
+
+### 7. Complete the task
+
+When the user completes an `in_review` task, Toodo reads the state of its pull request
+(`gh pr view <url> --json state`). Only a merged pull request moves the task to `done`,
+which may make dependent tasks `ready`. An open pull request is rejected until it is
+merged; a pull request closed without merging is rejected too, so the user reopens it or
+cancels the task.
 
 Removing the worktree (`herdr worktree remove`) is a separate cleanup step, usually after
 the pull request is merged.

@@ -87,7 +87,7 @@ A unit of work inside a workspace.
 | `branch` | Branch created for the task's worktree. |
 | `worktreePath` | Directory of the task's worktree. |
 | `herdrWorkspaceId` | herdr workspace bound to the worktree, if any. |
-| `pullRequestUrl` | Set when the PR is opened. |
+| `pullRequestUrl` | Set when the PR is opened, as the task moves to `in_review`. |
 
 ### Task Dependencies (DAG)
 

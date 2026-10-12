@@ -48,8 +48,8 @@ impl Storage {
     }
 
     fn init(mut conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "foreign_keys", true)?;
         migrations::migrate(&mut conn)?;
+        conn.pragma_update(None, "foreign_keys", true)?;
         Ok(Self { conn })
     }
 }

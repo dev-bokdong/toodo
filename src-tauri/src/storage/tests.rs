@@ -90,8 +90,9 @@ fn entities_survive_reopening_the_database_file() {
     let mut started = add_task(&mut storage, &local, "Login page");
     let remote_task = add_task(&mut storage, &remote, "Remote fix");
     storage.add_dependency(started.id, base.id).unwrap();
-    storage.set_task_status(base.id, InProgress).unwrap();
-    storage.set_task_status(base.id, Done).unwrap();
+    for status in [InProgress, InReview, Done] {
+        storage.set_task_status(base.id, status).unwrap();
+    }
     storage.set_task_status(started.id, InProgress).unwrap();
     started.task_type = TaskType::Fix;
     started.branch = Some(format!("fix/login-page-{}", started.id));
@@ -328,6 +329,12 @@ fn status_changes_follow_transitions_and_release_dependents() {
     assert_eq!(status(&storage, &b), Planned);
 
     assert_eq!(storage.set_task_status(a.id, InProgress).unwrap(), []);
+    assert!(matches!(
+        storage.set_task_status(a.id, Done),
+        Err(StorageError::Transition(error)) if error.from == InProgress && error.to == Done
+    ));
+    assert_eq!(storage.set_task_status(a.id, InReview).unwrap(), []);
+    assert_eq!(status(&storage, &b), Planned);
     assert_eq!(
         storage.set_task_status(a.id, Done).unwrap(),
         [StatusChange {
@@ -568,7 +575,7 @@ fn start_task_writes_nothing_when_it_is_rejected() {
 }
 
 #[test]
-fn complete_task_stores_commits_and_url_and_releases_dependents() {
+fn open_pull_request_stores_commits_and_url_and_keeps_dependents_waiting() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let task = add_task(&mut storage, &workspace, "Add login");
@@ -580,30 +587,38 @@ fn complete_task_stores_commits_and_url_and_releases_dependents() {
         .unwrap();
     let commits = [commit(task.id, "aaa", 10), commit(task.id, "bbb", 20)];
 
-    let (completed, changes) = storage
-        .complete_task(task.id, &commits, "https://github.com/acme/toodo/pull/3")
+    let pr = "https://github.com/acme/toodo/pull/3";
+
+    let in_review = storage
+        .open_pull_request(task.id, &commits[..1], pr)
         .unwrap();
 
-    assert_eq!(completed.status, Done);
-    assert_eq!(
-        completed.pull_request_url.as_deref(),
-        Some("https://github.com/acme/toodo/pull/3")
-    );
-    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), completed);
+    assert_eq!(in_review.status, InReview);
+    assert_eq!(in_review.pull_request_url.as_deref(), Some(pr));
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), in_review);
+    assert_eq!(status(&storage, &dependent), Planned);
+
+    let updated = storage.open_pull_request(task.id, &commits, pr).unwrap();
+    assert_eq!(updated, in_review);
     assert_eq!(storage.list_commit_records(task.id).unwrap(), commits);
+    assert_eq!(status(&storage, &dependent), Planned);
+
     assert_eq!(
-        changes,
+        storage.set_task_status(task.id, Done).unwrap(),
         [StatusChange {
             task: dependent.id,
             from: Planned,
             to: Ready
         }]
     );
-    assert_eq!(status(&storage, &dependent), Ready);
+    assert!(matches!(
+        storage.open_pull_request(task.id, &commits, pr),
+        Err(StorageError::Transition(_))
+    ));
 }
 
 #[test]
-fn complete_task_writes_nothing_when_it_is_rejected() {
+fn open_pull_request_writes_nothing_when_it_is_rejected() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let ready = add_task(&mut storage, &workspace, "Not started");
@@ -614,11 +629,11 @@ fn complete_task_writes_nothing_when_it_is_rejected() {
         .unwrap();
 
     assert!(matches!(
-        storage.complete_task(ready.id, &[commit(ready.id, "aaa", 1)], "https://x/pull/1"),
+        storage.open_pull_request(ready.id, &[commit(ready.id, "aaa", 1)], "https://x/pull/1"),
         Err(StorageError::Transition(_))
     ));
     assert!(matches!(
-        storage.complete_task(
+        storage.open_pull_request(
             started.id,
             &[commit(ready.id, "aaa", 1)],
             "https://x/pull/1"
@@ -627,7 +642,7 @@ fn complete_task_writes_nothing_when_it_is_rejected() {
     ));
     let duplicate = [commit(started.id, "aaa", 1), commit(started.id, "aaa", 2)];
     assert!(matches!(
-        storage.complete_task(started.id, &duplicate, "https://x/pull/1"),
+        storage.open_pull_request(started.id, &duplicate, "https://x/pull/1"),
         Err(StorageError::Sqlite(_))
     ));
     for task in [&ready, &started] {

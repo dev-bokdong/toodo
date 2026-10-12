@@ -1,6 +1,7 @@
-//! Commands that finish a task: recording the commits of its branch and completing it,
-//! which pushes the branch, opens a pull request with `gh`, and moves the task to
-//! `done` (see `docs/workflow.md`).
+//! Commands that finish a task (see `docs/workflow.md`): recording the commits of its
+//! branch, opening its pull request, which pushes the branch, opens (or reuses) a pull
+//! request with `gh`, and moves the task to `in_review`, and completing it once that
+//! pull request is merged, which moves it to `done` and releases its dependents.
 //!
 //! They run on the async runtime because git and gh can take seconds. The database lock
 //! is not held while they run.
@@ -10,14 +11,14 @@ use tauri::State;
 use super::types::{self, CommitRecord, Task, TaskId};
 use super::{CommandError, CommandResult, GitHubState, GitState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::adapters::github::{GitHub, NewPullRequest};
+use crate::adapters::github::{GitHub, NewPullRequest, PullRequestState};
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
 use crate::domain::status::TaskStatus;
 use crate::storage::StorageError;
 
-/// Reads the commits of an `in_progress` task's branch that are not on the base branch
-/// and stores them as its commit records.
+/// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
+/// the base branch and stores them as its commit records.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn refresh_commit_records(
@@ -28,20 +29,34 @@ pub fn refresh_commit_records(
     Ok(types::map_all(&refresh(&storage, &git, task_id.into())?))
 }
 
-/// Records the commits of an `in_progress` task, pushes its branch, opens a pull request
-/// into the base branch (or reuses the open one), and moves the task to `done`.
+/// Records the commits of an `in_progress` or `in_review` task, pushes its branch, opens
+/// a pull request into the base branch (or reuses the open one), and moves the task to
+/// `in_review`. Run it again after more commits to push them to the pull request.
 #[tauri::command(async)]
 #[specta::specta]
-pub fn complete_task(
+pub fn open_pull_request(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
     github: State<'_, GitHubState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&complete(&storage, &git, &github, id.into())?).into())
+    Ok((&open(&storage, &git, &github, id.into())?).into())
 }
 
-/// An `in_progress` task with the workspace and worktree its git commands run in.
+/// Moves an `in_review` task to `done` once its pull request is merged, which may make
+/// its dependents `ready`.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn complete_task(
+    storage: State<'_, StorageState>,
+    github: State<'_, GitHubState>,
+    id: TaskId,
+) -> CommandResult<Task> {
+    Ok((&complete(&storage, &github, id.into())?).into())
+}
+
+/// An `in_progress` or `in_review` task with the workspace and worktree its git commands
+/// run in.
 struct Checkout {
     task: model::Task,
     location: WorkspaceLocation,
@@ -55,9 +70,9 @@ fn checkout(storage: &StorageState, id: model::TaskId) -> CommandResult<Checkout
     let task = storage
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
-    if task.status != TaskStatus::InProgress {
+    if !matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview) {
         return Err(CommandError::rejected(format!(
-            "task {id} is {}; only an in_progress task can record commits or be completed",
+            "task {id} is {}; only an in_progress or in_review task can record commits or open a pull request",
             task.status
         )));
     }
@@ -109,7 +124,7 @@ fn refresh(
     Ok(records)
 }
 
-fn complete(
+fn open(
     storage: &StorageState,
     git: &Git,
     github: &GitHub,
@@ -119,7 +134,7 @@ fn complete(
     let records = commit_records(git, &checkout)?;
     if records.is_empty() {
         return Err(CommandError::rejected(format!(
-            "branch {} has no commits that are not on {}; commit the work before completing the task",
+            "branch {} has no commits that are not on {}; commit the work before opening a pull request",
             checkout.branch, checkout.base
         )));
     }
@@ -140,8 +155,43 @@ fn complete(
             body: &checkout.task.description,
         })?,
     };
-    let (completed, _) = lock(storage).complete_task(id, &records, &pull_request_url)?;
-    Ok(completed)
+    Ok(lock(storage).open_pull_request(id, &records, &pull_request_url)?)
+}
+
+fn complete(
+    storage: &StorageState,
+    github: &GitHub,
+    id: model::TaskId,
+) -> CommandResult<model::Task> {
+    let task = lock(storage)
+        .get_task(id)?
+        .ok_or(StorageError::TaskNotFound(id))?;
+    let pull_request_url = match (task.status, task.pull_request_url) {
+        (TaskStatus::InReview, Some(url)) => url,
+        (status, _) => {
+            return Err(CommandError::rejected(format!(
+                "task {id} is {status} without a pull request; only an in_review task can be completed"
+            )));
+        }
+    };
+    match github.pull_request_state(&pull_request_url)? {
+        PullRequestState::Merged => {}
+        PullRequestState::Open => {
+            return Err(CommandError::rejected(format!(
+                "pull request {pull_request_url} is not merged yet; merge it before completing the task"
+            )));
+        }
+        PullRequestState::Closed => {
+            return Err(CommandError::rejected(format!(
+                "pull request {pull_request_url} was closed without merging; reopen it or cancel the task"
+            )));
+        }
+    }
+    let mut storage = lock(storage);
+    storage.set_task_status(id, TaskStatus::Done)?;
+    Ok(storage
+        .get_task(id)?
+        .ok_or(StorageError::TaskNotFound(id))?)
 }
 
 #[cfg(test)]
@@ -249,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn completing_records_commits_pushes_opens_a_pull_request_and_finishes_the_task() {
+    fn opening_a_pull_request_records_commits_pushes_and_puts_the_task_in_review() {
         let fixture = local_fixture();
         let git_runner = runner(vec![
             log(&[SHA_A, SHA_B]),
@@ -259,11 +309,11 @@ mod tests {
         let gh_runner = runner(vec![Ok("[]".to_owned()), Ok(format!("{PR}\n"))]);
         let (git, github) = adapters(&git_runner, &gh_runner);
 
-        let completed = complete(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+        let in_review = open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
 
-        assert_eq!(completed.status, TaskStatus::Done);
-        assert_eq!(completed.pull_request_url.as_deref(), Some(PR));
-        assert_eq!(stored(&fixture, &fixture.task), completed);
+        assert_eq!(in_review.status, TaskStatus::InReview);
+        assert_eq!(in_review.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(stored(&fixture, &fixture.task), in_review);
         let records = lock(&fixture.storage)
             .list_commit_records(fixture.task.id)
             .unwrap();
@@ -276,7 +326,7 @@ mod tests {
         );
         assert_eq!(
             stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Ready
+            TaskStatus::Planned
         );
         assert_eq!(git_commands(&git_runner), ["log", "remote", "push"]);
         assert_eq!(
@@ -321,7 +371,7 @@ mod tests {
         let gh_runner = runner(vec![Ok("[]".to_owned()), Ok(format!("{PR}\n"))]);
         let (git, github) = adapters(&git_runner, &gh_runner);
 
-        complete(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+        open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
 
         let push = &invocations(&git_runner)[2];
         assert_eq!(push.program, "ssh");
@@ -339,7 +389,7 @@ mod tests {
         let gh_runner = runner(Vec::new());
         let (git, github) = adapters(&git_runner, &gh_runner);
 
-        let error = complete(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
+        let error = open(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
@@ -359,7 +409,7 @@ mod tests {
         let gh_runner = runner(Vec::new());
         let (git, github) = adapters(&git_runner, &gh_runner);
 
-        let error = complete(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
+        let error = open(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("is not a GitHub repository"));
@@ -385,7 +435,7 @@ mod tests {
         ]);
         let (git, github) = adapters(&git_runner, &gh_runner);
 
-        let error = complete(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
+        let error = open(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::External);
         assert_eq!(stored(&fixture, &fixture.task), fixture.task);
         assert_eq!(
@@ -395,8 +445,8 @@ mod tests {
             []
         );
 
-        let completed = complete(&fixture.storage, &git, &github, fixture.task.id).unwrap();
-        assert_eq!(completed.pull_request_url.as_deref(), Some(PR));
+        let in_review = open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+        assert_eq!(in_review.pull_request_url.as_deref(), Some(PR));
         assert_eq!(invocations(&gh_runner).len(), 3);
         assert_eq!(invocations(&gh_runner)[2].args[1], "list");
     }
@@ -432,9 +482,11 @@ mod tests {
     #[test]
     fn an_in_progress_task_without_a_worktree_is_rejected() {
         let fixture = local_fixture();
-        lock(&fixture.storage)
-            .set_task_status(fixture.task.id, TaskStatus::Done)
-            .unwrap();
+        for status in [TaskStatus::InReview, TaskStatus::Done] {
+            lock(&fixture.storage)
+                .set_task_status(fixture.task.id, status)
+                .unwrap();
+        }
         let ready = fixture.dependent.id;
         lock(&fixture.storage)
             .set_task_status(ready, TaskStatus::InProgress)
@@ -443,10 +495,75 @@ mod tests {
         let gh_runner = runner(Vec::new());
         let (git, github) = adapters(&git_runner, &gh_runner);
 
-        let error = complete(&fixture.storage, &git, &github, ready).unwrap_err();
+        let error = open(&fixture.storage, &git, &github, ready).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("has no worktree"));
         assert!(invocations(&git_runner).is_empty());
+    }
+
+    fn in_review_fixture() -> Fixture {
+        let fixture = local_fixture();
+        lock(&fixture.storage)
+            .open_pull_request(fixture.task.id, &[], PR)
+            .unwrap();
+        fixture
+    }
+
+    fn state(state: &str) -> Result<String, GitError> {
+        Ok(format!(r#"{{"state":"{state}"}}"#))
+    }
+
+    #[test]
+    fn completing_a_task_with_a_merged_pull_request_finishes_it_and_releases_dependents() {
+        let fixture = in_review_fixture();
+        let gh_runner = runner(vec![state("MERGED")]);
+        let github = GitHub::new(Box::new(gh_runner.clone()));
+
+        let completed = complete(&fixture.storage, &github, fixture.task.id).unwrap();
+
+        assert_eq!(completed.status, TaskStatus::Done);
+        assert_eq!(completed.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(stored(&fixture, &fixture.task), completed);
+        assert_eq!(
+            stored(&fixture, &fixture.dependent).status,
+            TaskStatus::Ready
+        );
+        assert_eq!(
+            invocations(&gh_runner)[0].args,
+            ["pr", "view", PR, "--json", "state"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn a_pull_request_that_is_not_merged_keeps_the_task_in_review() {
+        let fixture = in_review_fixture();
+        let github = GitHub::new(Box::new(runner(vec![state("OPEN"), state("CLOSED")])));
+
+        for expected in ["is not merged yet", "was closed without merging"] {
+            let error = complete(&fixture.storage, &github, fixture.task.id).unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::Rejected);
+            assert!(error.message.contains(expected), "{}", error.message);
+        }
+        assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
+        assert_eq!(
+            stored(&fixture, &fixture.dependent).status,
+            TaskStatus::Planned
+        );
+    }
+
+    #[test]
+    fn only_an_in_review_task_can_be_completed() {
+        let fixture = local_fixture();
+        let gh_runner = runner(Vec::new());
+        let github = GitHub::new(Box::new(gh_runner.clone()));
+
+        let error = complete(&fixture.storage, &github, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("only an in_review task"));
+        assert!(invocations(&gh_runner).is_empty());
+        let error = complete(&fixture.storage, &github, model::TaskId(999)).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
     }
 }

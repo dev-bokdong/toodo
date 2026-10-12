@@ -21,6 +21,7 @@ vi.mock("@/lib/bindings", () => ({
     openTaskInHerdr: vi.fn(),
     listCommitRecords: vi.fn(),
     refreshCommitRecords: vi.fn(),
+    openPullRequest: vi.fn(),
     completeTask: vi.fn(),
     listHerdrMachines: vi.fn(),
     addHerdrMachine: vi.fn(),
@@ -372,7 +373,7 @@ describe("App", () => {
     });
   });
 
-  it("records commits and completes an in-progress task with a pull request", async () => {
+  it("records commits, opens a pull request, and completes the task once it is merged", async () => {
     const started = task(1, 1, "Add login", {
       status: "in_progress",
       branch: "feat/add-login-1",
@@ -393,35 +394,72 @@ describe("App", () => {
     expect(within(commits).getByText("Add login form")).toBeInTheDocument();
     expect(mocked.refreshCommitRecords).toHaveBeenCalledWith(1);
 
-    const done = { ...started, status: "done" as const, pullRequestUrl: pr };
-    mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
-    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    expect(screen.queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
+    const inReview = { ...started, status: "in_review" as const, pullRequestUrl: pr };
+    mocked.openPullRequest.mockResolvedValue({ status: "ok", data: inReview });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [inReview] });
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [first, second] });
-    fireEvent.click(screen.getByRole("button", { name: "Complete #1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open pull request for #1" }));
 
     expect(await screen.findByText(pr)).toBeInTheDocument();
-    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(screen.getByText("In review")).toBeInTheDocument();
     expect(await screen.findByText("Fix login redirect")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
+    expect(mocked.openPullRequest).toHaveBeenCalledWith(1);
+
+    const done = { ...inReview, status: "done" as const };
+    mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    fireEvent.click(screen.getByRole("button", { name: "Complete #1" }));
+
+    expect(await screen.findByText("Done")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Push #1 to its pull request" })).not.toBeInTheDocument();
     expect(mocked.completeTask).toHaveBeenCalledWith(1);
+  });
+
+  it("shows why a pull request could not be opened", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add login", { status: "in_progress", branch: "feat/add-login-1", worktreePath: "D:\\wt\\x" })],
+    });
+    mocked.openPullRequest.mockResolvedValue({
+      status: "error",
+      error: { kind: "rejected", message: "branch feat/add-login-1 has no commits that are not on main" },
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open pull request for #1" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("has no commits that are not on main");
+    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open pull request for #1" })).toBeEnabled();
   });
 
   it("shows why a task could not be completed", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
-      data: [task(1, 1, "Add login", { status: "in_progress", branch: "feat/add-login-1", worktreePath: "D:\\wt\\x" })],
+      data: [
+        task(1, 1, "Add login", {
+          status: "in_review",
+          branch: "feat/add-login-1",
+          worktreePath: "D:\\wt\\x",
+          pullRequestUrl: "https://github.com/acme/toodo/pull/12",
+        }),
+      ],
     });
     mocked.completeTask.mockResolvedValue({
       status: "error",
-      error: { kind: "rejected", message: "branch feat/add-login-1 has no commits that are not on main" },
+      error: { kind: "rejected", message: "pull request https://github.com/acme/toodo/pull/12 is not merged yet" },
     });
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("has no commits that are not on main");
-    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
+    expect(screen.getByText("In review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
   });
 });

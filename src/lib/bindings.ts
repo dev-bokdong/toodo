@@ -42,7 +42,7 @@ export const commands = {
 	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(__TAURI_INVOKE("update_task", { task })),
 	/**
-	 *  Moves a task to `in_progress`, `done`, or `cancelled` and returns the readiness
+	 *  Moves a task to `in_progress`, `in_review`, `done`, or `cancelled` and returns the readiness
 	 *  changes this caused in other tasks.
 	 */
 	setTaskStatus: (id: TaskId, status: TaskStatus) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("set_task_status", { id, status })),
@@ -66,13 +66,19 @@ export const commands = {
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
 	/**
-	 *  Reads the commits of an `in_progress` task's branch that are not on the base branch
-	 *  and stores them as its commit records.
+	 *  Reads the commits of an `in_progress` or `in_review` task's branch that are not on
+	 *  the base branch and stores them as its commit records.
 	 */
 	refreshCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(__TAURI_INVOKE("refresh_commit_records", { taskId })),
 	/**
-	 *  Records the commits of an `in_progress` task, pushes its branch, opens a pull request
-	 *  into the base branch (or reuses the open one), and moves the task to `done`.
+	 *  Records the commits of an `in_progress` or `in_review` task, pushes its branch, opens
+	 *  a pull request into the base branch (or reuses the open one), and moves the task to
+	 *  `in_review`. Run it again after more commits to push them to the pull request.
+	 */
+	openPullRequest: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("open_pull_request", { id })),
+	/**
+	 *  Moves an `in_review` task to `done` once its pull request is merged, which may make
+	 *  its dependents `ready`.
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 };
@@ -214,7 +220,7 @@ export type TaskEdit = {
 
 export type TaskId = number;
 
-export type TaskStatus = "planned" | "ready" | "in_progress" | "done" | "cancelled";
+export type TaskStatus = "planned" | "ready" | "in_progress" | "in_review" | "done" | "cancelled";
 
 export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore";
 

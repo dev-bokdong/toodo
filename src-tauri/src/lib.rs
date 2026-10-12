@@ -40,6 +40,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::herdr::start_task,
         commands::herdr::open_task_in_herdr,
         commands::completion::refresh_commit_records,
+        commands::completion::open_pull_request,
         commands::completion::complete_task,
     ])
 }

@@ -166,15 +166,25 @@ export function useRefreshCommitRecords() {
   });
 }
 
-export function useCompleteTask() {
+/** Pushes the task branch and opens (or reuses) its pull request; the task moves to `in_review`. */
+export function useOpenPullRequest() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: TaskId) => unwrap(commands.completeTask(id)),
+    mutationFn: (id: TaskId) => unwrap(commands.openPullRequest(id)),
     onSuccess: (task) =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
       ]),
+  });
+}
+
+/** Marks an `in_review` task `done` once its pull request is merged. */
+export function useCompleteTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: TaskId) => unwrap(commands.completeTask(id)),
+    onSuccess: (task) => queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
   });
 }
 

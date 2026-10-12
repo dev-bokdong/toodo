@@ -33,7 +33,10 @@ Toodo is a task-planning app that turns a plan into implemented, reviewed code:
    directory through the herdr API.
 4. **Implement** the task inside herdr (agent panes running in that worktree).
 5. **Record** the commits produced (SHA, message, author, timestamp) against the task.
-6. **Complete** the task: marking it done opens a pull request from the worktree branch.
+6. **Review** the task: push the worktree branch and open a pull request; the task moves
+   to `in_review`.
+7. **Complete** the task once its pull request is merged; only then do dependent tasks
+   become ready.
 
 See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 [`docs/workflow.md`](docs/workflow.md) for the task lifecycle.

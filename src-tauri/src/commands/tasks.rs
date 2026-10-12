@@ -58,7 +58,7 @@ fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
     Ok((&task).into())
 }
 
-/// Moves a task to `in_progress`, `done`, or `cancelled` and returns the readiness
+/// Moves a task to `in_progress`, `in_review`, `done`, or `cancelled` and returns the readiness
 /// changes this caused in other tasks.
 #[tauri::command]
 #[specta::specta]

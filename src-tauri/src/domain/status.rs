@@ -7,6 +7,8 @@ pub enum TaskStatus {
     Planned,
     Ready,
     InProgress,
+    /// The task branch is pushed and its pull request is open, waiting to be merged.
+    InReview,
     Done,
     Cancelled,
 }
@@ -17,6 +19,7 @@ impl TaskStatus {
             Self::Planned => "planned",
             Self::Ready => "ready",
             Self::InProgress => "in_progress",
+            Self::InReview => "in_review",
             Self::Done => "done",
             Self::Cancelled => "cancelled",
         }
@@ -28,7 +31,8 @@ impl TaskStatus {
             (self, next),
             (Planned, Ready | Cancelled)
                 | (Ready, Planned | InProgress | Cancelled)
-                | (InProgress, Done | Cancelled)
+                | (InProgress, InReview | Cancelled)
+                | (InReview, Done | Cancelled)
         )
     }
 
@@ -69,7 +73,7 @@ mod tests {
     use super::TaskStatus::*;
     use super::*;
 
-    const ALL: [TaskStatus; 5] = [Planned, Ready, InProgress, Done, Cancelled];
+    const ALL: [TaskStatus; 6] = [Planned, Ready, InProgress, InReview, Done, Cancelled];
 
     #[test]
     fn only_documented_transitions_are_allowed() {
@@ -79,8 +83,10 @@ mod tests {
             (Ready, Planned),
             (Ready, InProgress),
             (Ready, Cancelled),
-            (InProgress, Done),
+            (InProgress, InReview),
             (InProgress, Cancelled),
+            (InReview, Done),
+            (InReview, Cancelled),
         ];
         for from in ALL {
             for to in ALL {

@@ -369,6 +369,7 @@ pub enum TaskStatus {
     Planned,
     Ready,
     InProgress,
+    InReview,
     Done,
     Cancelled,
 }
@@ -379,6 +380,7 @@ impl From<status::TaskStatus> for TaskStatus {
             status::TaskStatus::Planned => Self::Planned,
             status::TaskStatus::Ready => Self::Ready,
             status::TaskStatus::InProgress => Self::InProgress,
+            status::TaskStatus::InReview => Self::InReview,
             status::TaskStatus::Done => Self::Done,
             status::TaskStatus::Cancelled => Self::Cancelled,
         }
@@ -391,6 +393,7 @@ impl From<TaskStatus> for status::TaskStatus {
             TaskStatus::Planned => Self::Planned,
             TaskStatus::Ready => Self::Ready,
             TaskStatus::InProgress => Self::InProgress,
+            TaskStatus::InReview => Self::InReview,
             TaskStatus::Done => Self::Done,
             TaskStatus::Cancelled => Self::Cancelled,
         }

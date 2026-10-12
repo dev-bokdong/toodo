@@ -29,10 +29,11 @@ const TASK_TYPES: [TaskType; 7] = [
     TaskType::Chore,
 ];
 
-const TASK_STATUSES: [TaskStatus; 5] = [
+const TASK_STATUSES: [TaskStatus; 6] = [
     TaskStatus::Planned,
     TaskStatus::Ready,
     TaskStatus::InProgress,
+    TaskStatus::InReview,
     TaskStatus::Done,
     TaskStatus::Cancelled,
 ];
@@ -299,31 +300,32 @@ impl Storage {
         Ok(started)
     }
 
-    /// Completes an `in_progress` task in one transaction: replaces its commit records,
-    /// stores its pull request URL, and moves it to `done`. Returns the completed task and
-    /// the readiness changes this caused in its dependents.
-    pub fn complete_task(
+    /// Records the open pull request of an `in_progress` or `in_review` task in one
+    /// transaction: replaces its commit records, stores the pull request URL, and moves
+    /// it to (or keeps it in) `in_review`. Dependents stay waiting until it is `done`.
+    pub fn open_pull_request(
         &mut self,
         id: TaskId,
         records: &[CommitRecord],
         pull_request_url: &str,
-    ) -> Result<(Task, Vec<StatusChange>)> {
+    ) -> Result<Task> {
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        let status = task.status.transition_to(TaskStatus::Done)?;
+        if task.status != TaskStatus::InReview {
+            task.status.transition_to(TaskStatus::InReview)?;
+        }
         super::commits::write_commit_records(&tx, id, records)?;
         tx.execute(
             "UPDATE tasks SET status = ?2, pull_request_url = ?3 WHERE id = ?1",
-            params![id.0, status.as_str(), pull_request_url],
+            params![id.0, TaskStatus::InReview.as_str(), pull_request_url],
         )?;
-        let changes = sync_readiness(&tx, task.workspace_id)?;
-        let completed = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let in_review = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
-        Ok((completed, changes))
+        Ok(in_review)
     }
 
-    /// Moves a task to `in_progress`, `done`, or `cancelled` if its current status allows
-    /// it, and returns the readiness changes this caused in other tasks.
+    /// Moves a task to `in_progress`, `in_review`, `done`, or `cancelled` if its current
+    /// status allows it, and returns the readiness changes this caused in other tasks.
     pub fn set_task_status(&mut self, id: TaskId, status: TaskStatus) -> Result<Vec<StatusChange>> {
         if matches!(status, TaskStatus::Planned | TaskStatus::Ready) {
             return Err(StorageError::DerivedStatus(status));

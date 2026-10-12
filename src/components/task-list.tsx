@@ -9,6 +9,7 @@ import {
   useCreateTask,
   useHerdrStatus,
   useMachineSettings,
+  useOpenPullRequest,
   useOpenTaskInHerdr,
   useRefreshCommitRecords,
   useSaveMachineSettings,
@@ -23,6 +24,7 @@ const statusLabels: Record<TaskStatus, string> = {
   planned: "Planned",
   ready: "Ready",
   in_progress: "In progress",
+  in_review: "In review",
   done: "Done",
   cancelled: "Cancelled",
 };
@@ -31,6 +33,7 @@ const statusStyles: Record<TaskStatus, string> = {
   planned: "bg-muted text-muted-foreground",
   ready: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200",
   in_progress: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
+  in_review: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
   cancelled: "bg-muted text-muted-foreground line-through",
 };
@@ -78,11 +81,15 @@ function TaskRow({ task }: { task: Task }) {
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
   const refreshCommits = useRefreshCommitRecords();
+  const openPullRequest = useOpenPullRequest();
   const completeTask = useCompleteTask();
   const herdrRunning = herdr.data?.running === true;
-  const hasWorktree = task.status === "in_progress" && task.worktreePath !== null;
-  const finishing = refreshCommits.isPending || completeTask.isPending;
-  const actionError = startTask.error ?? openTask.error ?? refreshCommits.error ?? completeTask.error;
+  const inReview = task.status === "in_review";
+  const active = task.status === "in_progress" || inReview;
+  const hasWorktree = active && task.worktreePath !== null;
+  const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
+  const actionError =
+    startTask.error ?? openTask.error ?? refreshCommits.error ?? openPullRequest.error ?? completeTask.error;
 
   return (
     <li className="flex items-start gap-3 px-3 py-2">
@@ -129,7 +136,7 @@ function TaskRow({ task }: { task: Task }) {
           {startTask.isPending ? "Starting..." : "Start"}
         </Button>
       )}
-      {task.status === "in_progress" && task.herdrWorkspaceId && (
+      {active && task.herdrWorkspaceId && (
         <Button
           size="xs"
           variant="outline"
@@ -153,13 +160,25 @@ function TaskRow({ task }: { task: Task }) {
           </Button>
           <Button
             size="xs"
-            aria-label={`Complete #${task.id}`}
+            variant={inReview ? "outline" : "default"}
+            aria-label={inReview ? `Push #${task.id} to its pull request` : `Open pull request for #${task.id}`}
             disabled={finishing}
-            onClick={() => completeTask.mutate(task.id)}
+            onClick={() => openPullRequest.mutate(task.id)}
           >
-            {completeTask.isPending ? "Completing..." : "Complete"}
+            {openPullRequest.isPending ? "Pushing..." : inReview ? "Push to PR" : "Open PR"}
           </Button>
         </>
+      )}
+      {inReview && (
+        <Button
+          size="xs"
+          aria-label={`Complete #${task.id}`}
+          title="Complete the task once its pull request is merged"
+          disabled={finishing}
+          onClick={() => completeTask.mutate(task.id)}
+        >
+          {completeTask.isPending ? "Completing..." : "Complete"}
+        </Button>
       )}
       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", statusStyles[task.status])}>
         {statusLabels[task.status]}
@@ -169,7 +188,7 @@ function TaskRow({ task }: { task: Task }) {
 }
 
 function CommitList({ task }: { task: Task }) {
-  const recorded = task.status === "in_progress" || task.status === "done";
+  const recorded = task.status === "in_progress" || task.status === "in_review" || task.status === "done";
   const commits = useCommitRecords(task.id, recorded);
 
   if (commits.isError) {
