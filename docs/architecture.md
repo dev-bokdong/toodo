@@ -165,16 +165,28 @@ Toodo owns planning, task state, commit records, and pull requests.
 - Worktree location is configured per machine (`worktreeRoot`); worktree paths and branch
   names are derived from task type, name, and ID; see
   [Worktree Layout and Branch Naming](#worktree-layout-and-branch-naming).
+- herdr CLI output is parsed as JSON. herdr CLI commands print the same
+  `{"id": ..., "result": ...}` envelope as the socket API (verified for `workspace list`,
+  `worktree list`, and `agent list` on herdr 0.9.3). Any command found not to return JSON
+  is sent over the named pipe instead.
+- Commits are recorded automatically: on task completion Toodo runs
+  `git log <baseBranch>..<taskBranch>` in the worktree and stores the result. While a task
+  is in progress, the user can refresh commit records manually.
+- Storage uses SQLite through `rusqlite` (single-user local app; no async pool needed).
+- Pull requests target GitHub only, through the `gh` CLI.
+- Repositories inside WSL (`\\wsl$\...`) are not supported as local workspaces. Register
+  them as SSH workspaces if needed.
+- Task types are a fixed set (see [Task Types](#task-types)).
 
-## Open Decisions
+## Deferred
 
-- Whether repositories inside WSL (`\\wsl$\...`) are supported (suggested: not initially;
-  treat them as SSH workspaces if needed).
-- Whether the herdr CLI offers machine-readable output for every command needed; if not,
-  send those requests over the named pipe directly.
-- Whether commit recording is automatic (on task completion / on events) or manual.
-- Whether users can define custom task types later.
-- Git hosting providers beyond GitHub.
-- Code signing for the installer (unsigned builds trigger SmartScreen warnings).
-- An optional herdr plugin (in-herdr actions such as "complete task"); plugins are in
-  preview on Windows, so this is out of the first scope.
+Out of the first scope; revisit when needed.
+
+- User-defined task types.
+- Git hosting providers beyond GitHub (for example GitLab), added as another Git hosting
+  adapter.
+- Code signing for the installer; decide before public distribution (unsigned builds
+  trigger SmartScreen warnings).
+- A herdr plugin for in-herdr actions such as "complete task"; herdr plugins are in
+  preview on Windows.
+- Native WSL repository support.

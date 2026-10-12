@@ -58,8 +58,10 @@ an agent (`herdr agent prompt`) and shows agent state (working, blocked, done) f
 
 ### 5. Record commits
 
-Toodo reads the commits on the task branch that are not on the base branch and stores a
-`CommitRecord` (SHA, message, author, timestamp) for each one.
+Toodo reads the commits on the task branch that are not on the base branch
+(`git log <baseBranch>..<taskBranch>`) and stores a `CommitRecord` (SHA, message, author,
+timestamp) for each one. This runs automatically when the task is completed; while the
+task is in progress, the user can trigger it manually to refresh the list.
 
 ### 6. Complete the task and open a PR
 
