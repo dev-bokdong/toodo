@@ -566,3 +566,81 @@ fn start_task_writes_nothing_when_it_is_rejected() {
     assert_eq!(status(&storage, &first), Ready);
     assert_eq!(status(&storage, &second), Planned);
 }
+
+#[test]
+fn complete_task_stores_commits_and_url_and_releases_dependents() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let dependent = add_task(&mut storage, &workspace, "Use login");
+    storage.add_dependency(dependent.id, task.id).unwrap();
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+    storage
+        .start_task(task.id, &checkout(path, "feat/add-login-1"), "w7")
+        .unwrap();
+    let commits = [commit(task.id, "aaa", 10), commit(task.id, "bbb", 20)];
+
+    let (completed, changes) = storage
+        .complete_task(task.id, &commits, "https://github.com/acme/toodo/pull/3")
+        .unwrap();
+
+    assert_eq!(completed.status, Done);
+    assert_eq!(
+        completed.pull_request_url.as_deref(),
+        Some("https://github.com/acme/toodo/pull/3")
+    );
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), completed);
+    assert_eq!(storage.list_commit_records(task.id).unwrap(), commits);
+    assert_eq!(
+        changes,
+        [StatusChange {
+            task: dependent.id,
+            from: Planned,
+            to: Ready
+        }]
+    );
+    assert_eq!(status(&storage, &dependent), Ready);
+}
+
+#[test]
+fn complete_task_writes_nothing_when_it_is_rejected() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let ready = add_task(&mut storage, &workspace, "Not started");
+    let started = add_task(&mut storage, &workspace, "Started");
+    storage.set_task_status(started.id, InProgress).unwrap();
+    storage
+        .replace_commit_records(started.id, &[commit(started.id, "old", 1)])
+        .unwrap();
+
+    assert!(matches!(
+        storage.complete_task(ready.id, &[commit(ready.id, "aaa", 1)], "https://x/pull/1"),
+        Err(StorageError::Transition(_))
+    ));
+    assert!(matches!(
+        storage.complete_task(
+            started.id,
+            &[commit(ready.id, "aaa", 1)],
+            "https://x/pull/1"
+        ),
+        Err(StorageError::CommitTaskMismatch { .. })
+    ));
+    let duplicate = [commit(started.id, "aaa", 1), commit(started.id, "aaa", 2)];
+    assert!(matches!(
+        storage.complete_task(started.id, &duplicate, "https://x/pull/1"),
+        Err(StorageError::Sqlite(_))
+    ));
+    for task in [&ready, &started] {
+        assert_eq!(
+            storage.get_task(task.id).unwrap().unwrap().pull_request_url,
+            None
+        );
+    }
+    assert_eq!(status(&storage, &ready), Ready);
+    assert_eq!(status(&storage, &started), InProgress);
+    assert_eq!(storage.list_commit_records(ready.id).unwrap(), []);
+    assert_eq!(
+        storage.list_commit_records(started.id).unwrap(),
+        [commit(started.id, "old", 1)]
+    );
+}

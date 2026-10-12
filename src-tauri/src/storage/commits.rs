@@ -1,6 +1,6 @@
 //! Commit records of a task.
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{Result, Storage, StorageError};
 use crate::domain::model::{CommitRecord, TaskId};
@@ -9,33 +9,11 @@ impl Storage {
     /// Replaces the commit records of `task` with `records`, keeping their order. Every
     /// record must belong to `task`.
     pub fn replace_commit_records(&mut self, task: TaskId, records: &[CommitRecord]) -> Result<()> {
-        if let Some(record) = records.iter().find(|record| record.task_id != task) {
-            return Err(StorageError::CommitTaskMismatch {
-                expected: task,
-                found: record.task_id,
-            });
-        }
         let tx = self.conn.transaction()?;
         tx.query_row("SELECT 1 FROM tasks WHERE id = ?1", [task.0], |_| Ok(()))
             .optional()?
             .ok_or(StorageError::TaskNotFound(task))?;
-        tx.execute("DELETE FROM commit_records WHERE task_id = ?1", [task.0])?;
-        {
-            let mut insert = tx.prepare(
-                "INSERT INTO commit_records (task_id, position, sha, message, author, committed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?;
-            for (position, record) in records.iter().enumerate() {
-                insert.execute(params![
-                    task.0,
-                    position as i64,
-                    record.sha,
-                    record.message,
-                    record.author,
-                    record.committed_at
-                ])?;
-            }
-        }
+        write_commit_records(&tx, task, records)?;
         tx.commit()?;
         Ok(())
     }
@@ -59,4 +37,35 @@ impl Storage {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(records)
     }
+}
+
+/// Replaces the commit records of the existing task `task` with `records`, keeping
+/// their order. Every record must belong to `task`.
+pub(super) fn write_commit_records(
+    conn: &Connection,
+    task: TaskId,
+    records: &[CommitRecord],
+) -> Result<()> {
+    if let Some(record) = records.iter().find(|record| record.task_id != task) {
+        return Err(StorageError::CommitTaskMismatch {
+            expected: task,
+            found: record.task_id,
+        });
+    }
+    conn.execute("DELETE FROM commit_records WHERE task_id = ?1", [task.0])?;
+    let mut insert = conn.prepare(
+        "INSERT INTO commit_records (task_id, position, sha, message, author, committed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for (position, record) in records.iter().enumerate() {
+        insert.execute(params![
+            task.0,
+            position as i64,
+            record.sha,
+            record.message,
+            record.author,
+            record.committed_at
+        ])?;
+    }
+    Ok(())
 }

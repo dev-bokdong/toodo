@@ -2,4 +2,5 @@
 //! fakes instead of real processes.
 
 pub mod git;
+pub mod github;
 pub mod herdr;

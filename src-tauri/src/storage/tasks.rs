@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::dag::{self, DependencyError, StatusChange};
-use crate::domain::model::{HostPath, Task, TaskId, TaskType, WorkspaceId};
+use crate::domain::model::{CommitRecord, HostPath, Task, TaskId, TaskType, WorkspaceId};
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
@@ -297,6 +297,29 @@ impl Storage {
         let started = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(started)
+    }
+
+    /// Completes an `in_progress` task in one transaction: replaces its commit records,
+    /// stores its pull request URL, and moves it to `done`. Returns the completed task and
+    /// the readiness changes this caused in its dependents.
+    pub fn complete_task(
+        &mut self,
+        id: TaskId,
+        records: &[CommitRecord],
+        pull_request_url: &str,
+    ) -> Result<(Task, Vec<StatusChange>)> {
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let status = task.status.transition_to(TaskStatus::Done)?;
+        super::commits::write_commit_records(&tx, id, records)?;
+        tx.execute(
+            "UPDATE tasks SET status = ?2, pull_request_url = ?3 WHERE id = ?1",
+            params![id.0, status.as_str(), pull_request_url],
+        )?;
+        let changes = sync_readiness(&tx, task.workspace_id)?;
+        let completed = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok((completed, changes))
     }
 
     /// Moves a task to `in_progress`, `done`, or `cancelled` if its current status allows

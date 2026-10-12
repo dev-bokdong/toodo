@@ -48,6 +48,16 @@ export const commands = {
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
+	/**
+	 *  Reads the commits of an `in_progress` task's branch that are not on the base branch
+	 *  and stores them as its commit records.
+	 */
+	refreshCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(__TAURI_INVOKE("refresh_commit_records", { taskId })),
+	/**
+	 *  Records the commits of an `in_progress` task, pushes its branch, opens a pull request
+	 *  into the base branch (or reuses the open one), and moves the task to `done`.
+	 */
+	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 };
 
 /* Types */

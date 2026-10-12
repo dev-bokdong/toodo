@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
-import { commands, type Task, type Workspace } from "@/lib/bindings";
+import { commands, type CommitRecord, type Task, type Workspace } from "@/lib/bindings";
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -16,6 +16,9 @@ vi.mock("@/lib/bindings", () => ({
     saveMachineSettings: vi.fn(),
     startTask: vi.fn(),
     openTaskInHerdr: vi.fn(),
+    listCommitRecords: vi.fn(),
+    refreshCommitRecords: vi.fn(),
+    completeTask: vi.fn(),
   },
 }));
 
@@ -52,6 +55,10 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
   };
 }
 
+function commit(taskId: number, sha: string, message: string): CommitRecord {
+  return { taskId, sha, message, author: "Ada <ada@example.com>", committedAt: 1700000000 };
+}
+
 function renderApp() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -70,6 +77,7 @@ describe("App", () => {
       status: "ok",
       data: { machine, worktreeRoot: null },
     }));
+    mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -242,5 +250,58 @@ describe("App", () => {
       machine: { kind: "ssh", label: "devbox" },
       worktreeRoot: "/srv/wt",
     });
+  });
+
+  it("records commits and completes an in-progress task with a pull request", async () => {
+    const started = task(1, 1, "Add login", {
+      status: "in_progress",
+      branch: "feat/add-login-1",
+      worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
+      herdrWorkspaceId: "w27",
+    });
+    const first = commit(1, "1111111aaaa", "Add login form\n\nWith validation");
+    const second = commit(1, "2222222bbbb", "Fix login redirect");
+    const pr = "https://github.com/acme/toodo/pull/12";
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    mocked.refreshCommitRecords.mockResolvedValue({ status: "ok", data: [first] });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh commits of #1" }));
+    const commits = await screen.findByRole("list", { name: "Commits of #1" });
+    expect(within(commits).getByText("1111111")).toBeInTheDocument();
+    expect(within(commits).getByText("Add login form")).toBeInTheDocument();
+    expect(mocked.refreshCommitRecords).toHaveBeenCalledWith(1);
+
+    const done = { ...started, status: "done" as const, pullRequestUrl: pr };
+    mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [first, second] });
+    fireEvent.click(screen.getByRole("button", { name: "Complete #1" }));
+
+    expect(await screen.findByText(pr)).toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+    expect(await screen.findByText("Fix login redirect")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
+    expect(mocked.completeTask).toHaveBeenCalledWith(1);
+  });
+
+  it("shows why a task could not be completed", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add login", { status: "in_progress", branch: "feat/add-login-1", worktreePath: "D:\\wt\\x" })],
+    });
+    mocked.completeTask.mockResolvedValue({
+      status: "error",
+      error: { kind: "rejected", message: "branch feat/add-login-1 has no commits that are not on main" },
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("has no commits that are not on main");
+    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
   });
 });

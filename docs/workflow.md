@@ -70,19 +70,33 @@ an agent (`herdr agent prompt`) and shows agent state (working, blocked, done) f
 ### 5. Record commits
 
 Toodo reads the commits on the task branch that are not on the base branch
-(`git log <baseBranch>..<taskBranch>`) and stores a `CommitRecord` (SHA, message, author,
-timestamp) for each one. This runs automatically when the task is completed; while the
-task is in progress, the user can trigger it manually to refresh the list.
+(`git log --reverse <baseBranch>..<taskBranch>` in the worktree, over `ssh.exe` for remote
+workspaces) and stores a `CommitRecord` (SHA, message, author, timestamp) for each one,
+oldest first, replacing the previous records. This runs automatically when the task is
+completed; while the task is in progress, the user can trigger it manually ("Refresh
+commits") to refresh the list.
 
 ### 6. Complete the task and open a PR
 
-When the user marks the task complete, Toodo:
+When the user marks an `in_progress` task complete, Toodo:
 
-1. Refreshes the commit records.
-2. Pushes the task branch to the git remote (over `ssh.exe` for remote workspaces).
-3. Opens a pull request with `gh` from the task branch into the base branch and stores
-   its URL.
-4. Moves the task to `done`, which may make dependent tasks `ready`.
+1. Reads the commits of the task branch. A branch without commits ahead of the base
+   branch is rejected, because there is nothing to open a pull request for.
+2. Reads the `origin` remote URL and derives the GitHub repository (`host/owner/name`)
+   from it. A remote that is not a hosted repository URL is rejected.
+3. Pushes the task branch to `origin` (`git push --set-upstream origin <branch>`, over
+   `ssh.exe` for remote workspaces).
+4. Reuses the open pull request of the task branch if there is one
+   (`gh pr list --repo <repo> --head <branch> --state open`); otherwise opens one with
+   `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
+   title and described with the task description. `gh` always runs on this machine, so
+   SSH machines do not need it.
+5. In one transaction, stores the commit records and the pull request URL and moves the
+   task to `done`, which may make dependent tasks `ready`.
+
+If any step fails, the task stays `in_progress` with its previous commit records and the
+error is shown; completing it again is safe, because pushing is repeatable and an open
+pull request is reused instead of created twice.
 
 Removing the worktree (`herdr worktree remove`) is a separate cleanup step, usually after
 the pull request is merged.

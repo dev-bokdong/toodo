@@ -148,6 +148,59 @@ impl Git {
         Ok(Some(branch).filter(|branch| !branch.is_empty()))
     }
 
+    /// Commits reachable from `branch` but not from `base`, oldest first, read in the
+    /// repository or worktree at `dir` on the machine of `location`.
+    pub fn commits_between(
+        &self,
+        location: &WorkspaceLocation,
+        dir: &str,
+        base: &str,
+        branch: &str,
+    ) -> Result<Vec<LoggedCommit>, GitError> {
+        let range = format!("{base}..{branch}");
+        let args = ["log", "--reverse", LOG_FORMAT, &range, "--"];
+        let output = self.run(location, Some(dir), &args)?;
+        output
+            .split(RECORD_SEPARATOR)
+            .map(|record| record.trim_start_matches(['\r', '\n']))
+            .filter(|record| !record.trim().is_empty())
+            .map(|record| {
+                parse_commit(record).ok_or_else(|| GitError::UnexpectedOutput {
+                    command: format!("git log {range}"),
+                    output: record.to_owned(),
+                })
+            })
+            .collect()
+    }
+
+    /// Pushes `branch` to `origin` and makes it the upstream of the local branch.
+    pub fn push_branch(
+        &self,
+        location: &WorkspaceLocation,
+        dir: &str,
+        branch: &str,
+    ) -> Result<(), GitError> {
+        self.run(
+            location,
+            Some(dir),
+            &["push", "--set-upstream", "origin", branch],
+        )?;
+        Ok(())
+    }
+
+    /// URL of the `origin` remote of the repository at `dir`.
+    pub fn origin_url(&self, location: &WorkspaceLocation, dir: &str) -> Result<String, GitError> {
+        let output = self.run(location, Some(dir), &["remote", "get-url", "origin"])?;
+        let url = output.trim();
+        if url.is_empty() {
+            return Err(GitError::UnexpectedOutput {
+                command: "git remote get-url origin".to_owned(),
+                output: output.clone(),
+            });
+        }
+        Ok(url.to_owned())
+    }
+
     /// Runs `git [-C <dir>] <args>` on the machine that hosts `location`.
     fn run(
         &self,
@@ -184,6 +237,41 @@ impl Git {
         };
         self.runner.run(&invocation)
     }
+}
+
+/// A commit as printed by [`Git::commits_between`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoggedCommit {
+    pub sha: String,
+    /// Subject and body.
+    pub message: String,
+    /// `Name <email>` of the author.
+    pub author: String,
+    /// Committer timestamp in seconds since the Unix epoch.
+    pub committed_at: i64,
+}
+
+// Fields are separated by US (0x1f) and commits by RS (0x1e), which cannot appear in
+// the fields themselves.
+const LOG_FORMAT: &str = "--format=%H%x1f%an <%ae>%x1f%ct%x1f%B%x1e";
+const FIELD_SEPARATOR: char = '\u{1f}';
+const RECORD_SEPARATOR: char = '\u{1e}';
+
+fn parse_commit(record: &str) -> Option<LoggedCommit> {
+    let mut fields = record.splitn(4, FIELD_SEPARATOR);
+    let sha = fields.next()?.trim();
+    let author = fields.next()?;
+    let committed_at = fields.next()?.trim().parse().ok()?;
+    let message = fields.next()?.trim_end();
+    if sha.len() < 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(LoggedCommit {
+        sha: sha.to_owned(),
+        message: message.to_owned(),
+        author: author.to_owned(),
+        committed_at,
+    })
 }
 
 fn location_path(location: &WorkspaceLocation) -> &str {
@@ -368,6 +456,88 @@ mod tests {
         };
         let (git, _) = git(vec![Err(spawn.clone())]);
         assert_eq!(git.default_branch(&local(r"C:\dev\a")), Err(spawn));
+    }
+
+    const SHA_A: &str = "1111111111111111111111111111111111111111";
+    const SHA_B: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn commits_between_parses_log_records_oldest_first() {
+        let log = format!(
+            "{SHA_A}\u{1f}Ada <ada@example.com>\u{1f}1700000000\u{1f}Add login\n\nWith a body\n\u{1e}\n\
+             {SHA_B}\u{1f}Bob <bob@example.com>\u{1f}1700000100\u{1f}Fix login\n\u{1e}\n"
+        );
+        let (git, runner) = git(vec![Ok(log)]);
+        let commits = git
+            .commits_between(&local(r"C:\dev\a"), r"D:\wt\a\feat-x-1", "main", "feat/x-1")
+            .unwrap();
+        assert_eq!(
+            commits,
+            vec![
+                LoggedCommit {
+                    sha: SHA_A.to_owned(),
+                    message: "Add login\n\nWith a body".to_owned(),
+                    author: "Ada <ada@example.com>".to_owned(),
+                    committed_at: 1_700_000_000,
+                },
+                LoggedCommit {
+                    sha: SHA_B.to_owned(),
+                    message: "Fix login".to_owned(),
+                    author: "Bob <bob@example.com>".to_owned(),
+                    committed_at: 1_700_000_100,
+                },
+            ]
+        );
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0].args,
+            args(&[
+                "-C",
+                r"D:\wt\a\feat-x-1",
+                "log",
+                "--reverse",
+                "--format=%H%x1f%an <%ae>%x1f%ct%x1f%B%x1e",
+                "main..feat/x-1",
+                "--",
+            ])
+        );
+    }
+
+    #[test]
+    fn commits_between_is_empty_without_new_commits_and_rejects_garbage() {
+        let (git, _) = git(vec![Ok(String::new()), Ok("not a log\n".to_owned())]);
+        let location = local(r"C:\dev\a");
+        assert_eq!(
+            git.commits_between(&location, r"C:\dev\a", "main", "feat/x-1")
+                .unwrap(),
+            Vec::new()
+        );
+        assert!(matches!(
+            git.commits_between(&location, r"C:\dev\a", "main", "feat/x-1"),
+            Err(GitError::UnexpectedOutput { .. })
+        ));
+    }
+
+    #[test]
+    fn push_and_origin_url_run_in_the_given_directory_on_the_machine() {
+        let (git, runner) = git(vec![
+            Ok(String::new()),
+            Ok("git@github.com:acme/a.git\n".to_owned()),
+        ]);
+        git.push_branch(&remote("/srv/a"), "/wt/a/feat-x-1", "feat/x-1")
+            .unwrap();
+        assert_eq!(
+            git.origin_url(&remote("/srv/a"), "/wt/a/feat-x-1").unwrap(),
+            "git@github.com:acme/a.git"
+        );
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(
+            invocations[0].args[4],
+            "git '-C' '/wt/a/feat-x-1' 'push' '--set-upstream' 'origin' 'feat/x-1'"
+        );
+        assert_eq!(
+            invocations[1].args[4],
+            "git '-C' '/wt/a/feat-x-1' 'remote' 'get-url' 'origin'"
+        );
     }
 
     #[test]

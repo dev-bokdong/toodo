@@ -36,6 +36,7 @@ export const queryKeys = {
   tasks: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "tasks"] as const,
   herdrStatus: ["herdr-status"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
+  commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
 };
 
 export function machineOf(location: WorkspaceLocation): Machine {
@@ -99,6 +100,34 @@ export function useStartTask() {
 export function useOpenTaskInHerdr() {
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.openTaskInHerdr(id)),
+  });
+}
+
+export function useCommitRecords(taskId: TaskId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.commitRecords(taskId),
+    queryFn: () => unwrap(commands.listCommitRecords(taskId)),
+    enabled,
+  });
+}
+
+export function useRefreshCommitRecords() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: TaskId) => unwrap(commands.refreshCommitRecords(taskId)),
+    onSuccess: (records, taskId) => queryClient.setQueryData(queryKeys.commitRecords(taskId), records),
+  });
+}
+
+export function useCompleteTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: TaskId) => unwrap(commands.completeTask(id)),
+    onSuccess: (task) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
+      ]),
   });
 }
 

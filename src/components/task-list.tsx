@@ -4,10 +4,13 @@ import { inputClass, describeLocation } from "@/components/workspace-list";
 import type { Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
 import {
   machineOf,
+  useCommitRecords,
+  useCompleteTask,
   useCreateTask,
   useHerdrStatus,
   useMachineSettings,
   useOpenTaskInHerdr,
+  useRefreshCommitRecords,
   useSaveMachineSettings,
   useStartTask,
   useTasks,
@@ -74,8 +77,12 @@ function TaskRow({ task }: { task: Task }) {
   const herdr = useHerdrStatus();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
+  const refreshCommits = useRefreshCommitRecords();
+  const completeTask = useCompleteTask();
   const herdrRunning = herdr.data?.running === true;
-  const actionError = startTask.error ?? openTask.error;
+  const hasWorktree = task.status === "in_progress" && task.worktreePath !== null;
+  const finishing = refreshCommits.isPending || completeTask.isPending;
+  const actionError = startTask.error ?? openTask.error ?? refreshCommits.error ?? completeTask.error;
 
   return (
     <li className="flex items-start gap-3 px-3 py-2">
@@ -99,6 +106,13 @@ function TaskRow({ task }: { task: Task }) {
             {task.worktreePath && ` \u00b7 ${task.worktreePath}`}
           </p>
         )}
+        {task.pullRequestUrl && (
+          <p className="truncate text-xs">
+            <span className="text-muted-foreground">Pull request </span>
+            <span className="select-all font-mono">{task.pullRequestUrl}</span>
+          </p>
+        )}
+        <CommitList task={task} />
         {actionError && (
           <p role="alert" className="text-xs text-destructive">
             {actionError.message}
@@ -126,10 +140,57 @@ function TaskRow({ task }: { task: Task }) {
           Open in herdr
         </Button>
       )}
+      {hasWorktree && (
+        <>
+          <Button
+            size="xs"
+            variant="outline"
+            aria-label={`Refresh commits of #${task.id}`}
+            disabled={finishing}
+            onClick={() => refreshCommits.mutate(task.id)}
+          >
+            {refreshCommits.isPending ? "Refreshing..." : "Refresh commits"}
+          </Button>
+          <Button
+            size="xs"
+            aria-label={`Complete #${task.id}`}
+            disabled={finishing}
+            onClick={() => completeTask.mutate(task.id)}
+          >
+            {completeTask.isPending ? "Completing..." : "Complete"}
+          </Button>
+        </>
+      )}
       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", statusStyles[task.status])}>
         {statusLabels[task.status]}
       </span>
     </li>
+  );
+}
+
+function CommitList({ task }: { task: Task }) {
+  const recorded = task.status === "in_progress" || task.status === "done";
+  const commits = useCommitRecords(task.id, recorded);
+
+  if (commits.isError) {
+    return (
+      <p role="alert" className="text-xs text-destructive">
+        Failed to load commits: {commits.error.message}
+      </p>
+    );
+  }
+  if (!commits.data || commits.data.length === 0) {
+    return null;
+  }
+  return (
+    <ul aria-label={`Commits of #${task.id}`} className="mt-1 flex flex-col gap-0.5">
+      {commits.data.map((commit) => (
+        <li key={commit.sha} className="flex gap-2 text-xs" title={commit.author}>
+          <code className="shrink-0 text-muted-foreground">{commit.sha.slice(0, 7)}</code>
+          <span className="truncate">{commit.message.split("\n", 1)[0]}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

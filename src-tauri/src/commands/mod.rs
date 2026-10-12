@@ -1,6 +1,7 @@
 //! Tauri commands exposed to the frontend. Arguments and results use the serializable
 //! shapes in [`types`]; failures are reported as a [`CommandError`].
 
+pub mod completion;
 pub mod herdr;
 pub mod tasks;
 pub mod types;
@@ -12,6 +13,7 @@ use serde::Serialize;
 use specta::Type;
 
 use crate::adapters::git::{Git, GitError};
+use crate::adapters::github::GitHub;
 use crate::adapters::herdr::{Herdr, HerdrError};
 use crate::domain::dag::DependencyError;
 use crate::domain::naming::NamingError;
@@ -22,6 +24,8 @@ pub type StorageState = Mutex<Storage>;
 pub type GitState = Arc<Git>;
 
 pub type HerdrState = Arc<Herdr>;
+
+pub type GitHubState = Arc<GitHub>;
 
 pub type CommandResult<T> = Result<T, CommandError>;
 

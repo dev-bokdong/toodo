@@ -159,8 +159,11 @@ Toodo owns planning, task state, commit records, and pull requests.
   - `herdr agent list|get|prompt|wait|read`: drive and observe agents in panes.
   - `herdr machine list|status|add`: saved SSH machines for remote workspaces.
   - `herdr api schema` / `herdr api snapshot`: API schema and live runtime state.
-- **Git hosting adapter**: pushes the task branch and opens pull requests with the `gh`
-  CLI, reusing its authentication.
+- **Git hosting adapter**: opens pull requests with the `gh` CLI, reusing its
+  authentication (`src-tauri/src/adapters/github.rs`). `gh` runs on this machine and
+  names the repository with `--repo <host>/<owner>/<name>`, derived from the `origin`
+  remote URL, so it needs no local checkout. The task branch is pushed by the workspace
+  adapter, on the machine that holds the worktree.
 - **Storage**: SQLite database `toodo.sqlite3` in the app data directory (`%APPDATA%`)
   for workspaces, machine settings, tasks, dependencies, and commit records
   (`src-tauri/src/storage/`).
