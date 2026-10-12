@@ -86,13 +86,19 @@ commits") to refresh the list.
 When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo:
 
 1. Reads the commits of the task branch. A branch without commits ahead of the base
-   branch is rejected, because there is nothing to open a pull request for.
+   branch is rejected, because there is nothing to open a pull request for, unless its
+   pull request is already merged (step 3).
 2. Reads the `origin` remote URL and derives the GitHub repository (`host/owner/name`)
    from it. A remote that is not a hosted repository URL is rejected.
-3. Pushes the task branch to `origin` (`git push --set-upstream origin <branch>`, over
-   `ssh.exe` for remote workspaces).
-4. Reuses the open pull request of the task branch if there is one
-   (`gh pr list --repo <repo> --head <branch> --state open`); otherwise opens one with
+3. Looks up the most recent pull request of the task branch in any state
+   (`gh pr list --repo <repo> --head <branch> --state all`), which may have been opened
+   outside Toodo, e.g. by an agent in herdr. An open or merged one whose base is not the
+   workspace base branch is rejected, because dependent tasks start from that branch. A
+   merged one is recorded without pushing (if the branch log is empty after the merge,
+   the commit records stored earlier are kept) and the next step is skipped.
+4. Pushes the task branch to `origin` (`git push --set-upstream origin <branch>`, over
+   `ssh.exe` for remote workspaces), then reuses the open pull request, or, when there
+   is none or the last one was closed, opens one with
    `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
    title and described with the task description. `gh` always runs on this machine, so
    SSH machines do not need it.
@@ -109,8 +115,10 @@ Review and merging happen on GitHub; Toodo never merges a pull request itself.
 
 ### 7. Complete the task
 
-When the user completes an `in_review` task, Toodo reads the state of its pull request
-(`gh pr view <url> --json state`). Only a merged pull request moves the task to `done`,
+When the user completes an `in_review` task, Toodo reads the state and base branch of
+its pull request (`gh pr view <url> --json url,state,baseRefName`). A pull request into
+another branch than the workspace base branch is rejected. Only a merged pull request
+moves the task to `done`,
 which may make dependent tasks `ready`. An open pull request is rejected until it is
 merged; a pull request closed without merging is rejected too, so the user reopens it or
 cancels the task.

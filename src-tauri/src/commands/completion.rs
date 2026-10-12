@@ -11,7 +11,7 @@ use tauri::State;
 use super::types::{self, CommitRecord, Task, TaskId};
 use super::{CommandError, CommandResult, GitHubState, GitState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::adapters::github::{GitHub, NewPullRequest, PullRequestState};
+use crate::adapters::github::{GitHub, NewPullRequest, PullRequest, PullRequestState};
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
 use crate::domain::status::TaskStatus;
@@ -30,8 +30,10 @@ pub fn refresh_commit_records(
 }
 
 /// Records the commits of an `in_progress` or `in_review` task, pushes its branch, opens
-/// a pull request into the base branch (or reuses the open one), and moves the task to
-/// `in_review`. Run it again after more commits to push them to the pull request.
+/// a pull request into the base branch, and moves the task to `in_review`. A pull request
+/// of the branch opened elsewhere (e.g. from herdr) is adopted instead: an open one gets
+/// the push, a merged one is recorded without pushing. Run it again after more commits
+/// to push them to the pull request.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn open_pull_request(
@@ -132,21 +134,44 @@ fn open(
 ) -> CommandResult<model::Task> {
     let checkout = checkout(storage, id)?;
     let records = commit_records(git, &checkout)?;
-    if records.is_empty() {
-        return Err(CommandError::rejected(format!(
-            "branch {} has no commits that are not on {}; commit the work before opening a pull request",
-            checkout.branch, checkout.base
-        )));
-    }
     let origin = git.origin_url(&checkout.location, &checkout.worktree)?;
     let repository = GitHubRepository::from_remote_url(&origin).ok_or_else(|| {
         CommandError::rejected(format!(
             "remote origin {origin:?} is not a GitHub repository; pull requests are opened on GitHub only"
         ))
     })?;
+    // A closed pull request is not reused: a new one is opened into the right base.
+    let existing = github
+        .find_pull_request(&repository, &checkout.branch)?
+        .filter(|pull_request| pull_request.state != PullRequestState::Closed);
+    if let Some(pull_request) = &existing {
+        check_base(pull_request, &checkout.base)?;
+    }
+    if let Some(PullRequest {
+        url,
+        state: PullRequestState::Merged,
+        ..
+    }) = existing
+    {
+        // After the merge the base may already contain the branch, so its log can be
+        // empty; keep the commits recorded before in that case.
+        let mut storage = lock(storage);
+        let records = if records.is_empty() {
+            storage.list_commit_records(id)?
+        } else {
+            records
+        };
+        return Ok(storage.open_pull_request(id, &records, &url)?);
+    }
+    if records.is_empty() {
+        return Err(CommandError::rejected(format!(
+            "branch {} has no commits that are not on {}; commit the work before opening a pull request",
+            checkout.branch, checkout.base
+        )));
+    }
     git.push_branch(&checkout.location, &checkout.worktree, &checkout.branch)?;
-    let pull_request_url = match github.find_open_pull_request(&repository, &checkout.branch)? {
-        Some(url) => url,
+    let pull_request_url = match existing {
+        Some(pull_request) => pull_request.url,
         None => github.create_pull_request(&NewPullRequest {
             repository: &repository,
             head: &checkout.branch,
@@ -158,14 +183,33 @@ fn open(
     Ok(lock(storage).open_pull_request(id, &records, &pull_request_url)?)
 }
 
+/// Rejects a pull request that does not merge into the workspace's base branch: the
+/// worktrees of dependent tasks start from that branch, so they would miss the work.
+fn check_base(pull_request: &PullRequest, base: &str) -> CommandResult<()> {
+    if pull_request.base == base {
+        return Ok(());
+    }
+    Err(CommandError::rejected(format!(
+        "pull request {} merges into {}, not the workspace base branch {base}; dependent tasks start from {base}, so retarget it or open a new one",
+        pull_request.url, pull_request.base
+    )))
+}
+
 fn complete(
     storage: &StorageState,
     github: &GitHub,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let task = lock(storage)
-        .get_task(id)?
-        .ok_or(StorageError::TaskNotFound(id))?;
+    let (task, base) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        (task, workspace.default_base_branch)
+    };
     let pull_request_url = match (task.status, task.pull_request_url) {
         (TaskStatus::InReview, Some(url)) => url,
         (status, _) => {
@@ -174,7 +218,9 @@ fn complete(
             )));
         }
     };
-    match github.pull_request_state(&pull_request_url)? {
+    let pull_request = github.pull_request(&pull_request_url)?;
+    check_base(&pull_request, &base)?;
+    match pull_request.state {
         PullRequestState::Merged => {}
         PullRequestState::Open => {
             return Err(CommandError::rejected(format!(
@@ -385,8 +431,8 @@ mod tests {
     #[test]
     fn a_branch_without_commits_is_rejected_before_anything_is_pushed() {
         let fixture = local_fixture();
-        let git_runner = runner(vec![log(&[])]);
-        let gh_runner = runner(Vec::new());
+        let git_runner = runner(vec![log(&[]), origin("git@github.com:acme/toodo.git")]);
+        let gh_runner = runner(vec![Ok("[]".to_owned())]);
         let (git, github) = adapters(&git_runner, &gh_runner);
 
         let error = open(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
@@ -397,8 +443,8 @@ mod tests {
                 .message
                 .contains("has no commits that are not on main")
         );
-        assert_eq!(git_commands(&git_runner), ["log"]);
-        assert!(invocations(&gh_runner).is_empty());
+        assert_eq!(git_commands(&git_runner), ["log", "remote"]);
+        assert_eq!(invocations(&gh_runner).len(), 1);
         assert_eq!(stored(&fixture, &fixture.task), fixture.task);
     }
 
@@ -431,7 +477,7 @@ mod tests {
         let gh_runner = runner(vec![
             Ok("[]".to_owned()),
             Err(failed()),
-            Ok(format!(r#"[{{"url":"{PR}"}}]"#)),
+            listed("OPEN", "main"),
         ]);
         let (git, github) = adapters(&git_runner, &gh_runner);
 
@@ -510,14 +556,149 @@ mod tests {
         fixture
     }
 
-    fn state(state: &str) -> Result<String, GitError> {
-        Ok(format!(r#"{{"state":"{state}"}}"#))
+    fn pull_request_json(state: &str, base: &str) -> String {
+        format!(r#"{{"baseRefName":"{base}","state":"{state}","url":"{PR}"}}"#)
+    }
+
+    /// `gh pr list` output with one pull request.
+    fn listed(state: &str, base: &str) -> Result<String, GitError> {
+        Ok(format!("[{}]", pull_request_json(state, base)))
+    }
+
+    /// `gh pr view` output.
+    fn viewed(state: &str, base: &str) -> Result<String, GitError> {
+        Ok(pull_request_json(state, base))
+    }
+
+    fn recorded_shas(fixture: &Fixture) -> Vec<String> {
+        lock(&fixture.storage)
+            .list_commit_records(fixture.task.id)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.sha)
+            .collect()
+    }
+
+    #[test]
+    fn an_open_pull_request_opened_outside_toodo_is_adopted_and_pushed() {
+        let fixture = local_fixture();
+        let git_runner = runner(vec![
+            log(&[SHA_A]),
+            origin("git@github.com:acme/toodo.git"),
+            Ok(String::new()),
+        ]);
+        let gh_runner = runner(vec![listed("OPEN", "main")]);
+        let (git, github) = adapters(&git_runner, &gh_runner);
+
+        let in_review = open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+
+        assert_eq!(in_review.status, TaskStatus::InReview);
+        assert_eq!(in_review.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(git_commands(&git_runner), ["log", "remote", "push"]);
+        assert_eq!(invocations(&gh_runner).len(), 1);
+        assert_eq!(recorded_shas(&fixture), [SHA_A]);
+    }
+
+    #[test]
+    fn a_merged_pull_request_is_adopted_without_pushing_and_can_be_completed() {
+        let fixture = local_fixture();
+        lock(&fixture.storage)
+            .replace_commit_records(
+                fixture.task.id,
+                &[model::CommitRecord {
+                    task_id: fixture.task.id,
+                    sha: SHA_A.to_owned(),
+                    message: "Add login".to_owned(),
+                    author: "Ada <ada@example.com>".to_owned(),
+                    committed_at: 1,
+                }],
+            )
+            .unwrap();
+        let git_runner = runner(vec![log(&[]), origin("git@github.com:acme/toodo.git")]);
+        let gh_runner = runner(vec![listed("MERGED", "main"), viewed("MERGED", "main")]);
+        let (git, github) = adapters(&git_runner, &gh_runner);
+
+        let in_review = open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+
+        assert_eq!(in_review.status, TaskStatus::InReview);
+        assert_eq!(in_review.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(git_commands(&git_runner), ["log", "remote"]);
+        assert_eq!(invocations(&gh_runner).len(), 1);
+        assert_eq!(recorded_shas(&fixture), [SHA_A]);
+        assert_eq!(
+            stored(&fixture, &fixture.dependent).status,
+            TaskStatus::Planned
+        );
+
+        let completed = complete(&fixture.storage, &github, fixture.task.id).unwrap();
+        assert_eq!(completed.status, TaskStatus::Done);
+        assert_eq!(
+            stored(&fixture, &fixture.dependent).status,
+            TaskStatus::Ready
+        );
+    }
+
+    #[test]
+    fn a_closed_pull_request_is_replaced_by_a_new_one() {
+        let fixture = local_fixture();
+        let git_runner = runner(vec![
+            log(&[SHA_A]),
+            origin("git@github.com:acme/toodo.git"),
+            Ok(String::new()),
+        ]);
+        let new_pr = "https://github.com/acme/toodo/pull/13";
+        let gh_runner = runner(vec![listed("CLOSED", "develop"), Ok(format!("{new_pr}\n"))]);
+        let (git, github) = adapters(&git_runner, &gh_runner);
+
+        let in_review = open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+
+        assert_eq!(in_review.pull_request_url.as_deref(), Some(new_pr));
+        assert_eq!(git_commands(&git_runner), ["log", "remote", "push"]);
+        assert_eq!(invocations(&gh_runner)[1].args[..2], ["pr", "create"]);
+    }
+
+    #[test]
+    fn a_pull_request_into_another_base_is_rejected_when_opening() {
+        let fixture = local_fixture();
+        let git_runner = runner(vec![log(&[SHA_A]), origin("git@github.com:acme/toodo.git")]);
+        let gh_runner = runner(vec![listed("OPEN", "develop")]);
+        let (git, github) = adapters(&git_runner, &gh_runner);
+
+        let error = open(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error
+                .message
+                .contains("merges into develop, not the workspace base branch main"),
+            "{}",
+            error.message
+        );
+        assert_eq!(git_commands(&git_runner), ["log", "remote"]);
+        assert_eq!(stored(&fixture, &fixture.task), fixture.task);
+        assert!(recorded_shas(&fixture).is_empty());
+    }
+
+    #[test]
+    fn a_pull_request_into_another_base_is_rejected_when_completing() {
+        let fixture = in_review_fixture();
+        let github = GitHub::new(Box::new(runner(vec![viewed("MERGED", "develop")])));
+
+        let error = complete(&fixture.storage, &github, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("merges into develop"));
+        assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
+        assert_eq!(
+            stored(&fixture, &fixture.dependent).status,
+            TaskStatus::Planned
+        );
     }
 
     #[test]
     fn completing_a_task_with_a_merged_pull_request_finishes_it_and_releases_dependents() {
         let fixture = in_review_fixture();
-        let gh_runner = runner(vec![state("MERGED")]);
+        let gh_runner = runner(vec![viewed("MERGED", "main")]);
         let github = GitHub::new(Box::new(gh_runner.clone()));
 
         let completed = complete(&fixture.storage, &github, fixture.task.id).unwrap();
@@ -531,14 +712,17 @@ mod tests {
         );
         assert_eq!(
             invocations(&gh_runner)[0].args,
-            ["pr", "view", PR, "--json", "state"].map(str::to_owned)
+            ["pr", "view", PR, "--json", "url,state,baseRefName"].map(str::to_owned)
         );
     }
 
     #[test]
     fn a_pull_request_that_is_not_merged_keeps_the_task_in_review() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![state("OPEN"), state("CLOSED")])));
+        let github = GitHub::new(Box::new(runner(vec![
+            viewed("OPEN", "main"),
+            viewed("CLOSED", "main"),
+        ])));
 
         for expected in ["is not merged yet", "was closed without merging"] {
             let error = complete(&fixture.storage, &github, fixture.task.id).unwrap_err();

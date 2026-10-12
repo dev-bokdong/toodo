@@ -72,8 +72,10 @@ export const commands = {
 	refreshCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(__TAURI_INVOKE("refresh_commit_records", { taskId })),
 	/**
 	 *  Records the commits of an `in_progress` or `in_review` task, pushes its branch, opens
-	 *  a pull request into the base branch (or reuses the open one), and moves the task to
-	 *  `in_review`. Run it again after more commits to push them to the pull request.
+	 *  a pull request into the base branch, and moves the task to `in_review`. A pull request
+	 *  of the branch opened elsewhere (e.g. from herdr) is adopted instead: an open one gets
+	 *  the push, a merged one is recorded without pushing. Run it again after more commits
+	 *  to push them to the pull request.
 	 */
 	openPullRequest: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("open_pull_request", { id })),
 	/**

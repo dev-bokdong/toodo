@@ -28,6 +28,33 @@ pub enum PullRequestState {
     Merged,
 }
 
+/// A pull request as reported by `gh`, whoever opened it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequest {
+    pub url: String,
+    pub state: PullRequestState,
+    /// Branch the pull request merges into.
+    pub base: String,
+}
+
+/// Fields requested with `--json` for a [`PullRequest`].
+const PULL_REQUEST_FIELDS: &str = "url,state,baseRefName";
+
+fn parse_pull_request(value: &Value) -> Option<PullRequest> {
+    let field = |name: &str| value.get(name).and_then(Value::as_str);
+    let state = match field("state")? {
+        "OPEN" => PullRequestState::Open,
+        "CLOSED" => PullRequestState::Closed,
+        "MERGED" => PullRequestState::Merged,
+        _ => return None,
+    };
+    Some(PullRequest {
+        url: field("url")?.to_owned(),
+        state,
+        base: field("baseRefName")?.to_owned(),
+    })
+}
+
 pub struct GitHub {
     runner: Box<dyn Runner>,
 }
@@ -37,12 +64,13 @@ impl GitHub {
         Self { runner }
     }
 
-    /// URL of the open pull request whose head is `head`, if there is one.
-    pub fn find_open_pull_request(
+    /// The most recent pull request whose head is `head`, in any state, if there is one.
+    /// It may have been opened outside Toodo, e.g. by an agent in herdr.
+    pub fn find_pull_request(
         &self,
         repository: &GitHubRepository,
         head: &str,
-    ) -> Result<Option<String>, GitError> {
+    ) -> Result<Option<PullRequest>, GitError> {
         let repository = repository.to_string();
         let invocation = invocation(&[
             "pr",
@@ -52,9 +80,9 @@ impl GitHub {
             "--head",
             head,
             "--state",
-            "open",
+            "all",
             "--json",
-            "url",
+            PULL_REQUEST_FIELDS,
             "--limit",
             "1",
         ]);
@@ -64,13 +92,7 @@ impl GitHub {
         let pull_requests = pull_requests.as_array().ok_or_else(unexpected)?;
         pull_requests
             .first()
-            .map(|pull_request| {
-                pull_request
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .ok_or_else(unexpected)
-            })
+            .map(|pull_request| parse_pull_request(pull_request).ok_or_else(unexpected))
             .transpose()
     }
 
@@ -103,18 +125,15 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// State of the pull request at `url`.
-    pub fn pull_request_state(&self, url: &str) -> Result<PullRequestState, GitError> {
-        let invocation = invocation(&["pr", "view", url, "--json", "state"]);
+    /// The pull request at `url`.
+    pub fn pull_request(&self, url: &str) -> Result<PullRequest, GitError> {
+        let invocation = invocation(&["pr", "view", url, "--json", PULL_REQUEST_FIELDS]);
         let output = self.runner.run(&invocation)?;
-        let pull_request: Value =
-            serde_json::from_str(&output).map_err(|_| unexpected(&invocation, &output))?;
-        match pull_request.get("state").and_then(Value::as_str) {
-            Some("OPEN") => Ok(PullRequestState::Open),
-            Some("CLOSED") => Ok(PullRequestState::Closed),
-            Some("MERGED") => Ok(PullRequestState::Merged),
-            _ => Err(unexpected(&invocation, &output)),
-        }
+        serde_json::from_str::<Value>(&output)
+            .ok()
+            .as_ref()
+            .and_then(parse_pull_request)
+            .ok_or_else(|| unexpected(&invocation, &output))
     }
 }
 
@@ -148,23 +167,30 @@ mod tests {
         GitHubRepository::from_remote_url("git@github.com:acme/toodo.git").unwrap()
     }
 
+    const URL: &str = "https://github.com/acme/toodo/pull/7";
+
+    fn pull_request(state: PullRequestState, base: &str) -> PullRequest {
+        PullRequest {
+            url: URL.to_owned(),
+            state,
+            base: base.to_owned(),
+        }
+    }
+
     #[test]
-    fn find_open_pull_request_reads_the_first_url() {
+    fn find_pull_request_reads_the_first_pull_request_in_any_state() {
         let (github, runner) = github(vec![
-            Ok(r#"[{"url":"https://github.com/acme/toodo/pull/7"}]"#.to_owned()),
+            Ok(format!(
+                r#"[{{"baseRefName":"main","state":"MERGED","url":"{URL}"}}]"#
+            )),
             Ok("[]\n".to_owned()),
         ]);
         assert_eq!(
-            github
-                .find_open_pull_request(&repository(), "feat/x-1")
-                .unwrap()
-                .as_deref(),
-            Some("https://github.com/acme/toodo/pull/7")
+            github.find_pull_request(&repository(), "feat/x-1").unwrap(),
+            Some(pull_request(PullRequestState::Merged, "main"))
         );
         assert_eq!(
-            github
-                .find_open_pull_request(&repository(), "feat/x-1")
-                .unwrap(),
+            github.find_pull_request(&repository(), "feat/x-1").unwrap(),
             None
         );
         assert_eq!(
@@ -177,9 +203,9 @@ mod tests {
                 "--head",
                 "feat/x-1",
                 "--state",
-                "open",
+                "all",
                 "--json",
-                "url",
+                "url,state,baseRefName",
                 "--limit",
                 "1",
             ])
@@ -187,42 +213,49 @@ mod tests {
     }
 
     #[test]
-    fn find_open_pull_request_rejects_non_json_output() {
-        let (github, _) = github(vec![Ok("no pull requests\n".to_owned())]);
-        assert!(matches!(
-            github.find_open_pull_request(&repository(), "feat/x-1"),
-            Err(GitError::UnexpectedOutput { .. })
-        ));
+    fn find_pull_request_rejects_unexpected_output() {
+        let (github, _) = github(vec![
+            Ok("no pull requests\n".to_owned()),
+            Ok(format!(r#"[{{"url":"{URL}","state":"OPEN"}}]"#)),
+        ]);
+        for _ in 0..2 {
+            assert!(matches!(
+                github.find_pull_request(&repository(), "feat/x-1"),
+                Err(GitError::UnexpectedOutput { .. })
+            ));
+        }
     }
 
     #[test]
-    fn pull_request_state_reads_the_state_field() {
-        let url = "https://github.com/acme/toodo/pull/7";
+    fn pull_request_reads_state_and_base() {
+        let view = |state: &str| {
+            Ok(format!(
+                r#"{{"baseRefName":"develop","state":"{state}","url":"{URL}"}}"#
+            ))
+        };
         let (github, runner) = github(vec![
-            Ok(r#"{"state":"MERGED"}"#.to_owned()),
-            Ok(r#"{"state":"OPEN"}"#.to_owned()),
-            Ok(r#"{"state":"CLOSED"}"#.to_owned()),
-            Ok(r#"{"state":"DRAFT"}"#.to_owned()),
+            view("MERGED"),
+            view("OPEN"),
+            view("CLOSED"),
+            view("DRAFT"),
         ]);
-        assert_eq!(
-            github.pull_request_state(url).unwrap(),
-            PullRequestState::Merged
-        );
-        assert_eq!(
-            github.pull_request_state(url).unwrap(),
-            PullRequestState::Open
-        );
-        assert_eq!(
-            github.pull_request_state(url).unwrap(),
-            PullRequestState::Closed
-        );
+        for state in [
+            PullRequestState::Merged,
+            PullRequestState::Open,
+            PullRequestState::Closed,
+        ] {
+            assert_eq!(
+                github.pull_request(URL).unwrap(),
+                pull_request(state, "develop")
+            );
+        }
         assert!(matches!(
-            github.pull_request_state(url),
+            github.pull_request(URL),
             Err(GitError::UnexpectedOutput { .. })
         ));
         assert_eq!(
             runner.invocations.lock().unwrap()[0],
-            invocation(&["pr", "view", url, "--json", "state"])
+            invocation(&["pr", "view", URL, "--json", "url,state,baseRefName"])
         );
     }
 
