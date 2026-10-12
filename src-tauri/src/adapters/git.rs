@@ -215,6 +215,40 @@ impl Git {
         Ok(Some(branch).filter(|branch| !branch.is_empty()))
     }
 
+    /// Gives an empty repository, one without any commit, its first commit on `branch` so
+    /// worktrees can branch off it, and pushes it to `origin` when that remote exists.
+    /// The commit is empty: files the user staged stay staged. Returns whether it
+    /// committed; a repository that already has commits is left alone.
+    pub fn create_initial_commit(
+        &self,
+        repo: &WorkspaceLocation,
+        branch: &str,
+    ) -> Result<bool, GitError> {
+        let path = Some(location_path(repo));
+        let local_branch = format!("refs/heads/{branch}");
+        for revision in [local_branch.as_str(), "HEAD"] {
+            match self.run(repo, path, &["rev-parse", "--verify", "--quiet", revision]) {
+                Ok(_) => return Ok(false),
+                Err(GitError::Failed { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let has_origin = self
+            .run(repo, path, &["remote"])?
+            .lines()
+            .any(|remote| remote.trim() == "origin");
+        self.run(repo, path, &["symbolic-ref", "HEAD", &local_branch])?;
+        self.run(
+            repo,
+            path,
+            &["commit", "--allow-empty", "--only", "-m", "Initial commit"],
+        )?;
+        if has_origin {
+            self.run(repo, path, &["push", "--set-upstream", "origin", branch])?;
+        }
+        Ok(true)
+    }
+
     /// Commits reachable from `branch` but not from `base`, oldest first, read in the
     /// repository or worktree at `dir` on the machine of `location`.
     pub fn commits_between(
@@ -518,6 +552,69 @@ mod tests {
         };
         let (git, _) = git(vec![Err(spawn.clone())]);
         assert_eq!(git.default_branch(&local(r"C:\dev\a")), Err(spawn));
+    }
+
+    #[test]
+    fn an_empty_repository_gets_an_initial_commit_pushed_to_origin() {
+        let (git, runner) = git(vec![
+            Err(failed()),
+            Err(failed()),
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]);
+        assert!(
+            git.create_initial_commit(&local(r"C:\dev\a"), "main")
+                .unwrap()
+        );
+        let commands: Vec<Vec<String>> = runner
+            .invocations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|invocation| invocation.args[2..].to_vec())
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                args(&["rev-parse", "--verify", "--quiet", "refs/heads/main"]),
+                args(&["rev-parse", "--verify", "--quiet", "HEAD"]),
+                args(&["remote"]),
+                args(&["symbolic-ref", "HEAD", "refs/heads/main"]),
+                args(&["commit", "--allow-empty", "--only", "-m", "Initial commit"]),
+                args(&["push", "--set-upstream", "origin", "main"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_repository_without_origin_is_only_committed_to() {
+        let (git, runner) = git(vec![
+            Err(failed()),
+            Err(failed()),
+            Ok("upstream\n".to_owned()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]);
+        assert!(
+            git.create_initial_commit(&remote("/srv/a"), "main")
+                .unwrap()
+        );
+        assert_eq!(runner.invocations.lock().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn a_repository_with_commits_is_left_alone() {
+        let (git, runner) = git(vec![
+            Ok("abc\n".to_owned()),
+            Err(failed()),
+            Ok("def\n".to_owned()),
+        ]);
+        let repo = local(r"C:\dev\a");
+        assert!(!git.create_initial_commit(&repo, "main").unwrap());
+        assert!(!git.create_initial_commit(&repo, "develop").unwrap());
+        assert_eq!(runner.invocations.lock().unwrap().len(), 3);
     }
 
     const SHA_A: &str = "1111111111111111111111111111111111111111";

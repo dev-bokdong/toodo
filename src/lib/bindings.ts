@@ -63,6 +63,7 @@ export const commands = {
 	/**
 	 *  Creates the worktree of a `ready` task through herdr and moves the task to
 	 *  `in_progress`. Requires a worktree root for the machine of the task's workspace.
+	 *  An empty repository first gets an initial commit on the workspace's base branch.
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),

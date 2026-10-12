@@ -8,7 +8,8 @@
 use tauri::State;
 
 use super::types::{HerdrStatus, Task, TaskId};
-use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
+use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
+use crate::adapters::git::Git;
 use crate::adapters::herdr::{Herdr, HerdrError, NewWorktree};
 use crate::domain::model::{self, Machine, WorkspaceLocation};
 use crate::domain::naming;
@@ -23,14 +24,16 @@ pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> 
 
 /// Creates the worktree of a `ready` task through herdr and moves the task to
 /// `in_progress`. Requires a worktree root for the machine of the task's workspace.
+/// An empty repository first gets an initial commit on the workspace's base branch.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn start_task(
     storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
     herdr: State<'_, HerdrState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&start(&storage, &herdr, id.into())?).into())
+    Ok((&start(&storage, &git, &herdr, id.into())?).into())
 }
 
 #[tauri::command(async)]
@@ -57,7 +60,12 @@ pub fn remove_task_worktree(
     Ok((&remove_worktree(&storage, &herdr, id.into(), force)?).into())
 }
 
-fn start(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<model::Task> {
+fn start(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    id: model::TaskId,
+) -> CommandResult<model::Task> {
     let (workspace, checkout) = {
         let storage = lock(storage);
         let task = storage
@@ -77,6 +85,7 @@ fn start(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandRes
         WorkspaceLocation::Local { path } => path.as_str(),
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
+    git.create_initial_commit(&workspace.location, &workspace.default_base_branch)?;
     let path = checkout.path.to_string();
     let herdr_workspace_id = herdr.create_worktree(
         &workspace.location.machine(),
@@ -188,7 +197,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::adapters::git::fake::FakeRunner;
+    use crate::adapters::git::fake::{FakeRunner, failed};
     use crate::adapters::git::{GitError, Invocation};
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{HostPath, MachineLabel, MachineSettings, TaskType};
@@ -245,6 +254,13 @@ mod tests {
         (Herdr::new(Box::new(runner.clone())), runner)
     }
 
+    /// Git for a repository whose base branch already exists.
+    fn existing_base() -> Git {
+        Git::new(Box::new(Arc::new(FakeRunner::new(vec![Ok(
+            "abc\n".to_owned()
+        )]))))
+    }
+
     fn invocations(runner: &FakeRunner) -> Vec<Invocation> {
         runner.invocations.lock().unwrap().clone()
     }
@@ -261,7 +277,7 @@ mod tests {
         let fixture = local_fixture(Some(r"D:\wt"));
         let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
 
-        let started = start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        let started = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
 
         assert_eq!(started.status, TaskStatus::InProgress);
         assert_eq!(started.branch.as_deref(), Some("feat/add-login-1"));
@@ -293,6 +309,54 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_repository_gets_an_initial_commit_before_the_worktree() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Err(failed()),
+            Err(failed()),
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        let started = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(started.status, TaskStatus::InProgress);
+        let git_commands: Vec<String> = invocations(&git_runner)
+            .iter()
+            .map(|invocation| invocation.args[2..].join(" "))
+            .collect();
+        assert_eq!(
+            git_commands[4],
+            "commit --allow-empty --only -m Initial commit"
+        );
+        assert_eq!(git_commands[5], "push --set-upstream origin main");
+        assert_eq!(invocations(&runner)[0].args[..2], ["worktree", "create"]);
+    }
+
+    #[test]
+    fn a_failed_initial_commit_leaves_the_task_ready_without_running_herdr() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git = Git::new(Box::new(Arc::new(FakeRunner::new(vec![
+            Err(failed()),
+            Err(failed()),
+            Ok(String::new()),
+            Ok(String::new()),
+            Err(failed()),
+        ]))));
+        let (herdr, runner) = herdr(Vec::new());
+
+        let error = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::External);
+        assert_eq!(stored(&fixture), fixture.task);
+        assert!(invocations(&runner).is_empty());
+    }
+
+    #[test]
     fn ssh_tasks_start_on_their_machine() {
         let devbox = MachineLabel::parse("devbox").unwrap();
         let fixture = fixture(
@@ -314,7 +378,7 @@ mod tests {
             Ok(CREATED.to_owned()),
         ]);
 
-        start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
 
         assert_eq!(
             invocations(&runner)[1].args[..7],
@@ -339,7 +403,7 @@ mod tests {
         let fixture = local_fixture(None);
         let (herdr, runner) = herdr(Vec::new());
 
-        let error = start(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+        let error = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
         assert_eq!(error.message, "worktree root is not set for machine local");
@@ -350,9 +414,9 @@ mod tests {
     fn a_task_that_is_not_ready_is_rejected_before_herdr_runs() {
         let fixture = local_fixture(Some(r"D:\wt"));
         let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
-        start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
 
-        let error = start(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+        let error = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert_eq!(invocations(&runner).len(), 1);
@@ -366,7 +430,7 @@ mod tests {
             stderr: r#"{"error":{"code":"worktree_create_failed","message":"fatal: invalid reference: main"}}"#.to_owned(),
         })]);
 
-        let error = start(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+        let error = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::External);
         assert!(error.message.ends_with("fatal: invalid reference: main"));
@@ -392,7 +456,7 @@ mod tests {
                 .chain(results)
                 .collect(),
         );
-        start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
         lock(&fixture.storage)
             .set_task_status(fixture.task.id, TaskStatus::Cancelled)
             .unwrap();
@@ -511,7 +575,7 @@ mod tests {
         assert_eq!(error.message, format!("task {id} has no worktree"));
 
         let fixture = local_fixture(Some(r"D:\wt"));
-        start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
         let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("only done or cancelled tasks"));
@@ -526,7 +590,7 @@ mod tests {
         let error = open(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
 
-        start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
         open(&fixture.storage, &herdr, fixture.task.id).unwrap();
         assert_eq!(
             invocations(&runner)[1].args,
