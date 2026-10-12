@@ -18,6 +18,55 @@ A root git repository that tasks are planned against.
 | `herdrMachine` | For `ssh` workspaces: the saved herdr machine label; also used as the `ssh.exe` host. |
 | `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). |
 
+### Machine Settings
+
+Per-machine configuration. There is one entry for the local machine and one for each
+saved herdr SSH machine that hosts a workspace.
+
+| Field | Description |
+| --- | --- |
+| `machine` | `local` or the saved herdr machine label. |
+| `worktreeRoot` | Absolute directory under which task worktrees are created on that machine (Windows path for `local`, POSIX path for SSH machines). Required before a task on that machine can be started. |
+
+### Task Types
+
+A fixed set; users cannot define their own types for now.
+
+| Type | Use for |
+| --- | --- |
+| `feat` | A new feature. |
+| `fix` | A bug fix. |
+| `modify` | A change to existing behavior that is neither a new feature nor a bug fix. |
+| `refactor` | Restructuring code without changing behavior. |
+| `docs` | Documentation-only changes. |
+| `test` | Adding or changing tests only. |
+| `chore` | Build, tooling, dependency, or maintenance work. |
+
+### Worktree Layout and Branch Naming
+
+Each task worktree is created at:
+
+```
+<worktreeRoot>/<workspace-name>/<task-type>-<task-name>-<task-id>
+```
+
+and checks out the task branch:
+
+```
+<task-type>/<task-name>-<task-id>
+```
+
+- `worktreeRoot` comes from the settings of the machine that hosts the workspace.
+- `<workspace-name>` is the source workspace's name.
+- `<task-type>` is the task's [type](#task-types).
+- `<task-name>` is the task title; `<task-id>` keeps the path and branch unique even when
+  titles repeat.
+- Workspace and task names are converted to slugs that are safe both as directory names
+  (no path separators, no characters invalid on Windows, no trailing dots or spaces) and
+  as git ref components.
+- Path and branch are passed to herdr explicitly:
+  `herdr worktree create --path <path> --branch <branch>`.
+
 ### Task
 
 A unit of work inside a workspace.
@@ -26,6 +75,7 @@ A unit of work inside a workspace.
 | --- | --- |
 | `id` | Stable identifier. |
 | `workspaceId` | Owning workspace. |
+| `type` | Kind of change, one of the [task types](#task-types). Used in the worktree path and branch name. |
 | `title`, `description` | What should be implemented (English). |
 | `status` | See [workflow.md](workflow.md#task-states). |
 | `dependsOn` | IDs of tasks that must be completed first. |
@@ -112,6 +162,9 @@ Toodo owns planning, task state, commit records, and pull requests.
 - Backend in Rust (tokio); frontend in React + TypeScript with React Flow for the DAG.
 - External tools are invoked as processes (`herdr`, `git.exe`, `ssh.exe`, `gh`) rather than
   reimplemented through libraries.
+- Worktree location is configured per machine (`worktreeRoot`); worktree paths and branch
+  names are derived from task type, name, and ID; see
+  [Worktree Layout and Branch Naming](#worktree-layout-and-branch-naming).
 
 ## Open Decisions
 
@@ -120,7 +173,7 @@ Toodo owns planning, task state, commit records, and pull requests.
 - Whether the herdr CLI offers machine-readable output for every command needed; if not,
   send those requests over the named pipe directly.
 - Whether commit recording is automatic (on task completion / on events) or manual.
-- Worktree directory layout and branch naming scheme.
+- Whether users can define custom task types later.
 - Git hosting providers beyond GitHub.
 - Code signing for the installer (unsigned builds trigger SmartScreen warnings).
 - An optional herdr plugin (in-herdr actions such as "complete task"); plugins are in

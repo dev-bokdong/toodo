@@ -37,10 +37,15 @@ dependency that would create a cycle and computes which tasks are `ready`.
 
 When the user starts a `ready` task, Toodo:
 
-1. Chooses a branch name and worktree directory for the task.
-2. Calls the herdr API (`herdr worktree create`) to create the git worktree in a separate
-   directory and open it as a herdr workspace.
-3. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
+1. Resolves the worktree directory as
+   `<worktreeRoot>/<workspace-name>/<task-type>-<task-name>-<task-id>`, where
+   `worktreeRoot` is set per machine (see
+   [architecture.md](architecture.md#worktree-layout-and-branch-naming)). If the machine
+   has no `worktreeRoot` yet, the user is asked to set it first.
+2. Derives the task branch as `<task-type>/<task-name>-<task-id>`.
+3. Calls `herdr worktree create --path <dir> --branch <branch> --base <baseBranch>` to
+   create the git worktree and open it as a herdr workspace.
+4. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
    `in_progress`.
 
 ### 4. Implement in herdr
