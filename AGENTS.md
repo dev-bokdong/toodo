@@ -74,7 +74,8 @@ Layout:
     slugs, worktree paths and branch names). Pure logic: no I/O, Tauri, or storage.
   - `src-tauri/src/adapters/`: thin wrappers around external tools (`git.rs` runs git
     locally or over `ssh`, `herdr.rs` drives the herdr CLI, `github.rs` opens pull
-    requests with `gh`), each behind a trait with a fake for tests.
+    requests with `gh`, `ssh.rs` reads and appends hosts in `~/.ssh/config` and lists
+    remote directories), each behind a trait with a fake for tests.
   - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema
     changes go in a new entry appended to `migrations.rs`; never edit a released one.
 

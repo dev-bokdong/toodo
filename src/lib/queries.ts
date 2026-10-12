@@ -4,6 +4,7 @@ import {
   type CommandError,
   type Machine,
   type MachineSettings,
+  type NewSshHost,
   type NewTask,
   type NewWorkspace,
   type TaskId,
@@ -37,7 +38,35 @@ export const queryKeys = {
   herdrStatus: ["herdr-status"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
+  sshHosts: ["ssh-hosts"] as const,
+  remoteDirectories: (machine: string, path: string | null) =>
+    ["remote-directories", machine, path] as const,
 };
+
+/** Host aliases of the user's SSH config; refetched when the window regains focus. */
+export function useSshHosts() {
+  return useQuery({
+    queryKey: queryKeys.sshHosts,
+    queryFn: () => unwrap(commands.listSshHosts()),
+  });
+}
+
+export function useAddSshHost() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (host: NewSshHost) => unwrap(commands.addSshHost(host)),
+    onSuccess: (hosts) => queryClient.setQueryData(queryKeys.sshHosts, hosts),
+  });
+}
+
+/** Subdirectories of `path` on `machine`; `null` lists the login directory. */
+export function useRemoteDirectories(machine: string, path: string | null) {
+  return useQuery({
+    queryKey: queryKeys.remoteDirectories(machine, path),
+    queryFn: () => unwrap(commands.listRemoteDirectories(machine, path)),
+    retry: false,
+  });
+}
 
 export function machineOf(location: WorkspaceLocation): Machine {
   return location.kind === "local" ? { kind: "local" } : { kind: "ssh", label: location.machine };

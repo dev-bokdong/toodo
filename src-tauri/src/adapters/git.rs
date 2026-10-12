@@ -4,7 +4,7 @@
 use std::fmt;
 use std::process::{Command, Stdio};
 
-use crate::domain::model::WorkspaceLocation;
+use crate::domain::model::{MachineLabel, WorkspaceLocation};
 use crate::domain::path::{PosixPath, WindowsPath};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,8 +80,22 @@ pub(super) fn describe(invocation: &Invocation) -> String {
 }
 
 /// Quotes one word for the POSIX shell that runs an SSH remote command.
-fn shell_quote(word: &str) -> String {
+pub(super) fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+/// `ssh.exe` running `remote` on `machine` without prompting for passwords or host keys.
+pub(super) fn ssh_invocation(machine: &MachineLabel, remote: String) -> Invocation {
+    Invocation {
+        program: "ssh",
+        args: vec![
+            "-o".to_owned(),
+            "BatchMode=yes".to_owned(),
+            "--".to_owned(),
+            machine.as_str().to_owned(),
+            remote,
+        ],
+    }
 }
 
 pub struct Git {
@@ -223,16 +237,7 @@ impl Git {
                     .chain(git_args.iter().map(|arg| shell_quote(arg)))
                     .collect::<Vec<_>>()
                     .join(" ");
-                Invocation {
-                    program: "ssh",
-                    args: vec![
-                        "-o".to_owned(),
-                        "BatchMode=yes".to_owned(),
-                        "--".to_owned(),
-                        machine.as_str().to_owned(),
-                        remote,
-                    ],
-                }
+                ssh_invocation(machine, remote)
             }
         };
         self.runner.run(&invocation)
@@ -329,7 +334,6 @@ mod tests {
 
     use super::fake::{FakeRunner, failed};
     use super::*;
-    use crate::domain::model::MachineLabel;
 
     fn git(results: Vec<Result<String, GitError>>) -> (Git, Arc<FakeRunner>) {
         let runner = Arc::new(FakeRunner::new(results));

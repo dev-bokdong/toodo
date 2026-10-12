@@ -3,6 +3,7 @@
 
 pub mod completion;
 pub mod herdr;
+pub mod machines;
 pub mod tasks;
 pub mod types;
 pub mod workspaces;
@@ -15,8 +16,10 @@ use specta::Type;
 use crate::adapters::git::{Git, GitError};
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::{Herdr, HerdrError};
+use crate::adapters::ssh::{Ssh, SshConfigError, SshConfigFile};
 use crate::domain::dag::DependencyError;
 use crate::domain::naming::NamingError;
+use crate::domain::ssh_config::SshHostError;
 use crate::storage::{Storage, StorageError};
 
 pub type StorageState = Mutex<Storage>;
@@ -26,6 +29,11 @@ pub type GitState = Arc<Git>;
 pub type HerdrState = Arc<Herdr>;
 
 pub type GitHubState = Arc<GitHub>;
+
+pub type SshState = Arc<Ssh>;
+
+/// `None` when the home directory, and so the SSH config, cannot be found.
+pub type SshConfigState = Option<SshConfigFile>;
 
 pub type CommandResult<T> = Result<T, CommandError>;
 
@@ -95,6 +103,20 @@ impl From<HerdrError> for CommandError {
         let kind = match &error {
             HerdrError::Spawn { .. } | HerdrError::Failed { .. } => CommandErrorKind::External,
             HerdrError::UnexpectedOutput { .. } => CommandErrorKind::Internal,
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<SshConfigError> for CommandError {
+    fn from(error: SshConfigError) -> Self {
+        let kind = match &error {
+            SshConfigError::Io { .. } => CommandErrorKind::External,
+            SshConfigError::Host(SshHostError::AlreadyExists(_)) => CommandErrorKind::Rejected,
+            SshConfigError::Host(_) => CommandErrorKind::InvalidInput,
         };
         Self {
             kind,

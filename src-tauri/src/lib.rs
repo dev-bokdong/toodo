@@ -22,6 +22,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::workspaces::delete_workspace,
         commands::workspaces::get_machine_settings,
         commands::workspaces::save_machine_settings,
+        commands::machines::list_ssh_hosts,
+        commands::machines::add_ssh_host,
+        commands::machines::list_remote_directories,
         commands::tasks::list_tasks,
         commands::tasks::get_task,
         commands::tasks::create_task,
@@ -53,6 +56,7 @@ pub fn run() {
     export_bindings(&builder);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -66,6 +70,10 @@ pub fn run() {
             app.manage::<commands::GitHubState>(Arc::new(adapters::github::GitHub::new(Box::new(
                 adapters::git::ProcessRunner,
             ))));
+            app.manage::<commands::SshState>(Arc::new(adapters::ssh::Ssh::new(Box::new(
+                adapters::git::ProcessRunner,
+            ))));
+            app.manage::<commands::SshConfigState>(adapters::ssh::SshConfigFile::in_home());
             app.manage::<commands::HerdrState>(Arc::new(adapters::herdr::Herdr::new(Box::new(
                 adapters::git::ProcessRunner,
             ))));

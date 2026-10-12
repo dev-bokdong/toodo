@@ -2,7 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { commands, type CommitRecord, type Task, type Workspace } from "@/lib/bindings";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -19,10 +22,14 @@ vi.mock("@/lib/bindings", () => ({
     listCommitRecords: vi.fn(),
     refreshCommitRecords: vi.fn(),
     completeTask: vi.fn(),
+    listSshHosts: vi.fn(),
+    addSshHost: vi.fn(),
+    listRemoteDirectories: vi.fn(),
   },
 }));
 
 const mocked = vi.mocked(commands);
+const mockedOpenDialog = vi.mocked(openDialog);
 
 const toodo: Workspace = {
   id: 1,
@@ -78,6 +85,7 @@ describe("App", () => {
       data: { machine, worktreeRoot: null },
     }));
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: [] });
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -122,32 +130,99 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
   });
 
-  it("clones a repository into a new workspace and selects it", async () => {
+  it("groups workspaces under Local and the hosts of the SSH config", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["gpu"] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    const local = await screen.findByRole("region", { name: "Machine Local" });
+    expect(within(local).getByText("toodo")).toBeInTheDocument();
+    expect(within(await screen.findByRole("region", { name: "Machine gpu" })).queryByRole("listitem")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Machine devbox" })).getByText("/srv/herdr")).toBeInTheDocument();
+  });
+
+  it("opens a local repository picked in the folder dialog", async () => {
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.createWorkspace.mockResolvedValue({ status: "ok", data: toodo });
+    mockedOpenDialog.mockResolvedValue("C:\\dev\\toodo");
+    renderApp();
+
+    await screen.findByText("No workspaces yet.");
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    fireEvent.click(screen.getByRole("button", { name: "Open on Local" }));
+    fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
+    await waitFor(() => expect(screen.getByLabelText("Folder")).toHaveValue("C:\\dev\\toodo"));
+    expect(screen.getByLabelText("Name")).toHaveValue("toodo");
+    expect(mockedOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Open workspace" }));
+
+    expect(await screen.findByRole("heading", { name: "toodo" })).toBeInTheDocument();
+    expect(mocked.createWorkspace).toHaveBeenCalledWith({
+      name: "toodo",
+      location: { kind: "local", path: "C:\\dev\\toodo" },
+      source: { kind: "open" },
+      defaultBaseBranch: null,
+    });
+  });
+
+  it("clones into a folder browsed on an SSH host and selects the workspace", async () => {
+    mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
+    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["devbox"] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: herdr });
+    mocked.listRemoteDirectories.mockImplementation(async (_machine, path) => ({
+      status: "ok",
+      data:
+        path === null
+          ? { path: "/home/me", directories: ["src"] }
+          : path === "/home/me/src"
+            ? { path: "/home/me/src", directories: [] }
+            : { path: "/home", directories: ["me"] },
+    }));
     renderApp();
 
     await screen.findByText("No workspaces yet.");
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [herdr] });
-    fireEvent.click(screen.getByRole("button", { name: "New" }));
-    expect(screen.queryByLabelText("Repository URL")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("radio", { name: "Clone" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clone on devbox" }));
     fireEvent.change(screen.getByLabelText("Repository URL"), {
       target: { value: "git@github.com:o/herdr.git" },
     });
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "herdr" } });
-    fireEvent.change(screen.getByLabelText("Path"), { target: { value: "/srv/herdr" } });
-    fireEvent.change(screen.getByLabelText("SSH machine"), { target: { value: "devbox" } });
+    fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
+    const browser = screen.getByRole("group", { name: "Browse folders on devbox" });
+    fireEvent.click(await within(browser).findByRole("button", { name: "src/" }));
+    await within(browser).findByText("No subfolders");
+    fireEvent.click(within(browser).getByRole("button", { name: "Select folder" }));
+
+    expect(screen.getByLabelText("Parent folder")).toHaveValue("/home/me/src");
+    expect(screen.getByText("Clones into /home/me/src/herdr")).toBeInTheDocument();
+    expect(mocked.listRemoteDirectories).toHaveBeenCalledWith("devbox", null);
     fireEvent.click(screen.getByRole("button", { name: "Clone workspace" }));
 
     expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(mocked.createWorkspace).toHaveBeenCalledWith({
       name: "herdr",
-      location: { kind: "ssh", machine: "devbox", path: "/srv/herdr" },
+      location: { kind: "ssh", machine: "devbox", path: "/home/me/src/herdr" },
       source: { kind: "clone", url: "git@github.com:o/herdr.git" },
       defaultBaseBranch: null,
     });
+  });
+
+  it("adds an SSH host to the config and lists it as a machine", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    mocked.addSshHost.mockResolvedValue({ status: "ok", data: ["devbox"] });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add SSH host" }));
+    fireEvent.change(screen.getByLabelText("Host alias"), { target: { value: "devbox" } });
+    fireEvent.change(screen.getByLabelText("Host name"), { target: { value: "10.0.0.5" } });
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "2222" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add host" }));
+
+    expect(await screen.findByRole("region", { name: "Machine devbox" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Host alias")).not.toBeInTheDocument();
+    expect(mocked.addSshHost).toHaveBeenCalledWith({ alias: "devbox", hostName: "10.0.0.5", user: null, port: 2222 });
   });
 
   it("creates a task and reloads the task list", async () => {

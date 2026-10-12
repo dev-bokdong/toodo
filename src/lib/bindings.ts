@@ -18,6 +18,15 @@ export const commands = {
 	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(__TAURI_INVOKE("delete_workspace", { id })),
 	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("get_machine_settings", { machine })),
 	saveMachineSettings: (settings: MachineSettings) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("save_machine_settings", { settings })),
+	/**  Host aliases from `~/.ssh/config`, re-read on every call. */
+	listSshHosts: () => typedError<string[], CommandError>(__TAURI_INVOKE("list_ssh_hosts")),
+	/**  Appends a `Host` block to `~/.ssh/config` and returns the updated host aliases. */
+	addSshHost: (host: NewSshHost) => typedError<string[], CommandError>(__TAURI_INVOKE("add_ssh_host", { host })),
+	/**
+	 *  Subdirectories of `path` on `machine`, or of the login directory when `path` is
+	 *  absent. ssh runs on a blocking thread because connecting can take seconds.
+	 */
+	listRemoteDirectories: (machine: string, path: string | null) => typedError<RemoteDirectory, CommandError>(__TAURI_INVOKE("list_remote_directories", { machine, path })),
 	/**  Tasks of a workspace ordered by ID, each with its dependencies. */
 	listTasks: (workspaceId: WorkspaceId) => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks", { workspaceId })),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
@@ -115,6 +124,15 @@ export type MachineSettings = {
 	worktreeRoot: string | null,
 };
 
+/**  A remote machine to append to the user's SSH config. */
+export type NewSshHost = {
+	/**  Name used by `ssh <alias>` and shown as the machine label. */
+	alias: string,
+	hostName: string,
+	user: string | null,
+	port: number | null,
+};
+
 export type NewTask = {
 	workspaceId: WorkspaceId,
 	taskType: TaskType,
@@ -128,6 +146,13 @@ export type NewWorkspace = {
 	source: WorkspaceSource,
 	/**  Detected from the repository when empty or absent. */
 	defaultBaseBranch: string | null,
+};
+
+/**  Subdirectories of a directory on a remote machine, for the folder browser. */
+export type RemoteDirectory = {
+	/**  Absolute POSIX path of the listed directory. */
+	path: string,
+	directories: string[],
 };
 
 /**

@@ -6,8 +6,8 @@ use specta::Type;
 use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
-use crate::adapters::herdr;
-use crate::domain::{dag, model, path, status};
+use crate::adapters::{herdr, ssh};
+use crate::domain::{dag, model, path, ssh_config, status};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -250,6 +250,49 @@ impl TryFrom<MachineSettings> for model::MachineSettings {
                 worktree_root: root.map(posix_path).transpose()?,
             },
         })
+    }
+}
+
+/// A remote machine to append to the user's SSH config.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NewSshHost {
+    /// Name used by `ssh <alias>` and shown as the machine label.
+    pub alias: String,
+    pub host_name: String,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+}
+
+impl TryFrom<NewSshHost> for ssh_config::SshHost {
+    type Error = CommandError;
+
+    fn try_from(host: NewSshHost) -> CommandResult<Self> {
+        Self::new(
+            &host.alias,
+            &host.host_name,
+            host.user.as_deref(),
+            host.port,
+        )
+        .map_err(|error| CommandError::invalid_input(error.to_string()))
+    }
+}
+
+/// Subdirectories of a directory on a remote machine, for the folder browser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDirectory {
+    /// Absolute POSIX path of the listed directory.
+    pub path: String,
+    pub directories: Vec<String>,
+}
+
+impl From<&ssh::RemoteDirectory> for RemoteDirectory {
+    fn from(listing: &ssh::RemoteDirectory) -> Self {
+        Self {
+            path: listing.path.as_str().to_owned(),
+            directories: listing.directories.clone(),
+        }
     }
 }
 
