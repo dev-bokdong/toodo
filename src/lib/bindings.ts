@@ -67,6 +67,12 @@ export const commands = {
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
 	/**
+	 *  Removes the worktree of a `done` or `cancelled` task through herdr, which also closes
+	 *  its herdr workspace, and forgets both on the task. The branch is kept. Without `force`,
+	 *  a worktree with modified or untracked files is rejected.
+	 */
+	removeTaskWorktree: (id: TaskId, force: boolean) => typedError<Task, CommandError>(__TAURI_INVOKE("remove_task_worktree", { id, force })),
+	/**
 	 *  Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 	 *  the base branch and stores them as its commit records.
 	 */
@@ -81,7 +87,7 @@ export const commands = {
 	openPullRequest: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("open_pull_request", { id })),
 	/**
 	 *  Moves an `in_review` task to `done` once its pull request is merged, which may make
-	 *  its dependents `ready`.
+	 *  its dependents `ready`. Its herdr workspace is closed; the worktree stays on disk.
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 };

@@ -166,12 +166,65 @@ impl Herdr {
             ],
         );
         let output = self.runner.run(&invocation)?;
-        parse(&invocation, &output)?
-            .pointer("/result/workspace/workspace_id")
+        workspace_id(&invocation, &output)
+    }
+
+    /// Opens the existing worktree at `path` of `repository` as a herdr workspace without
+    /// focusing it, or finds the workspace that already has it open. Returns its ID.
+    pub fn open_worktree(
+        &self,
+        machine: &Machine,
+        repository: &str,
+        path: &str,
+    ) -> Result<String, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(
+            profile_id.as_deref(),
+            &[
+                "worktree",
+                "open",
+                "--cwd",
+                repository,
+                "--path",
+                path,
+                "--no-focus",
+            ],
+        );
+        let output = self.runner.run(&invocation)?;
+        workspace_id(&invocation, &output)
+    }
+
+    /// Removes the worktree checkout of a herdr workspace and closes the workspace; the
+    /// branch is kept. Without `force`, herdr refuses a checkout with modified or
+    /// untracked files.
+    pub fn remove_worktree(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        force: bool,
+    ) -> Result<(), HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let mut args = vec!["worktree", "remove", "--workspace", workspace_id];
+        if force {
+            args.push("--force");
+        }
+        let invocation = invocation(profile_id.as_deref(), &args);
+        let output = self.runner.run(&invocation)?;
+        match parse(&invocation, &output)?
+            .pointer("/result/type")
             .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| unexpected(&invocation, &output))
+        {
+            Some("worktree_removed") => Ok(()),
+            _ => Err(unexpected(&invocation, &output)),
+        }
+    }
+
+    /// Closes a herdr workspace. The worktree checkout it was bound to stays on disk.
+    pub fn close_workspace(&self, machine: &Machine, workspace_id: &str) -> Result<(), HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(profile_id.as_deref(), &["workspace", "close", workspace_id]);
+        self.runner.run(&invocation)?;
+        Ok(())
     }
 
     pub fn focus_workspace(&self, machine: &Machine, workspace_id: &str) -> Result<(), HerdrError> {
@@ -277,6 +330,16 @@ fn invocation(profile_id: Option<&str>, args: &[&str]) -> Invocation {
             .chain(args.iter().map(|arg| (*arg).to_owned()))
             .collect(),
     }
+}
+
+/// The workspace ID in the output of `herdr worktree create` or `herdr worktree open`.
+fn workspace_id(invocation: &Invocation, output: &str) -> Result<String, HerdrError> {
+    parse(invocation, output)?
+        .pointer("/result/workspace/workspace_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| unexpected(invocation, output))
 }
 
 fn parse(invocation: &Invocation, output: &str) -> Result<Value, HerdrError> {
@@ -533,6 +596,78 @@ mod tests {
             herdr.create_worktree(&Machine::Local, &WORKTREE),
             Err(HerdrError::UnexpectedOutput { .. })
         ));
+    }
+
+    #[test]
+    fn remove_worktree_removes_the_workspace_checkout() {
+        let removed = r#"{"id":"cli:worktree:remove","result":{"forced":true,
+            "path":"D:\\wt\\toodo\\feat-add-x-3","type":"worktree_removed","workspace_id":"w27"}}"#;
+        let (herdr, runner) = herdr(vec![
+            Ok(removed.to_owned()),
+            Ok(removed.to_owned()),
+            Ok(r#"{"id":"x","result":{"type":"ok"}}"#.to_owned()),
+        ]);
+        herdr
+            .remove_worktree(&Machine::Local, "w27", false)
+            .unwrap();
+        herdr.remove_worktree(&Machine::Local, "w27", true).unwrap();
+        assert!(matches!(
+            herdr.remove_worktree(&Machine::Local, "w27", false),
+            Err(HerdrError::UnexpectedOutput { .. })
+        ));
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(
+            invocations[0].args,
+            ["worktree", "remove", "--workspace", "w27"].map(str::to_owned)
+        );
+        assert_eq!(
+            invocations[1].args,
+            ["worktree", "remove", "--workspace", "w27", "--force"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn close_workspace_closes_it_on_the_machine() {
+        let (herdr, runner) = herdr(vec![
+            machine_list(&[saved("m2", "devbox", "default", true)]),
+            Ok(r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#.to_owned()),
+        ]);
+        herdr.close_workspace(&devbox(), "w27").unwrap();
+        assert_eq!(
+            runner.invocations.lock().unwrap()[1].args,
+            ["--machine", "m2", "workspace", "close", "w27"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn open_worktree_returns_the_herdr_workspace() {
+        let opened = r#"{"id":"cli:worktree:open","result":{"already_open":false,
+            "type":"worktree_opened","workspace":{"workspace_id":"w30"}}}"#;
+        let (herdr, runner) = herdr(vec![
+            machine_list(&[saved("m2", "devbox", "default", true)]),
+            Ok(opened.to_owned()),
+        ]);
+        assert_eq!(
+            herdr
+                .open_worktree(&devbox(), "/srv/toodo", "/wt/toodo/feat-x-3")
+                .unwrap(),
+            "w30"
+        );
+        assert_eq!(
+            runner.invocations.lock().unwrap()[1].args,
+            [
+                "--machine",
+                "m2",
+                "worktree",
+                "open",
+                "--cwd",
+                "/srv/toodo",
+                "--path",
+                "/wt/toodo/feat-x-3",
+                "--no-focus",
+            ]
+            .map(str::to_owned)
+        );
     }
 
     #[test]

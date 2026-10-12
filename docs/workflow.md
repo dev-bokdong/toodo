@@ -118,10 +118,34 @@ Review and merging happen on GitHub; Toodo never merges a pull request itself.
 When the user completes an `in_review` task, Toodo reads the state and base branch of
 its pull request (`gh pr view <url> --json url,state,baseRefName`). A pull request into
 another branch than the workspace base branch is rejected. Only a merged pull request
-moves the task to `done`,
-which may make dependent tasks `ready`. An open pull request is rejected until it is
+completes the task: Toodo closes its herdr workspace (`herdr workspace close
+<herdrWorkspaceId>`), which keeps the worktree checkout on disk, then moves the task to
+`done` and clears `herdrWorkspaceId` in one transaction, which may make dependent tasks
+`ready`. A workspace herdr no longer has is treated as already closed; any other herdr
+failure keeps the task `in_review`, and completing it again is safe. An open pull request is rejected until it is
 merged; a pull request closed without merging is rejected too, so the user reopens it or
 cancels the task.
 
-Removing the worktree (`herdr worktree remove`) is a separate cleanup step, usually after
-the pull request is merged.
+Removing the worktree is a separate cleanup step (step 8).
+
+### 8. Clean up the worktree
+
+When the user removes the worktree of a `done` or `cancelled` task ("Remove worktree"),
+Toodo:
+
+1. If the task still has a herdr workspace (a cancelled task), calls
+   `herdr worktree remove --workspace <herdrWorkspaceId>` (prefixed with
+   `--machine <profile-id>` for SSH workspaces), which deletes the checkout and closes
+   its herdr workspace. The task branch is kept, locally and on `origin`.
+2. If the task has no herdr workspace (a completed task, whose workspace was closed) or
+   herdr no longer has it (the user closed it, which keeps the checkout, or herdr lost
+   its session), opens the checkout again with
+   `herdr worktree open --cwd <repository> --path <worktreePath> --no-focus` and removes
+   it through the new workspace. If herdr cannot find the checkout either, it is already
+   gone and nothing is removed.
+3. Clears `worktreePath` and `herdrWorkspaceId` on the task. Its status, branch, commit
+   records, and pull request stay.
+
+A checkout with modified or untracked files is rejected and kept; the user can then
+force the removal ("Force remove", `--force`), which discards those files. Any other
+herdr failure keeps the task unchanged.

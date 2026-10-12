@@ -189,6 +189,17 @@ export function useCompleteTask() {
   });
 }
 
+/** Removes the worktree of a `done` or `cancelled` task through herdr; `force` discards local changes. */
+export function useRemoveTaskWorktree() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, force }: { id: TaskId; force: boolean }) =>
+      unwrap(commands.removeTaskWorktree(id, force)),
+    onSuccess: (task) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+  });
+}
+
 export function useUpdateTask() {
   const queryClient = useQueryClient();
   return useMutation({

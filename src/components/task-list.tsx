@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { inputClass, describeLocation } from "@/components/workspace-list";
 import type { Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
 import {
+  CommandFailure,
   machineOf,
   useAddDependency,
   useCancelTask,
@@ -16,6 +17,7 @@ import {
   useOpenTaskInHerdr,
   useRefreshCommitRecords,
   useRemoveDependency,
+  useRemoveTaskWorktree,
   useSaveMachineSettings,
   useStartTask,
   useTasks,
@@ -87,6 +89,15 @@ const cancellableStatuses: TaskStatus[] = ["planned", "ready", "in_progress", "i
 /** Statuses whose task has no live worktree to lose, so it can be deleted. */
 const deletableStatuses: TaskStatus[] = ["planned", "ready", "done", "cancelled"];
 
+type Confirmation = "cancel" | "delete" | "remove-worktree" | "force-remove-worktree";
+
+const confirmLabels: Record<Confirmation, string> = {
+  cancel: "Confirm cancel",
+  delete: "Confirm delete",
+  "remove-worktree": "Confirm remove worktree",
+  "force-remove-worktree": "Confirm force remove",
+};
+
 function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const herdr = useHerdrStatus();
   const startTask = useStartTask();
@@ -98,14 +109,19 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const deleteTask = useDeleteTask();
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
+  const removeWorktree = useRemoveTaskWorktree();
   const [editing, setEditing] = useState(false);
-  const [confirming, setConfirming] = useState<"cancel" | "delete" | null>(null);
+  const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const herdrRunning = herdr.data?.running === true;
   const inReview = task.status === "in_review";
   const active = task.status === "in_progress" || inReview;
   const hasWorktree = active && task.worktreePath !== null;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done" || task.status === "cancelled";
+  const removableWorktree = final && task.worktreePath !== null;
+  // A rejected removal means the worktree has local changes; offer to discard them.
+  const dirtyWorktree =
+    removableWorktree && removeWorktree.error instanceof CommandFailure && removeWorktree.error.kind === "rejected";
   const dependenciesEditable = task.status === "planned" || task.status === "ready";
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const ref = { workspaceId: task.workspaceId, id: task.id };
@@ -117,15 +133,20 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
     completeTask.error ??
     cancelTask.error ??
     deleteTask.error ??
+    removeWorktree.error ??
     addDependency.error ??
     removeDependency.error;
   const candidates = tasks.filter(
     (other) => other.id !== task.id && other.status !== "cancelled" && !task.dependsOn.includes(other.id),
   );
 
-  function confirm(action: "cancel" | "delete") {
-    const mutation = action === "cancel" ? cancelTask : deleteTask;
-    mutation.mutate(ref, { onSettled: () => setConfirming(null) });
+  function confirm(action: Confirmation) {
+    const onSettled = () => setConfirming(null);
+    if (action === "remove-worktree" || action === "force-remove-worktree") {
+      removeWorktree.mutate({ id: task.id, force: action === "force-remove-worktree" }, { onSettled });
+    } else {
+      (action === "cancel" ? cancelTask : deleteTask).mutate(ref, { onSettled });
+    }
   }
 
   return (
@@ -215,11 +236,11 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
                 <Button
                   size="xs"
                   variant="destructive"
-                  aria-label={`Confirm ${confirming} #${task.id}`}
-                  disabled={cancelTask.isPending || deleteTask.isPending}
+                  aria-label={`${confirmLabels[confirming]} #${task.id}`}
+                  disabled={cancelTask.isPending || deleteTask.isPending || removeWorktree.isPending}
                   onClick={() => confirm(confirming)}
                 >
-                  {confirming === "cancel" ? "Confirm cancel" : "Confirm delete"}
+                  {removeWorktree.isPending ? "Removing..." : confirmLabels[confirming]}
                 </Button>
                 <Button size="xs" variant="ghost" onClick={() => setConfirming(null)}>
                   Back
@@ -240,6 +261,30 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
                     onClick={() => setConfirming("cancel")}
                   >
                     Cancel
+                  </Button>
+                )}
+                {removableWorktree && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`Remove worktree of #${task.id}`}
+                    title="Remove the worktree and close its herdr workspace; the branch is kept"
+                    disabled={!herdrRunning}
+                    onClick={() => setConfirming("remove-worktree")}
+                  >
+                    Remove worktree
+                  </Button>
+                )}
+                {dirtyWorktree && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`Force remove worktree of #${task.id}`}
+                    title="Remove the worktree and discard its modified and untracked files"
+                    disabled={!herdrRunning}
+                    onClick={() => setConfirming("force-remove-worktree")}
+                  >
+                    Force remove
                   </Button>
                 )}
                 {deletableStatuses.includes(task.status) && (
@@ -304,8 +349,8 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
         <Button
           size="xs"
           aria-label={`Complete #${task.id}`}
-          title="Complete the task once its pull request is merged"
-          disabled={finishing}
+          title="Complete the task once its pull request is merged; its herdr workspace is closed and the worktree kept"
+          disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
           onClick={() => completeTask.mutate(task.id)}
         >
           {completeTask.isPending ? "Completing..." : "Complete"}

@@ -538,6 +538,32 @@ fn start_task_records_the_worktree_and_moves_to_in_progress() {
 }
 
 #[test]
+fn clear_task_worktree_keeps_the_branch_and_status() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+    let started = storage
+        .start_task(task.id, &checkout(path, "feat/add-login-1"), "w7")
+        .unwrap();
+    storage.set_task_status(task.id, Cancelled).unwrap();
+
+    let cleared = storage.clear_task_worktree(task.id).unwrap();
+
+    assert_eq!(
+        (&cleared.worktree_path, &cleared.herdr_workspace_id),
+        (&None, &None)
+    );
+    assert_eq!(cleared.branch, started.branch);
+    assert_eq!(cleared.status, Cancelled);
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), cleared);
+    assert!(matches!(
+        storage.clear_task_worktree(TaskId(999)),
+        Err(StorageError::TaskNotFound(_))
+    ));
+}
+
+#[test]
 fn start_task_writes_nothing_when_it_is_rejected() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(

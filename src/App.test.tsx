@@ -24,6 +24,7 @@ vi.mock("@/lib/bindings", () => ({
     saveMachineSettings: vi.fn(),
     startTask: vi.fn(),
     openTaskInHerdr: vi.fn(),
+    removeTaskWorktree: vi.fn(),
     listCommitRecords: vi.fn(),
     refreshCommitRecords: vi.fn(),
     openPullRequest: vi.fn(),
@@ -576,5 +577,40 @@ describe("App", () => {
 
     expect(await screen.findByText("No tasks in this workspace yet.")).toBeInTheDocument();
     expect(mocked.deleteTask).toHaveBeenCalledWith(1);
+  });
+
+  it("removes the worktree of a finished task, forcing it only after a rejection", async () => {
+    const finished = task(1, 1, "Add login", {
+      status: "done",
+      branch: "feat/add-login-1",
+      worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
+      herdrWorkspaceId: "w27",
+    });
+    const cleared = { ...finished, worktreePath: null, herdrWorkspaceId: null };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [finished] });
+    mocked.removeTaskWorktree
+      .mockResolvedValueOnce({
+        status: "error",
+        error: { kind: "rejected", message: "the worktree of task 1 has modified or untracked files" },
+      })
+      .mockResolvedValueOnce({ status: "ok", data: cleared });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove worktree of #1" }));
+    expect(mocked.removeTaskWorktree).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Force remove worktree of #1" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm remove worktree #1" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("modified or untracked files");
+    expect(mocked.removeTaskWorktree).toHaveBeenCalledWith(1, false);
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [cleared] });
+    fireEvent.click(screen.getByRole("button", { name: "Force remove worktree of #1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm force remove #1" }));
+
+    await waitFor(() => expect(screen.queryByText(/D:\\wt\\toodo/)).not.toBeInTheDocument());
+    expect(mocked.removeTaskWorktree).toHaveBeenLastCalledWith(1, true);
+    expect(screen.queryByRole("button", { name: "Remove worktree of #1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete #1" })).toBeInTheDocument();
   });
 });

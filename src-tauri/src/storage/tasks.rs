@@ -300,6 +300,39 @@ impl Storage {
         Ok(started)
     }
 
+    /// Moves an `in_review` task to `done` and forgets its herdr workspace, which was
+    /// closed, in one transaction. The worktree path stays: the checkout is kept on disk
+    /// until its worktree is removed. Dependents may become `ready`.
+    pub fn complete_task(&mut self, id: TaskId) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let status = task.status.transition_to(TaskStatus::Done)?;
+        tx.execute(
+            "UPDATE tasks SET status = ?2, herdr_workspace_id = NULL WHERE id = ?1",
+            params![id.0, status.as_str()],
+        )?;
+        sync_readiness(&tx, task.workspace_id)?;
+        let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(done)
+    }
+
+    /// Forgets the worktree and herdr workspace of a task after its worktree was removed.
+    /// The branch, status, commit records, and pull request stay.
+    pub fn clear_task_worktree(&mut self, id: TaskId) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let updated = tx.execute(
+            "UPDATE tasks SET worktree_path = NULL, herdr_workspace_id = NULL WHERE id = ?1",
+            [id.0],
+        )?;
+        if updated == 0 {
+            return Err(StorageError::TaskNotFound(id));
+        }
+        let cleared = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(cleared)
+    }
+
     /// Records the open pull request of an `in_progress` or `in_review` task in one
     /// transaction: replaces its commit records, stores the pull request URL, and moves
     /// it to (or keeps it in) `in_review`. Dependents stay waiting until it is `done`.

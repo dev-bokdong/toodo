@@ -1,17 +1,20 @@
 //! Commands that finish a task (see `docs/workflow.md`): recording the commits of its
 //! branch, opening its pull request, which pushes the branch, opens (or reuses) a pull
 //! request with `gh`, and moves the task to `in_review`, and completing it once that
-//! pull request is merged, which moves it to `done` and releases its dependents.
+//! pull request is merged, which closes its herdr workspace (keeping the worktree), moves
+//! it to `done`, and releases its dependents.
 //!
 //! They run on the async runtime because git and gh can take seconds. The database lock
 //! is not held while they run.
 
 use tauri::State;
 
+use super::herdr::{WORKSPACE_NOT_FOUND, has_code};
 use super::types::{self, CommitRecord, Task, TaskId};
-use super::{CommandError, CommandResult, GitHubState, GitState, StorageState, lock};
+use super::{CommandError, CommandResult, GitHubState, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::adapters::github::{GitHub, NewPullRequest, PullRequest, PullRequestState};
+use crate::adapters::herdr::Herdr;
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
 use crate::domain::status::TaskStatus;
@@ -46,15 +49,16 @@ pub fn open_pull_request(
 }
 
 /// Moves an `in_review` task to `done` once its pull request is merged, which may make
-/// its dependents `ready`.
+/// its dependents `ready`. Its herdr workspace is closed; the worktree stays on disk.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn complete_task(
     storage: State<'_, StorageState>,
     github: State<'_, GitHubState>,
+    herdr: State<'_, HerdrState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&complete(&storage, &github, id.into())?).into())
+    Ok((&complete(&storage, &github, &herdr, id.into())?).into())
 }
 
 /// An `in_progress` or `in_review` task with the workspace and worktree its git commands
@@ -198,9 +202,10 @@ fn check_base(pull_request: &PullRequest, base: &str) -> CommandResult<()> {
 fn complete(
     storage: &StorageState,
     github: &GitHub,
+    herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let (task, base) = {
+    let (task, location, base) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -208,7 +213,7 @@ fn complete(
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (task, workspace.default_base_branch)
+        (task, workspace.location, workspace.default_base_branch)
     };
     let pull_request_url = match (task.status, task.pull_request_url) {
         (TaskStatus::InReview, Some(url)) => url,
@@ -233,11 +238,15 @@ fn complete(
             )));
         }
     }
-    let mut storage = lock(storage);
-    storage.set_task_status(id, TaskStatus::Done)?;
-    Ok(storage
-        .get_task(id)?
-        .ok_or(StorageError::TaskNotFound(id))?)
+    // A workspace herdr no longer has was already closed, e.g. by the user.
+    if let Some(workspace_id) = &task.herdr_workspace_id {
+        match herdr.close_workspace(&location.machine(), workspace_id) {
+            Ok(()) => {}
+            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(lock(storage).complete_task(id)?)
 }
 
 #[cfg(test)]
@@ -338,6 +347,19 @@ mod tests {
             .iter()
             .map(|invocation| invocation.args[2].clone())
             .collect()
+    }
+
+    /// A herdr that must not be called.
+    fn no_herdr() -> Herdr {
+        Herdr::new(Box::new(runner(Vec::new())))
+    }
+
+    /// A herdr that closes one workspace.
+    fn closing_herdr() -> (Herdr, Arc<FakeRunner>) {
+        let runner = runner(vec![Ok(
+            r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#.to_owned(),
+        )]);
+        (Herdr::new(Box::new(runner.clone())), runner)
     }
 
     fn stored(fixture: &Fixture, task: &model::Task) -> model::Task {
@@ -630,7 +652,13 @@ mod tests {
             TaskStatus::Planned
         );
 
-        let completed = complete(&fixture.storage, &github, fixture.task.id).unwrap();
+        let completed = complete(
+            &fixture.storage,
+            &github,
+            &closing_herdr().0,
+            fixture.task.id,
+        )
+        .unwrap();
         assert_eq!(completed.status, TaskStatus::Done);
         assert_eq!(
             stored(&fixture, &fixture.dependent).status,
@@ -684,7 +712,7 @@ mod tests {
         let fixture = in_review_fixture();
         let github = GitHub::new(Box::new(runner(vec![viewed("MERGED", "develop")])));
 
-        let error = complete(&fixture.storage, &github, fixture.task.id).unwrap_err();
+        let error = complete(&fixture.storage, &github, &no_herdr(), fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("merges into develop"));
@@ -700,12 +728,19 @@ mod tests {
         let fixture = in_review_fixture();
         let gh_runner = runner(vec![viewed("MERGED", "main")]);
         let github = GitHub::new(Box::new(gh_runner.clone()));
+        let (herdr, herdr_runner) = closing_herdr();
 
-        let completed = complete(&fixture.storage, &github, fixture.task.id).unwrap();
+        let completed = complete(&fixture.storage, &github, &herdr, fixture.task.id).unwrap();
 
         assert_eq!(completed.status, TaskStatus::Done);
         assert_eq!(completed.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(completed.herdr_workspace_id, None);
+        assert_eq!(completed.worktree_path, fixture.task.worktree_path);
         assert_eq!(stored(&fixture, &fixture.task), completed);
+        assert_eq!(
+            invocations(&herdr_runner)[0].args,
+            ["workspace", "close", "w27"].map(str::to_owned)
+        );
         assert_eq!(
             stored(&fixture, &fixture.dependent).status,
             TaskStatus::Ready
@@ -725,7 +760,8 @@ mod tests {
         ])));
 
         for expected in ["is not merged yet", "was closed without merging"] {
-            let error = complete(&fixture.storage, &github, fixture.task.id).unwrap_err();
+            let error =
+                complete(&fixture.storage, &github, &no_herdr(), fixture.task.id).unwrap_err();
             assert_eq!(error.kind, CommandErrorKind::Rejected);
             assert!(error.message.contains(expected), "{}", error.message);
         }
@@ -742,12 +778,50 @@ mod tests {
         let gh_runner = runner(Vec::new());
         let github = GitHub::new(Box::new(gh_runner.clone()));
 
-        let error = complete(&fixture.storage, &github, fixture.task.id).unwrap_err();
+        let error = complete(&fixture.storage, &github, &no_herdr(), fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("only an in_review task"));
         assert!(invocations(&gh_runner).is_empty());
-        let error = complete(&fixture.storage, &github, model::TaskId(999)).unwrap_err();
+        let error =
+            complete(&fixture.storage, &github, &no_herdr(), model::TaskId(999)).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_herdr_workspace_that_is_already_closed_does_not_block_completion() {
+        let fixture = in_review_fixture();
+        let github = GitHub::new(Box::new(runner(vec![viewed("MERGED", "main")])));
+        let herdr = Herdr::new(Box::new(runner(vec![Err(GitError::Failed {
+            command: "herdr workspace close".to_owned(),
+            stderr:
+                r#"{"error":{"code":"workspace_not_found","message":"workspace w27 not found"}}"#
+                    .to_owned(),
+        })])));
+
+        let completed = complete(&fixture.storage, &github, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(completed.status, TaskStatus::Done);
+        assert_eq!(completed.herdr_workspace_id, None);
+    }
+
+    #[test]
+    fn a_herdr_failure_keeps_the_task_in_review() {
+        let fixture = in_review_fixture();
+        let github = GitHub::new(Box::new(runner(vec![viewed("MERGED", "main")])));
+        let herdr = Herdr::new(Box::new(runner(vec![Err(GitError::Spawn {
+            program: "herdr".to_owned(),
+            message: "program not found".to_owned(),
+        })])));
+        let before = stored(&fixture, &fixture.task);
+
+        let error = complete(&fixture.storage, &github, &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::External);
+        assert_eq!(stored(&fixture, &fixture.task), before);
+        assert_eq!(
+            stored(&fixture, &fixture.dependent).status,
+            TaskStatus::Planned
+        );
     }
 }

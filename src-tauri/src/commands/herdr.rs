@@ -1,5 +1,6 @@
 //! Commands that drive herdr: the server health check, starting a task in a new
-//! worktree, and focusing the herdr workspace of a started task.
+//! worktree, focusing the herdr workspace of a started task, and removing the worktree
+//! of a finished task.
 //!
 //! They run on the async runtime instead of the main thread because herdr calls can take
 //! seconds. The database lock is not held while herdr runs.
@@ -8,7 +9,7 @@ use tauri::State;
 
 use super::types::{HerdrStatus, Task, TaskId};
 use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
-use crate::adapters::herdr::{Herdr, NewWorktree};
+use crate::adapters::herdr::{Herdr, HerdrError, NewWorktree};
 use crate::domain::model::{self, Machine, WorkspaceLocation};
 use crate::domain::naming;
 use crate::domain::status::TaskStatus;
@@ -40,6 +41,20 @@ pub fn open_task_in_herdr(
     id: TaskId,
 ) -> CommandResult<()> {
     open(&storage, &herdr, id.into())
+}
+
+/// Removes the worktree of a `done` or `cancelled` task through herdr, which also closes
+/// its herdr workspace, and forgets both on the task. The branch is kept. Without `force`,
+/// a worktree with modified or untracked files is rejected.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn remove_task_worktree(
+    storage: State<'_, StorageState>,
+    herdr: State<'_, HerdrState>,
+    id: TaskId,
+    force: bool,
+) -> CommandResult<Task> {
+    Ok((&remove_worktree(&storage, &herdr, id.into(), force)?).into())
 }
 
 fn start(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<model::Task> {
@@ -90,6 +105,82 @@ fn open(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResu
         (workspace.location.machine(), herdr_workspace_id)
     };
     Ok(herdr.focus_workspace(&machine, &herdr_workspace_id)?)
+}
+
+fn remove_worktree(
+    storage: &StorageState,
+    herdr: &Herdr,
+    id: model::TaskId,
+    force: bool,
+) -> CommandResult<model::Task> {
+    let (location, path, herdr_workspace_id) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        if !matches!(task.status, TaskStatus::Done | TaskStatus::Cancelled) {
+            return Err(CommandError::rejected(format!(
+                "task {id} is {}; only done or cancelled tasks can remove their worktree",
+                task.status
+            )));
+        }
+        let path = task
+            .worktree_path
+            .ok_or_else(|| CommandError::rejected(format!("task {id} has no worktree")))?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        (
+            workspace.location,
+            path.to_string(),
+            task.herdr_workspace_id,
+        )
+    };
+    let machine = location.machine();
+    let dirty = |error: HerdrError| {
+        if has_code(&error, DIRTY_WORKTREE) {
+            CommandError::rejected(format!(
+                "the worktree of task {id} at {path} has modified or untracked files; \
+                 force the removal to discard them"
+            ))
+        } else {
+            error.into()
+        }
+    };
+    let removed = match &herdr_workspace_id {
+        Some(workspace_id) => match herdr.remove_worktree(&machine, workspace_id, force) {
+            Ok(()) => true,
+            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => false,
+            Err(error) => return Err(dirty(error)),
+        },
+        None => false,
+    };
+    // herdr no longer has the workspace, e.g. the user closed it or herdr lost its session,
+    // but the checkout may still exist: open it again to remove it.
+    if !removed {
+        let repository = match &location {
+            WorkspaceLocation::Local { path } => path.as_str(),
+            WorkspaceLocation::Ssh { path, .. } => path.as_str(),
+        };
+        match herdr.open_worktree(&machine, repository, &path) {
+            Ok(workspace_id) => herdr
+                .remove_worktree(&machine, &workspace_id, force)
+                .map_err(dirty)?,
+            // The checkout is already gone.
+            Err(error) if has_code(&error, WORKTREE_NOT_FOUND) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(lock(storage).clear_task_worktree(id)?)
+}
+
+/// herdr API error codes that commands handle.
+const DIRTY_WORKTREE: &str = "dirty_worktree_requires_force";
+pub(super) const WORKSPACE_NOT_FOUND: &str = "workspace_not_found";
+const WORKTREE_NOT_FOUND: &str = "worktree_not_found";
+
+pub(super) fn has_code(error: &HerdrError, expected: &str) -> bool {
+    matches!(error, HerdrError::Failed { code: Some(code), .. } if code == expected)
 }
 
 #[cfg(test)]
@@ -280,6 +371,151 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::External);
         assert!(error.message.ends_with("fatal: invalid reference: main"));
         assert_eq!(stored(&fixture), fixture.task);
+    }
+
+    const REMOVED: &str = r#"{"id":"cli:worktree:remove","result":{"type":"worktree_removed"}}"#;
+
+    fn herdr_failed(code: &str) -> Result<String, GitError> {
+        Err(GitError::Failed {
+            command: "herdr worktree".to_owned(),
+            stderr: format!(r#"{{"error":{{"code":"{code}","message":"{code}"}}}}"#),
+        })
+    }
+
+    /// A local task started in herdr workspace `w27` and then cancelled; `results` follow
+    /// the scripted `herdr worktree create`.
+    fn cancelled_task(results: Vec<Result<String, GitError>>) -> (Fixture, Herdr, Arc<FakeRunner>) {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(
+            [Ok(CREATED.to_owned())]
+                .into_iter()
+                .chain(results)
+                .collect(),
+        );
+        start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        lock(&fixture.storage)
+            .set_task_status(fixture.task.id, TaskStatus::Cancelled)
+            .unwrap();
+        (fixture, herdr, runner)
+    }
+
+    #[test]
+    fn a_finished_task_removes_its_worktree_and_keeps_its_branch() {
+        let (fixture, herdr, runner) = cancelled_task(vec![Ok(REMOVED.to_owned())]);
+
+        let task = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+
+        assert_eq!(
+            (&task.worktree_path, &task.herdr_workspace_id),
+            (&None, &None)
+        );
+        assert_eq!(task.branch.as_deref(), Some("feat/add-login-1"));
+        assert_eq!(task.status, TaskStatus::Cancelled);
+        assert_eq!(stored(&fixture), task);
+        assert_eq!(
+            invocations(&runner)[1].args,
+            ["worktree", "remove", "--workspace", "w27"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn a_dirty_worktree_is_kept_unless_forced() {
+        let (fixture, herdr, runner) = cancelled_task(vec![
+            herdr_failed("dirty_worktree_requires_force"),
+            Ok(REMOVED.to_owned()),
+        ]);
+        let before = stored(&fixture);
+
+        let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains(r"D:\wt\toodo\feat-add-login-1"));
+        assert_eq!(stored(&fixture), before);
+
+        remove_worktree(&fixture.storage, &herdr, fixture.task.id, true).unwrap();
+        assert_eq!(
+            invocations(&runner)[2].args,
+            ["worktree", "remove", "--workspace", "w27", "--force"].map(str::to_owned)
+        );
+        assert_eq!(stored(&fixture).worktree_path, None);
+    }
+
+    #[test]
+    fn a_worktree_herdr_no_longer_has_open_is_opened_again_to_remove_it() {
+        let opened = r#"{"id":"cli:worktree:open","result":{"workspace":{"workspace_id":"w40"}}}"#;
+        let (fixture, herdr, runner) = cancelled_task(vec![
+            herdr_failed("workspace_not_found"),
+            Ok(opened.to_owned()),
+            Ok(REMOVED.to_owned()),
+        ]);
+
+        remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+
+        let invocations = invocations(&runner);
+        assert_eq!(
+            invocations[2].args,
+            [
+                "worktree",
+                "open",
+                "--cwd",
+                r"C:\dev\toodo",
+                "--path",
+                r"D:\wt\toodo\feat-add-login-1",
+                "--no-focus",
+            ]
+            .map(str::to_owned)
+        );
+        assert_eq!(
+            invocations[3].args,
+            ["worktree", "remove", "--workspace", "w40"].map(str::to_owned)
+        );
+        assert_eq!(stored(&fixture).worktree_path, None);
+    }
+
+    #[test]
+    fn a_worktree_that_is_already_gone_is_only_forgotten() {
+        let (fixture, herdr, runner) = cancelled_task(vec![
+            herdr_failed("workspace_not_found"),
+            herdr_failed("worktree_not_found"),
+        ]);
+
+        let task = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+
+        assert_eq!(
+            (&task.worktree_path, &task.herdr_workspace_id),
+            (&None, &None)
+        );
+        assert_eq!(invocations(&runner).len(), 3);
+    }
+
+    #[test]
+    fn other_herdr_failures_keep_the_worktree() {
+        let (fixture, herdr, _) = cancelled_task(vec![herdr_failed("worktree_remove_failed")]);
+        let before = stored(&fixture);
+
+        let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::External);
+        assert_eq!(stored(&fixture), before);
+    }
+
+    #[test]
+    fn only_finished_tasks_with_a_worktree_remove_it() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+        let id = fixture.task.id;
+
+        lock(&fixture.storage)
+            .set_task_status(id, TaskStatus::Cancelled)
+            .unwrap();
+        let error = remove_worktree(&fixture.storage, &herdr, id, false).unwrap_err();
+        assert_eq!(error.message, format!("task {id} has no worktree"));
+
+        let fixture = local_fixture(Some(r"D:\wt"));
+        start(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("only done or cancelled tasks"));
+        assert_eq!(invocations(&runner).len(), 1);
     }
 
     #[test]
