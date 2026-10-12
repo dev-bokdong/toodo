@@ -58,8 +58,9 @@ fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
     Ok((&task).into())
 }
 
-/// Moves a task to `in_progress`, `in_review`, `done`, or `cancelled` and returns the readiness
-/// changes this caused in other tasks.
+/// Moves a task to `in_progress` or `cancelled` and returns the readiness changes this
+/// caused in other tasks. `in_review` and `done` are reached only through
+/// `open_pull_request` and `complete_task`, which check the pull request.
 #[tauri::command]
 #[specta::specta]
 pub fn set_task_status(
@@ -67,7 +68,26 @@ pub fn set_task_status(
     id: TaskId,
     status: TaskStatus,
 ) -> CommandResult<Vec<StatusChange>> {
-    let changes = lock(&storage).set_task_status(id.into(), status.into())?;
+    change_status(&mut lock(&storage), id, status)
+}
+
+fn change_status(
+    storage: &mut Storage,
+    id: TaskId,
+    status: TaskStatus,
+) -> CommandResult<Vec<StatusChange>> {
+    let command = match status {
+        TaskStatus::InReview => Some("open_pull_request"),
+        TaskStatus::Done => Some("complete_task"),
+        _ => None,
+    };
+    if let Some(command) = command {
+        let status = crate::domain::status::TaskStatus::from(status);
+        return Err(CommandError::rejected(format!(
+            "a task becomes {status} only through {command}, which checks its pull request"
+        )));
+    }
+    let changes = storage.set_task_status(id.into(), status.into())?;
     Ok(types::map_all(&changes))
 }
 
@@ -167,6 +187,21 @@ mod tests {
         assert_eq!(edited.branch.as_deref(), Some("feat/add-commands-1"));
         let stored = storage.get_task(task.id).unwrap().unwrap();
         assert_eq!(Task::from(&stored), edited);
+    }
+
+    #[test]
+    fn set_task_status_cannot_skip_the_pull_request_checks() {
+        let (mut storage, task) = storage_with_task();
+        change_status(&mut storage, task.id.into(), TaskStatus::InProgress).unwrap();
+        for status in [TaskStatus::InReview, TaskStatus::Done] {
+            let error = change_status(&mut storage, task.id.into(), status).unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::Rejected);
+            assert_eq!(
+                storage.get_task(task.id).unwrap().unwrap().status,
+                crate::domain::status::TaskStatus::InProgress
+            );
+        }
+        change_status(&mut storage, task.id.into(), TaskStatus::Cancelled).unwrap();
     }
 
     #[test]

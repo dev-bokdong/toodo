@@ -42,8 +42,9 @@ export const commands = {
 	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(__TAURI_INVOKE("update_task", { task })),
 	/**
-	 *  Moves a task to `in_progress`, `in_review`, `done`, or `cancelled` and returns the readiness
-	 *  changes this caused in other tasks.
+	 *  Moves a task to `in_progress` or `cancelled` and returns the readiness changes this
+	 *  caused in other tasks. `in_review` and `done` are reached only through
+	 *  `open_pull_request` and `complete_task`, which check the pull request.
 	 */
 	setTaskStatus: (id: TaskId, status: TaskStatus) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("set_task_status", { id, status })),
 	/**
