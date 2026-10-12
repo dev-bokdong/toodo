@@ -70,6 +70,8 @@ Layout:
   - `src-tauri/src/commands.rs`: Tauri commands exposed to the frontend.
   - `src-tauri/src/domain/`: core domain model and rules (task DAG, status transitions,
     slugs, worktree paths and branch names). Pure logic: no I/O, Tauri, or storage.
+  - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema
+    changes go in a new entry appended to `migrations.rs`; never edit a released one.
 
 ## Commands
 

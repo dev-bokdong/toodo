@@ -1,7 +1,13 @@
 mod commands;
 pub mod domain;
+pub mod storage;
 
+use std::sync::Mutex;
+
+use tauri::Manager;
 use tauri_specta::{Builder, collect_commands};
+
+const DATABASE_FILE: &str = "toodo.sqlite3";
 
 const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
 
@@ -26,6 +32,10 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            let data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&data_dir)?;
+            let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;
+            app.manage(Mutex::new(storage));
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -155,8 +155,19 @@ Toodo owns planning, task state, commit records, and pull requests.
   - `herdr api schema` / `herdr api snapshot`: API schema and live runtime state.
 - **Git hosting adapter**: pushes the task branch and opens pull requests with the `gh`
   CLI, reusing its authentication.
-- **Storage**: SQLite database in the app data directory (`%APPDATA%`) for workspaces,
-  tasks, dependencies, and commit records.
+- **Storage**: SQLite database `toodo.sqlite3` in the app data directory (`%APPDATA%`)
+  for workspaces, machine settings, tasks, dependencies, and commit records
+  (`src-tauri/src/storage/`).
+  - The schema is versioned with `PRAGMA user_version` and migrated forward on startup;
+    a database from a newer Toodo version is refused rather than modified.
+  - Workspace and task IDs are never reused after a delete, because task IDs are part of
+    branch and worktree names.
+  - Writes that touch the task DAG run in one transaction: new edges are validated
+    against the DAG rules, and `planned`/`ready` statuses are recomputed from the
+    dependencies after every dependency, status, or task change. `planned` and `ready`
+    cannot be set directly.
+  - Deleting a workspace or task also deletes its tasks, dependency edges, and commit
+    records.
 
 ## Decisions
 
