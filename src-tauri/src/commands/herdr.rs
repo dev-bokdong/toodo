@@ -99,8 +99,10 @@ fn start(
     Ok(lock(storage).start_task(id, &checkout, &herdr_workspace_id)?)
 }
 
+/// Focuses the herdr workspace of a started task. When herdr no longer has it, e.g. the
+/// user closed it, the task's worktree is opened again and the new workspace remembered.
 fn open(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<()> {
-    let (machine, herdr_workspace_id): (Machine, String) = {
+    let (location, worktree_path, herdr_workspace_id) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -111,9 +113,24 @@ fn open(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResu
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (workspace.location.machine(), herdr_workspace_id)
+        (workspace.location, task.worktree_path, herdr_workspace_id)
     };
-    Ok(herdr.focus_workspace(&machine, &herdr_workspace_id)?)
+    let machine: Machine = location.machine();
+    match herdr.focus_workspace(&machine, &herdr_workspace_id) {
+        Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {
+            let Some(path) = worktree_path else {
+                return Err(error.into());
+            };
+            let repository = match &location {
+                WorkspaceLocation::Local { path } => path.as_str(),
+                WorkspaceLocation::Ssh { path, .. } => path.as_str(),
+            };
+            let reopened = herdr.open_worktree(&machine, repository, &path.to_string())?;
+            lock(storage).set_task_herdr_workspace(id, &reopened)?;
+            Ok(herdr.focus_workspace(&machine, &reopened)?)
+        }
+        result => Ok(result?),
+    }
 }
 
 fn remove_worktree(
@@ -596,5 +613,28 @@ mod tests {
             invocations(&runner)[1].args,
             ["workspace", "focus", "w27"].map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn open_reopens_a_worktree_whose_herdr_workspace_is_gone() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let opened = r#"{"id":"cli:worktree:open","result":{"workspace":{"workspace_id":"w40"}}}"#;
+        let (herdr, runner) = herdr(vec![
+            Ok(CREATED.to_owned()),
+            herdr_failed("workspace_not_found"),
+            Ok(opened.to_owned()),
+            Ok(String::new()),
+        ]);
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        open(&fixture.storage, &herdr, fixture.task.id).unwrap();
+
+        let invocations = invocations(&runner);
+        assert_eq!(invocations[2].args[..2], ["worktree", "open"]);
+        assert_eq!(
+            invocations[3].args,
+            ["workspace", "focus", "w40"].map(str::to_owned)
+        );
+        assert_eq!(stored(&fixture).herdr_workspace_id.as_deref(), Some("w40"));
     }
 }

@@ -333,6 +333,18 @@ impl Storage {
         Ok(cleared)
     }
 
+    /// Records the herdr workspace a task's worktree was opened again in.
+    pub fn set_task_herdr_workspace(&mut self, id: TaskId, herdr_workspace_id: &str) -> Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE tasks SET herdr_workspace_id = ?2 WHERE id = ?1",
+            params![id.0, herdr_workspace_id],
+        )?;
+        if updated == 0 {
+            return Err(StorageError::TaskNotFound(id));
+        }
+        Ok(())
+    }
+
     /// Records the open pull request of an `in_progress` or `in_review` task in one
     /// transaction: replaces its commit records, stores the pull request URL, and moves
     /// it to (or keeps it in) `in_review`. Dependents stay waiting until it is `done`.
