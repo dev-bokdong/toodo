@@ -194,6 +194,48 @@ impl Herdr {
         workspace_id(&invocation, &output)
     }
 
+    /// Opens the repository checkout at `path` on `machine` as a herdr workspace labelled
+    /// `label` without focusing it, unless a herdr workspace already has that checkout
+    /// open. Returns the ID of the workspace.
+    pub fn open_workspace(
+        &self,
+        machine: &Machine,
+        path: &str,
+        label: &str,
+    ) -> Result<String, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let list = invocation(profile_id.as_deref(), &["workspace", "list"]);
+        let output = self.runner.run(&list)?;
+        let workspaces = parse(&list, &output)?;
+        let workspaces = workspaces
+            .pointer("/result/workspaces")
+            .and_then(Value::as_array)
+            .ok_or_else(|| unexpected(&list, &output))?;
+        let existing = workspaces.iter().find_map(|workspace| {
+            let checkout = workspace.pointer("/worktree/checkout_path")?.as_str()?;
+            (checkout == path)
+                .then(|| workspace.get("workspace_id")?.as_str())
+                .flatten()
+        });
+        if let Some(id) = existing {
+            return Ok(id.to_owned());
+        }
+        let create = invocation(
+            profile_id.as_deref(),
+            &[
+                "workspace",
+                "create",
+                "--cwd",
+                path,
+                "--label",
+                label,
+                "--no-focus",
+            ],
+        );
+        let output = self.runner.run(&create)?;
+        workspace_id(&create, &output)
+    }
+
     /// Removes the worktree checkout of a herdr workspace and closes the workspace; the
     /// branch is kept. Without `force`, herdr refuses a checkout with modified or
     /// untracked files.
@@ -332,7 +374,8 @@ fn invocation(profile_id: Option<&str>, args: &[&str]) -> Invocation {
     }
 }
 
-/// The workspace ID in the output of `herdr worktree create` or `herdr worktree open`.
+/// The workspace ID in the output of `herdr worktree create`, `herdr worktree open`, or
+/// `herdr workspace create`.
 fn workspace_id(invocation: &Invocation, output: &str) -> Result<String, HerdrError> {
     parse(invocation, output)?
         .pointer("/result/workspace/workspace_id")
@@ -664,6 +707,57 @@ mod tests {
                 "/srv/toodo",
                 "--path",
                 "/wt/toodo/feat-x-3",
+                "--no-focus",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    const WORKSPACE_LIST: &str = r#"{"id":"cli:workspace:list","result":{"type":"workspace_list",
+        "workspaces":[{"label":"~","workspace_id":"w23"},
+        {"label":"toodo","workspace_id":"w24","worktree":{"checkout_path":"/srv/toodo",
+        "is_linked_worktree":false,"repo_root":"/srv/toodo"}}]}}"#;
+
+    #[test]
+    fn open_workspace_reuses_a_workspace_with_the_checkout_open() {
+        let (herdr, runner) = herdr(vec![
+            machine_list(&[saved("m2", "devbox", "default", true)]),
+            Ok(WORKSPACE_LIST.to_owned()),
+        ]);
+        assert_eq!(
+            herdr
+                .open_workspace(&devbox(), "/srv/toodo", "toodo")
+                .unwrap(),
+            "w24"
+        );
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(
+            invocations[1].args,
+            ["--machine", "m2", "workspace", "list"].map(str::to_owned)
+        );
+        assert_eq!(invocations.len(), 2);
+    }
+
+    #[test]
+    fn open_workspace_creates_one_for_a_new_checkout() {
+        let created = r#"{"id":"cli:workspace:create","result":{"type":"workspace_created",
+            "workspace":{"label":"api","workspace_id":"w2P"}}}"#;
+        let (herdr, runner) = herdr(vec![Ok(WORKSPACE_LIST.to_owned()), Ok(created.to_owned())]);
+        assert_eq!(
+            herdr
+                .open_workspace(&Machine::Local, r"C:\dev\api", "api")
+                .unwrap(),
+            "w2P"
+        );
+        assert_eq!(
+            runner.invocations.lock().unwrap()[1].args,
+            [
+                "workspace",
+                "create",
+                "--cwd",
+                r"C:\dev\api",
+                "--label",
+                "api",
                 "--no-focus",
             ]
             .map(str::to_owned)

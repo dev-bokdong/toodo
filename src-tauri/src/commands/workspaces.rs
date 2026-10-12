@@ -5,8 +5,9 @@ use tauri::State;
 use super::types::{
     self, MachineSettings, NewWorkspace, Workspace, WorkspaceId, WorkspaceSetup, WorkspaceSource,
 };
-use super::{CommandError, CommandResult, GitState, StorageState, lock};
+use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
+use crate::adapters::herdr::Herdr;
 use crate::domain::model;
 use crate::storage::{self, StorageError};
 
@@ -28,25 +29,33 @@ pub fn get_workspace(
     Ok((&workspace).into())
 }
 
-/// Clones the repository or checks the existing one, then saves the workspace. Git runs
-/// on a blocking thread because a clone can take minutes.
+/// Clones the repository or checks the existing one, opens it as a herdr workspace, then
+/// saves the workspace. Git and herdr run on a blocking thread because a clone can take
+/// minutes.
 #[tauri::command]
 #[specta::specta]
 pub async fn create_workspace(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
+    herdr: State<'_, HerdrState>,
     workspace: NewWorkspace,
 ) -> CommandResult<Workspace> {
     let setup = workspace.try_into()?;
     let git = GitState::clone(&git);
-    let new = tauri::async_runtime::spawn_blocking(move || prepare_workspace(&git, setup))
+    let herdr = HerdrState::clone(&herdr);
+    let new = tauri::async_runtime::spawn_blocking(move || prepare_workspace(&git, &herdr, setup))
         .await
         .map_err(|error| CommandError::internal(format!("workspace setup panicked: {error}")))??;
     Ok((&lock(&storage).create_workspace(&new)?).into())
 }
 
-/// Brings the repository to the workspace location and resolves the base branch.
-fn prepare_workspace(git: &Git, setup: WorkspaceSetup) -> CommandResult<storage::NewWorkspace> {
+/// Brings the repository to the workspace location, resolves the base branch, and opens
+/// the repository in herdr unless a herdr workspace already has it open.
+fn prepare_workspace(
+    git: &Git,
+    herdr: &Herdr,
+    setup: WorkspaceSetup,
+) -> CommandResult<storage::NewWorkspace> {
     let location = match setup.source {
         WorkspaceSource::Clone { url } => {
             git.clone_repository(&url, &setup.location)?;
@@ -62,6 +71,11 @@ fn prepare_workspace(git: &Git, setup: WorkspaceSetup) -> CommandResult<storage:
             )
         })?,
     };
+    let repository = match &location {
+        model::WorkspaceLocation::Local { path } => path.as_str(),
+        model::WorkspaceLocation::Ssh { path, .. } => path.as_str(),
+    };
+    herdr.open_workspace(&location.machine(), repository, &setup.name)?;
     Ok(storage::NewWorkspace {
         name: setup.name,
         location,
@@ -134,37 +148,84 @@ mod tests {
         }
     }
 
+    /// `herdr workspace list` output without the repository, then `herdr workspace create`.
+    fn herdr_opens_a_new_workspace() -> Vec<Result<String, GitError>> {
+        vec![
+            Ok(r#"{"id":"cli:workspace:list","result":{"workspaces":[]}}"#.to_owned()),
+            Ok(
+                r#"{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"w9"}}}"#
+                    .to_owned(),
+            ),
+        ]
+    }
+
+    struct Prepared {
+        result: CommandResult<storage::NewWorkspace>,
+        invocations: Vec<Invocation>,
+        herdr_invocations: Vec<Invocation>,
+    }
+
     fn prepare(
         setup: WorkspaceSetup,
         results: Vec<Result<String, GitError>>,
-    ) -> (CommandResult<storage::NewWorkspace>, Vec<Invocation>) {
+        herdr_results: Vec<Result<String, GitError>>,
+    ) -> Prepared {
         let runner = Arc::new(FakeRunner::new(results));
-        let result = prepare_workspace(&Git::new(Box::new(runner.clone())), setup);
-        let invocations = runner.invocations.lock().unwrap().clone();
-        (result, invocations)
+        let herdr_runner = Arc::new(FakeRunner::new(herdr_results));
+        let result = prepare_workspace(
+            &Git::new(Box::new(runner.clone())),
+            &Herdr::new(Box::new(herdr_runner.clone())),
+            setup,
+        );
+        Prepared {
+            result,
+            invocations: runner.invocations.lock().unwrap().clone(),
+            herdr_invocations: herdr_runner.invocations.lock().unwrap().clone(),
+        }
     }
 
     #[test]
     fn open_uses_the_repository_root_and_detects_the_base_branch() {
-        let (result, invocations) = prepare(
+        let prepared = prepare(
             setup(WorkspaceSource::Open, None),
             vec![
                 Ok("C:/dev/toodo\n".to_owned()),
                 Ok("origin/main\n".to_owned()),
             ],
+            herdr_opens_a_new_workspace(),
         );
-        let new = result.unwrap();
+        let new = prepared.result.unwrap();
         assert_eq!(new.location, local(r"C:\dev\toodo"));
         assert_eq!(new.default_base_branch, "main");
-        assert_eq!(invocations[1].args[..2], ["-C", r"C:\dev\toodo"]);
+        assert_eq!(prepared.invocations[1].args[..2], ["-C", r"C:\dev\toodo"]);
+        assert_eq!(
+            prepared.herdr_invocations[1].args,
+            [
+                "workspace",
+                "create",
+                "--cwd",
+                r"C:\dev\toodo",
+                "--label",
+                "toodo",
+                "--no-focus",
+            ]
+            .map(str::to_owned)
+        );
     }
 
     #[test]
     fn open_rejects_a_path_outside_a_repository() {
-        let (result, invocations) =
-            prepare(setup(WorkspaceSource::Open, None), vec![Err(failed())]);
-        assert_eq!(result.unwrap_err().kind, CommandErrorKind::External);
-        assert_eq!(invocations.len(), 1);
+        let prepared = prepare(
+            setup(WorkspaceSource::Open, None),
+            vec![Err(failed())],
+            Vec::new(),
+        );
+        assert_eq!(
+            prepared.result.unwrap_err().kind,
+            CommandErrorKind::External
+        );
+        assert_eq!(prepared.invocations.len(), 1);
+        assert!(prepared.herdr_invocations.is_empty());
     }
 
     #[test]
@@ -172,25 +233,50 @@ mod tests {
         let source = WorkspaceSource::Clone {
             url: "git@h:a.git".to_owned(),
         };
-        let (result, invocations) =
-            prepare(setup(source, Some("develop")), vec![Ok(String::new())]);
-        let new = result.unwrap();
+        let prepared = prepare(
+            setup(source, Some("develop")),
+            vec![Ok(String::new())],
+            herdr_opens_a_new_workspace(),
+        );
+        let new = prepared.result.unwrap();
         assert_eq!(new.location, local(r"C:\dev\toodo\src"));
         assert_eq!(new.default_base_branch, "develop");
-        assert_eq!(invocations[0].args[0], "clone");
-        assert_eq!(invocations.len(), 1);
+        assert_eq!(prepared.invocations[0].args[0], "clone");
+        assert_eq!(prepared.invocations.len(), 1);
+        assert_eq!(prepared.herdr_invocations[1].args[3], r"C:\dev\toodo\src");
+    }
+
+    #[test]
+    fn a_herdr_failure_does_not_save_the_workspace() {
+        let prepared = prepare(
+            setup(WorkspaceSource::Open, Some("main")),
+            vec![Ok("C:/dev/toodo\n".to_owned())],
+            vec![Err(GitError::Spawn {
+                program: "herdr".to_owned(),
+                message: "program not found".to_owned(),
+            })],
+        );
+        assert_eq!(
+            prepared.result.unwrap_err().kind,
+            CommandErrorKind::External
+        );
     }
 
     #[test]
     fn undetectable_base_branch_asks_for_one() {
-        let (result, _) = prepare(
+        let prepared = prepare(
             setup(WorkspaceSource::Open, None),
             vec![
                 Ok("C:/dev/toodo\n".to_owned()),
                 Err(failed()),
                 Err(failed()),
             ],
+            Vec::new(),
         );
-        assert_eq!(result.unwrap_err().kind, CommandErrorKind::InvalidInput);
+        assert_eq!(
+            prepared.result.unwrap_err().kind,
+            CommandErrorKind::InvalidInput
+        );
+        assert!(prepared.herdr_invocations.is_empty());
     }
 }

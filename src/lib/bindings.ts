@@ -8,8 +8,9 @@ export const commands = {
 	listWorkspaces: () => typedError<Workspace[], CommandError>(__TAURI_INVOKE("list_workspaces")),
 	getWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(__TAURI_INVOKE("get_workspace", { id })),
 	/**
-	 *  Clones the repository or checks the existing one, then saves the workspace. Git runs
-	 *  on a blocking thread because a clone can take minutes.
+	 *  Clones the repository or checks the existing one, opens it as a herdr workspace, then
+	 *  saves the workspace. Git and herdr run on a blocking thread because a clone can take
+	 *  minutes.
 	 */
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("create_workspace", { workspace })),
 	/**  Saves the name, location, and default base branch of an existing workspace. */
