@@ -101,7 +101,10 @@ impl From<GitError> for CommandError {
 impl From<HerdrError> for CommandError {
     fn from(error: HerdrError) -> Self {
         let kind = match &error {
-            HerdrError::Spawn { .. } | HerdrError::Failed { .. } => CommandErrorKind::External,
+            HerdrError::Spawn { .. }
+            | HerdrError::Failed { .. }
+            | HerdrError::MachineNotSaved { .. }
+            | HerdrError::MachineDisabled { .. } => CommandErrorKind::External,
             HerdrError::UnexpectedOutput { .. } => CommandErrorKind::Internal,
         };
         Self {

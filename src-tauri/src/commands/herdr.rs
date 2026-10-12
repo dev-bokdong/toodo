@@ -214,15 +214,22 @@ mod tests {
                 worktree_root: Some(PosixPath::parse("/wt").unwrap()),
             }),
         );
-        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+        let (herdr, runner) = herdr(vec![
+            Ok(
+                r#"[{"id":"m7","label":"devbox","target":"devbox","session":"default",
+                "enabled":true,"selected":false}]"#
+                    .to_owned(),
+            ),
+            Ok(CREATED.to_owned()),
+        ]);
 
         start(&fixture.storage, &herdr, fixture.task.id).unwrap();
 
         assert_eq!(
-            invocations(&runner)[0].args[..7],
+            invocations(&runner)[1].args[..7],
             [
                 "--machine",
-                "devbox",
+                "m7",
                 "worktree",
                 "create",
                 "--cwd",
@@ -231,7 +238,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            invocations(&runner)[0].args[7],
+            invocations(&runner)[1].args[7],
             "/wt/toodo/feat-add-login-1"
         );
     }
