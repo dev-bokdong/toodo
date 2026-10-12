@@ -198,8 +198,8 @@ Toodo owns planning, task state, commit records, and pull requests.
   `{"id": ..., "result": ...}` envelope as the socket API (verified for `workspace list`,
   `worktree list`, and `agent list` on herdr 0.9.3). Any command found not to return JSON
   is sent over the named pipe instead.
-- Commits are recorded automatically: on task completion Toodo runs
-  `git log <baseBranch>..<taskBranch>` in the worktree and stores the result. While a task
+- Commits are recorded automatically: when it opens or updates a task's pull request,
+  Toodo runs `git log <baseBranch>..<taskBranch>` in the worktree and stores the result. While a task
   is in progress, the user can refresh commit records manually.
 - Storage uses SQLite through `rusqlite` (single-user local app; no async pool needed).
 - Pull requests target GitHub only, through the `gh` CLI.

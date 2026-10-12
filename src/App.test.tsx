@@ -14,6 +14,11 @@ vi.mock("@/lib/bindings", () => ({
     createWorkspace: vi.fn(),
     listTasks: vi.fn(),
     createTask: vi.fn(),
+    updateTask: vi.fn(),
+    setTaskStatus: vi.fn(),
+    deleteTask: vi.fn(),
+    addDependency: vi.fn(),
+    removeDependency: vi.fn(),
     herdrStatus: vi.fn(),
     getMachineSettings: vi.fn(),
     saveMachineSettings: vi.fn(),
@@ -118,7 +123,8 @@ describe("App", () => {
 
     const tasks = await screen.findByRole("list", { name: "Tasks" });
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
-    expect(within(tasks).getByText("Depends on #1")).toBeInTheDocument();
+    const dependencies = within(tasks).getByRole("group", { name: "Dependencies of #2" });
+    expect(within(dependencies).getByText("#1")).toBeInTheDocument();
     expect(within(tasks).getByText("Planned")).toBeInTheDocument();
     expect(mocked.listTasks).toHaveBeenCalledWith(1);
 
@@ -461,5 +467,114 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
     expect(screen.getByText("In review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
+  });
+
+  it("adds and removes task dependencies", async () => {
+    const storage = task(1, 1, "Add storage");
+    const ui = task(2, 1, "Add UI");
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: [{ taskId: 2, from: "ready", to: "planned" }] });
+    renderApp();
+
+    const add = await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    expect(within(add).getByRole("option", { name: "#1 Add storage" })).toBeInTheDocument();
+    expect(within(add).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [storage, { ...ui, status: "planned", dependsOn: [1] }],
+    });
+    fireEvent.change(add, { target: { value: "1" } });
+
+    const remove = await screen.findByRole("button", { name: "Remove dependency #1 from #2" });
+    expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
+    expect(screen.getByText("Planned")).toBeInTheDocument();
+    mocked.removeDependency.mockResolvedValue({ status: "ok", data: [{ taskId: 2, from: "planned", to: "ready" }] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
+    fireEvent.click(remove);
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Remove dependency #1 from #2" })).not.toBeInTheDocument(),
+    );
+    expect(mocked.removeDependency).toHaveBeenCalledWith(2, 1);
+  });
+
+  it("shows why a dependency was rejected", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add storage"), task(2, 1, "Add UI", { status: "planned", dependsOn: [1] })],
+    });
+    mocked.addDependency.mockResolvedValue({
+      status: "error",
+      error: { kind: "rejected", message: "dependency would create a cycle: #1 -> #2 -> #1" },
+    });
+    renderApp();
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "Add dependency to #1" }), {
+      target: { value: "2" },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("would create a cycle");
+    expect(mocked.addDependency).toHaveBeenCalledWith(1, 2);
+    expect(screen.queryByRole("combobox", { name: "Add dependency to #2" })).not.toBeInTheDocument();
+  });
+
+  it("edits the type, title, and description of a task", async () => {
+    const original = task(1, 1, "Add login", { description: "old" });
+    const edited = { ...original, taskType: "fix" as const, title: "Add sign-in", description: "new" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
+    mocked.updateTask.mockResolvedValue({ status: "ok", data: edited });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    fireEvent.change(within(form).getByLabelText("Type of #1"), { target: { value: "fix" } });
+    fireEvent.change(within(form).getByLabelText("Title of #1"), { target: { value: "  Add sign-in " } });
+    fireEvent.change(within(form).getByLabelText("Description of #1"), { target: { value: " new " } });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [edited] });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Add sign-in")).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
+    expect(mocked.updateTask).toHaveBeenCalledWith({
+      id: 1,
+      taskType: "fix",
+      title: "Add sign-in",
+      description: "new",
+    });
+  });
+
+  it("cancels and then deletes a task only after confirming", async () => {
+    const started = task(1, 1, "Add login", {
+      status: "in_progress",
+      branch: "feat/add-login-1",
+      worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    mocked.setTaskStatus.mockResolvedValue({ status: "ok", data: [] });
+    mocked.deleteTask.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel #1" }));
+    expect(screen.queryByRole("button", { name: "Delete #1" })).not.toBeInTheDocument();
+    expect(mocked.setTaskStatus).not.toHaveBeenCalled();
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [{ ...started, status: "cancelled" }] });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm cancel #1" }));
+
+    expect(await screen.findByText("Cancelled")).toBeInTheDocument();
+    expect(mocked.setTaskStatus).toHaveBeenCalledWith(1, "cancelled");
+    expect(screen.queryByRole("button", { name: "Cancel #1" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit #1" })).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete #1" }));
+    expect(mocked.deleteTask).not.toHaveBeenCalled();
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete #1" }));
+
+    expect(await screen.findByText("No tasks in this workspace yet.")).toBeInTheDocument();
+    expect(mocked.deleteTask).toHaveBeenCalledWith(1);
   });
 });

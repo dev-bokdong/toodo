@@ -4,17 +4,22 @@ import { inputClass, describeLocation } from "@/components/workspace-list";
 import type { Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
 import {
   machineOf,
+  useAddDependency,
+  useCancelTask,
   useCommitRecords,
   useCompleteTask,
   useCreateTask,
+  useDeleteTask,
   useHerdrStatus,
   useMachineSettings,
   useOpenPullRequest,
   useOpenTaskInHerdr,
   useRefreshCommitRecords,
+  useRemoveDependency,
   useSaveMachineSettings,
   useStartTask,
   useTasks,
+  useUpdateTask,
 } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
@@ -68,7 +73,7 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
       {tasks.data && tasks.data.length > 0 && (
         <ul aria-label="Tasks" className="flex flex-col divide-y rounded-lg border">
           {tasks.data.map((task) => (
-            <TaskRow key={task.id} task={task} />
+            <TaskRow key={task.id} task={task} tasks={tasks.data} />
           ))}
         </ul>
       )}
@@ -76,36 +81,114 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
   );
 }
 
-function TaskRow({ task }: { task: Task }) {
+/** Statuses whose task can still be cancelled; `set_task_status` allows these. */
+const cancellableStatuses: TaskStatus[] = ["planned", "ready", "in_progress", "in_review"];
+
+/** Statuses whose task has no live worktree to lose, so it can be deleted. */
+const deletableStatuses: TaskStatus[] = ["planned", "ready", "done", "cancelled"];
+
+function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const herdr = useHerdrStatus();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
   const refreshCommits = useRefreshCommitRecords();
   const openPullRequest = useOpenPullRequest();
   const completeTask = useCompleteTask();
+  const cancelTask = useCancelTask();
+  const deleteTask = useDeleteTask();
+  const addDependency = useAddDependency();
+  const removeDependency = useRemoveDependency();
+  const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState<"cancel" | "delete" | null>(null);
   const herdrRunning = herdr.data?.running === true;
   const inReview = task.status === "in_review";
   const active = task.status === "in_progress" || inReview;
   const hasWorktree = active && task.worktreePath !== null;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
+  const final = task.status === "done" || task.status === "cancelled";
+  const dependenciesEditable = task.status === "planned" || task.status === "ready";
+  const changingDependencies = addDependency.isPending || removeDependency.isPending;
+  const ref = { workspaceId: task.workspaceId, id: task.id };
   const actionError =
-    startTask.error ?? openTask.error ?? refreshCommits.error ?? openPullRequest.error ?? completeTask.error;
+    startTask.error ??
+    openTask.error ??
+    refreshCommits.error ??
+    openPullRequest.error ??
+    completeTask.error ??
+    cancelTask.error ??
+    deleteTask.error ??
+    addDependency.error ??
+    removeDependency.error;
+  const candidates = tasks.filter(
+    (other) => other.id !== task.id && other.status !== "cancelled" && !task.dependsOn.includes(other.id),
+  );
+
+  function confirm(action: "cancel" | "delete") {
+    const mutation = action === "cancel" ? cancelTask : deleteTask;
+    mutation.mutate(ref, { onSettled: () => setConfirming(null) });
+  }
 
   return (
     <li className="flex items-start gap-3 px-3 py-2">
       <span className="mt-0.5 w-8 shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex items-center gap-2">
-          <span className="rounded-md border px-1.5 text-xs font-medium">{task.taskType}</span>
-          <span className="truncate text-sm font-medium">{task.title}</span>
-        </div>
-        {task.description && (
-          <p className="line-clamp-2 text-xs text-muted-foreground">{task.description}</p>
+        {editing ? (
+          <TaskEditForm task={task} onDone={() => setEditing(false)} />
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="rounded-md border px-1.5 text-xs font-medium">{task.taskType}</span>
+              <span className="truncate text-sm font-medium">{task.title}</span>
+            </div>
+            {task.description && (
+              <p className="line-clamp-2 text-xs text-muted-foreground">{task.description}</p>
+            )}
+          </>
         )}
-        {task.dependsOn.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            Depends on {task.dependsOn.map((id) => `#${id}`).join(", ")}
-          </p>
+        {(task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
+          <div
+            role="group"
+            aria-label={`Dependencies of #${task.id}`}
+            className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
+          >
+            {task.dependsOn.length > 0 && <span>Depends on</span>}
+            {task.dependsOn.map((id) => (
+              <span key={id} className="inline-flex items-center gap-0.5 rounded-md border px-1 tabular-nums">
+                <span>#{id}</span>
+                {dependenciesEditable && (
+                  <button
+                    type="button"
+                    aria-label={`Remove dependency #${id} from #${task.id}`}
+                    className="px-0.5 hover:text-foreground disabled:opacity-50"
+                    disabled={changingDependencies}
+                    onClick={() => removeDependency.mutate({ ...ref, dependsOn: id })}
+                  >
+                    {"\u00d7"}
+                  </button>
+                )}
+              </span>
+            ))}
+            {dependenciesEditable && candidates.length > 0 && (
+              <select
+                aria-label={`Add dependency to #${task.id}`}
+                className="h-6 max-w-48 rounded-md border bg-transparent px-1 text-xs"
+                value=""
+                disabled={changingDependencies}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    addDependency.mutate({ ...ref, dependsOn: Number(e.target.value) });
+                  }
+                }}
+              >
+                <option value="">Add dependency...</option>
+                {candidates.map((other) => (
+                  <option key={other.id} value={other.id}>
+                    #{other.id} {other.title}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         )}
         {task.branch && (
           <p className="truncate font-mono text-xs text-muted-foreground" title={task.worktreePath ?? undefined}>
@@ -124,6 +207,54 @@ function TaskRow({ task }: { task: Task }) {
           <p role="alert" className="text-xs text-destructive">
             {actionError.message}
           </p>
+        )}
+        {!editing && (
+          <div className="mt-0.5 flex flex-wrap gap-1">
+            {confirming ? (
+              <>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  aria-label={`Confirm ${confirming} #${task.id}`}
+                  disabled={cancelTask.isPending || deleteTask.isPending}
+                  onClick={() => confirm(confirming)}
+                >
+                  {confirming === "cancel" ? "Confirm cancel" : "Confirm delete"}
+                </Button>
+                <Button size="xs" variant="ghost" onClick={() => setConfirming(null)}>
+                  Back
+                </Button>
+              </>
+            ) : (
+              <>
+                {!final && (
+                  <Button size="xs" variant="ghost" aria-label={`Edit #${task.id}`} onClick={() => setEditing(true)}>
+                    Edit
+                  </Button>
+                )}
+                {cancellableStatuses.includes(task.status) && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`Cancel #${task.id}`}
+                    onClick={() => setConfirming("cancel")}
+                  >
+                    Cancel
+                  </Button>
+                )}
+                {deletableStatuses.includes(task.status) && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`Delete #${task.id}`}
+                    onClick={() => setConfirming("delete")}
+                  >
+                    Delete
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
         )}
       </div>
       {task.status === "ready" && (
@@ -184,6 +315,67 @@ function TaskRow({ task }: { task: Task }) {
         {statusLabels[task.status]}
       </span>
     </li>
+  );
+}
+
+function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const updateTask = useUpdateTask();
+  const [taskType, setTaskType] = useState<TaskType>(task.taskType);
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    updateTask.mutate(
+      { id: task.id, taskType, title: title.trim(), description: description.trim() },
+      { onSuccess: onDone },
+    );
+  }
+
+  return (
+    <form onSubmit={submit} aria-label={`Edit task #${task.id}`} className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <select
+          aria-label={`Type of #${task.id}`}
+          className={cn(inputClass, "w-28")}
+          value={taskType}
+          onChange={(e) => setTaskType(e.target.value as TaskType)}
+        >
+          {taskTypes.map((type) => (
+            <option key={type} value={type}>
+              {type}
+            </option>
+          ))}
+        </select>
+        <input
+          className={inputClass}
+          aria-label={`Title of #${task.id}`}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          required
+        />
+      </div>
+      <input
+        className={inputClass}
+        placeholder="Description (optional)"
+        aria-label={`Description of #${task.id}`}
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+      />
+      <div className="flex gap-1">
+        <Button type="submit" size="xs" disabled={updateTask.isPending}>
+          {updateTask.isPending ? "Saving..." : "Save"}
+        </Button>
+        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
+          Discard
+        </Button>
+      </div>
+      {updateTask.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {updateTask.error.message}
+        </p>
+      )}
+    </form>
   );
 }
 

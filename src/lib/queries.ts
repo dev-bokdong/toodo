@@ -7,6 +7,7 @@ import {
   type NewSshHost,
   type NewTask,
   type NewWorkspace,
+  type TaskEdit,
   type TaskId,
   type WorkspaceId,
   type WorkspaceLocation,
@@ -186,6 +187,54 @@ export function useCompleteTask() {
     mutationFn: (id: TaskId) => unwrap(commands.completeTask(id)),
     onSuccess: (task) => queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
   });
+}
+
+export function useUpdateTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (task: TaskEdit) => unwrap(commands.updateTask(task)),
+    onSuccess: (task) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+  });
+}
+
+/** A task of `workspaceId`; carried along so the workspace's task list can be refetched. */
+type WorkspaceTask = { workspaceId: WorkspaceId; id: TaskId };
+
+/** Commands that may change the status of several tasks of a workspace. */
+function useWorkspaceTasksMutation<T extends { workspaceId: WorkspaceId }>(
+  mutationFn: (variables: T) => Promise<unknown>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: (_, { workspaceId }) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(workspaceId) }),
+  });
+}
+
+export function useCancelTask() {
+  return useWorkspaceTasksMutation(({ id }: WorkspaceTask) =>
+    unwrap(commands.setTaskStatus(id, "cancelled")),
+  );
+}
+
+export function useDeleteTask() {
+  return useWorkspaceTasksMutation(({ id }: WorkspaceTask) => unwrap(commands.deleteTask(id)));
+}
+
+type Dependency = WorkspaceTask & { dependsOn: TaskId };
+
+export function useAddDependency() {
+  return useWorkspaceTasksMutation(({ id, dependsOn }: Dependency) =>
+    unwrap(commands.addDependency(id, dependsOn)),
+  );
+}
+
+export function useRemoveDependency() {
+  return useWorkspaceTasksMutation(({ id, dependsOn }: Dependency) =>
+    unwrap(commands.removeDependency(id, dependsOn)),
+  );
 }
 
 export function useCreateTask() {
