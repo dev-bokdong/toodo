@@ -49,7 +49,7 @@ const statusStyles: Record<TaskStatus, string> = {
 
 export function TaskList({ workspace }: { workspace: Workspace }) {
   const tasks = useTasks(workspace.id);
-  const [view, setView] = useState<"list" | "graph">("list");
+  const [view, setView] = useState<"list" | "timeline">("list");
 
   return (
     <section aria-labelledby="tasks-heading" className="flex flex-col gap-4">
@@ -78,7 +78,7 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
       {tasks.data && tasks.data.length > 0 && (
         <>
           <div role="group" aria-label="Task view" className="flex gap-1">
-            {(["list", "graph"] as const).map((option) => (
+            {(["list", "timeline"] as const).map((option) => (
               <Button
                 key={option}
                 size="xs"
@@ -86,7 +86,7 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
                 aria-pressed={view === option}
                 onClick={() => setView(option)}
               >
-                {option === "list" ? "List" : "Graph"}
+                {option === "list" ? "List" : "Timeline"}
               </Button>
             ))}
           </div>

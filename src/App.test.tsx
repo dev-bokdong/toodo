@@ -101,6 +101,7 @@ function renderApp() {
 
 describe("App", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.resetAllMocks();
     mocked.appInfo.mockResolvedValue({ name: "toodo", version: "1.2.3" });
     mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: true, version: "0.9.3" } });
@@ -157,22 +158,54 @@ describe("App", () => {
     expect(mocked.listTasks).toHaveBeenLastCalledWith(2);
   });
 
-  it("shows the tasks of the selected workspace as a dependency graph", async () => {
+  it("shows the tasks of the selected workspace on a timeline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const day = 24 * 60 * 60;
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const planned = (at: number) => ({ ...task(0, 1, "").milestones, plannedAt: at });
+    const lastYear = new Date(2025, 5, 1).getTime() / 1000;
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
-      data: [task(1, 1, "Add storage", { status: "done" }), task(2, 1, "Add UI", { status: "planned", dependsOn: [1] })],
+      data: [
+        task(1, 1, "Add storage", {
+          status: "done",
+          milestones: { ...planned(plannedAt), completedAt: plannedAt + 3 * day },
+        }),
+        task(2, 1, "Add UI", { status: "planned", dependsOn: [1], milestones: planned(plannedAt + day) }),
+        task(3, 1, "Write docs"),
+        task(4, 1, "Fix login", {
+          status: "done",
+          milestones: { ...planned(lastYear), completedAt: lastYear + day },
+        }),
+      ],
     });
     renderApp();
 
     await screen.findByRole("list", { name: "Tasks" });
-    fireEvent.click(screen.getByRole("button", { name: "Graph" }));
+    fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
 
-    const graph = await screen.findByRole("region", { name: "Dependency graph" });
-    expect(await within(graph).findByText("Add UI")).toBeInTheDocument();
-    expect(within(graph).getByText("Add storage")).toBeInTheDocument();
-    expect(within(graph).getByText("Planned")).toBeInTheDocument();
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    expect(await within(timeline).findByText("Add UI")).toBeInTheDocument();
+    expect(within(timeline).getByText("Add storage")).toBeInTheDocument();
+    const unplaced = within(timeline).getByRole("complementary", { name: "Tasks without a planned date" });
+    expect(within(unplaced).getByText("Write docs")).toBeInTheDocument();
+    expect(within(timeline).getByRole("button", { name: "Week" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByRole("list", { name: "Tasks" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(timeline).getByRole("button", { name: "Month" }));
+    expect(within(timeline).getByRole("button", { name: "Month" })).toHaveAttribute("aria-pressed", "true");
+    const period = within(timeline).getByRole("combobox", { name: "Timeline period" });
+    expect(within(period).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All time",
+      "2026",
+      "2025",
+    ]);
+    fireEvent.change(period, { target: { value: "2025" } });
+    expect(await within(timeline).findByText("Fix login")).toBeInTheDocument();
+    expect(within(timeline).queryByText("Add UI")).not.toBeInTheDocument();
+    expect(within(unplaced).getByText("Write docs")).toBeInTheDocument();
   });
 
   it("shows command errors returned by the backend", async () => {
