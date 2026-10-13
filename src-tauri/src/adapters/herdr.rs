@@ -102,6 +102,41 @@ impl From<GitError> for HerdrError {
 pub struct ServerStatus {
     pub running: bool,
     pub version: Option<String>,
+    /// Path of the server's API socket, the endpoint of event subscriptions.
+    pub socket: Option<String>,
+}
+
+/// What the agent in a herdr pane is doing. Ordered by how much it needs the user, so
+/// the maximum over a workspace's panes summarizes the workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AgentStatus {
+    /// No agent, or herdr cannot tell its state.
+    Unknown,
+    Idle,
+    Done,
+    Working,
+    Blocked,
+}
+
+impl AgentStatus {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "unknown" => Some(Self::Unknown),
+            "idle" => Some(Self::Idle),
+            "done" => Some(Self::Done),
+            "working" => Some(Self::Working),
+            "blocked" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+}
+
+/// A pane of the local herdr server and the status of its agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneAgent {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub status: AgentStatus,
 }
 
 /// A git worktree to create and open as a herdr workspace.
@@ -138,7 +173,36 @@ impl Herdr {
             .and_then(|server| server.get("version"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        Ok(ServerStatus { running, version })
+        let socket = server
+            .as_ref()
+            .and_then(|server| server.get("socket"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok(ServerStatus {
+            running,
+            version,
+            socket,
+        })
+    }
+
+    /// Panes of the local herdr server with the status of their agents.
+    pub fn list_panes(&self) -> Result<Vec<PaneAgent>, HerdrError> {
+        let invocation = invocation(None, &["pane", "list"]);
+        let output = self.runner.run(&invocation)?;
+        let pane = |row: &Value| {
+            Some(PaneAgent {
+                pane_id: row.get("pane_id")?.as_str()?.to_owned(),
+                workspace_id: row.get("workspace_id")?.as_str()?.to_owned(),
+                // Statuses added by a newer herdr are shown as unknown.
+                status: AgentStatus::parse(row.get("agent_status")?.as_str()?)
+                    .unwrap_or(AgentStatus::Unknown),
+            })
+        };
+        parse(&invocation, &output)?
+            .pointer("/result/panes")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.iter().map(pane).collect())
+            .ok_or_else(|| unexpected(&invocation, &output))
     }
 
     /// Creates the worktree on `machine` and opens it as a herdr workspace without
@@ -767,7 +831,10 @@ mod tests {
     #[test]
     fn server_status_reports_a_stopped_server() {
         let (herdr, runner) = herdr(vec![
-            Ok(r#"{"server":{"running":true,"version":"0.9.3"}}"#.to_owned()),
+            Ok(
+                r#"{"server":{"running":true,"version":"0.9.3","socket":"/home/u/.config/herdr/herdr.sock"}}"#
+                    .to_owned(),
+            ),
             Ok(r#"{"server":{"running":false,"version":null}}"#.to_owned()),
             Ok("not json".to_owned()),
         ]);
@@ -775,14 +842,16 @@ mod tests {
             herdr.server_status().unwrap(),
             ServerStatus {
                 running: true,
-                version: Some("0.9.3".to_owned())
+                version: Some("0.9.3".to_owned()),
+                socket: Some("/home/u/.config/herdr/herdr.sock".to_owned()),
             }
         );
         assert_eq!(
             herdr.server_status().unwrap(),
             ServerStatus {
                 running: false,
-                version: None
+                version: None,
+                socket: None,
             }
         );
         assert!(matches!(
@@ -792,6 +861,39 @@ mod tests {
         assert_eq!(
             runner.invocations.lock().unwrap()[0].args,
             ["status", "--json"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn panes_are_listed_with_their_agent_status() {
+        let (herdr, runner) = herdr(vec![
+            Ok(r#"{"id":"cli:pane:list","result":{"panes":[
+                {"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},
+                {"agent_status":"unknown","pane_id":"w1:p2","workspace_id":"w1"},
+                {"agent_status":"sleeping","pane_id":"w2:p1","workspace_id":"w2"}]}}"#
+                .to_owned()),
+            Ok(r#"{"id":"cli:pane:list","result":{"panes":[{"pane_id":"w1:p1"}]}}"#.to_owned()),
+        ]);
+        let pane = |pane_id: &str, workspace_id: &str, status| PaneAgent {
+            pane_id: pane_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            status,
+        };
+        assert_eq!(
+            herdr.list_panes().unwrap(),
+            [
+                pane("w1:p1", "w1", AgentStatus::Working),
+                pane("w1:p2", "w1", AgentStatus::Unknown),
+                pane("w2:p1", "w2", AgentStatus::Unknown),
+            ]
+        );
+        assert!(matches!(
+            herdr.list_panes(),
+            Err(HerdrError::UnexpectedOutput { .. })
+        ));
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0].args,
+            ["pane", "list"].map(str::to_owned)
         );
     }
 

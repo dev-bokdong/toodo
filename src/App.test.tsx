@@ -1,10 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { formatDate } from "@/lib/timeline";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { commands, type CommitRecord, type HerdrMachine, type Task, type Workspace } from "@/lib/bindings";
+import {
+  commands,
+  events,
+  type CommitRecord,
+  type HerdrMachine,
+  type Task,
+  type TaskAgentStatus,
+  type Workspace,
+} from "@/lib/bindings";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
@@ -35,10 +43,16 @@ vi.mock("@/lib/bindings", () => ({
     listSshHosts: vi.fn(),
     addSshHost: vi.fn(),
     listRemoteDirectories: vi.fn(),
+    listAgentStatuses: vi.fn(),
+  },
+  events: {
+    tasksChanged: { listen: vi.fn() },
+    agentStatusesChanged: { listen: vi.fn() },
   },
 }));
 
 const mocked = vi.mocked(commands);
+const mockedEvents = vi.mocked(events, { deep: true });
 const mockedOpenDialog = vi.mocked(openDialog);
 
 const toodo: Workspace = {
@@ -112,6 +126,9 @@ describe("App", () => {
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
     mocked.listSshHosts.mockResolvedValue({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listAgentStatuses.mockResolvedValue([]);
+    mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -396,6 +413,42 @@ describe("App", () => {
     expect(mocked.startTask).toHaveBeenCalledWith(1);
     fireEvent.click(open);
     await waitFor(() => expect(mocked.openTaskInHerdr).toHaveBeenCalledWith(1));
+  });
+
+  it("follows herdr events: agent statuses of active tasks and task changes", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add login", { status: "in_progress", herdrWorkspaceId: "w27" }),
+        task(2, 1, "Add logout", { status: "done" }),
+      ],
+    });
+    mocked.listAgentStatuses.mockResolvedValue([{ taskId: 1, status: "working" }]);
+    renderApp();
+
+    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    expect(await within(tasks).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
+
+    const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
+    const blocked: TaskAgentStatus[] = [
+      { taskId: 1, status: "blocked" },
+      { taskId: 2, status: "idle" },
+    ];
+    act(() => {
+      onAgentStatuses({ event: "agent-statuses-changed", id: 1, payload: { statuses: blocked } });
+    });
+    await waitFor(() =>
+      expect(within(tasks).getByLabelText("Agent of #1")).toHaveTextContent("Agent needs input"),
+    );
+    expect(within(tasks).queryByLabelText("Agent of #2")).not.toBeInTheDocument();
+
+    const loads = mocked.listTasks.mock.calls.length;
+    const [[onTasksChanged]] = mockedEvents.tasksChanged.listen.mock.calls;
+    act(() => {
+      onTasksChanged({ event: "tasks-changed", id: 2, payload: { workspaceId: 1 } });
+    });
+    await waitFor(() => expect(mocked.listTasks.mock.calls.length).toBeGreaterThan(loads));
   });
 
   it("shows why a task could not be started", async () => {

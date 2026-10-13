@@ -214,10 +214,33 @@ Toodo owns planning, task state, commit records, and pull requests.
     installs herdr itself.
   - Failures exit non-zero and print `{"error": {"code", "message"}}` on stderr.
   - Commands use the herdr CLI (recommended by herdr for portable Windows behavior).
-  - Events use the socket API: newline-delimited JSON over a Windows named pipe,
-    `events.subscribe` for `worktree.created`, `worktree.removed`, and
-    `pane.agent_status_changed`. On `events_lost`, resubscribe and reconcile with
-    `session.snapshot`.
+  - Events use the socket API (`src-tauri/src/adapters/herdr_events.rs`,
+    `src-tauri/src/commands/events.rs`): newline-delimited JSON over the server socket
+    that `herdr status --json` reports as `server.socket`. On Windows herdr serves it as
+    the named pipe `\\.\pipe\<socket path>`; elsewhere it is a Unix domain socket.
+    - A background thread keeps one `events.subscribe` connection to the local herdr
+      server for `worktree.created`, `worktree.opened`, `worktree.removed`,
+      `workspace.closed`, `pane.created`, `pane.closed`, `pane.agent_detected`, and
+      `pane.agent_status_changed` of every pane. Agent status subscriptions name one
+      pane each and a connection takes one subscription, so a new pane means a new
+      connection.
+    - Lifecycle events arrive as `{"event": "worktree_removed", "data": {...}}`;
+      pane-scoped ones keep the dotted name (`pane.agent_status_changed`). Neither
+      `workspace.updated` nor `pane.updated` reports agent status changes (verified on
+      herdr 0.9.3).
+    - `worktree.removed` forgets the worktree and herdr workspace of the local task bound
+      to that herdr workspace; `worktree.created`/`worktree.opened` stores the new herdr
+      workspace of the local task with that worktree path. The frontend gets a
+      `TasksChanged` event and refetches the workspace's tasks.
+    - Agent status is read again with `herdr pane list` on every pane or agent event
+      instead of being patched from the event, as herdr recommends. The status of a task
+      is the most urgent one among the panes of its herdr workspace (blocked, working,
+      done, idle) and reaches the frontend through `list_agent_statuses` and the
+      `AgentStatusesChanged` event.
+    - When the subscription ends (herdr stopped, `events_lost`, `pane_not_found`), agent
+      statuses are cleared and the thread subscribes again after 1 s, doubling up to
+      30 s while the server stays unreachable.
+    - Only the local herdr server is watched; tasks of SSH workspaces get no events yet.
   - Toodo does not embed a terminal; it focuses the herdr workspace instead.
   - Relevant commands:
   - `herdr worktree create|open|list|remove`: manage worktree-backed herdr workspaces.

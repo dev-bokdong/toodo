@@ -4,7 +4,7 @@ import { HerdrBanner } from "@/components/herdr-banner";
 import { TaskList } from "@/components/task-list";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
-import { useWorkspaces } from "@/lib/queries";
+import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
 
 export default function App() {
   const appInfo = useQuery({
@@ -12,6 +12,7 @@ export default function App() {
     queryFn: () => commands.appInfo(),
   });
   const workspaces = useWorkspaces();
+  useHerdrEvents();
   const [selectedId, setSelectedId] = useState<WorkspaceId | null>(null);
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];

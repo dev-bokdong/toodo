@@ -6,44 +6,50 @@ pub mod storage;
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
-use tauri_specta::{Builder, collect_commands};
+use tauri_specta::{Builder, collect_commands, collect_events};
 
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
 const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
 
 fn specta_builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![
-        commands::app_info,
-        commands::workspaces::list_workspaces,
-        commands::workspaces::get_workspace,
-        commands::workspaces::create_workspace,
-        commands::workspaces::update_workspace,
-        commands::workspaces::delete_workspace,
-        commands::workspaces::get_machine_settings,
-        commands::workspaces::save_machine_settings,
-        commands::machines::list_herdr_machines,
-        commands::machines::add_herdr_machine,
-        commands::machines::list_ssh_hosts,
-        commands::machines::add_ssh_host,
-        commands::machines::list_remote_directories,
-        commands::tasks::list_tasks,
-        commands::tasks::get_task,
-        commands::tasks::create_task,
-        commands::tasks::update_task,
-        commands::tasks::set_task_status,
-        commands::tasks::delete_task,
-        commands::tasks::add_dependency,
-        commands::tasks::remove_dependency,
-        commands::tasks::list_commit_records,
-        commands::herdr::herdr_status,
-        commands::herdr::start_task,
-        commands::herdr::open_task_in_herdr,
-        commands::herdr::remove_task_worktree,
-        commands::completion::refresh_commit_records,
-        commands::completion::open_pull_request,
-        commands::completion::complete_task,
-    ])
+    Builder::<tauri::Wry>::new()
+        .commands(collect_commands![
+            commands::app_info,
+            commands::workspaces::list_workspaces,
+            commands::workspaces::get_workspace,
+            commands::workspaces::create_workspace,
+            commands::workspaces::update_workspace,
+            commands::workspaces::delete_workspace,
+            commands::workspaces::get_machine_settings,
+            commands::workspaces::save_machine_settings,
+            commands::machines::list_herdr_machines,
+            commands::machines::add_herdr_machine,
+            commands::machines::list_ssh_hosts,
+            commands::machines::add_ssh_host,
+            commands::machines::list_remote_directories,
+            commands::tasks::list_tasks,
+            commands::tasks::get_task,
+            commands::tasks::create_task,
+            commands::tasks::update_task,
+            commands::tasks::set_task_status,
+            commands::tasks::delete_task,
+            commands::tasks::add_dependency,
+            commands::tasks::remove_dependency,
+            commands::tasks::list_commit_records,
+            commands::herdr::herdr_status,
+            commands::herdr::start_task,
+            commands::herdr::open_task_in_herdr,
+            commands::herdr::remove_task_worktree,
+            commands::completion::refresh_commit_records,
+            commands::completion::open_pull_request,
+            commands::completion::complete_task,
+            commands::events::list_agent_statuses,
+        ])
+        .events(collect_events![
+            commands::events::TasksChanged,
+            commands::events::AgentStatusesChanged,
+        ])
 }
 
 fn export_bindings(builder: &Builder<tauri::Wry>) {
@@ -81,6 +87,8 @@ pub fn run() {
             app.manage::<commands::HerdrState>(Arc::new(adapters::herdr::Herdr::new(Box::new(
                 adapters::git::ProcessRunner,
             ))));
+            app.manage::<commands::events::AgentStatusState>(Mutex::default());
+            commands::events::spawn(app.handle().clone())?;
             Ok(())
         })
         .run(tauri::generate_context!())

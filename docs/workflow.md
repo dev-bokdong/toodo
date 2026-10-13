@@ -80,7 +80,9 @@ Implementation happens directly in herdr: the user and/or AI agents work in pane
 to the task's worktree. Toodo does not embed a terminal; it focuses the herdr workspace
 (`herdr workspace focus`). Toodo may optionally send the task description as a prompt to
 an agent (`herdr agent prompt`) and shows agent state (working, blocked, done) from
-`pane.agent_status_changed` events.
+`pane.agent_status_changed` events. Tasks of local workspaces show the agent state of
+their herdr workspace; if the user removes a task's worktree in herdr, Toodo forgets
+the worktree, and if they open it again in herdr, Toodo follows the new workspace.
 
 ### 5. Record commits
 

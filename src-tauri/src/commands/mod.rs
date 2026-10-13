@@ -2,6 +2,7 @@
 //! shapes in [`types`]; failures are reported as a [`CommandError`].
 
 pub mod completion;
+pub mod events;
 pub mod herdr;
 pub mod machines;
 pub mod tasks;

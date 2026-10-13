@@ -4,4 +4,5 @@
 pub mod git;
 pub mod github;
 pub mod herdr;
+pub mod herdr_events;
 pub mod ssh;

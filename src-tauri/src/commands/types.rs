@@ -583,6 +583,38 @@ impl From<&herdr::ServerStatus> for HerdrStatus {
     }
 }
 
+/// What the agent working on a task in herdr is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Idle,
+    Working,
+    Blocked,
+    Done,
+}
+
+impl AgentStatus {
+    /// `None` for panes without a recognized agent.
+    pub fn from_herdr(status: herdr::AgentStatus) -> Option<Self> {
+        match status {
+            herdr::AgentStatus::Unknown => None,
+            herdr::AgentStatus::Idle => Some(Self::Idle),
+            herdr::AgentStatus::Done => Some(Self::Done),
+            herdr::AgentStatus::Working => Some(Self::Working),
+            herdr::AgentStatus::Blocked => Some(Self::Blocked),
+        }
+    }
+}
+
+/// The agent status of a task whose herdr workspace has an agent, summarized over the
+/// workspace's panes: blocked over working over done over idle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAgentStatus {
+    pub task_id: TaskId,
+    pub status: AgentStatus,
+}
+
 pub(super) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
     items.iter().map(U::from).collect()
 }

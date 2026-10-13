@@ -2,11 +2,12 @@ import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { TaskGraph } from "@/components/task-graph";
 import { inputClass, describeLocation } from "@/components/workspace-list";
-import type { Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
+import type { AgentStatus, Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
 import {
   CommandFailure,
   machineOf,
   useAddDependency,
+  useAgentStatuses,
   useCancelTask,
   useCommitRecords,
   useCompleteTask,
@@ -28,6 +29,20 @@ import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore"];
+
+const agentLabels: Record<AgentStatus, string> = {
+  idle: "Agent idle",
+  working: "Agent working",
+  blocked: "Agent needs input",
+  done: "Agent done",
+};
+
+const agentStyles: Record<AgentStatus, string> = {
+  idle: "bg-muted text-muted-foreground",
+  working: "bg-sky-100 text-sky-800",
+  blocked: "bg-amber-100 text-amber-900",
+  done: "bg-emerald-100 text-emerald-800",
+};
 
 const statusLabels: Record<TaskStatus, string> = {
   planned: "Planned",
@@ -143,6 +158,7 @@ function TaskTimeline({ task }: { task: Task }) {
 
 function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const herdr = useHerdrStatus();
+  const agentStatuses = useAgentStatuses();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
   const refreshCommits = useRefreshCommitRecords();
@@ -159,6 +175,7 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const inReview = task.status === "in_review";
   const active = task.status === "in_progress" || inReview;
   const hasWorktree = active && task.worktreePath !== null;
+  const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done" || task.status === "cancelled";
   const removableWorktree = final && task.worktreePath !== null;
@@ -399,6 +416,14 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
         >
           {completeTask.isPending ? "Completing..." : "Complete"}
         </Button>
+      )}
+      {active && agentStatus && (
+        <span
+          aria-label={`Agent of #${task.id}`}
+          className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", agentStyles[agentStatus])}
+        >
+          {agentLabels[agentStatus]}
+        </span>
       )}
       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", statusStyles[task.status])}>
         {statusLabels[task.status]}

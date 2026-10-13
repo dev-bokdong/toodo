@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   commands,
+  events,
   type CommandError,
   type Machine,
   type MachineSettings,
@@ -37,6 +39,7 @@ export const queryKeys = {
   workspaces: ["workspaces"] as const,
   tasks: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "tasks"] as const,
   herdrStatus: ["herdr-status"] as const,
+  agentStatuses: ["agent-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   herdrMachines: ["herdr-machines"] as const,
@@ -118,6 +121,34 @@ export function useHerdrStatus() {
     queryKey: queryKeys.herdrStatus,
     queryFn: () => unwrap(commands.herdrStatus()),
   });
+}
+
+/** Agent status of each task whose herdr workspace runs an agent; kept current by `useHerdrEvents`. */
+export function useAgentStatuses() {
+  return useQuery({
+    queryKey: queryKeys.agentStatuses,
+    queryFn: () => commands.listAgentStatuses(),
+  });
+}
+
+/** Applies the changes the backend reports from herdr events while the app is mounted. */
+export function useHerdrEvents() {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const subscriptions = [
+      events.tasksChanged.listen(({ payload }) =>
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks(payload.workspaceId) }),
+      ),
+      events.agentStatusesChanged.listen(({ payload }) =>
+        queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses),
+      ),
+    ];
+    return () => {
+      for (const subscription of subscriptions) {
+        void subscription.then((unlisten) => unlisten());
+      }
+    };
+  }, [queryClient]);
 }
 
 export function useMachineSettings(machine: Machine) {
