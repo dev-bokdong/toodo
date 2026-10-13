@@ -249,6 +249,33 @@ impl Git {
         Ok(true)
     }
 
+    /// Where a worktree for the existing `branch` can be checked out from: the branch
+    /// itself while the repository still has it, else its `origin/<branch>` remote-tracking
+    /// branch. `None` when neither exists.
+    pub fn branch_source(
+        &self,
+        repo: &WorkspaceLocation,
+        branch: &str,
+    ) -> Result<Option<String>, GitError> {
+        let path = Some(location_path(repo));
+        let remote = format!("origin/{branch}");
+        for (reference, source) in [
+            (format!("refs/heads/{branch}"), branch),
+            (format!("refs/remotes/{remote}"), remote.as_str()),
+        ] {
+            match self.run(
+                repo,
+                path,
+                &["rev-parse", "--verify", "--quiet", &reference],
+            ) {
+                Ok(_) => return Ok(Some(source.to_owned())),
+                Err(GitError::Failed { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
     /// Commits reachable from `branch` but not from `base`, oldest first, read in the
     /// repository or worktree at `dir` on the machine of `location`.
     pub fn commits_between(
@@ -615,6 +642,44 @@ mod tests {
         assert!(!git.create_initial_commit(&repo, "main").unwrap());
         assert!(!git.create_initial_commit(&repo, "develop").unwrap());
         assert_eq!(runner.invocations.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn branch_source_prefers_the_local_branch_then_origin() {
+        let (git, runner) = git(vec![
+            Ok("abc\n".to_owned()),
+            Err(failed()),
+            Ok("abc\n".to_owned()),
+            Err(failed()),
+            Err(failed()),
+        ]);
+        let repo = local(r"C:\dev\a");
+        assert_eq!(
+            git.branch_source(&repo, "feat/x-1").unwrap().as_deref(),
+            Some("feat/x-1")
+        );
+        assert_eq!(
+            git.branch_source(&repo, "feat/x-1").unwrap().as_deref(),
+            Some("origin/feat/x-1")
+        );
+        assert_eq!(git.branch_source(&repo, "feat/x-1").unwrap(), None);
+        let references: Vec<String> = runner
+            .invocations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|invocation| invocation.args.last().unwrap().clone())
+            .collect();
+        assert_eq!(
+            references,
+            [
+                "refs/heads/feat/x-1",
+                "refs/heads/feat/x-1",
+                "refs/remotes/origin/feat/x-1",
+                "refs/heads/feat/x-1",
+                "refs/remotes/origin/feat/x-1",
+            ]
+        );
     }
 
     const SHA_A: &str = "1111111111111111111111111111111111111111";

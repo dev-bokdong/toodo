@@ -20,6 +20,7 @@ import {
   useRefreshCommitRecords,
   useRemoveDependency,
   useRemoveTaskWorktree,
+  useRestoreTaskWorktree,
   useSaveMachineSettings,
   useStartTask,
   useTasks,
@@ -169,6 +170,7 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const removeWorktree = useRemoveTaskWorktree();
+  const restoreWorktree = useRestoreTaskWorktree();
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const herdrRunning = herdr.data?.running === true;
@@ -194,6 +196,7 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
     cancelTask.error ??
     deleteTask.error ??
     removeWorktree.error ??
+    restoreWorktree.error ??
     addDependency.error ??
     removeDependency.error;
   const candidates = tasks.filter(
@@ -371,6 +374,18 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
           onClick={() => startTask.mutate(task.id)}
         >
           {startTask.isPending ? "Starting..." : "Start"}
+        </Button>
+      )}
+      {active && task.worktreePath === null && task.branch !== null && (
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={`Restore worktree of #${task.id}`}
+          title={`Check out ${task.branch} into a new worktree and open it in herdr`}
+          disabled={!herdrRunning || restoreWorktree.isPending}
+          onClick={() => restoreWorktree.mutate(task.id)}
+        >
+          {restoreWorktree.isPending ? "Restoring..." : "Restore worktree"}
         </Button>
       )}
       {active && task.herdrWorkspaceId && (

@@ -573,6 +573,37 @@ fn clear_task_worktree_keeps_the_branch_and_status() {
 }
 
 #[test]
+fn restore_task_worktree_keeps_status_branch_and_history() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+    let started = storage
+        .start_task(task.id, &checkout(path.clone(), "feat/add-login-1"), "w7")
+        .unwrap();
+    storage.clear_task_worktree(task.id).unwrap();
+
+    let restored = storage.restore_task_worktree(task.id, &path, "w9").unwrap();
+
+    assert_eq!(restored.worktree_path, Some(path));
+    assert_eq!(restored.herdr_workspace_id.as_deref(), Some("w9"));
+    assert_eq!(
+        (&restored.status, &restored.branch, &restored.timeline),
+        (&started.status, &started.branch, &started.timeline)
+    );
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), restored);
+    let posix = HostPath::Posix(PosixPath::parse("/wt/x").unwrap());
+    assert!(matches!(
+        storage.restore_task_worktree(task.id, &posix, "w9"),
+        Err(StorageError::WorktreePathMismatch(_))
+    ));
+    assert!(matches!(
+        storage.restore_task_worktree(TaskId(999), &posix, "w9"),
+        Err(StorageError::TaskNotFound(_))
+    ));
+}
+
+#[test]
 fn start_task_writes_nothing_when_it_is_rejected() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(

@@ -386,6 +386,34 @@ impl Storage {
         Ok(cleared)
     }
 
+    /// Records the worktree a task got back after its previous one was removed, and the
+    /// herdr workspace it is open in. Status, branch, and history are unchanged.
+    pub fn restore_task_worktree(
+        &mut self,
+        id: TaskId,
+        path: &HostPath,
+        herdr_workspace_id: &str,
+    ) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let workspace_kind: String = tx
+            .query_row(
+                "SELECT w.kind FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
+                 WHERE t.id = ?1",
+                [id.0],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        let worktree_path = stored_worktree_path(id, &workspace_kind, Some(path))?;
+        tx.execute(
+            "UPDATE tasks SET worktree_path = ?2, herdr_workspace_id = ?3 WHERE id = ?1",
+            params![id.0, worktree_path, herdr_workspace_id],
+        )?;
+        let restored = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(restored)
+    }
+
     /// Records the herdr workspace a task's worktree was opened again in.
     pub fn set_task_herdr_workspace(&mut self, id: TaskId, herdr_workspace_id: &str) -> Result<()> {
         let updated = self.conn.execute(

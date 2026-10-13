@@ -34,6 +34,7 @@ vi.mock("@/lib/bindings", () => ({
     startTask: vi.fn(),
     openTaskInHerdr: vi.fn(),
     removeTaskWorktree: vi.fn(),
+    restoreTaskWorktree: vi.fn(),
     listCommitRecords: vi.fn(),
     refreshCommitRecords: vi.fn(),
     openPullRequest: vi.fn(),
@@ -449,6 +450,25 @@ describe("App", () => {
       onTasksChanged({ event: "tasks-changed", id: 2, payload: { workspaceId: 1 } });
     });
     await waitFor(() => expect(mocked.listTasks.mock.calls.length).toBeGreaterThan(loads));
+  });
+
+  it("restores the worktree of an active task that lost it", async () => {
+    const lost = task(1, 1, "Add login", { status: "in_progress", branch: "feat/add-login-1" });
+    const restored = { ...lost, worktreePath: "D:\\wt\\toodo\\feat-add-login-1", herdrWorkspaceId: "w31" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [lost] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [restored] });
+    mocked.restoreTaskWorktree.mockResolvedValue({ status: "ok", data: restored });
+    renderApp();
+
+    const restore = await screen.findByRole("button", { name: "Restore worktree of #1" });
+    expect(screen.queryByRole("button", { name: "Open pull request for #1" })).not.toBeInTheDocument();
+    await waitFor(() => expect(restore).toBeEnabled());
+    fireEvent.click(restore);
+
+    expect(await screen.findByRole("button", { name: "Open pull request for #1" })).toBeInTheDocument();
+    expect(mocked.restoreTaskWorktree).toHaveBeenCalledWith(1);
+    expect(screen.queryByRole("button", { name: "Restore worktree of #1" })).not.toBeInTheDocument();
   });
 
   it("shows why a task could not be started", async () => {

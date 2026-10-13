@@ -220,6 +220,16 @@ export function useCompleteTask() {
   });
 }
 
+/** Checks out the branch of an active task that lost its worktree into a new herdr worktree. */
+export function useRestoreTaskWorktree() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: TaskId) => unwrap(commands.restoreTaskWorktree(id)),
+    onSuccess: (task) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+  });
+}
+
 /** Removes the worktree of a `done` or `cancelled` task through herdr; `force` discards local changes. */
 export function useRemoveTaskWorktree() {
   const queryClient = useQueryClient();

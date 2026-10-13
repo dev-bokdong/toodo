@@ -1,6 +1,6 @@
 //! Commands that drive herdr: the server health check, starting a task in a new
-//! worktree, focusing the herdr workspace of a started task, and removing the worktree
-//! of a finished task.
+//! worktree, focusing the herdr workspace of a started task, restoring the worktree of an
+//! active task that lost it, and removing the worktree of a finished task.
 //!
 //! They run on the async runtime instead of the main thread because herdr calls can take
 //! seconds. The database lock is not held while herdr runs.
@@ -44,6 +44,20 @@ pub fn open_task_in_herdr(
     id: TaskId,
 ) -> CommandResult<()> {
     open(&storage, &herdr, id.into())
+}
+
+/// Checks out the branch of an `in_progress` or `in_review` task that lost its worktree,
+/// e.g. because it was removed in herdr, into a new worktree opened in herdr. The branch
+/// is taken from `origin` when the repository no longer has it.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn restore_task_worktree(
+    storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
+    herdr: State<'_, HerdrState>,
+    id: TaskId,
+) -> CommandResult<Task> {
+    Ok((&restore(&storage, &git, &herdr, id.into())?).into())
 }
 
 /// Removes the worktree of a `done` or `cancelled` task through herdr, which also closes
@@ -97,6 +111,67 @@ fn start(
         },
     )?;
     Ok(lock(storage).start_task(id, &checkout, &herdr_workspace_id)?)
+}
+
+fn restore(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    id: model::TaskId,
+) -> CommandResult<model::Task> {
+    let (workspace, checkout) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        if !matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview) {
+            return Err(CommandError::rejected(format!(
+                "task {id} is {}; only in progress or in review tasks can restore their worktree",
+                task.status
+            )));
+        }
+        if let Some(path) = &task.worktree_path {
+            return Err(CommandError::rejected(format!(
+                "task {id} already has its worktree at {path}"
+            )));
+        }
+        let branch = task
+            .branch
+            .clone()
+            .ok_or_else(|| CommandError::rejected(format!("task {id} has no branch")))?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        let settings = storage.get_machine_settings(&workspace.location.machine())?;
+        // The title may have changed since the task started; the path follows it, the
+        // branch keeps its name.
+        let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
+        checkout.branch = branch;
+        (workspace, checkout)
+    };
+    let base = git
+        .branch_source(&workspace.location, &checkout.branch)?
+        .ok_or_else(|| {
+            CommandError::rejected(format!(
+                "branch {} of task {id} no longer exists in the repository or on origin",
+                checkout.branch
+            ))
+        })?;
+    let repository = match &workspace.location {
+        WorkspaceLocation::Local { path } => path.as_str(),
+        WorkspaceLocation::Ssh { path, .. } => path.as_str(),
+    };
+    let path = checkout.path.to_string();
+    let herdr_workspace_id = herdr.create_worktree(
+        &workspace.location.machine(),
+        &NewWorktree {
+            repository,
+            path: &path,
+            branch: &checkout.branch,
+            base: &base,
+        },
+    )?;
+    Ok(lock(storage).restore_task_worktree(id, &checkout.path, &herdr_workspace_id)?)
 }
 
 /// Focuses the herdr workspace of a started task. When herdr no longer has it, e.g. the
@@ -287,6 +362,101 @@ mod tests {
             .get_task(fixture.task.id)
             .unwrap()
             .unwrap()
+    }
+
+    /// The fixture task, started in `w27` and then stripped of its worktree as when it is
+    /// removed in herdr.
+    fn lost_worktree() -> Fixture {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, _) = herdr(vec![Ok(CREATED.to_owned())]);
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+        lock(&fixture.storage)
+            .clear_task_worktree(fixture.task.id)
+            .unwrap();
+        fixture
+    }
+
+    const RECREATED: &str =
+        r#"{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w31"}}}"#;
+
+    #[test]
+    fn restore_checks_out_the_kept_branch_into_a_new_worktree() {
+        let fixture = lost_worktree();
+        let mut renamed = stored(&fixture);
+        renamed.title = "Add sign-in".to_owned();
+        lock(&fixture.storage).update_task(&renamed).unwrap();
+        let (herdr, runner) = herdr(vec![Ok(RECREATED.to_owned())]);
+
+        let restored =
+            restore(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(restored.status, TaskStatus::InProgress);
+        assert_eq!(restored.branch.as_deref(), Some("feat/add-login-1"));
+        assert_eq!(
+            restored.worktree_path,
+            Some(HostPath::Windows(
+                WindowsPath::parse(r"D:\wt\toodo\feat-add-sign-in-1").unwrap()
+            ))
+        );
+        assert_eq!(restored.herdr_workspace_id.as_deref(), Some("w31"));
+        assert_eq!(stored(&fixture), restored);
+        assert_eq!(
+            invocations(&runner)[0].args[4..],
+            [
+                "--path",
+                r"D:\wt\toodo\feat-add-sign-in-1",
+                "--branch",
+                "feat/add-login-1",
+                "--base",
+                "feat/add-login-1",
+                "--no-focus",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn restore_takes_a_branch_the_repository_lost_from_origin() {
+        let fixture = lost_worktree();
+        let git = Git::new(Box::new(Arc::new(FakeRunner::new(vec![
+            Err(failed()),
+            Ok("abc\n".to_owned()),
+        ]))));
+        let (herdr, runner) = herdr(vec![Ok(RECREATED.to_owned())]);
+
+        restore(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        let args = &invocations(&runner)[0].args;
+        assert_eq!(args[args.len() - 2], "origin/feat/add-login-1");
+    }
+
+    #[test]
+    fn restore_is_rejected_without_a_lost_worktree_or_a_branch() {
+        let gone = || {
+            Git::new(Box::new(Arc::new(FakeRunner::new(vec![
+                Err(failed()),
+                Err(failed()),
+            ]))))
+        };
+        let (herdr, runner) = herdr(Vec::new());
+
+        let ready = local_fixture(Some(r"D:\wt"));
+        let started = local_fixture(Some(r"D:\wt"));
+        let (start_herdr, _) = self::herdr(vec![Ok(CREATED.to_owned())]);
+        start(
+            &started.storage,
+            &existing_base(),
+            &start_herdr,
+            started.task.id,
+        )
+        .unwrap();
+        let lost = lost_worktree();
+        for (fixture, git) in [(&ready, gone()), (&started, gone()), (&lost, gone())] {
+            let error = restore(&fixture.storage, &git, &herdr, fixture.task.id).unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::Rejected, "{}", error.message);
+        }
+        assert!(invocations(&runner).is_empty());
+        assert_eq!(stored(&lost).worktree_path, None);
     }
 
     #[test]

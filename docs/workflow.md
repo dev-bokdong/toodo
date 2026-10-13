@@ -84,6 +84,15 @@ an agent (`herdr agent prompt`) and shows agent state (working, blocked, done) f
 their herdr workspace; if the user removes a task's worktree in herdr, Toodo forgets
 the worktree, and if they open it again in herdr, Toodo follows the new workspace.
 
+An `in_progress` or `in_review` task that lost its worktree this way can get it back
+("Restore worktree"). Toodo checks out the task's branch, which herdr keeps when it
+removes a worktree, with `herdr worktree create --cwd <repository> --path <dir>
+--branch <branch> --base <branch> --no-focus`; herdr checks out an existing branch as
+is and ignores `--base`. If the repository no longer has the branch, `--base
+origin/<branch>` recreates it from `origin`; if neither exists, the restore is
+rejected. The directory follows the current task title, and the status, commit
+records, and pull request stay as they were.
+
 ### 5. Record commits
 
 Toodo reads the commits on the task branch that are not on the base branch
