@@ -28,6 +28,7 @@ import {
   type TimelinePhase,
   type TimelineScale,
 } from "@/lib/task-graph";
+import { useThemePreference } from "@/lib/theme";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -69,6 +70,7 @@ export function TaskGraph({
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
   const [scale, setScale] = useState<TimelineScale>("week");
   const [year, setYear] = useState<number | null>(null);
+  const colorMode = useThemePreference();
   const container = useRef<HTMLDivElement>(null);
   const now = Math.floor(Date.now() / 1000);
   const layout = layoutTimeline(tasks, { now, scale, period: year === null ? null : yearPeriod(year) });
@@ -216,7 +218,7 @@ export function TaskGraph({
               onEdgesChange={changeEdges}
               onEdgesDelete={removeEdges}
               deleteKeyCode={["Backspace", "Delete"]}
-              colorMode="system"
+              colorMode={colorMode}
               proOptions={{ hideAttribution: true }}
             >
               <ViewportPortal>

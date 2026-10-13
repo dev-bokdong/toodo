@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { TaskList } from "@/components/task-list";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
@@ -26,16 +27,21 @@ export default function App() {
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </p>
       </aside>
-      <main className="min-w-0 flex-1 overflow-y-auto p-6">
-        <HerdrBanner />
-        {selected ? (
-          <TaskList key={selected.id} workspace={selected} />
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            {workspaces.isPending ? "" : "Create a workspace to start planning tasks."}
-          </p>
-        )}
-      </main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex shrink-0 justify-end px-6 pt-3">
+          <ThemeToggle />
+        </header>
+        <main className="min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-3">
+          <HerdrBanner />
+          {selected ? (
+            <TaskList key={selected.id} workspace={selected} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {workspaces.isPending ? "" : "Create a workspace to start planning tasks."}
+            </p>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
