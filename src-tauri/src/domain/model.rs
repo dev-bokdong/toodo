@@ -5,6 +5,7 @@ use std::fmt;
 
 use super::path::{PosixPath, WindowsPath};
 use super::status::TaskStatus;
+use super::timeline::TaskEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkspaceId(pub i64);
@@ -181,6 +182,11 @@ pub struct Task {
     pub worktree_path: Option<HostPath>,
     pub herdr_workspace_id: Option<String>,
     pub pull_request_url: Option<String>,
+    /// Merge time of the pull request reported by GitHub, in seconds since the Unix
+    /// epoch.
+    pub pull_request_merged_at: Option<i64>,
+    /// Status history, oldest event first.
+    pub timeline: Vec<TaskEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

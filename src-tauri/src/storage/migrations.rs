@@ -93,6 +93,20 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE tasks_new RENAME TO tasks;
     CREATE INDEX tasks_workspace_id ON tasks (workspace_id);
     ",
+    // Version 3: task status history for the timeline, and the merge time of a task's
+    // pull request. Tasks created before this version have no history.
+    r"
+    CREATE TABLE task_events (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        status TEXT NOT NULL
+            CHECK (status IN
+                ('planned', 'ready', 'in_progress', 'in_review', 'done', 'cancelled')),
+        at INTEGER NOT NULL
+    );
+    CREATE INDEX task_events_task_id ON task_events (task_id);
+    ALTER TABLE tasks ADD COLUMN pull_request_merged_at INTEGER;
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -186,5 +200,55 @@ mod tests {
             (count("task_dependencies"), count("commit_records")),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn version_3_adds_an_empty_history_and_no_merge_time_to_existing_tasks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..2] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status, pull_request_url)
+                VALUES (1, 'feat', 'A', 'done', 'https://github.com/acme/toodo/pull/1');
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), 3);
+        let merged_at: Option<i64> = conn
+            .query_row(
+                "SELECT pull_request_merged_at FROM tasks WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(merged_at, None);
+        let events = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM task_events", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(events(&conn), 0);
+        assert!(
+            conn.execute(
+                "INSERT INTO task_events (task_id, status, at) VALUES (1, 'merged', 1)",
+                []
+            )
+            .is_err()
+        );
+        conn.execute(
+            "INSERT INTO task_events (task_id, status, at) VALUES (1, 'done', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+        assert_eq!(events(&conn), 0);
     }
 }

@@ -10,6 +10,7 @@ use crate::domain::model::{CommitRecord, HostPath, Task, TaskId, TaskType, Works
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
+use crate::domain::timeline::TaskEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTask {
@@ -53,7 +54,8 @@ fn parse_task_status(raw: &str) -> Result<TaskStatus> {
 }
 
 const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status,
-        t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url, w.kind
+        t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url,
+        t.pull_request_merged_at, w.kind
     FROM tasks t JOIN workspaces w ON w.id = t.workspace_id";
 
 struct TaskRow {
@@ -67,6 +69,7 @@ struct TaskRow {
     worktree_path: Option<String>,
     herdr_workspace_id: Option<String>,
     pull_request_url: Option<String>,
+    pull_request_merged_at: Option<i64>,
     workspace_kind: String,
 }
 
@@ -83,11 +86,12 @@ impl TaskRow {
             worktree_path: row.get(7)?,
             herdr_workspace_id: row.get(8)?,
             pull_request_url: row.get(9)?,
-            workspace_kind: row.get(10)?,
+            pull_request_merged_at: row.get(10)?,
+            workspace_kind: row.get(11)?,
         })
     }
 
-    fn into_task(self, depends_on: BTreeSet<TaskId>) -> Result<Task> {
+    fn into_task(self, depends_on: BTreeSet<TaskId>, timeline: Vec<TaskEvent>) -> Result<Task> {
         let worktree_path = match (self.worktree_path, self.workspace_kind.as_str()) {
             (None, _) => None,
             (Some(raw), "local") => Some(HostPath::Windows(
@@ -109,6 +113,8 @@ impl TaskRow {
             worktree_path,
             herdr_workspace_id: self.herdr_workspace_id,
             pull_request_url: self.pull_request_url,
+            pull_request_merged_at: self.pull_request_merged_at,
+            timeline,
         })
     }
 }
@@ -135,12 +141,42 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
         depends_on.entry(task).or_default().insert(dependency);
     }
 
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT e.task_id, e.status, e.at
+         FROM task_events e JOIN tasks t ON t.id = e.task_id
+         WHERE {filter} ORDER BY e.id"
+    ))?;
+    let mut timelines: HashMap<i64, Vec<TaskEvent>> = HashMap::new();
+    for event in statement.query_map([parameter], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })? {
+        let (task, status, at) = event?;
+        timelines.entry(task).or_default().push(TaskEvent {
+            status: parse_task_status(&status)?,
+            at,
+        });
+    }
+
     rows.into_iter()
         .map(|row| {
             let dependencies = depends_on.remove(&row.id).unwrap_or_default();
-            row.into_task(dependencies)
+            let timeline = timelines.remove(&row.id).unwrap_or_default();
+            row.into_task(dependencies, timeline)
         })
         .collect()
+}
+
+/// Appends a status change of `task` at `at` to its status history.
+fn record_event(conn: &Connection, task: TaskId, status: TaskStatus, at: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO task_events (task_id, status, at) VALUES (?1, ?2, ?3)",
+        params![task.0, status.as_str(), at],
+    )?;
+    Ok(())
 }
 
 fn workspace_tasks(conn: &Connection, workspace: WorkspaceId) -> Result<Vec<Task>> {
@@ -176,23 +212,28 @@ fn stored_worktree_path<'a>(
     }
 }
 
-/// Applies [`dag::readiness_changes`] to the tasks of `workspace` and returns them.
-fn sync_readiness(conn: &Connection, workspace: WorkspaceId) -> Result<Vec<StatusChange>> {
+/// Applies [`dag::readiness_changes`] to the tasks of `workspace`, recording each change
+/// at `at`, and returns them.
+fn sync_readiness(conn: &Connection, workspace: WorkspaceId, at: i64) -> Result<Vec<StatusChange>> {
     let changes = dag::readiness_changes(&workspace_tasks(conn, workspace)?)?;
     for change in &changes {
         conn.execute(
             "UPDATE tasks SET status = ?2 WHERE id = ?1",
             params![change.task.0, change.to.as_str()],
         )?;
+        record_event(conn, change.task, change.to, at)?;
     }
     Ok(changes)
 }
 
 impl Storage {
-    /// Creates a task without dependencies, so it starts out `ready`.
+    /// Creates a task without dependencies, so it starts out `ready`, and records its
+    /// creation as the first event of its history.
     pub fn create_task(&mut self, new: &NewTask) -> Result<Task> {
         let status = TaskStatus::Ready;
-        let inserted = self.conn.execute(
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let inserted = tx.execute(
             "INSERT INTO tasks (workspace_id, type, title, description, status)
              SELECT id, ?2, ?3, ?4, ?5 FROM workspaces WHERE id = ?1",
             params![
@@ -206,8 +247,11 @@ impl Storage {
         if inserted == 0 {
             return Err(StorageError::WorkspaceNotFound(new.workspace_id));
         }
+        let id = TaskId(tx.last_insert_rowid());
+        record_event(&tx, id, status, at)?;
+        tx.commit()?;
         Ok(Task {
-            id: TaskId(self.conn.last_insert_rowid()),
+            id,
             workspace_id: new.workspace_id,
             task_type: new.task_type,
             title: new.title.clone(),
@@ -218,6 +262,8 @@ impl Storage {
             worktree_path: None,
             herdr_workspace_id: None,
             pull_request_url: None,
+            pull_request_merged_at: None,
+            timeline: vec![TaskEvent { status, at }],
         })
     }
 
@@ -274,6 +320,7 @@ impl Storage {
         checkout: &TaskCheckout,
         herdr_workspace_id: &str,
     ) -> Result<Task> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         let status = task.status.transition_to(TaskStatus::InProgress)?;
@@ -295,23 +342,29 @@ impl Storage {
                 herdr_workspace_id
             ],
         )?;
+        record_event(&tx, id, status, at)?;
         let started = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(started)
     }
 
-    /// Moves an `in_review` task to `done` and forgets its herdr workspace, which was
-    /// closed, in one transaction. The worktree path stays: the checkout is kept on disk
-    /// until its worktree is removed. Dependents may become `ready`.
-    pub fn complete_task(&mut self, id: TaskId) -> Result<Task> {
+    /// Moves an `in_review` task to `done`, stores the merge time of its pull request,
+    /// and forgets its herdr workspace, which was closed, in one transaction. The
+    /// worktree path stays: the checkout is kept on disk until its worktree is removed.
+    /// Dependents may become `ready`.
+    pub fn complete_task(&mut self, id: TaskId, merged_at: Option<i64>) -> Result<Task> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         let status = task.status.transition_to(TaskStatus::Done)?;
         tx.execute(
-            "UPDATE tasks SET status = ?2, herdr_workspace_id = NULL WHERE id = ?1",
-            params![id.0, status.as_str()],
+            "UPDATE tasks
+             SET status = ?2, herdr_workspace_id = NULL, pull_request_merged_at = ?3
+             WHERE id = ?1",
+            params![id.0, status.as_str(), merged_at],
         )?;
-        sync_readiness(&tx, task.workspace_id)?;
+        record_event(&tx, id, status, at)?;
+        sync_readiness(&tx, task.workspace_id, at)?;
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
@@ -345,25 +398,38 @@ impl Storage {
         Ok(())
     }
 
-    /// Records the open pull request of an `in_progress` or `in_review` task in one
-    /// transaction: replaces its commit records, stores the pull request URL, and moves
-    /// it to (or keeps it in) `in_review`. Dependents stay waiting until it is `done`.
+    /// Records the pull request of an `in_progress` or `in_review` task in one
+    /// transaction: replaces its commit records, stores the pull request URL and its
+    /// merge time (`None` until merged), and moves it to (or keeps it in) `in_review`.
+    /// Dependents stay waiting until it is `done`.
     pub fn open_pull_request(
         &mut self,
         id: TaskId,
         records: &[CommitRecord],
         pull_request_url: &str,
+        merged_at: Option<i64>,
     ) -> Result<Task> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        if task.status != TaskStatus::InReview {
+        let moved = task.status != TaskStatus::InReview;
+        if moved {
             task.status.transition_to(TaskStatus::InReview)?;
         }
         super::commits::write_commit_records(&tx, id, records)?;
         tx.execute(
-            "UPDATE tasks SET status = ?2, pull_request_url = ?3 WHERE id = ?1",
-            params![id.0, TaskStatus::InReview.as_str(), pull_request_url],
+            "UPDATE tasks SET status = ?2, pull_request_url = ?3, pull_request_merged_at = ?4
+             WHERE id = ?1",
+            params![
+                id.0,
+                TaskStatus::InReview.as_str(),
+                pull_request_url,
+                merged_at
+            ],
         )?;
+        if moved {
+            record_event(&tx, id, TaskStatus::InReview, at)?;
+        }
         let in_review = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(in_review)
@@ -375,6 +441,7 @@ impl Storage {
         if matches!(status, TaskStatus::Planned | TaskStatus::Ready) {
             return Err(StorageError::DerivedStatus(status));
         }
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         task.status.transition_to(status)?;
@@ -382,18 +449,20 @@ impl Storage {
             "UPDATE tasks SET status = ?2 WHERE id = ?1",
             params![id.0, status.as_str()],
         )?;
-        let changes = sync_readiness(&tx, task.workspace_id)?;
+        record_event(&tx, id, status, at)?;
+        let changes = sync_readiness(&tx, task.workspace_id, at)?;
         tx.commit()?;
         Ok(changes)
     }
 
-    /// Deletes a task with its dependency edges and commit records, and returns the
-    /// readiness changes this caused in its dependents.
+    /// Deletes a task with its dependency edges, commit records, and status history, and
+    /// returns the readiness changes this caused in its dependents.
     pub fn delete_task(&mut self, id: TaskId) -> Result<Vec<StatusChange>> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let workspace = task_workspace(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.execute("DELETE FROM tasks WHERE id = ?1", [id.0])?;
-        let changes = sync_readiness(&tx, workspace)?;
+        let changes = sync_readiness(&tx, workspace, at)?;
         tx.commit()?;
         Ok(changes)
     }
@@ -406,6 +475,7 @@ impl Storage {
         task: TaskId,
         depends_on: TaskId,
     ) -> Result<Vec<StatusChange>> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let workspace = if task == depends_on {
             None
@@ -425,7 +495,7 @@ impl Storage {
             "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
             [task.0, depends_on.0],
         )?;
-        let changes = sync_readiness(&tx, workspace)?;
+        let changes = sync_readiness(&tx, workspace, at)?;
         tx.commit()?;
         Ok(changes)
     }
@@ -437,13 +507,14 @@ impl Storage {
         task: TaskId,
         depends_on: TaskId,
     ) -> Result<Vec<StatusChange>> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let workspace = task_workspace(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
         tx.execute(
             "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             [task.0, depends_on.0],
         )?;
-        let changes = sync_readiness(&tx, workspace)?;
+        let changes = sync_readiness(&tx, workspace, at)?;
         tx.commit()?;
         Ok(changes)
     }

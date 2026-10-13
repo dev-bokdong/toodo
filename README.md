@@ -2,7 +2,9 @@
 
 Toodo is a Windows desktop app for planning and shipping code changes. It connects a task plan to
 isolated git worktrees, AI-agent implementation sessions in
-[herdr](https://herdr.dev), commit tracking, and pull requests.
+[herdr](https://herdr.dev), commit tracking, and pull requests. It keeps a timeline of
+when each task was planned, started, and completed, so the year's work can be compiled
+into a performance report.
 
 ## Features
 
@@ -15,6 +17,8 @@ isolated git worktrees, AI-agent implementation sessions in
   attached to the task's worktree.
 - **Commit tracking**: record the commits (SHA, message, author, time) made for a task.
 - **Completion and PR**: completing a task opens a pull request for its branch.
+- **Timeline**: every status change is timestamped; the dependency graph is drawn on a
+  time axis showing when each task was planned, started, reviewed, and completed.
 
 ## Documentation
 

@@ -3,6 +3,15 @@
 This document describes the domain model and the main components of Toodo. It is a
 starting point; refine it as implementation decisions are made.
 
+## Purpose
+
+Besides driving the work itself, Toodo is the record used to compile a year-end
+performance report. For every task it must be able to answer when it was planned, when
+work on it started, when its pull request was opened, and when it was completed or
+cancelled, and show how tasks depended on each other over time. Timeline data is
+therefore part of the domain, not a UI detail: it is recorded at the moment each change
+happens and never derived later from git or GitHub alone.
+
 ## Domain Model
 
 ### Workspace
@@ -88,6 +97,38 @@ A unit of work inside a workspace.
 | `worktreePath` | Directory of the task's worktree. |
 | `herdrWorkspaceId` | herdr workspace bound to the worktree, if any. |
 | `pullRequestUrl` | Set when the PR is opened, as the task moves to `in_review`. |
+| `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
+| `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
+
+### Task Timeline
+
+Every task keeps an append-only status history. Each entry is a `TaskEvent`:
+
+| Field | Description |
+| --- | --- |
+| `taskId` | Task the event belongs to. |
+| `status` | Status the task moved to. |
+| `at` | Time of the change, in seconds since the Unix epoch (UTC), from the clock of the machine running Toodo. Shown in the local time zone. |
+
+- Creating a task records its initial status (`planned` or `ready`). Every later status
+  change, including the automatic `planned`/`ready` recomputation after dependency
+  changes, records one event in the same transaction as the change itself.
+- Events are never edited or deleted on their own; they go away only when their task is
+  deleted. Cancelling a task keeps its history, so cancel rather than delete tasks that
+  should appear in a report.
+- The milestones used by the timeline view and reports are derived from the history:
+
+  | Milestone | Derived from |
+  | --- | --- |
+  | `plannedAt` | The first event (task creation). |
+  | `readyAt` | The latest move to `ready` before `startedAt` (when the last dependency was done). |
+  | `startedAt` | The first move to `in_progress`. |
+  | `reviewAt` | The first move to `in_review` (pull request opened). |
+  | `completedAt` | The move to `done`. |
+  | `cancelledAt` | The move to `cancelled`. |
+
+- Tasks created before status history existed have no events; their milestones are
+  unknown and are not guessed from git or GitHub.
 
 ### Task Dependencies (DAG)
 
@@ -110,6 +151,25 @@ A commit produced while implementing a task.
 
 Commits are discovered from the task branch, typically as
 `git log <baseBranch>..<taskBranch>` run in the worktree.
+
+## Timeline View
+
+The dependency graph of a workspace is drawn on a time axis instead of as a free-form
+layered DAG, so the same picture shows both what depended on what and when it happened.
+
+- The horizontal axis is time. Each task is a bar from `plannedAt` to `completedAt`
+  (or `cancelledAt`); a task that is still open extends to now. The bar is split into
+  phases by its milestones: waiting (`plannedAt` to `startedAt`), in progress
+  (`startedAt` to `reviewAt`), and in review (`reviewAt` to `completedAt`).
+- Dependency edges run from the prerequisite's bar to the dependent's bar, so the order
+  of work reads left to right.
+- The vertical axis has no meaning beyond grouping: tasks are packed into lanes, each
+  placed in the first lane that is free for its whole interval, in order of `plannedAt`.
+- The visible range can be zoomed (day, week, month) and narrowed to a period such as a
+  calendar year, the unit of a performance report.
+- Tasks without a known `plannedAt` are listed beside the timeline instead of on it.
+- Dependencies can still be added and removed in this view, with the same rules as in
+  the task list.
 
 ## Runtime Context
 
@@ -181,8 +241,10 @@ Toodo owns planning, task state, commit records, and pull requests.
     against the DAG rules, and `planned`/`ready` statuses are recomputed from the
     dependencies after every dependency, status, or task change. `planned` and `ready`
     cannot be set directly.
-  - Deleting a workspace or task also deletes its tasks, dependency edges, and commit
-    records.
+  - Every task status change appends a row to the task's status history in the same
+    transaction (see [Task Timeline](#task-timeline)).
+  - Deleting a workspace or task also deletes its tasks, dependency edges, commit
+    records, and status history.
 
 ## Decisions
 
@@ -206,6 +268,9 @@ Toodo owns planning, task state, commit records, and pull requests.
 - Repositories inside WSL (`\\wsl$\...`) are not supported as local workspaces. Register
   them as SSH workspaces if needed.
 - Task types are a fixed set (see [Task Types](#task-types)).
+- Toodo is used for year-end performance reporting, so every task status change is
+  timestamped and kept as history, and the dependency graph is drawn on a time axis
+  (see [Timeline View](#timeline-view)).
 
 ## Deferred
 
@@ -219,3 +284,7 @@ Out of the first scope; revisit when needed.
 - A herdr plugin for in-herdr actions such as "complete task"; herdr plugins are in
   preview on Windows.
 - Native WSL repository support.
+- Correcting timeline timestamps by hand, for example to enter work done before the task
+  was created in Toodo.
+- Exporting a report (for example Markdown or CSV) of the tasks completed in a period,
+  with their milestones, pull requests, and commits.

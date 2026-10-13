@@ -8,3 +8,4 @@ pub mod remote;
 pub mod slug;
 pub mod ssh_config;
 pub mod status;
+pub mod timeline;

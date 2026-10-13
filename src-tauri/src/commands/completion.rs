@@ -154,6 +154,7 @@ fn open(
     if let Some(PullRequest {
         url,
         state: PullRequestState::Merged,
+        merged_at,
         ..
     }) = existing
     {
@@ -165,7 +166,7 @@ fn open(
         } else {
             records
         };
-        return Ok(storage.open_pull_request(id, &records, &url)?);
+        return Ok(storage.open_pull_request(id, &records, &url, merged_at)?);
     }
     if records.is_empty() {
         return Err(CommandError::rejected(format!(
@@ -184,7 +185,7 @@ fn open(
             body: &checkout.task.description,
         })?,
     };
-    Ok(lock(storage).open_pull_request(id, &records, &pull_request_url)?)
+    Ok(lock(storage).open_pull_request(id, &records, &pull_request_url, None)?)
 }
 
 /// Rejects a pull request that does not merge into the workspace's base branch: the
@@ -246,7 +247,7 @@ fn complete(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(lock(storage).complete_task(id)?)
+    Ok(lock(storage).complete_task(id, pull_request.merged_at)?)
 }
 
 #[cfg(test)]
@@ -573,13 +574,24 @@ mod tests {
     fn in_review_fixture() -> Fixture {
         let fixture = local_fixture();
         lock(&fixture.storage)
-            .open_pull_request(fixture.task.id, &[], PR)
+            .open_pull_request(fixture.task.id, &[], PR, None)
             .unwrap();
         fixture
     }
 
+    /// `mergedAt` of a merged pull request in the `gh` output, and the same time in
+    /// seconds since the Unix epoch.
+    const MERGED_AT: (&str, i64) = ("2026-10-09T14:47:45Z", 1_791_557_265);
+
     fn pull_request_json(state: &str, base: &str) -> String {
-        format!(r#"{{"baseRefName":"{base}","state":"{state}","url":"{PR}"}}"#)
+        let merged_at = if state == "MERGED" {
+            format!("\"{}\"", MERGED_AT.0)
+        } else {
+            "null".to_owned()
+        };
+        format!(
+            r#"{{"baseRefName":"{base}","mergedAt":{merged_at},"state":"{state}","url":"{PR}"}}"#
+        )
     }
 
     /// `gh pr list` output with one pull request.
@@ -644,6 +656,7 @@ mod tests {
 
         assert_eq!(in_review.status, TaskStatus::InReview);
         assert_eq!(in_review.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(in_review.pull_request_merged_at, Some(MERGED_AT.1));
         assert_eq!(git_commands(&git_runner), ["log", "remote"]);
         assert_eq!(invocations(&gh_runner).len(), 1);
         assert_eq!(recorded_shas(&fixture), [SHA_A]);
@@ -734,6 +747,11 @@ mod tests {
 
         assert_eq!(completed.status, TaskStatus::Done);
         assert_eq!(completed.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(completed.pull_request_merged_at, Some(MERGED_AT.1));
+        assert_eq!(
+            completed.timeline.last().map(|event| event.status),
+            Some(TaskStatus::Done)
+        );
         assert_eq!(completed.herdr_workspace_id, None);
         assert_eq!(completed.worktree_path, fixture.task.worktree_path);
         assert_eq!(stored(&fixture, &fixture.task), completed);
@@ -747,7 +765,7 @@ mod tests {
         );
         assert_eq!(
             invocations(&gh_runner)[0].args,
-            ["pr", "view", PR, "--json", "url,state,baseRefName"].map(str::to_owned)
+            ["pr", "view", PR, "--json", "url,state,baseRefName,mergedAt"].map(str::to_owned)
         );
     }
 

@@ -24,6 +24,7 @@ import {
   useTasks,
   useUpdateTask,
 } from "@/lib/queries";
+import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore"];
@@ -123,6 +124,22 @@ const confirmLabels: Record<Confirmation, string> = {
   "remove-worktree": "Confirm remove worktree",
   "force-remove-worktree": "Confirm force remove",
 };
+
+function TaskTimeline({ task }: { task: Task }) {
+  const milestones = reachedMilestones(task.milestones);
+  if (milestones.length === 0) {
+    return null;
+  }
+  return (
+    <p aria-label={`Timeline of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+      {milestones.map(({ label, at }) => (
+        <time key={label} dateTime={new Date(at * 1000).toISOString()} title={new Date(at * 1000).toLocaleString()}>
+          {`${label} ${formatDate(at)}`}
+        </time>
+      ))}
+    </p>
+  );
+}
 
 function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const herdr = useHerdrStatus();
@@ -237,6 +254,7 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
             )}
           </div>
         )}
+        <TaskTimeline task={task} />
         {task.branch && (
           <p className="truncate font-mono text-xs text-muted-foreground" title={task.worktreePath ?? undefined}>
             {task.branch}

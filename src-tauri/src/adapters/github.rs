@@ -35,10 +35,12 @@ pub struct PullRequest {
     pub state: PullRequestState,
     /// Branch the pull request merges into.
     pub base: String,
+    /// Merge time in seconds since the Unix epoch; `None` until it is merged.
+    pub merged_at: Option<i64>,
 }
 
 /// Fields requested with `--json` for a [`PullRequest`].
-const PULL_REQUEST_FIELDS: &str = "url,state,baseRefName";
+const PULL_REQUEST_FIELDS: &str = "url,state,baseRefName,mergedAt";
 
 fn parse_pull_request(value: &Value) -> Option<PullRequest> {
     let field = |name: &str| value.get(name).and_then(Value::as_str);
@@ -48,11 +50,71 @@ fn parse_pull_request(value: &Value) -> Option<PullRequest> {
         "MERGED" => PullRequestState::Merged,
         _ => return None,
     };
+    // `gh` reports `"mergedAt": null` for a pull request that is not merged.
+    let merged_at = match value.get("mergedAt")? {
+        Value::Null => None,
+        Value::String(raw) => Some(parse_utc_timestamp(raw)?),
+        _ => return None,
+    };
     Some(PullRequest {
         url: field("url")?.to_owned(),
         state,
         base: field("baseRefName")?.to_owned(),
+        merged_at,
     })
+}
+
+/// Seconds since the Unix epoch of a UTC timestamp as printed by `gh`, e.g.
+/// `2026-10-09T14:47:45Z`.
+fn parse_utc_timestamp(raw: &str) -> Option<i64> {
+    let bytes = raw.as_bytes();
+    let separators_match = bytes.len() == 20
+        && [
+            (4, b'-'),
+            (7, b'-'),
+            (10, b'T'),
+            (13, b':'),
+            (16, b':'),
+            (19, b'Z'),
+        ]
+        .iter()
+        .all(|&(index, separator)| bytes[index] == separator);
+    if !separators_match {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| -> Option<i64> {
+        let digits = &raw[range];
+        digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| digits.parse().ok())
+            .flatten()
+    };
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Days from 1970-01-01 to the given proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil` algorithm).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month_index = (month + 9) % 12;
+    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 pub struct GitHub {
@@ -169,11 +231,38 @@ mod tests {
 
     const URL: &str = "https://github.com/acme/toodo/pull/7";
 
+    const MERGED_AT: &str = "2026-10-09T14:47:45Z";
+    const MERGED_AT_SECONDS: i64 = 1_791_557_265;
+
     fn pull_request(state: PullRequestState, base: &str) -> PullRequest {
         PullRequest {
             url: URL.to_owned(),
             state,
             base: base.to_owned(),
+            merged_at: (state == PullRequestState::Merged).then_some(MERGED_AT_SECONDS),
+        }
+    }
+
+    #[test]
+    fn utc_timestamps_are_converted_to_unix_seconds() {
+        assert_eq!(parse_utc_timestamp("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_utc_timestamp(MERGED_AT), Some(MERGED_AT_SECONDS));
+        assert_eq!(
+            parse_utc_timestamp("2024-02-29T23:59:59Z"),
+            Some(1_709_251_199)
+        );
+        for malformed in [
+            "",
+            "2026-10-09",
+            "2026-10-09 14:47:45Z",
+            "2026-10-09T14:47:45+09:00",
+            "2026-13-09T14:47:45Z",
+            "2023-02-29T00:00:00Z",
+            "2026-10-09T24:00:00Z",
+            "2026-1a-09T14:47:45Z",
+            "+026-10-09T14:47:45Z",
+        ] {
+            assert_eq!(parse_utc_timestamp(malformed), None, "{malformed}");
         }
     }
 
@@ -181,7 +270,7 @@ mod tests {
     fn find_pull_request_reads_the_first_pull_request_in_any_state() {
         let (github, runner) = github(vec![
             Ok(format!(
-                r#"[{{"baseRefName":"main","state":"MERGED","url":"{URL}"}}]"#
+                r#"[{{"baseRefName":"main","mergedAt":"{MERGED_AT}","state":"MERGED","url":"{URL}"}}]"#
             )),
             Ok("[]\n".to_owned()),
         ]);
@@ -205,7 +294,7 @@ mod tests {
                 "--state",
                 "all",
                 "--json",
-                "url,state,baseRefName",
+                "url,state,baseRefName,mergedAt",
                 "--limit",
                 "1",
             ])
@@ -217,8 +306,11 @@ mod tests {
         let (github, _) = github(vec![
             Ok("no pull requests\n".to_owned()),
             Ok(format!(r#"[{{"url":"{URL}","state":"OPEN"}}]"#)),
+            Ok(format!(
+                r#"[{{"baseRefName":"main","mergedAt":"yesterday","state":"MERGED","url":"{URL}"}}]"#
+            )),
         ]);
-        for _ in 0..2 {
+        for _ in 0..3 {
             assert!(matches!(
                 github.find_pull_request(&repository(), "feat/x-1"),
                 Err(GitError::UnexpectedOutput { .. })
@@ -227,10 +319,15 @@ mod tests {
     }
 
     #[test]
-    fn pull_request_reads_state_and_base() {
+    fn pull_request_reads_state_base_and_merge_time() {
         let view = |state: &str| {
+            let merged_at = if state == "MERGED" {
+                format!("\"{MERGED_AT}\"")
+            } else {
+                "null".to_owned()
+            };
             Ok(format!(
-                r#"{{"baseRefName":"develop","state":"{state}","url":"{URL}"}}"#
+                r#"{{"baseRefName":"develop","mergedAt":{merged_at},"state":"{state}","url":"{URL}"}}"#
             ))
         };
         let (github, runner) = github(vec![
@@ -255,7 +352,13 @@ mod tests {
         ));
         assert_eq!(
             runner.invocations.lock().unwrap()[0],
-            invocation(&["pr", "view", URL, "--json", "url,state,baseRefName"])
+            invocation(&[
+                "pr",
+                "view",
+                URL,
+                "--json",
+                "url,state,baseRefName,mergedAt"
+            ])
         );
     }
 

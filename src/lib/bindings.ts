@@ -216,6 +216,14 @@ export type Task = {
 	worktreePath: string | null,
 	herdrWorkspaceId: string | null,
 	pullRequestUrl: string | null,
+	/**  Merge time of the pull request reported by GitHub. */
+	pullRequestMergedAt: Timestamp | null,
+	/**
+	 *  Status history, oldest event first. Empty for tasks created before Toodo
+	 *  recorded it.
+	 */
+	timeline: TaskEvent[],
+	milestones: TaskMilestones,
 };
 
 /**
@@ -229,11 +237,32 @@ export type TaskEdit = {
 	description: string,
 };
 
+export type TaskEvent = {
+	status: TaskStatus,
+	at: Timestamp,
+};
+
 export type TaskId = number;
+
+/**
+ *  Milestones derived from a task's status history (see `docs/architecture.md`, Task
+ *  Timeline); `null` when not reached or not recorded.
+ */
+export type TaskMilestones = {
+	plannedAt: Timestamp | null,
+	readyAt: Timestamp | null,
+	startedAt: Timestamp | null,
+	reviewAt: Timestamp | null,
+	completedAt: Timestamp | null,
+	cancelledAt: Timestamp | null,
+};
 
 export type TaskStatus = "planned" | "ready" | "in_progress" | "in_review" | "done" | "cancelled";
 
 export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore";
+
+/**  Seconds since the Unix epoch (UTC). */
+export type Timestamp = number;
 
 export type Workspace = {
 	id: WorkspaceId,

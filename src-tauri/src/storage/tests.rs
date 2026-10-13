@@ -139,6 +139,15 @@ fn entities_survive_reopening_the_database_file() {
     let mut expected_started = started.clone();
     expected_started.status = InProgress;
     expected_started.depends_on = [base.id].into();
+    expected_started.timeline = local_tasks[1].timeline.clone();
+    assert_eq!(
+        expected_started
+            .timeline
+            .iter()
+            .map(|event| event.status)
+            .collect::<Vec<_>>(),
+        [Ready, Planned, Ready, InProgress]
+    );
     assert_eq!(
         storage.get_task(started.id).unwrap(),
         Some(expected_started)
@@ -616,7 +625,7 @@ fn open_pull_request_stores_commits_and_url_and_keeps_dependents_waiting() {
     let pr = "https://github.com/acme/toodo/pull/3";
 
     let in_review = storage
-        .open_pull_request(task.id, &commits[..1], pr)
+        .open_pull_request(task.id, &commits[..1], pr, None)
         .unwrap();
 
     assert_eq!(in_review.status, InReview);
@@ -624,7 +633,9 @@ fn open_pull_request_stores_commits_and_url_and_keeps_dependents_waiting() {
     assert_eq!(storage.get_task(task.id).unwrap().unwrap(), in_review);
     assert_eq!(status(&storage, &dependent), Planned);
 
-    let updated = storage.open_pull_request(task.id, &commits, pr).unwrap();
+    let updated = storage
+        .open_pull_request(task.id, &commits, pr, None)
+        .unwrap();
     assert_eq!(updated, in_review);
     assert_eq!(storage.list_commit_records(task.id).unwrap(), commits);
     assert_eq!(status(&storage, &dependent), Planned);
@@ -638,7 +649,7 @@ fn open_pull_request_stores_commits_and_url_and_keeps_dependents_waiting() {
         }]
     );
     assert!(matches!(
-        storage.open_pull_request(task.id, &commits, pr),
+        storage.open_pull_request(task.id, &commits, pr, None),
         Err(StorageError::Transition(_))
     ));
 }
@@ -655,20 +666,26 @@ fn open_pull_request_writes_nothing_when_it_is_rejected() {
         .unwrap();
 
     assert!(matches!(
-        storage.open_pull_request(ready.id, &[commit(ready.id, "aaa", 1)], "https://x/pull/1"),
+        storage.open_pull_request(
+            ready.id,
+            &[commit(ready.id, "aaa", 1)],
+            "https://x/pull/1",
+            None
+        ),
         Err(StorageError::Transition(_))
     ));
     assert!(matches!(
         storage.open_pull_request(
             started.id,
             &[commit(ready.id, "aaa", 1)],
-            "https://x/pull/1"
+            "https://x/pull/1",
+            None
         ),
         Err(StorageError::CommitTaskMismatch { .. })
     ));
     let duplicate = [commit(started.id, "aaa", 1), commit(started.id, "aaa", 2)];
     assert!(matches!(
-        storage.open_pull_request(started.id, &duplicate, "https://x/pull/1"),
+        storage.open_pull_request(started.id, &duplicate, "https://x/pull/1", None),
         Err(StorageError::Sqlite(_))
     ));
     for task in [&ready, &started] {
@@ -684,4 +701,123 @@ fn open_pull_request_writes_nothing_when_it_is_rejected() {
         storage.list_commit_records(started.id).unwrap(),
         [commit(started.id, "old", 1)]
     );
+}
+
+/// Storage whose clock reads `now`, so status changes get known timestamps.
+fn clocked_storage(start: i64) -> (Storage, std::sync::Arc<std::sync::atomic::AtomicI64>) {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let now = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(start));
+    let clock = now.clone();
+    storage.set_clock(move || clock.load(std::sync::atomic::Ordering::SeqCst));
+    (storage, now)
+}
+
+fn set_now(now: &std::sync::atomic::AtomicI64, at: i64) {
+    now.store(at, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn timeline(storage: &Storage, task: &Task) -> Vec<(TaskStatus, i64)> {
+    storage
+        .get_task(task.id)
+        .unwrap()
+        .unwrap()
+        .timeline
+        .iter()
+        .map(|event| (event.status, event.at))
+        .collect()
+}
+
+#[test]
+fn every_status_change_of_a_task_is_recorded_with_its_time() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    assert_eq!(timeline(&storage, &task), [(Ready, 100)]);
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), task);
+
+    set_now(&now, 200);
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+    storage
+        .start_task(task.id, &checkout(path, "feat/add-login-1"), "w7")
+        .unwrap();
+    set_now(&now, 300);
+    let pr = "https://github.com/acme/toodo/pull/3";
+    storage.open_pull_request(task.id, &[], pr, None).unwrap();
+    set_now(&now, 350);
+    let pushed_again = storage.open_pull_request(task.id, &[], pr, None).unwrap();
+    assert_eq!(pushed_again.timeline.len(), 3);
+    set_now(&now, 400);
+    let done = storage.complete_task(task.id, Some(390)).unwrap();
+
+    assert_eq!(
+        timeline(&storage, &task),
+        [
+            (Ready, 100),
+            (InProgress, 200),
+            (InReview, 300),
+            (Done, 400)
+        ]
+    );
+    assert_eq!(done, storage.get_task(task.id).unwrap().unwrap());
+    assert_eq!(done.pull_request_merged_at, Some(390));
+    assert_eq!(
+        crate::domain::timeline::milestones(&done.timeline),
+        crate::domain::timeline::Milestones {
+            planned_at: Some(100),
+            ready_at: Some(100),
+            started_at: Some(200),
+            review_at: Some(300),
+            completed_at: Some(400),
+            cancelled_at: None,
+        }
+    );
+}
+
+#[test]
+fn readiness_changes_are_recorded_and_rejected_changes_record_nothing() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+
+    set_now(&now, 200);
+    storage.add_dependency(b.id, a.id).unwrap();
+    set_now(&now, 250);
+    assert!(storage.add_dependency(a.id, b.id).is_err());
+    assert!(storage.set_task_status(b.id, InProgress).is_err());
+    assert!(storage.complete_task(a.id, None).is_err());
+    assert!(
+        storage
+            .open_pull_request(a.id, &[], "https://x/pull/1", None)
+            .is_err()
+    );
+    assert_eq!(timeline(&storage, &a), [(Ready, 100)]);
+    assert_eq!(timeline(&storage, &b), [(Ready, 100), (Planned, 200)]);
+
+    for (at, status) in [(300, InProgress), (400, InReview), (500, Done)] {
+        set_now(&now, at);
+        storage.set_task_status(a.id, status).unwrap();
+    }
+    set_now(&now, 600);
+    storage.set_task_status(b.id, Cancelled).unwrap();
+    assert_eq!(
+        timeline(&storage, &b),
+        [(Ready, 100), (Planned, 200), (Ready, 500), (Cancelled, 600)]
+    );
+
+    set_now(&now, 700);
+    let c = add_task(&mut storage, &workspace, "C");
+    let d = add_task(&mut storage, &workspace, "D");
+    set_now(&now, 710);
+    storage.add_dependency(c.id, d.id).unwrap();
+    set_now(&now, 720);
+    storage.remove_dependency(c.id, d.id).unwrap();
+    assert_eq!(
+        timeline(&storage, &c),
+        [(Ready, 700), (Planned, 710), (Ready, 720)]
+    );
+
+    let events_before = row_count(&storage, "task_events");
+    storage.delete_task(a.id).unwrap();
+    assert_eq!(events_before - row_count(&storage, "task_events"), 4);
 }

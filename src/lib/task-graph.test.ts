@@ -15,6 +15,16 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     worktreePath: null,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
+    pullRequestMergedAt: null,
+    timeline: [],
+    milestones: {
+      plannedAt: null,
+      readyAt: null,
+      startedAt: null,
+      reviewAt: null,
+      completedAt: null,
+      cancelledAt: null,
+    },
     ...overrides,
   };
 }

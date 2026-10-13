@@ -17,6 +17,7 @@ mod tests;
 
 use std::fmt;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
@@ -33,6 +34,16 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 /// in a transaction.
 pub struct Storage {
     conn: Connection,
+    /// Current time in seconds since the Unix epoch, used to timestamp task status
+    /// changes.
+    clock: Box<dyn Fn() -> i64 + Send>,
+}
+
+fn system_clock() -> i64 {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the system clock is set after the Unix epoch");
+    i64::try_from(elapsed.as_secs()).expect("seconds since the Unix epoch fit in i64")
 }
 
 impl Storage {
@@ -50,7 +61,20 @@ impl Storage {
     fn init(mut conn: Connection) -> Result<Self> {
         migrations::migrate(&mut conn)?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            clock: Box::new(system_clock),
+        })
+    }
+
+    /// Replaces the clock that timestamps task status changes.
+    #[cfg(test)]
+    pub(crate) fn set_clock(&mut self, clock: impl Fn() -> i64 + Send + 'static) {
+        self.clock = Box::new(clock);
+    }
+
+    fn now(&self) -> i64 {
+        (self.clock)()
     }
 }
 

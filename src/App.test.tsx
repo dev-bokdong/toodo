@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
+import { formatDate } from "@/lib/timeline";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { commands, type CommitRecord, type HerdrMachine, type Task, type Workspace } from "@/lib/bindings";
 
@@ -67,6 +68,16 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     worktreePath: null,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
+    pullRequestMergedAt: null,
+    timeline: [],
+    milestones: {
+      plannedAt: null,
+      readyAt: null,
+      startedAt: null,
+      reviewAt: null,
+      completedAt: null,
+      cancelledAt: null,
+    },
     ...overrides,
   };
 }
@@ -117,7 +128,13 @@ describe("App", () => {
       status: "ok",
       data:
         workspaceId === 1
-          ? [task(1, 1, "Add storage", { status: "done" }), task(2, 1, "Add UI", { status: "planned", dependsOn: [1] })]
+          ? [
+              task(1, 1, "Add storage", {
+                status: "done",
+                milestones: { ...task(1, 1, "").milestones, plannedAt: 1760000000, completedAt: 1760500000 },
+              }),
+              task(2, 1, "Add UI", { status: "planned", dependsOn: [1] }),
+            ]
           : [task(3, 2, "Fix ssh")],
     }));
     renderApp();
@@ -127,6 +144,11 @@ describe("App", () => {
     const dependencies = within(tasks).getByRole("group", { name: "Dependencies of #2" });
     expect(within(dependencies).getByText("#1")).toBeInTheDocument();
     expect(within(tasks).getByText("Planned")).toBeInTheDocument();
+    const timeline = within(tasks).getByLabelText("Timeline of #1");
+    expect(timeline).toHaveTextContent(`Planned ${formatDate(1760000000)}`);
+    expect(timeline).toHaveTextContent(`Completed ${formatDate(1760500000)}`);
+    expect(timeline).not.toHaveTextContent("Cancelled");
+    expect(within(tasks).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
     expect(mocked.listTasks).toHaveBeenCalledWith(1);
 
     fireEvent.click(screen.getByRole("button", { name: /herdr/ }));

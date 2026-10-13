@@ -107,6 +107,8 @@ mod tests {
             worktree_path: None,
             herdr_workspace_id: None,
             pull_request_url: None,
+            pull_request_merged_at: None,
+            timeline: Vec::new(),
         }
     }
 

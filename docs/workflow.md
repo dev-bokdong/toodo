@@ -13,6 +13,10 @@ planned --> ready --> in_progress --> in_review --> done
 
 A `planned` task can also be cancelled. `done` and `cancelled` are final states.
 
+Every state change, including the automatic moves between `planned` and `ready`, is
+recorded with its time in the task's status history, which feeds the timeline view and
+year-end reports (see [architecture.md](architecture.md#task-timeline)).
+
 | State | Meaning |
 | --- | --- |
 | `planned` | Task exists; one or more dependencies are not `done` yet. |
@@ -45,7 +49,8 @@ else the checked-out branch. Deleting a workspace never deletes its repository.
 ### 2. Plan tasks
 
 The user creates tasks and declares dependencies between them. Toodo rejects any
-dependency that would create a cycle and computes which tasks are `ready`.
+dependency that would create a cycle and computes which tasks are `ready`. The creation
+time is recorded as the task's `plannedAt`.
 
 ### 3. Prepare the worktree
 
@@ -67,7 +72,7 @@ When the user starts a `ready` task, Toodo:
    workspaces) to create the git worktree and open it as a herdr workspace. If herdr
    fails, the task stays `ready` and nothing is stored.
 5. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
-   `in_progress`.
+   `in_progress`, which records `startedAt`.
 
 ### 4. Implement in herdr
 
@@ -107,8 +112,9 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
    title and described with the task description. `gh` always runs on this machine, so
    SSH machines do not need it.
-5. In one transaction, stores the commit records and the pull request URL and moves the
-   task to `in_review`. Dependent tasks keep waiting: their worktrees start from the base
+5. In one transaction, stores the commit records and the pull request URL (and, for a
+   merged one, its `mergedAt` as `pullRequestMergedAt`) and moves the task to
+   `in_review`, which records `reviewAt`. Dependent tasks keep waiting: their worktrees start from the base
    branch, which does not contain this work until the pull request is merged.
 
 If any step fails, the task keeps its status and previous commit records and the error is
@@ -120,12 +126,13 @@ Review and merging happen on GitHub; Toodo never merges a pull request itself.
 
 ### 7. Complete the task
 
-When the user completes an `in_review` task, Toodo reads the state and base branch of
-its pull request (`gh pr view <url> --json url,state,baseRefName`). A pull request into
+When the user completes an `in_review` task, Toodo reads the state, base branch, and
+merge time of its pull request (`gh pr view <url> --json url,state,baseRefName,mergedAt`). A pull request into
 another branch than the workspace base branch is rejected. Only a merged pull request
 completes the task: Toodo closes its herdr workspace (`herdr workspace close
 <herdrWorkspaceId>`), which keeps the worktree checkout on disk, then moves the task to
-`done` and clears `herdrWorkspaceId` in one transaction, which may make dependent tasks
+`done` (recording `completedAt`), stores `pullRequestMergedAt`, and clears
+`herdrWorkspaceId` in one transaction, which may make dependent tasks
 `ready`. A workspace herdr no longer has is treated as already closed; any other herdr
 failure keeps the task `in_review`, and completing it again is safe. An open pull request is rejected until it is
 merged; a pull request closed without merging is rejected too, so the user reopens it or

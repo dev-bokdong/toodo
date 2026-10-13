@@ -7,7 +7,7 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{herdr, ssh};
-use crate::domain::{dag, model, path, ssh_config, status};
+use crate::domain::{dag, model, path, ssh_config, status, timeline};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -20,6 +20,11 @@ pub struct WorkspaceId(#[specta(type = Number)] pub i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct TaskId(#[specta(type = Number)] pub i64);
+
+/// Seconds since the Unix epoch (UTC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct Timestamp(#[specta(type = Number)] pub i64);
 
 impl From<WorkspaceId> for model::WorkspaceId {
     fn from(id: WorkspaceId) -> Self {
@@ -415,6 +420,45 @@ pub struct Task {
     pub worktree_path: Option<String>,
     pub herdr_workspace_id: Option<String>,
     pub pull_request_url: Option<String>,
+    /// Merge time of the pull request reported by GitHub.
+    pub pull_request_merged_at: Option<Timestamp>,
+    /// Status history, oldest event first. Empty for tasks created before Toodo
+    /// recorded it.
+    pub timeline: Vec<TaskEvent>,
+    pub milestones: TaskMilestones,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskEvent {
+    pub status: TaskStatus,
+    pub at: Timestamp,
+}
+
+/// Milestones derived from a task's status history (see `docs/architecture.md`, Task
+/// Timeline); `null` when not reached or not recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskMilestones {
+    pub planned_at: Option<Timestamp>,
+    pub ready_at: Option<Timestamp>,
+    pub started_at: Option<Timestamp>,
+    pub review_at: Option<Timestamp>,
+    pub completed_at: Option<Timestamp>,
+    pub cancelled_at: Option<Timestamp>,
+}
+
+impl From<timeline::Milestones> for TaskMilestones {
+    fn from(milestones: timeline::Milestones) -> Self {
+        Self {
+            planned_at: milestones.planned_at.map(Timestamp),
+            ready_at: milestones.ready_at.map(Timestamp),
+            started_at: milestones.started_at.map(Timestamp),
+            review_at: milestones.review_at.map(Timestamp),
+            completed_at: milestones.completed_at.map(Timestamp),
+            cancelled_at: milestones.cancelled_at.map(Timestamp),
+        }
+    }
 }
 
 impl From<&model::Task> for Task {
@@ -431,6 +475,16 @@ impl From<&model::Task> for Task {
             worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
+            pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
+            timeline: task
+                .timeline
+                .iter()
+                .map(|event| TaskEvent {
+                    status: event.status.into(),
+                    at: Timestamp(event.at),
+                })
+                .collect(),
+            milestones: timeline::milestones(&task.timeline).into(),
         }
     }
 }
