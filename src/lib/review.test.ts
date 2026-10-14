@@ -239,6 +239,7 @@ describe("summarize", () => {
 
     expect(summary.leadTime).toEqual({ median: 6 * day, tasks: 3 });
     expect(summary.cycleTime).toEqual({ median: 3 * day, tasks: 2 });
+    expect(summary.activeTime).toBeNull();
     expect(summary.reviewTime).toEqual({ median: (day + 2 * hour) / 2, tasks: 2 });
   });
 
@@ -252,6 +253,25 @@ describe("summarize", () => {
       { month: "2026-10", count: 0 },
       { month: "2026-11", count: 0 },
     ]);
+  });
+
+  it("leaves pauses out of the active time of completed tasks", () => {
+    const end = local(2026, 5, 20);
+    const resumed = completed(1, end, { startedAt: end - 10 * day }, {
+      timeline: [
+        { status: "planned", at: end - 20 * day },
+        { status: "in_progress", at: end - 10 * day },
+        { status: "planned", at: end - 9 * day },
+        { status: "in_progress", at: end - 2 * day },
+        { status: "in_review", at: end - day },
+        { status: "done", at: end },
+      ],
+    });
+
+    const summary = summarize(year, [resumed], [toodo]);
+
+    expect(summary.cycleTime).toEqual({ median: 10 * day, tasks: 1 });
+    expect(summary.activeTime).toEqual({ median: 3 * day, tasks: 1 });
   });
 });
 
@@ -293,6 +313,7 @@ describe("reviewMarkdown", () => {
         "- Completed by workspace: toodo 1",
         "- Median lead time (planned to completed): 2.0d (1 task)",
         "- Median cycle time (started to completed): no data",
+        "- Median active time (started to completed, without pauses): no data",
         "- Median review time (in review to merged): no data",
         "",
         "## Completed (1)",
@@ -335,14 +356,23 @@ describe("reviewCsv", () => {
       pullRequestMergedAt: at - hour,
     });
 
-    const csv = reviewCsv([done, entry(8, "planned", { workspaceId: 9, title: "Plan café" })], [toodo]);
+    done.task.timeline = [
+      { status: "planned", at: local(2026, 10, 1, 9) },
+      { status: "in_progress", at: at - 3 * hour },
+      { status: "in_review", at: at - 2 * hour },
+      { status: "done", at },
+    ];
+    const working = entry(8, "planned", { workspaceId: 9, title: "Plan café" });
+    working.task.timeline = [{ status: "in_progress", at: at - 1800 }];
+
+    const csv = reviewCsv([done, working], [toodo], at);
 
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Planned,Started,In review,Completed,Merged,Pull request,Commits in period",
-          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0',
-          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,0",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Planned,Started,In review,Completed,Merged,Pull request,Commits in period,Active hours",
+          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0,3',
+          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,0,0.5",
         ].join("\r\n") +
         "\r\n",
     );

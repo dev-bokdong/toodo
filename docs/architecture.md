@@ -182,8 +182,10 @@ workspaces are still drawn, dimmed and labeled with their workspace.
     to the current-time cursor.
   - Paused or done (`planned` after a start, `done`): fixed from `startedAt` to
     `pausedAt` (drawn faded) or `completedAt`.
-  A started bar is split into phases: in progress (`startedAt` to `reviewAt`) and in
-  review (`reviewAt` to the end).
+  A started bar is split into phases from the status history: in progress, in review,
+  and paused (back in `planned` until the task was resumed), so a paused and resumed
+  task shows its pause as a gap. Without history the phases come from the milestones:
+  in progress (`startedAt` to `reviewAt`) and in review (`reviewAt` to the end).
 - The wait before a bar is drawn lighter than the bar, so bar length still reads as
   work: a marker at `plannedAt` and a dashed line from it to the bar, with a tick at
   the `completedAt` of its last prerequisite when the task became ready later than it
@@ -232,12 +234,16 @@ records, pull request URLs); nothing is generated or guessed by an agent.
   | --- | --- | --- |
   | Lead time | `plannedAt` | `completedAt` |
   | Cycle time | `startedAt` | `completedAt` |
+  | Active time | `startedAt` | `completedAt`, counting only time `in_progress` or `in_review` |
   | Review time | `reviewAt` | `pullRequestMergedAt`, else `completedAt` |
 
-  A task without one of the milestones is left out of that median. A period over several
+  Cycle time includes pauses and active time leaves them out, so the two together show
+  how long a task took and how long it was worked on. A task without one of the
+  milestones (or without status history, for active time) is left out of that median. A period over several
   calendar months also counts the tasks completed in each month.
 - The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
-  task with its milestones as local times; UTF-8 with a byte order mark). The frontend
+  task with its milestones as local times and its active hours so far; UTF-8 with a byte
+  order mark). The frontend
   builds the file, since it knows the local time zone, and the `save_report` command
   writes it to the path picked in the save dialog; it only writes `.md` and `.csv` files.
 
