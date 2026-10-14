@@ -12,6 +12,7 @@ import {
   type NewWorkspace,
   type TaskEdit,
   type TaskId,
+  type Timestamp,
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
@@ -47,6 +48,7 @@ export const queryKeys = {
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
+  weekReview: (start: Timestamp, end: Timestamp) => ["week-review", start, end] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
 };
@@ -170,6 +172,14 @@ export function useTasks(workspaceId: WorkspaceId) {
   return useQuery({
     queryKey: queryKeys.tasks(workspaceId),
     queryFn: () => unwrap(commands.listTasks(workspaceId)),
+  });
+}
+
+/** Tasks of every workspace with a milestone or commit in `[start, end)`. */
+export function useWeekReview(start: Timestamp, end: Timestamp) {
+  return useQuery({
+    queryKey: queryKeys.weekReview(start, end),
+    queryFn: () => unwrap(commands.weekReview(start, end)),
   });
 }
 

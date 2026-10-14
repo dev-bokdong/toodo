@@ -4,7 +4,9 @@ import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { TaskList } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
+import { WeekReview } from "@/components/week-review";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
@@ -17,6 +19,7 @@ export default function App() {
   const workspaces = useWorkspaces();
   useHerdrEvents();
   const [selectedId, setSelectedId] = useState<WorkspaceId | null>(null);
+  const [reviewing, setReviewing] = useState(false);
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
 
@@ -24,7 +27,21 @@ export default function App() {
     <div className="flex h-screen bg-background text-foreground">
       <aside className="flex w-64 shrink-0 flex-col gap-4 border-r bg-sidebar p-3 text-sidebar-foreground">
         <h1 className="px-1 text-lg font-semibold tracking-tight">Toodo</h1>
-        <WorkspaceList selectedId={selected?.id ?? null} onSelect={setSelectedId} />
+        <Button
+          variant={reviewing ? "secondary" : "ghost"}
+          className="justify-start"
+          aria-pressed={reviewing}
+          onClick={() => setReviewing(true)}
+        >
+          Week review
+        </Button>
+        <WorkspaceList
+          selectedId={reviewing ? null : (selected?.id ?? null)}
+          onSelect={(id) => {
+            setSelectedId(id);
+            setReviewing(false);
+          }}
+        />
         <div className="mt-auto">
           <BackupPanel />
         </div>
@@ -39,7 +56,9 @@ export default function App() {
         <main className="min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-3">
           <UpdateBanner />
           <HerdrBanner />
-          {selected ? (
+          {reviewing ? (
+            <WeekReview />
+          ) : selected ? (
             <TaskList key={selected.id} workspace={selected} />
           ) : (
             <p className="text-sm text-muted-foreground">
