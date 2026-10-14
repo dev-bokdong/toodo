@@ -52,6 +52,7 @@ A fixed set; users cannot define their own types for now.
 | `docs` | Documentation-only changes. |
 | `test` | Adding or changing tests only. |
 | `chore` | Build, tooling, dependency, or maintenance work. |
+| `rnd` | Research and development: exploring an approach whose result may be not to adopt it (see [Conclude without merging](workflow.md#7b-conclude-without-merging)). |
 
 ### Worktree Layout and Branch Naming
 
@@ -92,6 +93,7 @@ A unit of work inside a workspace.
 | `type` | Kind of change, one of the [task types](#task-types). Used in the worktree path and branch name. |
 | `title`, `description` | What should be implemented (English). |
 | `status` | See [workflow.md](workflow.md#task-states). |
+| `resolution` | How a `done` task ended: `merged` (completed by its merged pull request) or `not_adopted` (concluded without merging); `null` for every other status. Tasks done before Toodo recorded it are `merged`. |
 | `dependsOn` | IDs of tasks that must be completed first. |
 | `branch` | Branch created for the task's worktree. |
 | `worktreePath` | Directory of the task's worktree. |
@@ -99,7 +101,7 @@ A unit of work inside a workspace.
 | `pullRequestUrl` | Set when the PR is opened, as the task moves to `in_review`. |
 | `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
 | `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
-| `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. |
+| `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
 | `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
 
 ### Task Timeline
@@ -245,10 +247,13 @@ generated or guessed by an agent.
   how long a task took and how long it was worked on. A task without one of the
   milestones (or without status history, for active time) is left out of that median. A period over several
   calendar months also counts the tasks completed in each month. The review screen also
-  says how many completed tasks have no completion note yet.
+  says how many completed tasks have no completion note yet, and how many completed
+  tasks were concluded without merging (not adopted); the Markdown report marks those
+  tasks "not adopted" and lists their conclusion.
 - The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
-  task with its milestones as local times, its active hours so far, the size and review
-  count of its pull request, and its completion note; UTF-8 with a byte
+  task with its milestones as local times, its resolution (`Merged` or `Not adopted`), its
+  active hours so far, the size and review count of its pull request, and its completion
+  note; UTF-8 with a byte
   order mark). The frontend
   builds the file, since it knows the local time zone, and the `save_report` command
   writes it to the path picked in the save dialog; it only writes `.md` and `.csv` files.

@@ -297,6 +297,14 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
+    /// Closes the pull request at `url` without merging it, leaving `comment` on it. The
+    /// branch is kept.
+    pub fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError> {
+        self.runner
+            .run(&invocation(&["pr", "close", url, "--comment", comment]))?;
+        Ok(())
+    }
+
     /// The size, reviews, and commits of the merged pull request at `url`.
     pub fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", MERGED_PULL_REQUEST_FIELDS]);

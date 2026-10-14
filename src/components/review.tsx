@@ -237,6 +237,11 @@ export function Review() {
                   <div className="flex items-center gap-2">
                     <span className="rounded-md border px-1.5 text-xs font-medium">{task.taskType}</span>
                     <span className="truncate text-sm font-medium">{task.title}</span>
+                    {task.resolution === "not_adopted" && (
+                      <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-200">
+                        Not adopted
+                      </span>
+                    )}
                     <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                       {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; {formatDate(at)}
                     </span>
@@ -294,6 +299,12 @@ function ReviewSummaryPanel({
             <dd className={cn("text-lg font-semibold", outcomeStyles[outcome])}>{count}</dd>
           </div>
         ))}
+        {summary.notAdopted > 0 && (
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Not adopted</dt>
+            <dd className="text-lg font-semibold text-rose-700 dark:text-rose-300">{summary.notAdopted}</dd>
+          </div>
+        )}
         <div className="flex flex-col">
           <dt className="text-xs text-muted-foreground">Commits</dt>
           <dd className="text-lg font-semibold">{summary.commits}</dd>

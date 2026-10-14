@@ -6,9 +6,11 @@ This document describes how a task moves from planning to a pull request.
 
 ```
           Start / Resume          Open PR             merged
-planned -----------------> in_progress ---------> in_review ---------> done
+planned -----------------> in_progress ---------> in_review ---------> done (merged)
    ^                           |                      |
    +------------ Pause --------+----------------------+
+                               |                      |
+                               +------ Conclude ------+---------------> done (not_adopted)
 ```
 
 | State | Meaning |
@@ -16,10 +18,10 @@ planned -----------------> in_progress ---------> in_review ---------> done
 | `planned` | Nobody works on the task: it was not started yet, or it was paused. |
 | `in_progress` | A worktree exists and implementation is happening in herdr. |
 | `in_review` | The task branch is pushed and its pull request is open, waiting to be merged. |
-| `done` | The pull request is merged; dependents can start from the updated base branch. |
+| `done` | Finished. Its `resolution` says how: `merged` (the pull request is merged; dependents can start from the updated base branch) or `not_adopted` (concluded without merging, see step 7b; dependents stay blocked). |
 
 Whether a `planned` task can be started is not a state: it can be started once every
-task it depends on is `done` (it is **ready**), and its dependencies can change while it
+task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**), and its dependencies can change while it
 is `planned`. The UI names a `planned` task that was worked on before "Paused" and
 offers "Resume" instead of "Start".
 
@@ -196,6 +198,36 @@ and an empty note clears it). The review counts completed tasks without a note s
 can be filled in before a report is written.
 
 The worktree stays until the task is deleted (step 8).
+
+### 7b. Conclude without merging
+
+Some work ends without anything to merge, typically research and development (`rnd`
+tasks, though any type can end this way): much was tried, and the conclusion is not to
+adopt it. The plan still has to be finished, and the reason has to be kept. The user
+concludes such an `in_progress` or `in_review` task ("Conclude") and must write the
+conclusion: what was tried, what was found, and why it is not adopted. Toodo
+(`conclude_task`):
+
+1. Rejects an empty conclusion, and any task that is not `in_progress` or `in_review`.
+2. Records the commits of the branch that are not on the base branch, as when
+   refreshing commits; a task without a worktree, or a branch whose log is empty, keeps
+   the commit records stored earlier.
+3. If the task has a pull request, reads its state (`gh pr view <url> --json
+   url,state,baseRefName,mergedAt`). An open one is closed without merging, with the
+   conclusion as a comment (`gh pr close <url> --comment <conclusion>`); a closed one is
+   left alone; a merged one is rejected, since that task completes with its merge (step
+   7).
+4. Closes the task's herdr workspace as in step 7, keeping the worktree on disk.
+5. Moves the task to `done` with the resolution `not_adopted` (recording `completedAt`),
+   stores the conclusion as its completion note, and clears `herdrWorkspaceId`, in one
+   transaction. The branch, worktree, and pull request URL stay, so the work can be
+   looked at later.
+
+The tasks that depend on it are not released: they were planned to build on work that
+is not there. The task list marks the dependency and says it was not adopted, and the
+user removes the dependency or changes the plan before starting them. The conclusion can
+be edited later but not cleared. Reviews count concluded tasks as completed and also
+report how many were not adopted, with their conclusions.
 
 ### 8. Delete the task and its worktree
 

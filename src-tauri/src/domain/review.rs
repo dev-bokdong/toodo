@@ -137,6 +137,7 @@ mod tests {
             pull_request_url: None,
             pull_request_merged_at: None,
             pull_request: None,
+            resolution: None,
             completion_note: None,
             timeline: history
                 .iter()

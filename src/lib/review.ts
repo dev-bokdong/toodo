@@ -2,6 +2,7 @@ import type {
   PullRequestSnapshot,
   ReviewEntry,
   ReviewOutcome,
+  TaskResolution,
   TaskType,
   Timestamp,
   Workspace,
@@ -212,6 +213,20 @@ export interface ReviewSummary {
   changes: ChangeStat | null;
   /** Completed tasks the user has not written a completion note for. */
   withoutNote: number;
+  /** Completed tasks that were concluded without merging, e.g. research that was not adopted. */
+  notAdopted: number;
+}
+
+/** How a done task ended, for reports; null for a task that is not done. */
+export function resolutionLabel(task: { resolution: TaskResolution | null }): string | null {
+  switch (task.resolution) {
+    case "merged":
+      return "Merged";
+    case "not_adopted":
+      return "Not adopted";
+    case null:
+      return null;
+  }
 }
 
 function median(values: number[]): DurationStat | null {
@@ -284,6 +299,7 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
             { pullRequests: 0, additions: 0, deletions: 0, changedFiles: 0 },
           ),
     withoutNote: completed.filter(({ task }) => task.completionNote === null).length,
+    notAdopted: completed.filter(({ task }) => task.resolution === "not_adopted").length,
   };
 }
 
@@ -344,6 +360,9 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
     `- ${summary.outcomes.map(({ outcome, count }) => `${outcomeLabels[outcome]}: ${count}`).join(", ")}`,
     `- Commits: ${summary.commits}`,
   );
+  if (summary.notAdopted > 0) {
+    lines.push(`- Concluded without merging (not adopted): ${summary.notAdopted}`);
+  }
   if (summary.completedByType.length > 0) {
     lines.push(
       `- Completed by type: ${summary.completedByType.map(({ taskType, count }) => `${taskType} ${count}`).join(", ")}`,
@@ -367,11 +386,15 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
   for (const group of groups) {
     lines.push(`## ${outcomeLabels[group.outcome]} (${group.entries.length})`, "");
     for (const { task, at, commits } of group.entries) {
+      const notAdopted = task.resolution === "not_adopted";
       const details = [names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`, formatDate(at)];
+      if (notAdopted) details.push("not adopted");
       if (task.pullRequestUrl) details.push(task.pullRequestUrl);
       if (task.pullRequest) details.push(pullRequestStats(task.pullRequest));
       lines.push(`- [${task.taskType}] ${task.title} (${details.join(", ")})`);
-      if (task.completionNote) lines.push(`  - Note: ${oneLine(task.completionNote)}`);
+      if (task.completionNote) {
+        lines.push(`  - ${notAdopted ? "Conclusion" : "Note"}: ${oneLine(task.completionNote)}`);
+      }
       for (const commit of commits) {
         lines.push(`  - \`${commit.sha.slice(0, 7)}\` ${commitSubject(commit.message)}`);
       }
@@ -400,6 +423,7 @@ const csvColumns = [
   "Title",
   "Outcome",
   "Outcome at",
+  "Resolution",
   "Planned",
   "Started",
   "In review",
@@ -430,6 +454,7 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: 
     task.title,
     outcomeLabels[outcome],
     formatDateTime(at),
+    resolutionLabel(task),
     time(task.milestones.plannedAt),
     time(task.milestones.startedAt),
     time(task.milestones.reviewAt),

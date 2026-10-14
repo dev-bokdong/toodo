@@ -146,6 +146,44 @@ pub(super) const MIGRATIONS: &[&str] = &[
         first_reviewed_at INTEGER
     );
     ",
+    // Version 6: the `rnd` task type, and how a `done` task ended: `merged`, or
+    // `not_adopted` for work concluded without merging. Every task done before this
+    // version was completed by its merge. The tasks table is rebuilt as in version 2 to
+    // change its CHECK constraints; statuses that version 4 retired are no longer allowed.
+    r"
+    CREATE TABLE tasks_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+        type TEXT NOT NULL
+            CHECK (type IN
+                ('feat', 'fix', 'modify', 'refactor', 'docs', 'test', 'chore', 'rnd')),
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL
+            CHECK (status IN ('planned', 'in_progress', 'in_review', 'done')),
+        resolution TEXT CHECK (resolution IN ('merged', 'not_adopted')),
+        branch TEXT,
+        worktree_path TEXT,
+        herdr_workspace_id TEXT,
+        pull_request_url TEXT,
+        pull_request_merged_at INTEGER,
+        completion_note TEXT,
+        CHECK ((status = 'done') = (resolution IS NOT NULL))
+    );
+    INSERT INTO tasks_new (id, workspace_id, type, title, description, status, resolution,
+        branch, worktree_path, herdr_workspace_id, pull_request_url, pull_request_merged_at,
+        completion_note)
+    SELECT id, workspace_id, type, title, description, status,
+        CASE WHEN status = 'done' THEN 'merged' END, branch, worktree_path,
+        herdr_workspace_id, pull_request_url, pull_request_merged_at, completion_note
+    FROM tasks;
+    DELETE FROM sqlite_sequence WHERE name = 'tasks_new';
+    INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'tasks_new', seq FROM sqlite_sequence WHERE name = 'tasks';
+    DROP TABLE tasks;
+    ALTER TABLE tasks_new RENAME TO tasks;
+    CREATE INDEX tasks_workspace_id ON tasks (workspace_id);
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -403,5 +441,109 @@ mod tests {
         .unwrap();
         conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
         assert_eq!(snapshots(&conn), 0);
+    }
+
+    #[test]
+    fn version_6_marks_done_tasks_merged_keeps_their_data_and_allows_rnd() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..5] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status, branch, pull_request_url,
+                    pull_request_merged_at, completion_note)
+                VALUES (1, 'feat', 'A', 'done', 'feat/a-1',
+                        'https://github.com/acme/toodo/pull/1', 40, 'Shipped'),
+                       (1, 'fix', 'B', 'in_progress', 'fix/b-2', NULL, NULL, NULL),
+                       (1, 'chore', 'C', 'planned', NULL, NULL, NULL, NULL);
+            INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (2, 1);
+            INSERT INTO task_events (task_id, status, at) VALUES (1, 'done', 40);
+            INSERT INTO commit_records (task_id, position, sha, message, author, committed_at)
+                VALUES (1, 0, 'aaa', 'Add A', 'Ada', 10);
+            INSERT INTO pull_request_snapshots (task_id, number, title, additions, deletions,
+                    changed_files, review_count, reviewer_count)
+                VALUES (1, 1, 'A', 1, 0, 1, 0, 0);
+            DELETE FROM tasks WHERE id = 3;
+            ",
+        )
+        .unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        // Status, resolution, completion note, and merge time.
+        type Row = (String, Option<String>, Option<String>, Option<i64>);
+        let rows: Vec<Row> = conn
+            .prepare(
+                "SELECT status, resolution, completion_note, pull_request_merged_at
+                 FROM tasks ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "done".to_owned(),
+                    Some("merged".to_owned()),
+                    Some("Shipped".to_owned()),
+                    Some(40)
+                ),
+                ("in_progress".to_owned(), None, None, None),
+            ]
+        );
+        conn.execute(
+            "INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'rnd', 'D', 'planned')",
+            [],
+        )
+        .unwrap();
+        // Deleted task IDs are still never reused.
+        assert_eq!(conn.last_insert_rowid(), 4);
+        for invalid in [
+            "UPDATE tasks SET status = 'done' WHERE id = 2",
+            "UPDATE tasks SET resolution = 'merged' WHERE id = 2",
+            "UPDATE tasks SET resolution = 'abandoned' WHERE id = 1",
+            "UPDATE tasks SET status = 'cancelled' WHERE id = 2",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            [
+                "task_dependencies",
+                "task_events",
+                "commit_records",
+                "pull_request_snapshots"
+            ]
+            .map(count),
+            [1, 1, 1, 1]
+        );
+        conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+        assert_eq!(
+            [
+                "task_dependencies",
+                "task_events",
+                "commit_records",
+                "pull_request_snapshots"
+            ]
+            .map(count),
+            [0, 0, 0, 0]
+        );
     }
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Task, TaskMilestones } from "@/lib/bindings";
 import {
   canAddDependency,
+  dependenciesDone,
   dependencyEdges,
   layoutTimeline,
   timelineAxis,
@@ -24,6 +25,7 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     pullRequestUrl: null,
     pullRequestMergedAt: null,
     pullRequest: null,
+    resolution: null,
     completionNote: null,
     timeline: [],
     milestones: {
@@ -50,6 +52,19 @@ describe("dependencyEdges", () => {
     const tasks = [task(1), task(2, { dependsOn: [1, 9] })];
 
     expect(dependencyEdges(tasks)).toEqual([{ id: "1->2", source: 1, target: 2 }]);
+  });
+});
+
+describe("dependenciesDone", () => {
+  it("waits for every prerequisite to be done and adopted", () => {
+    const merged = task(1, { status: "done", resolution: "merged" });
+    const notAdopted = task(2, { status: "done", resolution: "not_adopted" });
+    const working = task(3, { status: "in_review" });
+    const byId = new Map([merged, notAdopted, working].map((each) => [each.id, each]));
+
+    expect(dependenciesDone(task(4, { dependsOn: [1] }), byId)).toBe(true);
+    expect(dependenciesDone(task(5, { dependsOn: [1, 2] }), byId)).toBe(false);
+    expect(dependenciesDone(task(6, { dependsOn: [3] }), byId)).toBe(false);
   });
 });
 

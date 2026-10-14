@@ -338,6 +338,7 @@ pub enum TaskType {
     Docs,
     Test,
     Chore,
+    Rnd,
 }
 
 impl From<model::TaskType> for TaskType {
@@ -350,6 +351,7 @@ impl From<model::TaskType> for TaskType {
             model::TaskType::Docs => Self::Docs,
             model::TaskType::Test => Self::Test,
             model::TaskType::Chore => Self::Chore,
+            model::TaskType::Rnd => Self::Rnd,
         }
     }
 }
@@ -364,6 +366,27 @@ impl From<TaskType> for model::TaskType {
             TaskType::Docs => Self::Docs,
             TaskType::Test => Self::Test,
             TaskType::Chore => Self::Chore,
+            TaskType::Rnd => Self::Rnd,
+        }
+    }
+}
+
+/// How a `done` task ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskResolution {
+    /// Its pull request was merged.
+    Merged,
+    /// Concluded without merging; the completion note says why. Dependents stay
+    /// waiting.
+    NotAdopted,
+}
+
+impl From<model::TaskResolution> for TaskResolution {
+    fn from(resolution: model::TaskResolution) -> Self {
+        match resolution {
+            model::TaskResolution::Merged => Self::Merged,
+            model::TaskResolution::NotAdopted => Self::NotAdopted,
         }
     }
 }
@@ -408,6 +431,8 @@ pub struct Task {
     pub title: String,
     pub description: String,
     pub status: TaskStatus,
+    /// How the task ended; set exactly when it is `done`.
+    pub resolution: Option<TaskResolution>,
     /// Tasks this task depends on, in ascending ID order.
     pub depends_on: Vec<TaskId>,
     pub branch: Option<String>,
@@ -419,7 +444,8 @@ pub struct Task {
     /// The pull request as GitHub reported it when its merge completed the task; `null`
     /// for tasks completed before Toodo recorded it.
     pub pull_request: Option<PullRequestSnapshot>,
-    /// What the user wrote about the outcome of a `done` task.
+    /// What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
+    /// why it was not adopted.
     pub completion_note: Option<String>,
     /// Status history, oldest event first. Empty for tasks created before Toodo
     /// recorded it.
@@ -508,6 +534,7 @@ impl From<&model::Task> for Task {
             title: task.title.clone(),
             description: task.description.clone(),
             status: task.status.into(),
+            resolution: task.resolution.map(TaskResolution::from),
             depends_on: task.depends_on.iter().copied().map(TaskId::from).collect(),
             branch: task.branch.clone(),
             worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
