@@ -4,7 +4,6 @@ import {
   MarkerType,
   Position,
   ReactFlow,
-  ViewportPortal,
   useStore,
   useViewport,
   type Connection,
@@ -101,6 +100,12 @@ export function TaskGraph({
   const editable = (target: number) =>
     dependencyEditableStatuses.includes(tasks.find((task) => task.id === target)?.status ?? "done");
   const height = rowsTop + layout.rows * rowHeight;
+  const panelHeight = Math.min(Math.max(height + 32, 160), 448);
+  // Rows can be panned vertically only as far as they go; never into empty space.
+  const translateExtent: [[number, number], [number, number]] = [
+    [-Infinity, 0],
+    [Infinity, Math.max(height + 8, panelHeight)],
+  ];
 
   const nodes: BarNode[] = layout.bars.map((bar) => ({
     id: String(bar.task.id),
@@ -232,7 +237,7 @@ export function TaskGraph({
         <div
           ref={container}
           className="min-w-0 flex-1 rounded-lg border"
-          style={{ height: Math.min(Math.max(height + 32, 160), 448) }}
+          style={{ height: panelHeight }}
         >
           {layout.bars.length === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">
@@ -251,6 +256,7 @@ export function TaskGraph({
               zoomOnPinch={false}
               zoomOnDoubleClick={false}
               panOnScroll
+              translateExtent={translateExtent}
               nodesDraggable={false}
               nodesConnectable={!changing}
               isValidConnection={(c) => canAddDependency(tasks, Number(c.source), Number(c.target))}
@@ -261,9 +267,7 @@ export function TaskGraph({
               colorMode={colorMode}
               proOptions={{ hideAttribution: true }}
             >
-              <ViewportPortal>
-                <TimelineGrid layout={layout} height={height} />
-              </ViewportPortal>
+              <TimelineGrid layout={layout} />
               <TimelineHeader layout={layout} now={now} />
             </ReactFlow>
           )}
@@ -298,19 +302,25 @@ function useVisibleRange(): { from: number; to: number } {
   return { from: -x - tickOverscan, to: -x + width + tickOverscan };
 }
 
-/** Vertical grid lines at each fine tick and the current-time cursor, behind the bars. */
-function TimelineGrid({ layout, height }: { layout: TimelineLayout; height: number }) {
+/**
+ * Vertical grid lines at each fine tick and the current-time cursor, behind the bars. Like
+ * the header, they follow horizontal panning only, so they always run the panel's full height.
+ */
+function TimelineGrid({ layout }: { layout: TimelineLayout }) {
+  const { x } = useViewport();
   const { from, to } = useVisibleRange();
   return (
-    <div aria-hidden className="pointer-events-none absolute left-0 top-0 -z-10">
-      {layout.ticks
-        .filter((tick) => tick.x >= from && tick.x <= to)
-        .map((tick) => (
-          <div key={tick.at} className="absolute top-0 border-l border-border/60" style={{ left: tick.x, height }} />
-        ))}
-      {layout.nowX !== null && (
-        <div className="absolute top-0 border-l-2 border-red-500" style={{ left: layout.nowX, height }} />
-      )}
+    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden" style={{ zIndex: 0 }}>
+      <div className="absolute inset-y-0 left-0" style={{ transform: `translateX(${x}px)` }}>
+        {layout.ticks
+          .filter((tick) => tick.x >= from && tick.x <= to)
+          .map((tick) => (
+            <div key={tick.at} className="absolute inset-y-0 border-l border-border/60" style={{ left: tick.x }} />
+          ))}
+        {layout.nowX !== null && (
+          <div className="absolute inset-y-0 border-l-2 border-red-500" style={{ left: layout.nowX }} />
+        )}
+      </div>
     </div>
   );
 }
