@@ -147,6 +147,32 @@ describe("layoutTimeline", () => {
     });
   });
 
+  it("shows the pauses of a resumed task as phases between its stretches of work", () => {
+    const resumed = task(6, {
+      status: "done",
+      branch: "feat/task-6-6",
+      timeline: [
+        { status: "planned", at: jan(1) },
+        { status: "in_progress", at: jan(2) },
+        { status: "planned", at: jan(3) },
+        { status: "in_progress", at: jan(5) },
+        { status: "in_review", at: jan(6) },
+        { status: "done", at: jan(7) },
+      ],
+      milestones: milestones({ plannedAt: jan(1), startedAt: jan(2), reviewAt: jan(6), completedAt: jan(7) }),
+    });
+
+    const layout = layoutTimeline([resumed], { now, scale: "day", period: null });
+
+    expect(layout.bars[0]).toMatchObject({ x: 48, width: 5 * 48 });
+    expect(layout.bars[0].phases).toEqual([
+      { phase: "in_progress", x: 0, width: 48 },
+      { phase: "paused", x: 48, width: 2 * 48 },
+      { phase: "in_progress", x: 3 * 48, width: 48 },
+      { phase: "in_review", x: 4 * 48, width: 48 },
+    ]);
+  });
+
   it("moves bars that wait at now along with the current time", () => {
     const at = (time: number) => layoutTimeline([done, waiting], { now: time, scale: "hour", period: null });
 

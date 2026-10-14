@@ -6,6 +6,7 @@ import type { ReviewEntry, ReviewOutcome, Workspace } from "@/lib/bindings";
 import { useReview, useSaveReport, useWorkspaces } from "@/lib/queries";
 import {
   commitSubject,
+  durationKeys,
   durationLabels,
   formatDuration,
   groupByOutcome,
@@ -76,7 +77,9 @@ export function Review() {
     setNotice(null);
     const workspaceList = workspaces.data ?? [];
     const contents =
-      extension === "csv" ? reviewCsv(entries, workspaceList) : reviewMarkdown(period, entries, workspaceList);
+      extension === "csv"
+        ? reviewCsv(entries, workspaceList, Date.now() / 1000)
+        : reviewMarkdown(period, entries, workspaceList);
     try {
       const path = await saveDialog({
         title: extension === "csv" ? "Save review as CSV" : "Save review as Markdown",
@@ -287,7 +290,7 @@ function ReviewSummaryPanel({
         </div>
       </dl>
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
-        {(["leadTime", "cycleTime", "reviewTime"] as const).map((key) => {
+        {durationKeys.map((key) => {
           const stat = summary[key];
           return (
             <div key={key} className="contents">

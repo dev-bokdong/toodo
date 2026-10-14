@@ -60,11 +60,13 @@ const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", w
 const phaseStyles: Record<TimelinePhase, string> = {
   in_progress: "bg-blue-500",
   in_review: "bg-violet-500",
+  paused: "bg-muted-foreground/30",
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
   in_progress: "In progress",
   in_review: "In review",
+  paused: "Paused",
 };
 
 const pad = (value: number) => String(value).padStart(2, "0");
@@ -437,7 +439,7 @@ function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace, dim
         <div className="absolute inset-x-0 bottom-0 h-1.5">
           {phases.map((phase) => (
             <span
-              key={phase.phase}
+              key={phase.x}
               className={cn("absolute inset-y-0", phaseStyles[phase.phase])}
               style={{ left: phase.x, width: phase.width }}
             />

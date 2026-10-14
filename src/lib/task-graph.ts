@@ -1,4 +1,5 @@
 import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
+import { workSegments } from "@/lib/timeline";
 
 /** A dependency drawn from the prerequisite (`source`) to the task that waits on it (`target`). */
 export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
@@ -78,7 +79,7 @@ export const timelineBarGap = 16;
 /** A half-open time range `[start, end)`, in Unix seconds. */
 export type Period = { start: Timestamp; end: Timestamp };
 
-export type TimelinePhase = "in_progress" | "in_review";
+export type TimelinePhase = "in_progress" | "in_review" | "paused";
 
 export type TimelineBar = {
   task: Task;
@@ -88,7 +89,7 @@ export type TimelineBar = {
   width: number;
   /** The task has never started, so its bar waits at the current time (or after its prerequisites). */
   pending: boolean;
-  /** Phases, positioned relative to `x` at true scale. */
+  /** Phases in time order, positioned relative to `x` at true scale; a phase may repeat after a pause. */
   phases: { phase: TimelinePhase; x: number; width: number }[];
   /** The wait before the bar, from `plannedAt` to `x`; null when there was none. */
   lead: TimelineLead | null;
@@ -149,12 +150,20 @@ export function taskInterval(task: Task, now: Timestamp): Period | null {
   return { start: Math.min(started ?? end, end), end };
 }
 
+/**
+ * The phases of a bar covering `[start, end)`, from the status history; a task without
+ * recorded history falls back to its milestones, which know nothing about pauses.
+ */
 function taskPhases(task: Task, { start, end }: Period): { phase: TimelinePhase; start: Timestamp; end: Timestamp }[] {
+  const segments = workSegments(task.timeline);
   const { reviewAt } = task.milestones;
-  const phases: { phase: TimelinePhase; start: Timestamp; end: Timestamp }[] = [
-    { phase: "in_progress", start, end: reviewAt ?? end },
-    { phase: "in_review", start: reviewAt ?? end, end },
-  ];
+  const phases: { phase: TimelinePhase; start: Timestamp; end: Timestamp }[] =
+    segments.length > 0
+      ? segments.map((segment) => ({ phase: segment.state, start: segment.start, end: segment.end ?? end }))
+      : [
+          { phase: "in_progress", start, end: reviewAt ?? end },
+          { phase: "in_review", start: reviewAt ?? end, end },
+        ];
   return phases
     .map((phase) => ({ ...phase, start: Math.max(phase.start, start), end: Math.min(phase.end, end) }))
     .filter((phase) => phase.end > phase.start);

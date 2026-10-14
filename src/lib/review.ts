@@ -1,5 +1,5 @@
 import type { ReviewEntry, ReviewOutcome, TaskType, Timestamp, Workspace } from "@/lib/bindings";
-import { formatDate } from "@/lib/timeline";
+import { activeSeconds, formatDate } from "@/lib/timeline";
 
 export const outcomeLabels: Record<ReviewOutcome, string> = {
   completed: "Completed",
@@ -170,6 +170,8 @@ export interface ReviewSummary {
   leadTime: DurationStat | null;
   /** Started to completed. */
   cycleTime: DurationStat | null;
+  /** Time spent in progress or in review, leaving out pauses. */
+  activeTime: DurationStat | null;
   /** Opened for review to merged, or to completed when the merge time is unknown. */
   reviewTime: DurationStat | null;
   /** Tasks completed in each calendar month of the period; `null` for a period within one month. */
@@ -216,6 +218,12 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
     ).map(({ key, count }) => ({ workspace: key, count })),
     leadTime: median(durations(completed, ({ task, at }) => [task.milestones.plannedAt, at])),
     cycleTime: median(durations(completed, ({ task, at }) => [task.milestones.startedAt, at])),
+    activeTime: median(
+      completed.flatMap(({ task, at }) => {
+        const active = activeSeconds(task.timeline, at);
+        return active === null ? [] : [active];
+      }),
+    ),
     reviewTime: median(
       durations(completed, ({ task, at }) => [task.milestones.reviewAt, task.pullRequestMergedAt ?? at]),
     ),
@@ -253,9 +261,12 @@ function formatStat(stat: DurationStat | null): string {
   return `${formatDuration(stat.median)} (${stat.tasks} ${stat.tasks === 1 ? "task" : "tasks"})`;
 }
 
+export const durationKeys = ["leadTime", "cycleTime", "activeTime", "reviewTime"] as const;
+
 export const durationLabels = {
   leadTime: "Median lead time (planned to completed)",
   cycleTime: "Median cycle time (started to completed)",
+  activeTime: "Median active time (started to completed, without pauses)",
   reviewTime: "Median review time (in review to merged)",
 } as const;
 
@@ -283,7 +294,7 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
         .join(", ")}`,
     );
   }
-  for (const key of ["leadTime", "cycleTime", "reviewTime"] as const) {
+  for (const key of durationKeys) {
     lines.push(`- ${durationLabels[key]}: ${formatStat(summary[key])}`);
   }
   lines.push("");
@@ -333,13 +344,15 @@ const csvColumns = [
   "Merged",
   "Pull request",
   "Commits in period",
+  "Active hours",
 ];
 
 /**
  * One row per reviewed task as CSV (RFC 4180, CRLF line ends), led by a UTF-8 byte order
- * mark so spreadsheet apps read non-ASCII titles correctly.
+ * mark so spreadsheet apps read non-ASCII titles correctly. Active hours of a task still
+ * being worked on count until `now`.
  */
-export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[]): string {
+export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: Timestamp): string {
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const time = (at: Timestamp | null) => (at === null ? null : formatDateTime(at));
   const rows = entries.map(({ task, outcome, at, commits }) => [
@@ -356,8 +369,13 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[]): stri
     time(task.pullRequestMergedAt),
     task.pullRequestUrl,
     commits.length,
+    activeHours(activeSeconds(task.timeline, now)),
   ]);
   return `\uFEFF${[csvColumns, ...rows].map((row) => row.map(csvField).join(",")).join("\r\n")}\r\n`;
+}
+
+function activeHours(seconds: number | null): number | null {
+  return seconds === null ? null : Math.round(seconds / 360) / 10;
 }
 
 export function reviewFileName(period: ReviewPeriod, extension: "md" | "csv"): string {
