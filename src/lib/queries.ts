@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   commands,
   events,
+  type BackupSettings,
   type CommandError,
   type Machine,
   type MachineSettings,
@@ -44,9 +45,53 @@ export const queryKeys = {
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   herdrMachines: ["herdr-machines"] as const,
   sshHosts: ["ssh-hosts"] as const,
+  backups: ["backups"] as const,
+  backupSettings: ["backup-settings"] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
 };
+
+/** Backups in Toodo's backup directory, newest first. */
+export function useBackups() {
+  return useQuery({
+    queryKey: queryKeys.backups,
+    queryFn: () => unwrap(commands.listBackups()),
+  });
+}
+
+export function useBackupSettings() {
+  return useQuery({
+    queryKey: queryKeys.backupSettings,
+    queryFn: () => commands.getBackupSettings(),
+  });
+}
+
+/** Saving may write an automatic backup right away, so the backup list is refetched. */
+export function useSaveBackupSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: BackupSettings) => unwrap(commands.saveBackupSettings(settings)),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(queryKeys.backupSettings, settings);
+      return queryClient.invalidateQueries({ queryKey: queryKeys.backups });
+    },
+  });
+}
+
+export function useExportDatabase() {
+  return useMutation({
+    mutationFn: (path: string) => unwrap(commands.exportDatabase(path)),
+  });
+}
+
+/** Replaces all data with a backup, so every query is refetched afterwards. */
+export function useRestoreDatabase() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) => unwrap(commands.restoreDatabase(path)),
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+}
 
 /** Machines saved in herdr; refetched when the window regains focus. */
 export function useHerdrMachines() {

@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::{Result, StorageError};
 
-const MIGRATIONS: &[&str] = &[
+pub(super) const MIGRATIONS: &[&str] = &[
     // Version 1: initial schema. AUTOINCREMENT keeps workspace and task IDs from being
     // reused after a delete, because task IDs are part of branch and worktree names.
     r"

@@ -14,7 +14,7 @@ import {
   type Workspace,
 } from "@/lib/bindings";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -44,6 +44,11 @@ vi.mock("@/lib/bindings", () => ({
     addSshHost: vi.fn(),
     listRemoteDirectories: vi.fn(),
     listAgentStatuses: vi.fn(),
+    listBackups: vi.fn(),
+    getBackupSettings: vi.fn(),
+    saveBackupSettings: vi.fn(),
+    exportDatabase: vi.fn(),
+    restoreDatabase: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -127,6 +132,8 @@ describe("App", () => {
     mocked.listSshHosts.mockResolvedValue({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [] });
     mocked.listAgentStatuses.mockResolvedValue([]);
+    mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
+    mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
   });
