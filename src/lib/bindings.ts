@@ -97,6 +97,12 @@ export const commands = {
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
+	/**
+	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
+	 *  ordered by outcome, then by time. The caller picks the period, normally the seven
+	 *  days from a week's start in the local time zone.
+	 */
+	weekReview: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(__TAURI_INVOKE("week_review", { start, end })),
 	getBackupSettings: () => __TAURI_INVOKE<BackupSettings>("get_backup_settings"),
 	/**
 	 *  Saves the automatic backup settings, then writes an automatic backup if one is now
@@ -243,6 +249,22 @@ export type RemoteDirectory = {
 	path: string,
 	directories: string[],
 };
+
+/**  A task with activity in a reviewed period. */
+export type ReviewEntry = {
+	task: Task,
+	outcome: ReviewOutcome,
+	/**  Time of the outcome: the milestone, or the latest commit for `worked_on`. */
+	at: Timestamp,
+	/**  Commits of the task made in the period, oldest first. */
+	commits: CommitRecord[],
+};
+
+/**
+ *  What happened to a task during a reviewed period: the most advanced milestone it
+ *  reached in the period, or `worked_on` when it only got commits.
+ */
+export type ReviewOutcome = "completed" | "cancelled" | "opened_for_review" | "started" | "worked_on" | "planned";
 
 /**
  *  A task whose status moved between `planned` and `ready` because of a change to

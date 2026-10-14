@@ -7,7 +7,7 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{herdr, ssh};
-use crate::domain::{backup, dag, model, path, ssh_config, status, timeline};
+use crate::domain::{backup, dag, model, path, review, ssh_config, status, timeline};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -487,6 +487,44 @@ impl From<&model::Task> for Task {
             milestones: timeline::milestones(&task.timeline).into(),
         }
     }
+}
+
+/// What happened to a task during a reviewed period: the most advanced milestone it
+/// reached in the period, or `worked_on` when it only got commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewOutcome {
+    Completed,
+    Cancelled,
+    OpenedForReview,
+    Started,
+    WorkedOn,
+    Planned,
+}
+
+impl From<review::Outcome> for ReviewOutcome {
+    fn from(outcome: review::Outcome) -> Self {
+        match outcome {
+            review::Outcome::Completed => Self::Completed,
+            review::Outcome::Cancelled => Self::Cancelled,
+            review::Outcome::OpenedForReview => Self::OpenedForReview,
+            review::Outcome::Started => Self::Started,
+            review::Outcome::WorkedOn => Self::WorkedOn,
+            review::Outcome::Planned => Self::Planned,
+        }
+    }
+}
+
+/// A task with activity in a reviewed period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewEntry {
+    pub task: Task,
+    pub outcome: ReviewOutcome,
+    /// Time of the outcome: the milestone, or the latest commit for `worked_on`.
+    pub at: Timestamp,
+    /// Commits of the task made in the period, oldest first.
+    pub commits: Vec<CommitRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]

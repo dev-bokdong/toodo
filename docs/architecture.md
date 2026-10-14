@@ -185,6 +185,32 @@ layered DAG, so the same picture shows both what depended on what and when it ha
 - Dependencies can still be added and removed in this view, with the same rules as in
   the task list.
 
+## Week Review
+
+A report of the work recorded in one week, across all workspaces, for status updates and
+as material for the year-end report. It is built only from recorded facts (status
+history, commit records, pull request URLs); nothing is generated or guessed by an agent.
+
+- The user picks the week's first day (by default the Monday of the current week); the
+  week runs from local midnight of that day to local midnight seven days later, as the
+  half-open period `[start, end)` passed to the `week_review` command.
+- A task is in the review when it reached a milestone or got a commit in the period.
+  Its outcome is the most advanced milestone reached in the period, in this order:
+
+  | Outcome | Reached in the period |
+  | --- | --- |
+  | Completed | `completedAt` |
+  | Cancelled | `cancelledAt` |
+  | Opened for review | `reviewAt` |
+  | Started | `startedAt` |
+  | Worked on | No milestone, but at least one commit (`committedAt`) |
+  | Planned | `plannedAt` |
+
+- Each task is listed once, under its outcome, with its workspace, the time of the
+  outcome, its pull request, and the commits it got in the period.
+- Tasks without status history appear only through their commits.
+- The review can be copied as Markdown.
+
 ## Runtime Context
 
 Toodo is a Tauri 2 Windows desktop app that runs next to an already installed and running
@@ -334,5 +360,5 @@ Out of the first scope; revisit when needed.
 - Native WSL repository support.
 - Correcting timeline timestamps by hand, for example to enter work done before the task
   was created in Toodo.
-- Exporting a report (for example Markdown or CSV) of the tasks completed in a period,
-  with their milestones, pull requests, and commits.
+- Reports over periods other than a week (for example a year), or in other formats
+  such as CSV; the [Week Review](#week-review) covers one week as Markdown.
