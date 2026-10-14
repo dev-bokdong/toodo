@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { compactSelectClass } from "@/components/workspace-list";
 import {
   Handle,
   MarkerType,
@@ -194,7 +195,7 @@ export function TaskGraph({
         </div>
         <select
           aria-label="Timeline period"
-          className="h-6 rounded-md border bg-background px-1.5"
+          className={compactSelectClass}
           value={year ?? "all"}
           onChange={(event) => setYear(event.target.value === "all" ? null : Number(event.target.value))}
         >

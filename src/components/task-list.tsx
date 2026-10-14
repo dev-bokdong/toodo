@@ -1,7 +1,23 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
+import {
+  Check,
+  FolderGit2,
+  GitBranch,
+  GitPullRequest,
+  Inbox,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  SquareTerminal,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TaskGraph } from "@/components/task-graph";
-import { inputClass, describeLocation } from "@/components/workspace-list";
+import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import type { AgentStatus, Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
@@ -41,9 +57,9 @@ const agentLabels: Record<AgentStatus, string> = {
 
 const agentStyles: Record<AgentStatus, string> = {
   idle: "bg-muted text-muted-foreground",
-  working: "bg-sky-100 text-sky-800",
-  blocked: "bg-amber-100 text-amber-900",
-  done: "bg-emerald-100 text-emerald-800",
+  working: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200",
+  blocked: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
+  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
 };
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -134,9 +150,14 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
         </p>
       )}
       {tasks?.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          {workspace ? "No tasks in this workspace yet." : "No tasks yet."}
-        </p>
+        <EmptyState
+          title={workspace ? "No tasks in this workspace yet." : "No tasks yet."}
+          hint={
+            workspace
+              ? "Plan the first task above; tasks can depend on each other across workspaces."
+              : "Pick a workspace in the sidebar to plan its tasks."
+          }
+        />
       )}
       {allTasks.data && tasks && tasks.length > 0 && (
         <>
@@ -158,7 +179,7 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
               {showTimeline && (
                 <select
                   aria-label="Timeline workspace"
-                  className="h-6 rounded-md border bg-background px-1.5 text-xs"
+                  className={compactSelectClass}
                   value={filter ?? "all"}
                   onChange={(event) =>
                     setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
@@ -175,7 +196,7 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
             </div>
           )}
           {!showTimeline ? (
-            <ul aria-label="Tasks" className="flex flex-col divide-y rounded-lg border">
+            <ul aria-label="Tasks" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
               {tasks.map((task) => (
                 <TaskRow
                   key={task.id}
@@ -299,101 +320,200 @@ function TaskRow({
   }
 
   return (
-    <li className="flex items-start gap-3 px-3 py-2">
-      <span className="mt-0.5 w-8 shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        {editing ? (
-          <TaskEditForm task={task} onDone={() => setEditing(false)} />
-        ) : (
-          <>
-            <div className="flex items-center gap-2">
-              {showWorkspace && (
-                <span className="shrink-0 rounded-md bg-muted px-1.5 text-xs text-muted-foreground">
-                  {context.workspaceName(task.workspaceId)}
-                </span>
-              )}
-              <span className="rounded-md border px-1.5 text-xs font-medium">{task.taskType}</span>
-              <span className="truncate text-sm font-medium">{task.title}</span>
-            </div>
-            {task.description && (
-              <p className="line-clamp-2 text-xs text-muted-foreground">{task.description}</p>
-            )}
-          </>
-        )}
-        {(task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
-          <div
-            role="group"
-            aria-label={`Dependencies of #${task.id}`}
-            className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
-          >
-            {task.dependsOn.length > 0 && <span>Depends on</span>}
-            {task.dependsOn.map((id) => (
-              <span
-                key={id}
-                className="inline-flex items-center gap-0.5 rounded-md border px-1 tabular-nums"
-                title={context.byId.get(id)?.title}
-              >
-                <span>{taskRef(id, task.workspaceId, context)}</span>
-                {dependenciesEditable && (
-                  <button
-                    type="button"
-                    aria-label={`Remove dependency #${id} from #${task.id}`}
-                    className="px-0.5 hover:text-foreground disabled:opacity-50"
-                    disabled={changingDependencies}
-                    onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
-                  >
-                    {"\u00d7"}
-                  </button>
-                )}
+    <li className="flex flex-col gap-1.5 px-4 py-3">
+      {editing ? (
+        <TaskEditForm task={task} onDone={() => setEditing(false)} />
+      ) : (
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <StatusBadge task={task} />
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
+            {showWorkspace && (
+              <span className="shrink-0 rounded-md bg-muted px-1.5 text-xs text-muted-foreground">
+                {context.workspaceName(task.workspaceId)}
               </span>
-            ))}
-            {dependenciesEditable && candidates.length > 0 && (
-              <select
-                aria-label={`Add dependency to #${task.id}`}
-                className="h-6 max-w-48 rounded-md border bg-transparent px-1 text-xs"
-                value=""
-                disabled={changingDependencies}
-                onChange={(e) => {
-                  if (e.target.value) {
-                    addDependency.mutate({ id: task.id, dependsOn: Number(e.target.value) });
-                  }
-                }}
+            )}
+            <span className="shrink-0 rounded-md border px-1.5 font-mono text-xs">{task.taskType}</span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={task.title}>
+              {task.title}
+            </span>
+            {active && agentStatus && (
+              <span
+                aria-label={`Agent of #${task.id}`}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+                  agentStyles[agentStatus],
+                )}
               >
-                <option value="">Add dependency...</option>
-                {candidateGroups.map((group) => (
-                  <optgroup key={group.workspaceId} label={context.workspaceName(group.workspaceId)}>
-                    {group.tasks.map((other) => (
-                      <option key={other.id} value={other.id}>
-                        #{other.id} {other.title}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
+                <span
+                  aria-hidden
+                  className={cn("size-1.5 rounded-full bg-current", agentStatus === "working" && "animate-pulse")}
+                />
+                {agentLabels[agentStatus]}
+              </span>
             )}
           </div>
-        )}
-        <TaskTimeline task={task} />
-        {task.branch && (
-          <p className="truncate font-mono text-xs text-muted-foreground" title={task.worktreePath ?? undefined}>
+          {task.description && <p className="line-clamp-2 text-xs text-muted-foreground">{task.description}</p>}
+        </div>
+      )}
+      {(task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
+        <div
+          role="group"
+          aria-label={`Dependencies of #${task.id}`}
+          className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
+        >
+          {task.dependsOn.length > 0 && <span>Depends on</span>}
+          {task.dependsOn.map((id) => (
+            <span
+              key={id}
+              className={cn(
+                "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 tabular-nums",
+                context.byId.get(id)?.status === "done" && "line-through decoration-muted-foreground/60",
+              )}
+              title={context.byId.get(id)?.title}
+            >
+              <span>{taskRef(id, task.workspaceId, context)}</span>
+              {dependenciesEditable && (
+                <button
+                  type="button"
+                  aria-label={`Remove dependency #${id} from #${task.id}`}
+                  className="rounded-sm p-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  disabled={changingDependencies}
+                  onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
+                >
+                  <X className="size-3" />
+                </button>
+              )}
+            </span>
+          ))}
+          {dependenciesEditable && candidates.length > 0 && (
+            <select
+              aria-label={`Add dependency to #${task.id}`}
+              className={cn(compactSelectClass, "max-w-48")}
+              value=""
+              disabled={changingDependencies}
+              onChange={(e) => {
+                if (e.target.value) {
+                  addDependency.mutate({ id: task.id, dependsOn: Number(e.target.value) });
+                }
+              }}
+            >
+              <option value="">Add dependency...</option>
+              {candidateGroups.map((group) => (
+                <optgroup key={group.workspaceId} label={context.workspaceName(group.workspaceId)}>
+                  {group.tasks.map((other) => (
+                    <option key={other.id} value={other.id}>
+                      #{other.id} {other.title}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+      <TaskTimeline task={task} />
+      {task.branch && (
+        <p
+          className="flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground"
+          title={task.worktreePath ?? undefined}
+        >
+          <GitBranch aria-hidden className="size-3 shrink-0" />
+          <span className="truncate">
             {task.branch}
             {task.worktreePath && ` \u00b7 ${task.worktreePath}`}
-          </p>
-        )}
-        {task.pullRequestUrl && (
-          <p className="truncate text-xs">
-            <span className="text-muted-foreground">Pull request </span>
-            <span className="select-all font-mono">{task.pullRequestUrl}</span>
-          </p>
-        )}
-        <CommitList task={task} />
-        {actionError && (
-          <p role="alert" className="text-xs text-destructive">
-            {actionError.message}
-          </p>
-        )}
-        {!editing && (
-          <div className="mt-0.5 flex flex-wrap gap-1">
+          </span>
+        </p>
+      )}
+      {task.pullRequestUrl && (
+        <p className="flex min-w-0 items-center gap-1 text-xs">
+          <GitPullRequest aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+          <span className="sr-only">Pull request </span>
+          <span className="truncate select-all font-mono">{task.pullRequestUrl}</span>
+        </p>
+      )}
+      <CommitList task={task} />
+      {actionError && (
+        <p role="alert" className="text-xs text-destructive">
+          {actionError.message}
+        </p>
+      )}
+      {!editing && (
+        <div className="flex flex-wrap items-center gap-1">
+          {task.status === "planned" && (
+            <Button
+              size="xs"
+              aria-label={`${paused ? "Resume" : "Start"} #${task.id}`}
+              title={startable ? undefined : "Waits until all its dependencies are done"}
+              disabled={!startable || !herdrRunning || startTask.isPending}
+              onClick={() => startTask.mutate(task.id)}
+            >
+              <Play />
+              {startTask.isPending ? "Starting..." : paused ? "Resume" : "Start"}
+            </Button>
+          )}
+          {active && task.worktreePath === null && task.branch !== null && (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={`Restore worktree of #${task.id}`}
+              title={`Check out ${task.branch} into a new worktree and open it in herdr`}
+              disabled={!herdrRunning || restoreWorktree.isPending}
+              onClick={() => restoreWorktree.mutate(task.id)}
+            >
+              <FolderGit2 />
+              {restoreWorktree.isPending ? "Restoring..." : "Restore worktree"}
+            </Button>
+          )}
+          {active && task.herdrWorkspaceId && (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={`Open #${task.id} in herdr`}
+              disabled={!herdrRunning || openTask.isPending}
+              onClick={() => openTask.mutate(task.id)}
+            >
+              <SquareTerminal />
+              Open in herdr
+            </Button>
+          )}
+          {hasWorktree && (
+            <>
+              <Button
+                size="xs"
+                variant="outline"
+                aria-label={`Refresh commits of #${task.id}`}
+                disabled={finishing}
+                onClick={() => refreshCommits.mutate(task.id)}
+              >
+                <RefreshCw className={cn(refreshCommits.isPending && "animate-spin")} />
+                {refreshCommits.isPending ? "Refreshing..." : "Refresh commits"}
+              </Button>
+              <Button
+                size="xs"
+                variant={inReview ? "outline" : "default"}
+                aria-label={inReview ? `Push #${task.id} to its pull request` : `Open pull request for #${task.id}`}
+                disabled={finishing}
+                onClick={() => openPullRequest.mutate(task.id)}
+              >
+                {inReview ? <Upload /> : <GitPullRequest />}
+                {openPullRequest.isPending ? "Pushing..." : inReview ? "Push to PR" : "Open PR"}
+              </Button>
+            </>
+          )}
+          {inReview && (
+            <Button
+              size="xs"
+              aria-label={`Complete #${task.id}`}
+              title="Complete the task once its pull request is merged; its herdr workspace is closed and the worktree kept"
+              disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
+              onClick={() => completeTask.mutate(task.id)}
+            >
+              <Check />
+              {completeTask.isPending ? "Completing..." : "Complete"}
+            </Button>
+          )}
+          <div className="ml-auto flex items-center gap-0.5">
             {confirming ? (
               <>
                 <Button
@@ -403,6 +523,7 @@ function TaskRow({
                   disabled={deleteTask.isPending}
                   onClick={() => confirm(confirming)}
                 >
+                  <Trash2 />
                   {deleteTask.isPending ? "Deleting..." : confirmLabels[confirming]}
                 </Button>
                 <Button size="xs" variant="ghost" onClick={() => setConfirming(null)}>
@@ -412,42 +533,32 @@ function TaskRow({
             ) : (
               <>
                 {!final && (
-                  <Button size="xs" variant="ghost" aria-label={`Edit #${task.id}`} onClick={() => setEditing(true)}>
-                    Edit
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`Edit #${task.id}`}
+                    title="Edit"
+                    onClick={() => setEditing(true)}
+                  >
+                    <Pencil />
                   </Button>
                 )}
                 {active && (
                   <Button
-                    size="xs"
+                    size="icon-xs"
                     variant="ghost"
                     aria-label={`Pause #${task.id}`}
-                    title="Stop working on the task; it keeps its branch, worktree, and pull request and can be resumed"
+                    title="Pause: stop working on the task; it keeps its branch, worktree, and pull request and can be resumed"
                     disabled={pauseTask.isPending}
                     onClick={() => pauseTask.mutate(task.id)}
                   >
-                    Pause
-                  </Button>
-                )}
-                {deletableStatuses.includes(task.status) && (
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    aria-label={`Delete #${task.id}`}
-                    title={
-                      removableWorktree
-                        ? "Delete the task and remove its worktree and herdr workspace; the branch is kept"
-                        : undefined
-                    }
-                    disabled={removableWorktree && !herdrRunning}
-                    onClick={() => setConfirming("delete")}
-                  >
-                    Delete
+                    <Pause />
                   </Button>
                 )}
                 {dirtyWorktree && (
                   <Button
                     size="xs"
-                    variant="ghost"
+                    variant="destructive"
                     aria-label={`Force delete #${task.id}`}
                     title="Delete the task and discard the modified and untracked files of its worktree"
                     disabled={!herdrRunning}
@@ -456,90 +567,44 @@ function TaskRow({
                     Force delete
                   </Button>
                 )}
+                {deletableStatuses.includes(task.status) && (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`Delete #${task.id}`}
+                    title={
+                      removableWorktree
+                        ? "Delete the task and remove its worktree and herdr workspace; the branch is kept"
+                        : "Delete"
+                    }
+                    className="hover:text-destructive"
+                    disabled={removableWorktree && !herdrRunning}
+                    onClick={() => setConfirming("delete")}
+                  >
+                    <Trash2 />
+                  </Button>
+                )}
               </>
             )}
           </div>
-        )}
-      </div>
-      {task.status === "planned" && (
-        <Button
-          size="xs"
-          aria-label={`${paused ? "Resume" : "Start"} #${task.id}`}
-          title={startable ? undefined : "Waits until all its dependencies are done"}
-          disabled={!startable || !herdrRunning || startTask.isPending}
-          onClick={() => startTask.mutate(task.id)}
-        >
-          {startTask.isPending ? "Starting..." : paused ? "Resume" : "Start"}
-        </Button>
+        </div>
       )}
-      {active && task.worktreePath === null && task.branch !== null && (
-        <Button
-          size="xs"
-          variant="outline"
-          aria-label={`Restore worktree of #${task.id}`}
-          title={`Check out ${task.branch} into a new worktree and open it in herdr`}
-          disabled={!herdrRunning || restoreWorktree.isPending}
-          onClick={() => restoreWorktree.mutate(task.id)}
-        >
-          {restoreWorktree.isPending ? "Restoring..." : "Restore worktree"}
-        </Button>
-      )}
-      {active && task.herdrWorkspaceId && (
-        <Button
-          size="xs"
-          variant="outline"
-          aria-label={`Open #${task.id} in herdr`}
-          disabled={!herdrRunning || openTask.isPending}
-          onClick={() => openTask.mutate(task.id)}
-        >
-          Open in herdr
-        </Button>
-      )}
-      {hasWorktree && (
-        <>
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={`Refresh commits of #${task.id}`}
-            disabled={finishing}
-            onClick={() => refreshCommits.mutate(task.id)}
-          >
-            {refreshCommits.isPending ? "Refreshing..." : "Refresh commits"}
-          </Button>
-          <Button
-            size="xs"
-            variant={inReview ? "outline" : "default"}
-            aria-label={inReview ? `Push #${task.id} to its pull request` : `Open pull request for #${task.id}`}
-            disabled={finishing}
-            onClick={() => openPullRequest.mutate(task.id)}
-          >
-            {openPullRequest.isPending ? "Pushing..." : inReview ? "Push to PR" : "Open PR"}
-          </Button>
-        </>
-      )}
-      {inReview && (
-        <Button
-          size="xs"
-          aria-label={`Complete #${task.id}`}
-          title="Complete the task once its pull request is merged; its herdr workspace is closed and the worktree kept"
-          disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
-          onClick={() => completeTask.mutate(task.id)}
-        >
-          {completeTask.isPending ? "Completing..." : "Complete"}
-        </Button>
-      )}
-      {active && agentStatus && (
-        <span
-          aria-label={`Agent of #${task.id}`}
-          className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", agentStyles[agentStatus])}
-        >
-          {agentLabels[agentStatus]}
-        </span>
-      )}
-      <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", statusStyles[task.status])}>
-        {statusLabel(task)}
-      </span>
     </li>
+  );
+}
+
+/** The status of `task` as a pill with a colored dot. */
+function StatusBadge({ task }: { task: Task }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+        statusStyles[task.status],
+      )}
+    >
+      <span aria-hidden className="size-1.5 rounded-full bg-current opacity-80" />
+      {statusLabel(task)}
+    </span>
   );
 }
 
@@ -630,24 +695,70 @@ function CommitList({ task }: { task: Task }) {
   );
 }
 
+/** A dashed placeholder for a list with nothing in it yet. */
+export function EmptyState({ title, hint, icon }: { title: string; hint?: string; icon?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-1 rounded-xl border border-dashed px-6 py-10 text-center">
+      <span aria-hidden className="mb-1 text-muted-foreground [&_svg]:size-6">
+        {icon ?? <Inbox />}
+      </span>
+      <p className="text-sm font-medium">{title}</p>
+      {hint && <p className="max-w-sm text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * Where worktrees of the workspace's machine are created. Shown as a one-line summary once
+ * set, and as an open form while unset or being changed.
+ */
 function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   const machine = machineOf(workspace.location);
   const settings = useMachineSettings(machine);
   const saveSettings = useSaveMachineSettings();
   const [draft, setDraft] = useState<string | null>(null);
+  const [changing, setChanging] = useState(false);
   const saved = settings.data?.worktreeRoot ?? "";
   const machineName = machine.kind === "local" ? "this computer" : machine.label;
+  const error = settings.error ?? saveSettings.error;
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     saveSettings.mutate(
       { machine, worktreeRoot: (draft ?? saved).trim() || null },
-      { onSuccess: () => setDraft(null) },
+      {
+        onSuccess: () => {
+          setDraft(null);
+          setChanging(false);
+        },
+      },
+    );
+  }
+
+  if (settings.isSuccess && saved && !changing) {
+    return (
+      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        <FolderGit2 aria-hidden className="size-3.5 shrink-0" />
+        <span className="shrink-0">Worktrees on {machineName} in</span>
+        <code className="truncate text-foreground" title={saved}>
+          {saved}
+        </code>
+        <Button size="xs" variant="ghost" aria-label="Change worktree root" onClick={() => setChanging(true)}>
+          Change
+        </Button>
+      </div>
     );
   }
 
   return (
-    <form onSubmit={submit} aria-label="Worktree root" className="flex flex-col gap-1">
+    <form
+      onSubmit={submit}
+      aria-label="Worktree root"
+      className={cn(
+        "flex flex-col gap-1.5 rounded-xl border p-3",
+        settings.isSuccess && !saved && "border-amber-300 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30",
+      )}
+    >
       <div className="flex items-center gap-2">
         <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground">
           Worktree root on {machineName}
@@ -663,13 +774,26 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         <Button type="submit" size="sm" variant="outline" disabled={draft === null || saveSettings.isPending}>
           Save
         </Button>
+        {changing && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setDraft(null);
+              setChanging(false);
+            }}
+          >
+            Discard
+          </Button>
+        )}
       </div>
       {settings.isSuccess && !saved && (
         <p className="text-xs text-muted-foreground">Set a worktree root to start tasks on this machine.</p>
       )}
-      {(settings.error ?? saveSettings.error) && (
+      {error && (
         <p role="alert" className="text-xs text-destructive">
-          {(settings.error ?? saveSettings.error)?.message}
+          {error.message}
         </p>
       )}
     </form>
@@ -696,11 +820,15 @@ function NewTaskForm({ workspace }: { workspace: Workspace }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label="New task" className="flex flex-col gap-2">
+    <form
+      onSubmit={submit}
+      aria-label="New task"
+      className="flex flex-col gap-2 rounded-xl border bg-card p-3 shadow-xs"
+    >
       <div className="flex gap-2">
         <select
           aria-label="Task type"
-          className={cn(inputClass, "w-28")}
+          className={cn(inputClass, "w-28 font-mono")}
           value={taskType}
           onChange={(e) => setTaskType(e.target.value as TaskType)}
         >
@@ -719,6 +847,7 @@ function NewTaskForm({ workspace }: { workspace: Workspace }) {
           required
         />
         <Button type="submit" disabled={createTask.isPending}>
+          <Plus />
           Add task
         </Button>
       </div>

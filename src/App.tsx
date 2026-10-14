@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ChartColumn, FolderPlus, Layers, ListTodo } from "lucide-react";
 import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { Review } from "@/components/review";
-import { TaskList } from "@/components/task-list";
+import { EmptyState, TaskList } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
@@ -27,27 +28,39 @@ export default function App() {
   return (
     <div className="flex h-screen bg-background text-foreground">
       <aside className="flex w-64 shrink-0 flex-col gap-4 border-r bg-sidebar p-3 text-sidebar-foreground">
-        <h1 className="px-1 text-lg font-semibold tracking-tight">Toodo</h1>
-        <Button
-          variant={reviewing ? "secondary" : "ghost"}
-          className="justify-start"
-          aria-pressed={reviewing}
-          onClick={() => setReviewing(true)}
-        >
-          Review
-        </Button>
-        <Button
-          variant={showingAll ? "secondary" : "ghost"}
-          className="justify-start"
-          aria-pressed={showingAll}
-          disabled={!workspaces.data?.length}
-          onClick={() => {
-            setSelectedId("all");
-            setReviewing(false);
-          }}
-        >
-          All workspaces
-        </Button>
+        <h1 className="flex items-center gap-2 px-1 text-lg font-semibold tracking-tight">
+          <span
+            aria-hidden
+            className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground"
+          >
+            <ListTodo className="size-4" />
+          </span>
+          Toodo
+        </h1>
+        <nav className="flex flex-col gap-0.5">
+          <Button
+            variant={reviewing ? "secondary" : "ghost"}
+            className="justify-start"
+            aria-pressed={reviewing}
+            onClick={() => setReviewing(true)}
+          >
+            <ChartColumn />
+            Review
+          </Button>
+          <Button
+            variant={showingAll ? "secondary" : "ghost"}
+            className="justify-start"
+            aria-pressed={showingAll}
+            disabled={!workspaces.data?.length}
+            onClick={() => {
+              setSelectedId("all");
+              setReviewing(false);
+            }}
+          >
+            <Layers />
+            All workspaces
+          </Button>
+        </nav>
         <WorkspaceList
           selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
           onSelect={(id) => {
@@ -58,15 +71,15 @@ export default function App() {
         <div className="mt-auto">
           <BackupPanel />
         </div>
-        <p className="px-1 text-xs text-muted-foreground">
-          {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
-        </p>
+        <div className="flex items-center justify-between gap-2 px-1">
+          <p className="text-xs text-muted-foreground">
+            {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
+          </p>
+          <ThemeToggle />
+        </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex shrink-0 justify-end px-6 pt-3">
-          <ThemeToggle />
-        </header>
-        <main className="min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-3">
+        <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6">
           <UpdateBanner />
           <HerdrBanner />
           {reviewing ? (
@@ -76,9 +89,13 @@ export default function App() {
           ) : selected ? (
             <TaskList key={selected.id} workspace={selected} />
           ) : (
-            <p className="text-sm text-muted-foreground">
-              {workspaces.isPending ? "" : "Create a workspace to start planning tasks."}
-            </p>
+            !workspaces.isPending && (
+              <EmptyState
+                icon={<FolderPlus />}
+                title="Create a workspace to start planning tasks."
+                hint="Clone a repository or open one already cloned, on this computer or a saved herdr machine."
+              />
+            )
           )}
         </main>
       </div>

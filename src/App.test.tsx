@@ -703,7 +703,9 @@ describe("App", () => {
     await waitFor(() =>
       expect(screen.queryByText("Set a worktree root to start tasks on this machine.")).not.toBeInTheDocument(),
     );
-    expect(root).toHaveValue("/srv/wt");
+    // Once set, the root collapses into a summary line with the trimmed path.
+    expect(screen.getByText("/srv/wt")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change worktree root" })).toBeInTheDocument();
     expect(mocked.getMachineSettings).toHaveBeenCalledWith({ kind: "ssh", label: "devbox" });
     expect(mocked.saveMachineSettings).toHaveBeenCalledWith({
       machine: { kind: "ssh", label: "devbox" },
