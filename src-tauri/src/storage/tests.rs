@@ -941,3 +941,49 @@ fn only_status_changes_are_recorded_and_rejected_changes_record_nothing() {
     storage.delete_task(a.id).unwrap();
     assert_eq!(events_before - row_count(&storage, "task_events"), 4);
 }
+
+#[test]
+fn base_branch_cannot_change_while_a_task_is_in_review() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let mut workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let other = add_workspace(&mut storage, "Other", local_location(r"C:\src\other"));
+    let task = add_task(&mut storage, &workspace, "A");
+    let elsewhere = add_task(&mut storage, &other, "B");
+    storage.set_task_status(elsewhere.id, InProgress).unwrap();
+    storage.set_task_status(elsewhere.id, InReview).unwrap();
+
+    // A task in review in another workspace does not matter.
+    workspace.default_base_branch = "develop".to_owned();
+    storage.update_workspace(&workspace).unwrap();
+
+    storage.set_task_status(task.id, InProgress).unwrap();
+    storage.set_task_status(task.id, InReview).unwrap();
+    workspace.default_base_branch = "main".to_owned();
+    assert!(matches!(
+        storage.update_workspace(&workspace),
+        Err(StorageError::BaseBranchInReview { workspace: id, task: t })
+            if id == workspace.id && t == task.id
+    ));
+    assert_eq!(
+        storage
+            .get_workspace(workspace.id)
+            .unwrap()
+            .unwrap()
+            .default_base_branch,
+        "develop"
+    );
+
+    // Other fields still save while the branch stays.
+    workspace.default_base_branch = "develop".to_owned();
+    workspace.name = "Renamed".to_owned();
+    storage.update_workspace(&workspace).unwrap();
+    assert_eq!(
+        storage.get_workspace(workspace.id).unwrap(),
+        Some(workspace.clone())
+    );
+
+    // Once the review is over, the branch can change again.
+    storage.complete_task(task.id, Some(1)).unwrap();
+    workspace.default_base_branch = "main".to_owned();
+    storage.update_workspace(&workspace).unwrap();
+}

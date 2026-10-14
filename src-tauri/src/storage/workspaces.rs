@@ -117,9 +117,30 @@ impl Storage {
         rows.into_iter().map(WorkspaceRow::into_workspace).collect()
     }
 
+    /// Saves the workspace. Its base branch cannot change while one of its tasks is in
+    /// review: the open pull request targets the current branch.
     pub fn update_workspace(&mut self, workspace: &Workspace) -> Result<()> {
         let (kind, path, herdr_machine) = location_columns(&workspace.location);
-        let changed = self.conn.execute(
+        let tx = self.conn.transaction()?;
+        let in_review: Option<i64> = tx
+            .query_row(
+                "SELECT t.id
+                 FROM tasks t
+                 JOIN workspaces w ON w.id = t.workspace_id
+                 WHERE w.id = ?1 AND t.status = 'in_review' AND w.default_base_branch <> ?2
+                 ORDER BY t.id
+                 LIMIT 1",
+                params![workspace.id.0, workspace.default_base_branch],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(task) = in_review {
+            return Err(StorageError::BaseBranchInReview {
+                workspace: workspace.id,
+                task: TaskId(task),
+            });
+        }
+        let changed = tx.execute(
             "UPDATE workspaces
              SET name = ?2, kind = ?3, path = ?4, herdr_machine = ?5, default_base_branch = ?6
              WHERE id = ?1",
@@ -135,6 +156,7 @@ impl Storage {
         if changed == 0 {
             return Err(StorageError::WorkspaceNotFound(workspace.id));
         }
+        tx.commit()?;
         Ok(())
     }
 

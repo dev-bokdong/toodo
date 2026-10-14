@@ -96,6 +96,12 @@ pub enum StorageError {
         task: TaskId,
         depends_on: TaskId,
     },
+    /// The base branch of a workspace cannot change while one of its tasks is in review,
+    /// because the task's pull request targets the current branch.
+    BaseBranchInReview {
+        workspace: WorkspaceId,
+        task: TaskId,
+    },
     TaskNotFound(TaskId),
     Dependency(DependencyError),
     Transition(TransitionError),
@@ -131,6 +137,11 @@ impl fmt::Display for StorageError {
             } => write!(
                 f,
                 "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}",
+                workspace.0
+            ),
+            Self::BaseBranchInReview { workspace, task } => write!(
+                f,
+                "base branch of workspace {} cannot change while task {task} is in review",
                 workspace.0
             ),
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),

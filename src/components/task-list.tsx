@@ -40,6 +40,7 @@ import {
   useStartTask,
   useTasks,
   useUpdateTask,
+  useUpdateWorkspace,
   useWorkspaces,
 } from "@/lib/queries";
 import { dependenciesDone, isPaused } from "@/lib/task-graph";
@@ -132,11 +133,11 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
           {workspace?.name ?? "All workspaces"}
         </h2>
-        <p className="text-sm text-muted-foreground">
-          {workspace
-            ? `${describeLocation(workspace.location)} \u00b7 base ${workspace.defaultBaseBranch}`
-            : "Tasks of every workspace and the dependencies between them."}
-        </p>
+        {workspace ? (
+          <BaseBranchForm workspace={workspace} />
+        ) : (
+          <p className="text-sm text-muted-foreground">Tasks of every workspace and the dependencies between them.</p>
+        )}
       </header>
 
       {workspace && <WorktreeRootForm workspace={workspace} />}
@@ -705,6 +706,90 @@ export function EmptyState({ title, hint, icon }: { title: string; hint?: string
       <p className="text-sm font-medium">{title}</p>
       {hint && <p className="max-w-sm text-xs text-muted-foreground">{hint}</p>}
     </div>
+  );
+}
+
+/**
+ * The location and default base branch of the workspace; the branch that new task branches
+ * start from and pull requests target can be changed in place.
+ */
+function BaseBranchForm({ workspace }: { workspace: Workspace }) {
+  const updateWorkspace = useUpdateWorkspace();
+  const tasks = useTasks();
+  // An open pull request targets the current branch, so it stays while a task is in review.
+  const inReview = tasks.data?.filter((task) => task.workspaceId === workspace.id && task.status === "in_review");
+  const locked = inReview === undefined || inReview.length > 0;
+  const [draft, setDraft] = useState<string | null>(null);
+  const location = describeLocation(workspace.location);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (draft === null) return;
+    updateWorkspace.mutate({ ...workspace, defaultBaseBranch: draft.trim() }, { onSuccess: () => setDraft(null) });
+  }
+
+  if (draft === null) {
+    return (
+      <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
+        <span className="truncate">{location} &middot; base</span>
+        <code className="text-foreground">{workspace.defaultBaseBranch}</code>
+        <Button
+          size="xs"
+          variant="ghost"
+          aria-label="Change base branch"
+          disabled={locked}
+          onClick={() => {
+            updateWorkspace.reset();
+            setDraft(workspace.defaultBaseBranch);
+          }}
+        >
+          Change
+        </Button>
+        {inReview && inReview.length > 0 && (
+          <span className="truncate text-xs">
+            Locked while {inReview.map((task) => `#${task.id}`).join(", ")} {inReview.length > 1 ? "are" : "is"} in
+            review
+          </span>
+        )}
+      </p>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} aria-label="Base branch" className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+        <span className="truncate">{location} &middot;</span>
+        <label htmlFor="base-branch" className="shrink-0">
+          Base branch
+        </label>
+        <input
+          id="base-branch"
+          className={cn(inputClass, "max-w-56 font-mono")}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          autoFocus
+        />
+        <Button
+          type="submit"
+          size="sm"
+          variant="outline"
+          disabled={!draft.trim() || draft.trim() === workspace.defaultBaseBranch || updateWorkspace.isPending}
+        >
+          Save
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
+          Discard
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        New task branches start from this branch and pull requests target it.
+      </p>
+      {updateWorkspace.error && (
+        <p role="alert" className="text-xs text-destructive">
+          {updateWorkspace.error.message}
+        </p>
+      )}
+    </form>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   type TaskEdit,
   type TaskId,
   type Timestamp,
+  type Workspace,
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
@@ -154,6 +155,15 @@ export function useCreateWorkspace() {
   return useMutation({
     mutationFn: (workspace: NewWorkspace) => unwrap(commands.createWorkspace(workspace)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }),
+  });
+}
+
+/** Saves an edited workspace, such as a new default base branch. */
+export function useUpdateWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (workspace: Workspace) => unwrap(commands.updateWorkspace(workspace)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
   });
 }
 

@@ -27,7 +27,7 @@ cloning a repository into a path or by opening a repository already cloned at a 
 | `kind` | `local` or `ssh`. |
 | `path` | Absolute path to the repository root: a Windows path for `local`, a POSIX path for `ssh`. Keep the two as distinct types. |
 | `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh.exe` host. |
-| `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). |
+| `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). Detected or entered at registration and editable afterwards from the workspace header, except while a task of the workspace is `in_review` (its open PR targets the current branch). |
 
 ### Machine Settings
 
