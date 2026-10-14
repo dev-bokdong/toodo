@@ -7,7 +7,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, PullRequestSnapshot, Task, TaskId, TaskType, WorkspaceId,
+    CommitRecord, HostPath, PullRequestSnapshot, Task, TaskId, TaskResolution, TaskType,
+    WorkspaceId,
 };
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
@@ -22,7 +23,7 @@ pub struct NewTask {
     pub description: String,
 }
 
-const TASK_TYPES: [TaskType; 7] = [
+const TASK_TYPES: [TaskType; 8] = [
     TaskType::Feat,
     TaskType::Fix,
     TaskType::Modify,
@@ -30,6 +31,7 @@ const TASK_TYPES: [TaskType; 7] = [
     TaskType::Docs,
     TaskType::Test,
     TaskType::Chore,
+    TaskType::Rnd,
 ];
 
 const TASK_STATUSES: [TaskStatus; 4] = [
@@ -46,6 +48,13 @@ fn parse_task_type(raw: &str) -> Result<TaskType> {
         .ok_or_else(|| StorageError::InvalidData(format!("unknown task type {raw:?}")))
 }
 
+fn parse_task_resolution(raw: &str) -> Result<TaskResolution> {
+    [TaskResolution::Merged, TaskResolution::NotAdopted]
+        .into_iter()
+        .find(|resolution| resolution.as_str() == raw)
+        .ok_or_else(|| StorageError::InvalidData(format!("unknown task resolution {raw:?}")))
+}
+
 fn parse_task_status(raw: &str) -> Result<TaskStatus> {
     TASK_STATUSES
         .into_iter()
@@ -57,7 +66,7 @@ const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.descr
         t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url,
         t.pull_request_merged_at, w.kind, t.completion_note, s.number, s.title, s.additions,
         s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
-        s.first_reviewed_at
+        s.first_reviewed_at, t.resolution
     FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
         LEFT JOIN pull_request_snapshots s ON s.task_id = t.id";
 
@@ -76,6 +85,7 @@ struct TaskRow {
     workspace_kind: String,
     completion_note: Option<String>,
     pull_request: Option<PullRequestSnapshot>,
+    resolution: Option<String>,
 }
 
 impl TaskRow {
@@ -108,6 +118,7 @@ impl TaskRow {
                     first_reviewed_at: row.get(21)?,
                 }),
             },
+            resolution: row.get(22)?,
         })
     }
 
@@ -128,6 +139,11 @@ impl TaskRow {
             title: self.title,
             description: self.description,
             status: parse_task_status(&self.status)?,
+            resolution: self
+                .resolution
+                .as_deref()
+                .map(parse_task_resolution)
+                .transpose()?,
             depends_on,
             branch: self.branch,
             worktree_path,
@@ -286,6 +302,7 @@ impl Storage {
             pull_request_url: None,
             pull_request_merged_at: None,
             pull_request: None,
+            resolution: None,
             completion_note: None,
             timeline: vec![TaskEvent { status, at }],
         })
@@ -385,7 +402,7 @@ impl Storage {
         Ok(started)
     }
 
-    /// Moves an `in_review` task to `done`, stores the merge time and the snapshot of its
+    /// Moves an `in_review` task to `done` as merged, stores the merge time and the snapshot of its
     /// pull request, and forgets its herdr workspace, which was closed, in one
     /// transaction. Non-empty `commits` (those of the merged pull request) replace its
     /// commit records. The worktree path stays: the checkout is kept on disk until its
@@ -403,9 +420,15 @@ impl Storage {
         let status = task.status.transition_to(TaskStatus::Done)?;
         tx.execute(
             "UPDATE tasks
-             SET status = ?2, herdr_workspace_id = NULL, pull_request_merged_at = ?3
+             SET status = ?2, resolution = ?3, herdr_workspace_id = NULL,
+                 pull_request_merged_at = ?4
              WHERE id = ?1",
-            params![id.0, status.as_str(), merged_at],
+            params![
+                id.0,
+                status.as_str(),
+                TaskResolution::Merged.as_str(),
+                merged_at
+            ],
         )?;
         if let Some(snapshot) = pull_request {
             tx.execute(
@@ -434,6 +457,41 @@ impl Storage {
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
+    }
+
+    /// Moves an `in_progress` or `in_review` task to `done` without merging, as
+    /// `not_adopted`, in one transaction: stores `note`, the conclusion, as its completion
+    /// note and forgets its herdr workspace, which was closed. Non-empty `commits` replace
+    /// its commit records. The branch, worktree path, and pull request URL stay, and its
+    /// dependents keep waiting: work that was not adopted is not there to build on.
+    pub fn conclude_task(
+        &mut self,
+        id: TaskId,
+        note: &str,
+        commits: &[CommitRecord],
+    ) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let status = task.status.conclude()?;
+        tx.execute(
+            "UPDATE tasks
+             SET status = ?2, resolution = ?3, completion_note = ?4, herdr_workspace_id = NULL
+             WHERE id = ?1",
+            params![
+                id.0,
+                status.as_str(),
+                TaskResolution::NotAdopted.as_str(),
+                note
+            ],
+        )?;
+        if !commits.is_empty() {
+            super::commits::write_commit_records(&tx, id, commits)?;
+        }
+        record_event(&tx, id, status, at)?;
+        let concluded = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(concluded)
     }
 
     /// Stores what the user wrote about the outcome of a task; `None` clears it. Whether
@@ -548,7 +606,7 @@ impl Storage {
     /// Moves a task to `status` if its current status allows it, recording the change;
     /// pausing is a move back to `planned`. Starting requires all dependencies to be
     /// done. The pull request checks that guard `in_review` and `done` are up to the
-    /// caller.
+    /// caller; a task moved to `done` here counts as merged.
     pub fn set_task_status(&mut self, id: TaskId, status: TaskStatus) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
@@ -557,9 +615,10 @@ impl Storage {
         if status == TaskStatus::InProgress {
             ensure_ready(&tx, id)?;
         }
+        let resolution = (status == TaskStatus::Done).then_some(TaskResolution::Merged.as_str());
         tx.execute(
-            "UPDATE tasks SET status = ?2 WHERE id = ?1",
-            params![id.0, status.as_str()],
+            "UPDATE tasks SET status = ?2, resolution = ?3 WHERE id = ?1",
+            params![id.0, status.as_str(), resolution],
         )?;
         record_event(&tx, id, status, at)?;
         let changed = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;

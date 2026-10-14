@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
-use super::model::{Task, TaskId};
+use super::model::{Task, TaskId, TaskResolution};
 use super::status::TaskStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,12 +97,15 @@ fn dependencies_done(by_id: &HashMap<TaskId, &Task>, task: &Task) -> Result<bool
         let dependency = by_id
             .get(dependency)
             .ok_or(DependencyError::UnknownTask(*dependency))?;
-        all_done &= dependency.status == TaskStatus::Done;
+        // Work that was not adopted is not there to build on.
+        all_done &= dependency.status == TaskStatus::Done
+            && dependency.resolution != Some(TaskResolution::NotAdopted);
     }
     Ok(all_done)
 }
 
-/// Whether all dependencies of `task` are done, so it can be started.
+/// Whether all dependencies of `task` are done and none of them was concluded without
+/// being adopted, so it can be started.
 pub fn is_ready(tasks: &[Task], task: TaskId) -> Result<bool, DependencyError> {
     let by_id = index(tasks);
     let task = by_id.get(&task).ok_or(DependencyError::UnknownTask(task))?;
@@ -197,6 +200,7 @@ mod tests {
             pull_request_url: None,
             pull_request_merged_at: None,
             pull_request: None,
+            resolution: None,
             completion_note: None,
             timeline: Vec::new(),
         }
@@ -281,6 +285,22 @@ mod tests {
             .map(|id| is_ready(&tasks, TaskId(id)).unwrap())
             .collect();
         assert_eq!(ready, [true, false, false, true]);
+    }
+
+    #[test]
+    fn a_dependency_that_was_not_adopted_keeps_its_dependents_waiting() {
+        let mut merged = task(1, Done, &[]);
+        merged.resolution = Some(TaskResolution::Merged);
+        let mut not_adopted = task(2, Done, &[]);
+        not_adopted.resolution = Some(TaskResolution::NotAdopted);
+        let tasks = [
+            merged,
+            not_adopted,
+            task(3, Planned, &[1]),
+            task(4, Planned, &[1, 2]),
+        ];
+        assert!(is_ready(&tasks, TaskId(3)).unwrap());
+        assert!(!is_ready(&tasks, TaskId(4)).unwrap());
     }
 
     #[test]

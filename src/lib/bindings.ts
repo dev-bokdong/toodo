@@ -54,7 +54,8 @@ export const commands = {
 	pauseTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("pause_task", { id })),
 	/**
 	 *  Stores what the user wrote about the outcome of a `done` task, for reviews. The note
-	 *  is trimmed; an empty one clears it.
+	 *  is trimmed; an empty one clears it, except for a task that was not adopted, whose note
+	 *  is its required conclusion.
 	 */
 	setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("set_completion_note", { id, note })),
 	/**
@@ -105,6 +106,14 @@ export const commands = {
 	 *  recorded for reviews. Its herdr workspace is closed; the worktree stays on disk.
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
+	/**
+	 *  Concludes an `in_progress` or `in_review` task without merging, e.g. research whose
+	 *  result is not adopted: the task becomes `done` as `not_adopted` with `note`, the
+	 *  conclusion, as its completion note. The commits of its branch are recorded, an open
+	 *  pull request is closed with the conclusion as a comment, and its herdr workspace is
+	 *  closed. The branch and worktree stay, and its dependents keep waiting.
+	 */
+	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("conclude_task", { id, note })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
@@ -303,6 +312,8 @@ export type Task = {
 	title: string,
 	description: string,
 	status: TaskStatus,
+	/**  How the task ended; set exactly when it is `done`. */
+	resolution: TaskResolution | null,
 	/**  Tasks this task depends on, in ascending ID order. */
 	dependsOn: TaskId[],
 	branch: string | null,
@@ -316,7 +327,10 @@ export type Task = {
 	 *  for tasks completed before Toodo recorded it.
 	 */
 	pullRequest: PullRequestSnapshot | null,
-	/**  What the user wrote about the outcome of a `done` task. */
+	/**
+	 *  What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
+	 *  why it was not adopted.
+	 */
 	completionNote: string | null,
 	/**
 	 *  Status history, oldest event first. Empty for tasks created before Toodo
@@ -366,9 +380,19 @@ export type TaskMilestones = {
 	pausedAt: Timestamp | null,
 };
 
+/**  How a `done` task ended. */
+export type TaskResolution = 
+/**  Its pull request was merged. */
+"merged" | 
+/**
+ *  Concluded without merging; the completion note says why. Dependents stay
+ *  waiting.
+ */
+"not_adopted";
+
 export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
 
-export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore";
+export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore" | "rnd";
 
 /**  Tasks of the workspace changed outside a command, e.g. herdr removed a worktree. */
 export type TasksChanged = {

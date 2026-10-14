@@ -44,6 +44,7 @@ vi.mock("@/lib/bindings", () => ({
     refreshCommitRecords: vi.fn(),
     openPullRequest: vi.fn(),
     completeTask: vi.fn(),
+    concludeTask: vi.fn(),
     listHerdrMachines: vi.fn(),
     addHerdrMachine: vi.fn(),
     listSshHosts: vi.fn(),
@@ -99,6 +100,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     pullRequestUrl: null,
     pullRequestMergedAt: null,
     pullRequest: null,
+    resolution: null,
     completionNote: null,
     timeline: [],
     milestones: {
@@ -897,6 +899,51 @@ describe("App", () => {
     expect(screen.queryByLabelText("#1 needs a completion note")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Completion note for #1" })).not.toBeInTheDocument();
     expect(mocked.setCompletionNote).toHaveBeenCalledWith(1, "Cut sign-in time in half");
+  });
+
+  it("concludes research without merging and keeps its dependents blocked", async () => {
+    const research = task(1, 1, "Try a new cache", {
+      taskType: "rnd",
+      status: "in_review",
+      branch: "rnd/try-a-new-cache-1",
+      worktreePath: "D:\\wt\\toodo\\rnd-try-a-new-cache-1",
+      herdrWorkspaceId: "w1",
+      pullRequestUrl: "https://github.com/acme/toodo/pull/12",
+    });
+    const dependent = task(2, 1, "Use the new cache", { dependsOn: [1] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [research, dependent] });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Conclude #1 without merging" }));
+    const conclude = screen.getByRole("button", { name: "Conclude without merge" });
+    expect(conclude).toBeDisabled();
+
+    const concluded: Task = {
+      ...research,
+      status: "done",
+      resolution: "not_adopted",
+      herdrWorkspaceId: null,
+      completionNote: "Twice as slow as the current cache",
+    };
+    mocked.concludeTask.mockResolvedValue({ status: "ok", data: concluded });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [concluded, dependent] });
+    fireEvent.change(screen.getByRole("textbox", { name: "Conclusion of #1" }), {
+      target: { value: "  Twice as slow as the current cache " },
+    });
+    fireEvent.click(conclude);
+
+    expect(await screen.findByLabelText("Completion note of #1")).toHaveTextContent(
+      "Twice as slow as the current cache",
+    );
+    expect(mocked.concludeTask).toHaveBeenCalledWith(1, "Twice as slow as the current cache");
+    const tasks = screen.getByRole("list", { name: "Tasks" });
+    expect(within(tasks).getByText("Not adopted")).toBeInTheDocument();
+    expect(screen.queryByLabelText("#1 needs a completion note")).not.toBeInTheDocument();
+    expect(screen.getByRole("note", { name: "Blocked prerequisites of #2" })).toHaveTextContent(
+      "#1 was not adopted",
+    );
+    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
   });
 
   it("adds and removes task dependencies", async () => {

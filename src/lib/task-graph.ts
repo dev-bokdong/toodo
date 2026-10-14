@@ -7,9 +7,17 @@ export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
 /** Statuses whose dependencies can still change; the backend rejects edits for the others. */
 export const dependencyEditableStatuses: TaskStatus[] = ["planned"];
 
-/** Whether every dependency of `task` is done, so it can be started. */
+/** Whether `task` was concluded without merging, so tasks that depend on it cannot build on it. */
+export function isNotAdopted(task: Task | undefined): boolean {
+  return task?.resolution === "not_adopted";
+}
+
+/** Whether every dependency of `task` is done and adopted, so it can be started. */
 export function dependenciesDone(task: Task, byId: ReadonlyMap<TaskId, Task>): boolean {
-  return task.dependsOn.every((id) => byId.get(id)?.status === "done");
+  return task.dependsOn.every((id) => {
+    const dependency = byId.get(id);
+    return dependency?.status === "done" && !isNotAdopted(dependency);
+  });
 }
 
 /** A planned task that was worked on before: it keeps its branch and worktree. */
@@ -23,11 +31,14 @@ function isPending(task: Task): boolean {
 }
 
 /**
- * When the last dependency of `task` was completed, if all of them are done; null without
- * dependencies or when one is not done or not in `byId`.
+ * When the last dependency of `task` was completed, if all of them are done and adopted; null
+ * without dependencies or when one is not done, not adopted, or not in `byId`.
  */
 function readyAt(task: Task, byId: ReadonlyMap<TaskId, Task>): Timestamp | null {
-  const completed = task.dependsOn.map((id) => byId.get(id)?.milestones.completedAt ?? null);
+  const completed = task.dependsOn.map((id) => {
+    const dependency = byId.get(id);
+    return isNotAdopted(dependency) ? null : (dependency?.milestones.completedAt ?? null);
+  });
   return completed.length === 0 || completed.includes(null) ? null : Math.max(...(completed as Timestamp[]));
 }
 

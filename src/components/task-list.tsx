@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import {
   Check,
+  CircleSlash,
   FolderGit2,
   GitBranch,
   GitPullRequest,
@@ -27,6 +28,7 @@ import {
   useAgentStatuses,
   useCommitRecords,
   useCompleteTask,
+  useConcludeTask,
   useCreateTask,
   useDeleteTask,
   useHerdrStatus,
@@ -46,11 +48,11 @@ import {
   useWorkspaces,
 } from "@/lib/queries";
 import { pullRequestStats } from "@/lib/review";
-import { dependenciesDone, isPaused } from "@/lib/task-graph";
+import { dependenciesDone, isNotAdopted, isPaused } from "@/lib/task-graph";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
-const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore"];
+const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
 const agentLabels: Record<AgentStatus, string> = {
   idle: "Agent idle",
@@ -73,8 +75,14 @@ const statusLabels: Record<TaskStatus, string> = {
   done: "Done",
 };
 
-/** The status of `task`, naming a planned task that was worked on before "Paused". */
+/**
+ * The status of `task`, naming a planned task that was worked on before "Paused" and a task
+ * concluded without merging "Not adopted".
+ */
 function statusLabel(task: Task): string {
+  if (isNotAdopted(task)) {
+    return "Not adopted";
+  }
   return isPaused(task) ? "Paused" : statusLabels[task.status];
 }
 
@@ -84,6 +92,12 @@ const statusStyles: Record<TaskStatus, string> = {
   in_review: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
 };
+
+const notAdoptedStyle = "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200";
+
+function statusStyle(task: Task): string {
+  return isNotAdopted(task) ? notAdoptedStyle : statusStyles[task.status];
+}
 
 /** What the task list needs to name tasks of other workspaces. */
 type TaskContext = {
@@ -220,7 +234,7 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
                 filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
               }
               statusLabel={statusLabel}
-              statusStyles={statusStyles}
+              statusStyle={statusStyle}
             />
           )}
         </>
@@ -280,6 +294,7 @@ function TaskRow({
   const removeDependency = useRemoveDependency();
   const restoreWorktree = useRestoreTaskWorktree();
   const [editing, setEditing] = useState(false);
+  const [concluding, setConcluding] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const herdrRunning = herdr.data?.running === true;
   const inReview = task.status === "in_review";
@@ -290,6 +305,8 @@ function TaskRow({
   const final = task.status === "done";
   const paused = isPaused(task);
   const startable = task.status === "planned" && dependenciesDone(task, context.byId);
+  // Prerequisites concluded without merging: this task cannot build on them.
+  const notAdopted = task.status === "planned" ? task.dependsOn.filter((id) => isNotAdopted(context.byId.get(id))) : [];
   // A paused task may still have the worktree it had while it was worked on.
   const removableWorktree = !active && task.worktreePath !== null;
   // A rejected delete means the worktree has local changes; offer to discard them.
@@ -382,8 +399,13 @@ function TaskRow({
               className={cn(
                 "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 tabular-nums",
                 context.byId.get(id)?.status === "done" && "line-through decoration-muted-foreground/60",
+                notAdopted.includes(id) && "border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300",
               )}
-              title={context.byId.get(id)?.title}
+              title={
+                notAdopted.includes(id)
+                  ? `${context.byId.get(id)?.title} (not adopted)`
+                  : context.byId.get(id)?.title
+              }
             >
               <span>{taskRef(id, task.workspaceId, context)}</span>
               {dependenciesEditable && (
@@ -425,6 +447,17 @@ function TaskRow({
           )}
         </div>
       )}
+      {notAdopted.length > 0 && (
+        <p
+          role="note"
+          aria-label={`Blocked prerequisites of #${task.id}`}
+          className="text-xs text-rose-700 dark:text-rose-300"
+        >
+          {notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}{" "}
+          {notAdopted.length === 1 ? "was" : "were"} not adopted. Remove the dependency or change the plan to
+          start this task.
+        </p>
+      )}
       <TaskTimeline task={task} />
       {task.branch && (
         <p
@@ -457,13 +490,20 @@ function TaskRow({
           {actionError.message}
         </p>
       )}
-      {!editing && (
+      {concluding && !editing && <ConcludeForm task={task} onDone={() => setConcluding(false)} />}
+      {!editing && !concluding && (
         <div className="flex flex-wrap items-center gap-1">
           {task.status === "planned" && (
             <Button
               size="xs"
               aria-label={`${paused ? "Resume" : "Start"} #${task.id}`}
-              title={startable ? undefined : "Waits until all its dependencies are done"}
+              title={
+                startable
+                  ? undefined
+                  : notAdopted.length > 0
+                    ? "A dependency was not adopted; remove it to start"
+                    : "Waits until all its dependencies are done"
+              }
               disabled={!startable || !herdrRunning || startTask.isPending}
               onClick={() => startTask.mutate(task.id)}
             >
@@ -530,6 +570,19 @@ function TaskRow({
             >
               <Check />
               {completeTask.isPending ? "Completing..." : "Complete"}
+            </Button>
+          )}
+          {active && (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={`Conclude #${task.id} without merging`}
+              title="Finish without merging, e.g. research whose result is not adopted; an open pull request is closed"
+              disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
+              onClick={() => setConcluding(true)}
+            >
+              <CircleSlash />
+              Conclude
             </Button>
           )}
           <div className="ml-auto flex items-center gap-0.5">
@@ -618,7 +671,7 @@ function StatusBadge({ task }: { task: Task }) {
     <span
       className={cn(
         "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        statusStyles[task.status],
+        statusStyle(task),
       )}
     >
       <span aria-hidden className="size-1.5 rounded-full bg-current opacity-80" />
@@ -688,6 +741,52 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
   );
 }
 
+/**
+ * Concludes an active task without merging: the conclusion, why the work is not adopted, is
+ * required and becomes its completion note.
+ */
+function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const concludeTask = useConcludeTask();
+  const [note, setNote] = useState("");
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    concludeTask.mutate({ id: task.id, note: note.trim() }, { onSuccess: onDone });
+  }
+
+  return (
+    <form onSubmit={submit} aria-label={`Conclude #${task.id}`} className="flex flex-col gap-1">
+      <p className="text-xs text-muted-foreground">
+        Finish #{task.id} without merging. It is marked not adopted, its pull request is closed with the
+        conclusion as a comment, and the branch is kept. Tasks that depend on it stay blocked.
+      </p>
+      <textarea
+        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
+        aria-label={`Conclusion of #${task.id}`}
+        placeholder="What was tried, what was found, and why it is not adopted."
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        required
+        autoFocus
+      />
+      <div className="flex gap-1">
+        <Button type="submit" size="xs" disabled={concludeTask.isPending || note.trim() === ""}>
+          <CircleSlash />
+          {concludeTask.isPending ? "Concluding..." : "Conclude without merge"}
+        </Button>
+        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
+          Back
+        </Button>
+      </div>
+      {concludeTask.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {concludeTask.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
 /** The completion note of a done task, which reviews include, or a button to write one. */
 function CompletionNote({ task }: { task: Task }) {
   const setNote = useSetCompletionNote();
@@ -746,7 +845,12 @@ function CompletionNote({ task }: { task: Task }) {
         autoFocus
       />
       <div className="flex gap-1">
-        <Button type="submit" size="xs" disabled={setNote.isPending || note.trim() === saved}>
+        <Button
+          type="submit"
+          size="xs"
+          // The conclusion of work that was not adopted cannot be cleared.
+          disabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
+        >
           {setNote.isPending ? "Saving..." : "Save note"}
         </Button>
         <Button type="button" size="xs" variant="ghost" onClick={() => setEditing(false)}>

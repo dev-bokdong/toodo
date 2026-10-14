@@ -147,6 +147,8 @@ pub enum TaskType {
     Docs,
     Test,
     Chore,
+    /// Research and development: work whose conclusion may be not to adopt it.
+    Rnd,
 }
 
 impl TaskType {
@@ -159,6 +161,7 @@ impl TaskType {
             Self::Docs => "docs",
             Self::Test => "test",
             Self::Chore => "chore",
+            Self::Rnd => "rnd",
         }
     }
 }
@@ -166,6 +169,25 @@ impl TaskType {
 impl fmt::Display for TaskType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// How a `done` task ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskResolution {
+    /// Its pull request was merged into the base branch.
+    Merged,
+    /// The work was concluded without merging, e.g. research whose result was not
+    /// adopted. Its completion note says why; dependents stay blocked.
+    NotAdopted,
+}
+
+impl TaskResolution {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Merged => "merged",
+            Self::NotAdopted => "not_adopted",
+        }
     }
 }
 
@@ -177,6 +199,8 @@ pub struct Task {
     pub title: String,
     pub description: String,
     pub status: TaskStatus,
+    /// How the task ended; `Some` exactly when it is `done`.
+    pub resolution: Option<TaskResolution>,
     pub depends_on: BTreeSet<TaskId>,
     pub branch: Option<String>,
     pub worktree_path: Option<HostPath>,

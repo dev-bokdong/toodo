@@ -4,6 +4,7 @@ use tauri::State;
 
 use super::types::{self, CommitRecord, NewTask, Task, TaskEdit, TaskId};
 use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
+use crate::domain::model::TaskResolution;
 use crate::domain::status::TaskStatus;
 use crate::storage::{Storage, StorageError};
 
@@ -76,7 +77,8 @@ fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
 }
 
 /// Stores what the user wrote about the outcome of a `done` task, for reviews. The note
-/// is trimmed; an empty one clears it.
+/// is trimmed; an empty one clears it, except for a task that was not adopted, whose note
+/// is its required conclusion.
 #[tauri::command]
 #[specta::specta]
 pub fn set_completion_note(
@@ -98,6 +100,11 @@ fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResu
         )));
     }
     let note = Some(note.trim()).filter(|note| !note.is_empty());
+    if note.is_none() && task.resolution == Some(TaskResolution::NotAdopted) {
+        return Err(CommandError::invalid_input(
+            "the conclusion of work that was not adopted cannot be cleared",
+        ));
+    }
     Ok((&storage.set_completion_note(id.into(), note)?).into())
 }
 
@@ -250,6 +257,21 @@ mod tests {
             storage.get_task(task.id).unwrap().unwrap().completion_note,
             None
         );
+    }
+
+    #[test]
+    fn the_conclusion_of_a_task_that_was_not_adopted_can_be_edited_but_not_cleared() {
+        let (mut storage, task) = storage_with_task();
+        storage
+            .set_task_status(task.id, TaskStatus::InProgress)
+            .unwrap();
+        storage.conclude_task(task.id, "Too slow", &[]).unwrap();
+
+        let error = note_completion(&mut storage, task.id.into(), " ").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let edited = note_completion(&mut storage, task.id.into(), "Twice as slow").unwrap();
+        assert_eq!(edited.completion_note.as_deref(), Some("Twice as slow"));
+        assert_eq!(edited.resolution, Some(types::TaskResolution::NotAdopted));
     }
 
     #[test]

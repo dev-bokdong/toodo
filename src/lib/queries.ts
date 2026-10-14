@@ -316,7 +316,24 @@ export function useCompleteTask() {
   });
 }
 
-/** Checks out the branch of an active task that lost its worktree into a new herdr worktree. */
+/**
+ * Concludes an active task without merging it, e.g. research that is not adopted: it becomes
+ * `done` as `not_adopted` with `note` as its conclusion, and its open pull request is closed.
+ */
+export function useConcludeTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: { id: TaskId; note: string }) => unwrap(commands.concludeTask(id, note)),
+    // Concluding records the commits of the branch.
+    onSuccess: (task) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
 /** Saves the completion note of a done task; an empty note clears it. */
 export function useSetCompletionNote() {
   const queryClient = useQueryClient();
@@ -330,6 +347,7 @@ export function useSetCompletionNote() {
   });
 }
 
+/** Checks out the branch of an active task that lost its worktree into a new herdr worktree. */
 export function useRestoreTaskWorktree() {
   const queryClient = useQueryClient();
   return useMutation({

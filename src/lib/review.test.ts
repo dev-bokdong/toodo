@@ -41,6 +41,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       pullRequestUrl: null,
       pullRequestMergedAt: null,
       pullRequest: null,
+      resolution: null,
       completionNote: null,
       timeline: [],
       milestones: {
@@ -374,6 +375,32 @@ describe("reviewMarkdown", () => {
     expect(markdown).toContain("- [feat] Task 2 (toodo, 2026-10-13, #13, +120/-30 in 1 file, 1 review)\n");
   });
 
+  it("counts work that was not adopted and lists its conclusion", () => {
+    const at = local(2026, 10, 13, 15);
+    const entries = [
+      completed(1, at, {}, { resolution: "merged", completionNote: "Shipped" }),
+      completed(2, at, {}, {
+        taskType: "rnd",
+        resolution: "not_adopted",
+        pullRequestUrl: "https://github.com/acme/toodo/pull/5",
+        completionNote: "Twice as slow\nas the current cache",
+      }),
+    ];
+    const summary = summarize(weekStarting("2026-10-12"), entries, [toodo]);
+    const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo]);
+
+    expect(summary.notAdopted).toBe(1);
+    expect(summary.withoutNote).toBe(0);
+    expect(markdown).toContain("- Concluded without merging (not adopted): 1\n");
+    expect(markdown).toContain("- [feat] Task 1 (toodo, 2026-10-13)\n  - Note: Shipped\n");
+    expect(markdown).toContain(
+      "- [rnd] Task 2 (toodo, 2026-10-13, not adopted, https://github.com/acme/toodo/pull/5)\n  - Conclusion: Twice as slow as the current cache\n",
+    );
+    expect(reviewMarkdown(weekStarting("2026-10-12"), entries.slice(0, 1), [toodo])).not.toContain(
+      "not adopted",
+    );
+  });
+
   it("says so when the period has no recorded activity", () => {
     expect(reviewMarkdown(periodContaining("year", "2026-01-01"), [], [toodo])).toBe(
       "# Year review: 2026\n\nNo recorded activity.\n",
@@ -390,6 +417,7 @@ describe("reviewCsv", () => {
       pullRequestMergedAt: at - hour,
       pullRequest: snapshot(3),
       completionNote: "Cut login time\n  in half, finally",
+      resolution: "not_adopted",
     });
 
     done.task.timeline = [
@@ -406,9 +434,9 @@ describe("reviewCsv", () => {
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Planned,Started,In review,Completed,Merged,Pull request,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
-          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0,3,120,30,4,2,"Cut login time in half, finally"',
-          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,0,0.5,,,,,",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
+          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0,3,120,30,4,2,"Cut login time in half, finally"',
+          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,0,0.5,,,,,",
         ].join("\r\n") +
         "\r\n",
     );

@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
-import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
+import type { Task, TaskId, Timestamp } from "@/lib/bindings";
 import { useAddDependency, useRemoveDependency } from "@/lib/queries";
 import {
   canAddDependency,
@@ -87,7 +87,7 @@ export function TaskGraph({
   dimmed,
   workspaceLabel,
   statusLabel,
-  statusStyles,
+  statusStyle,
 }: {
   /** Tasks drawn on the timeline. */
   tasks: Task[];
@@ -98,7 +98,7 @@ export function TaskGraph({
   /** Workspace name shown on a bar, or null to leave it out. */
   workspaceLabel: (task: Task) => string | null;
   statusLabel: (task: Task) => string;
-  statusStyles: Record<TaskStatus, string>;
+  statusStyle: (task: Task) => string;
 }) {
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
@@ -129,7 +129,7 @@ export function TaskGraph({
     data: {
       bar,
       statusLabel: statusLabel(bar.task),
-      statusStyle: statusStyles[bar.task.status],
+      statusStyle: statusStyle(bar.task),
       workspace: workspaceLabel(bar.task),
       dimmed: dimmed.has(bar.task.id),
     },
@@ -303,7 +303,7 @@ export function TaskGraph({
                   <span className="truncate" title={task.title}>
                     {task.title}
                   </span>
-                  <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyles[task.status])}>
+                  <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyle(task))}>
                     {statusLabel(task)}
                   </span>
                 </li>

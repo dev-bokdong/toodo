@@ -13,6 +13,8 @@ pub enum TaskStatus {
     InProgress,
     /// The task branch is pushed and its pull request is open, waiting to be merged.
     InReview,
+    /// Finished: its pull request was merged, or the work was concluded without merging
+    /// (see [`super::model::TaskResolution`]).
     Done,
 }
 
@@ -36,6 +38,19 @@ impl TaskStatus {
                 // Pausing: work stops until the task is started again.
                 | (InProgress | InReview, Planned)
         )
+    }
+
+    /// Concludes a task that is being worked on without merging it, e.g. research that
+    /// is not adopted: unlike completing, which needs a merged pull request and so a task
+    /// `in_review`, an `in_progress` task can be concluded too.
+    pub fn conclude(self) -> Result<Self, TransitionError> {
+        match self {
+            Self::InProgress | Self::InReview => Ok(Self::Done),
+            from => Err(TransitionError {
+                from,
+                to: Self::Done,
+            }),
+        }
     }
 
     pub fn transition_to(self, next: Self) -> Result<Self, TransitionError> {
@@ -92,6 +107,18 @@ mod tests {
                 assert_eq!(from.can_transition_to(to), expected, "{from} -> {to}");
             }
         }
+    }
+
+    #[test]
+    fn only_a_task_being_worked_on_can_be_concluded() {
+        for from in ALL {
+            let expected = matches!(from, InProgress | InReview);
+            assert_eq!(from.conclude().is_ok(), expected, "{from}");
+        }
+        assert_eq!(
+            Planned.conclude().unwrap_err().to_string(),
+            "a planned task cannot become done"
+        );
     }
 
     #[test]
