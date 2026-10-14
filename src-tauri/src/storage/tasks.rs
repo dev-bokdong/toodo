@@ -5,11 +5,11 @@ use std::collections::{BTreeSet, HashMap};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
-use crate::domain::dag::{self, StatusChange};
+use crate::domain::dag;
 use crate::domain::model::{CommitRecord, HostPath, Task, TaskId, TaskType, WorkspaceId};
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
-use crate::domain::status::{TaskStatus, TransitionError};
+use crate::domain::status::TaskStatus;
 use crate::domain::timeline::TaskEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,13 +30,11 @@ const TASK_TYPES: [TaskType; 7] = [
     TaskType::Chore,
 ];
 
-const TASK_STATUSES: [TaskStatus; 6] = [
+const TASK_STATUSES: [TaskStatus; 4] = [
     TaskStatus::Planned,
-    TaskStatus::Ready,
     TaskStatus::InProgress,
     TaskStatus::InReview,
     TaskStatus::Done,
-    TaskStatus::Cancelled,
 ];
 
 fn parse_task_type(raw: &str) -> Result<TaskType> {
@@ -217,25 +215,20 @@ fn stored_worktree_path<'a>(
     }
 }
 
-/// Applies [`dag::readiness_changes`] to all tasks, recording each change at `at`, and
-/// returns them. All tasks, because a dependent may belong to another workspace.
-fn sync_readiness(conn: &Connection, at: i64) -> Result<Vec<StatusChange>> {
-    let changes = dag::readiness_changes(&all_tasks(conn)?)?;
-    for change in &changes {
-        conn.execute(
-            "UPDATE tasks SET status = ?2 WHERE id = ?1",
-            params![change.task.0, change.to.as_str()],
-        )?;
-        record_event(conn, change.task, change.to, at)?;
+/// Rejects starting `task` while one of its dependencies, in any workspace, is not done.
+fn ensure_ready(conn: &Connection, task: TaskId) -> Result<()> {
+    if dag::is_ready(&all_tasks(conn)?, task)? {
+        Ok(())
+    } else {
+        Err(StorageError::DependenciesNotDone(task))
     }
-    Ok(changes)
 }
 
 impl Storage {
-    /// Creates a task without dependencies, so it starts out `ready`, and records its
-    /// creation as the first event of its history.
+    /// Creates a `planned` task without dependencies and records its creation as the
+    /// first event of its history.
     pub fn create_task(&mut self, new: &NewTask) -> Result<Task> {
-        let status = TaskStatus::Ready;
+        let status = TaskStatus::Planned;
         let at = self.now();
         let tx = self.conn.transaction()?;
         let inserted = tx.execute(
@@ -322,8 +315,15 @@ impl Storage {
         Ok(())
     }
 
-    /// Records the worktree of a `ready` task and moves it to `in_progress` in one
-    /// transaction, so a task is never in progress without its worktree.
+    /// Rejects starting a task while one of its dependencies is not done; check this
+    /// before preparing its worktree.
+    pub fn ensure_ready(&self, id: TaskId) -> Result<()> {
+        ensure_ready(&self.conn, id)
+    }
+
+    /// Records the worktree of a `planned` task whose dependencies are done and moves it
+    /// to `in_progress` in one transaction, so a task is never in progress without its
+    /// worktree.
     pub fn start_task(
         &mut self,
         id: TaskId,
@@ -334,6 +334,7 @@ impl Storage {
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         let status = task.status.transition_to(TaskStatus::InProgress)?;
+        ensure_ready(&tx, id)?;
         let workspace_kind: String = tx.query_row(
             "SELECT kind FROM workspaces WHERE id = ?1",
             [task.workspace_id.0],
@@ -361,7 +362,7 @@ impl Storage {
     /// Moves an `in_review` task to `done`, stores the merge time of its pull request,
     /// and forgets its herdr workspace, which was closed, in one transaction. The
     /// worktree path stays: the checkout is kept on disk until its worktree is removed.
-    /// Dependents may become `ready`.
+    /// Dependents whose other dependencies are done can then start.
     pub fn complete_task(&mut self, id: TaskId, merged_at: Option<i64>) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
@@ -374,7 +375,6 @@ impl Storage {
             params![id.0, status.as_str(), merged_at],
         )?;
         record_event(&tx, id, status, at)?;
-        sync_readiness(&tx, at)?;
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
@@ -473,102 +473,62 @@ impl Storage {
         Ok(in_review)
     }
 
-    /// Moves a task to `in_progress`, `in_review`, `done`, or `cancelled` if its current
-    /// status allows it, and returns the readiness changes this caused in other tasks.
-    pub fn set_task_status(&mut self, id: TaskId, status: TaskStatus) -> Result<Vec<StatusChange>> {
-        if matches!(status, TaskStatus::Planned | TaskStatus::Ready) {
-            return Err(StorageError::DerivedStatus(status));
-        }
+    /// Moves a task to `status` if its current status allows it, recording the change;
+    /// pausing is a move back to `planned`. Starting requires all dependencies to be
+    /// done. The pull request checks that guard `in_review` and `done` are up to the
+    /// caller.
+    pub fn set_task_status(&mut self, id: TaskId, status: TaskStatus) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         task.status.transition_to(status)?;
+        if status == TaskStatus::InProgress {
+            ensure_ready(&tx, id)?;
+        }
         tx.execute(
             "UPDATE tasks SET status = ?2 WHERE id = ?1",
             params![id.0, status.as_str()],
         )?;
         record_event(&tx, id, status, at)?;
-        let changes = sync_readiness(&tx, at)?;
+        let changed = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
-        Ok(changes)
+        Ok(changed)
     }
 
-    /// Reopens a `cancelled` task: moves it to `planned`, then to `ready` if all its
-    /// dependencies are done, recording both moves. Its branch, worktree, herdr workspace,
-    /// commit records, and pull request stay, so starting it again resumes the work.
-    pub fn reopen_task(&mut self, id: TaskId) -> Result<Task> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        if task.status != TaskStatus::Cancelled {
-            return Err(TransitionError {
-                from: task.status,
-                to: TaskStatus::Planned,
-            }
-            .into());
-        }
-        tx.execute(
-            "UPDATE tasks SET status = ?2 WHERE id = ?1",
-            params![id.0, TaskStatus::Planned.as_str()],
-        )?;
-        record_event(&tx, id, TaskStatus::Planned, at)?;
-        sync_readiness(&tx, at)?;
-        let reopened = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.commit()?;
-        Ok(reopened)
-    }
-
-    /// Deletes a task with its dependency edges, commit records, and status history, and
-    /// returns the readiness changes this caused in its dependents.
-    pub fn delete_task(&mut self, id: TaskId) -> Result<Vec<StatusChange>> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        let deleted = tx.execute("DELETE FROM tasks WHERE id = ?1", [id.0])?;
+    /// Deletes a task with its dependency edges, commit records, and status history.
+    pub fn delete_task(&mut self, id: TaskId) -> Result<()> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM tasks WHERE id = ?1", [id.0])?;
         if deleted == 0 {
             return Err(StorageError::TaskNotFound(id));
         }
-        let changes = sync_readiness(&tx, at)?;
-        tx.commit()?;
-        Ok(changes)
+        Ok(())
     }
 
     /// Makes `task` depend on `depends_on`, which may belong to another workspace. Rejects
     /// unknown tasks, self dependencies, and edges that would close a cycle anywhere in the
-    /// DAG of all workspaces, writing nothing. Returns the readiness changes the new edge
-    /// caused.
-    pub fn add_dependency(
-        &mut self,
-        task: TaskId,
-        depends_on: TaskId,
-    ) -> Result<Vec<StatusChange>> {
-        let at = self.now();
+    /// DAG of all workspaces, writing nothing.
+    pub fn add_dependency(&mut self, task: TaskId, depends_on: TaskId) -> Result<()> {
         let tx = self.conn.transaction()?;
         dag::validate_dependency(&all_tasks(&tx)?, task, depends_on)?;
         tx.execute(
             "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
             [task.0, depends_on.0],
         )?;
-        let changes = sync_readiness(&tx, at)?;
         tx.commit()?;
-        Ok(changes)
+        Ok(())
     }
 
-    /// Removes the edge `task -> depends_on` if present and returns the readiness changes
-    /// this caused.
-    pub fn remove_dependency(
-        &mut self,
-        task: TaskId,
-        depends_on: TaskId,
-    ) -> Result<Vec<StatusChange>> {
-        let at = self.now();
+    /// Removes the edge `task -> depends_on` if present.
+    pub fn remove_dependency(&mut self, task: TaskId, depends_on: TaskId) -> Result<()> {
         let tx = self.conn.transaction()?;
         task_workspace(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
         tx.execute(
             "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             [task.0, depends_on.0],
         )?;
-        let changes = sync_readiness(&tx, at)?;
         tx.commit()?;
-        Ok(changes)
+        Ok(())
     }
 }

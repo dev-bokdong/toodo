@@ -312,7 +312,7 @@ export function useUpdateTask() {
   });
 }
 
-/** Commands that may change the status of several tasks, possibly in other workspaces. */
+/** Commands that change tasks that other tasks, possibly in other workspaces, may wait on. */
 function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -321,13 +321,9 @@ function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   });
 }
 
-export function useCancelTask() {
-  return useTasksMutation((id: TaskId) => unwrap(commands.setTaskStatus(id, "cancelled")));
-}
-
-/** Reopens a cancelled task, which waits for its dependencies again and keeps its worktree. */
-export function useReopenTask() {
-  return useTasksMutation((id: TaskId) => unwrap(commands.reopenTask(id)));
+/** Pauses a started task: it becomes planned again and keeps its branch and worktree. */
+export function usePauseTask() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.pauseTask(id)));
 }
 
 /** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */

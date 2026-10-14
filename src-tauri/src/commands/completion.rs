@@ -224,7 +224,7 @@ fn complete(
             "pull request {url} is not merged yet; merge it before completing the task"
         ))),
         Completion::Closed(url) => Err(CommandError::rejected(format!(
-            "pull request {url} was closed without merging; reopen it or cancel the task"
+            "pull request {url} was closed without merging; reopen it or pause the task"
         ))),
     }
 }
@@ -478,6 +478,11 @@ mod tests {
         (Herdr::new(Box::new(runner.clone())), runner)
     }
 
+    fn dependent_ready(fixture: &Fixture) -> bool {
+        let tasks = lock(&fixture.storage).list_all_tasks().unwrap();
+        crate::domain::dag::is_ready(&tasks, fixture.dependent.id).unwrap()
+    }
+
     fn stored(fixture: &Fixture, task: &model::Task) -> model::Task {
         lock(&fixture.storage).get_task(task.id).unwrap().unwrap()
     }
@@ -508,10 +513,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [SHA_A, SHA_B]
         );
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Planned
-        );
+        assert!(!dependent_ready(&fixture));
         assert_eq!(git_commands(&git_runner), ["log", "remote", "push"]);
         assert_eq!(
             invocations(&git_runner)[0].args[..2],
@@ -775,10 +777,7 @@ mod tests {
         assert_eq!(git_commands(&git_runner), ["log", "remote"]);
         assert_eq!(invocations(&gh_runner).len(), 1);
         assert_eq!(recorded_shas(&fixture), [SHA_A]);
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Planned
-        );
+        assert!(!dependent_ready(&fixture));
 
         let completed = complete(
             &fixture.storage,
@@ -788,10 +787,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(completed.status, TaskStatus::Done);
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Ready
-        );
+        assert!(dependent_ready(&fixture));
     }
 
     #[test]
@@ -845,10 +841,7 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("merges into develop"));
         assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Planned
-        );
+        assert!(!dependent_ready(&fixture));
     }
 
     #[test]
@@ -874,10 +867,7 @@ mod tests {
             invocations(&herdr_runner)[0].args,
             ["workspace", "close", "w27"].map(str::to_owned)
         );
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Ready
-        );
+        assert!(dependent_ready(&fixture));
         assert_eq!(
             invocations(&gh_runner)[0].args,
             ["pr", "view", PR, "--json", "url,state,baseRefName,mergedAt"].map(str::to_owned)
@@ -899,10 +889,7 @@ mod tests {
             assert!(error.message.contains(expected), "{}", error.message);
         }
         assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Planned
-        );
+        assert!(!dependent_ready(&fixture));
     }
 
     #[test]
@@ -967,10 +954,7 @@ mod tests {
         let done = stored(&fixture, &fixture.task);
         assert_eq!(done.status, TaskStatus::Done);
         assert_eq!(done.pull_request_merged_at, Some(MERGED_AT.1));
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Ready
-        );
+        assert!(dependent_ready(&fixture));
         assert_eq!(*recorder.0.lock().unwrap(), [done.workspace_id]);
         assert_eq!(invocations(&herdr_runner).len(), 1);
         assert!(failures.is_empty());
@@ -1025,9 +1009,6 @@ mod tests {
 
         assert_eq!(error.kind, CommandErrorKind::External);
         assert_eq!(stored(&fixture, &fixture.task), before);
-        assert_eq!(
-            stored(&fixture, &fixture.dependent).status,
-            TaskStatus::Planned
-        );
+        assert!(!dependent_ready(&fixture));
     }
 }

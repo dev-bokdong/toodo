@@ -24,7 +24,7 @@ use rusqlite::Connection;
 
 use crate::domain::dag::DependencyError;
 use crate::domain::model::{TaskId, WorkspaceId};
-use crate::domain::status::{TaskStatus, TransitionError};
+use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
 pub use tasks::NewTask;
@@ -99,8 +99,8 @@ pub enum StorageError {
     TaskNotFound(TaskId),
     Dependency(DependencyError),
     Transition(TransitionError),
-    /// `planned` and `ready` follow from a task's dependencies and cannot be set directly.
-    DerivedStatus(TaskStatus),
+    /// A task cannot start while one of its dependencies is not done.
+    DependenciesNotDone(TaskId),
     /// The worktree path is a Windows path for an SSH workspace or a POSIX path for a
     /// local one.
     WorktreePathMismatch(TaskId),
@@ -136,10 +136,12 @@ impl fmt::Display for StorageError {
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),
             Self::Dependency(error) => error.fmt(f),
             Self::Transition(error) => error.fmt(f),
-            Self::DerivedStatus(status) => write!(
-                f,
-                "status {status} is derived from dependencies and cannot be set directly"
-            ),
+            Self::DependenciesNotDone(id) => {
+                write!(
+                    f,
+                    "task {id} cannot start before all its dependencies are done"
+                )
+            }
             Self::WorktreePathMismatch(id) => write!(
                 f,
                 "worktree path of task {id} does not match the machine of its workspace"

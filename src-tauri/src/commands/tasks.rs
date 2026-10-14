@@ -2,8 +2,9 @@
 
 use tauri::State;
 
-use super::types::{self, CommitRecord, NewTask, StatusChange, Task, TaskEdit, TaskId, TaskStatus};
+use super::types::{self, CommitRecord, NewTask, Task, TaskEdit, TaskId};
 use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
+use crate::domain::status::TaskStatus;
 use crate::storage::{Storage, StorageError};
 
 /// Tasks of every workspace ordered by ID, each with its dependencies, which may belong
@@ -23,7 +24,7 @@ pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<T
     Ok((&task).into())
 }
 
-/// Creates a task without dependencies, so it starts out `ready`.
+/// Creates a `planned` task without dependencies.
 #[tauri::command]
 #[specta::specta]
 pub fn create_task(storage: State<'_, StorageState>, task: NewTask) -> CommandResult<Task> {
@@ -52,50 +53,29 @@ fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
     Ok((&task).into())
 }
 
-/// Moves a task to `in_progress` or `cancelled` and returns the readiness changes this
-/// caused in other tasks. `in_review` and `done` are reached only through
-/// `open_pull_request` and `complete_task`, which check the pull request.
+/// Pauses an `in_progress` or `in_review` task: it becomes `planned` again and keeps
+/// its branch, worktree, herdr workspace, commit records, and pull request, so starting
+/// it again resumes the work.
 #[tauri::command]
 #[specta::specta]
-pub fn set_task_status(
-    storage: State<'_, StorageState>,
-    id: TaskId,
-    status: TaskStatus,
-) -> CommandResult<Vec<StatusChange>> {
-    change_status(&mut lock(&storage), id, status)
+pub fn pause_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
+    pause(&mut lock(&storage), id)
 }
 
-fn change_status(
-    storage: &mut Storage,
-    id: TaskId,
-    status: TaskStatus,
-) -> CommandResult<Vec<StatusChange>> {
-    let command = match status {
-        TaskStatus::InReview => Some("open_pull_request"),
-        TaskStatus::Done => Some("complete_task"),
-        _ => None,
-    };
-    if let Some(command) = command {
-        let status = crate::domain::status::TaskStatus::from(status);
+fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
+    let task = storage
+        .get_task(id.into())?
+        .ok_or(StorageError::TaskNotFound(id.into()))?;
+    if task.status == TaskStatus::Planned {
         return Err(CommandError::rejected(format!(
-            "a task becomes {status} only through {command}, which checks its pull request"
+            "task {} is not being worked on",
+            task.id
         )));
     }
-    let changes = storage.set_task_status(id.into(), status.into())?;
-    Ok(types::map_all(&changes))
+    Ok((&storage.set_task_status(id.into(), TaskStatus::Planned)?).into())
 }
 
-/// Reopens a `cancelled` task, which becomes `planned`, or `ready` when all its
-/// dependencies are done. It keeps its branch and worktree, so starting it again resumes
-/// the work.
-#[tauri::command]
-#[specta::specta]
-pub fn reopen_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
-    Ok((&lock(&storage).reopen_task(id.into())?).into())
-}
-
-/// Deletes a task with its dependency edges and commit records and returns the
-/// readiness changes this caused in its dependents. A task that still has a worktree
+/// Deletes a task with its dependency edges and commit records. A task that still has a worktree
 /// first removes it through herdr, which also closes its herdr workspace; the branch is
 /// kept. Without `force`, a worktree with modified or untracked files is rejected and the
 /// task is kept.
@@ -106,13 +86,8 @@ pub fn delete_task(
     herdr: State<'_, HerdrState>,
     id: TaskId,
     force: bool,
-) -> CommandResult<Vec<StatusChange>> {
-    Ok(types::map_all(&super::herdr::delete(
-        &storage,
-        &herdr,
-        id.into(),
-        force,
-    )?))
+) -> CommandResult<()> {
+    super::herdr::delete(&storage, &herdr, id.into(), force)
 }
 
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
@@ -123,9 +98,8 @@ pub fn add_dependency(
     storage: State<'_, StorageState>,
     task_id: TaskId,
     depends_on: TaskId,
-) -> CommandResult<Vec<StatusChange>> {
-    let changes = lock(&storage).add_dependency(task_id.into(), depends_on.into())?;
-    Ok(types::map_all(&changes))
+) -> CommandResult<()> {
+    Ok(lock(&storage).add_dependency(task_id.into(), depends_on.into())?)
 }
 
 #[tauri::command]
@@ -134,9 +108,8 @@ pub fn remove_dependency(
     storage: State<'_, StorageState>,
     task_id: TaskId,
     depends_on: TaskId,
-) -> CommandResult<Vec<StatusChange>> {
-    let changes = lock(&storage).remove_dependency(task_id.into(), depends_on.into())?;
-    Ok(types::map_all(&changes))
+) -> CommandResult<()> {
+    Ok(lock(&storage).remove_dependency(task_id.into(), depends_on.into())?)
 }
 
 #[tauri::command]
@@ -203,18 +176,22 @@ mod tests {
     }
 
     #[test]
-    fn set_task_status_cannot_skip_the_pull_request_checks() {
+    fn pausing_moves_a_started_task_back_to_planned_and_keeps_its_branch() {
         let (mut storage, task) = storage_with_task();
-        change_status(&mut storage, task.id.into(), TaskStatus::InProgress).unwrap();
-        for status in [TaskStatus::InReview, TaskStatus::Done] {
-            let error = change_status(&mut storage, task.id.into(), status).unwrap_err();
-            assert_eq!(error.kind, CommandErrorKind::Rejected);
-            assert_eq!(
-                storage.get_task(task.id).unwrap().unwrap().status,
-                crate::domain::status::TaskStatus::InProgress
-            );
+        let error = pause(&mut storage, task.id.into()).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+
+        for status in [TaskStatus::InProgress, TaskStatus::InReview] {
+            storage
+                .set_task_status(task.id, TaskStatus::InProgress)
+                .unwrap();
+            if status == TaskStatus::InReview {
+                storage.set_task_status(task.id, status).unwrap();
+            }
+            let paused = pause(&mut storage, task.id.into()).unwrap();
+            assert_eq!(paused.status, types::TaskStatus::Planned);
+            assert_eq!(paused.branch.as_deref(), Some("feat/add-commands-1"));
         }
-        change_status(&mut storage, task.id.into(), TaskStatus::Cancelled).unwrap();
     }
 
     #[test]

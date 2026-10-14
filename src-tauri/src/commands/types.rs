@@ -7,7 +7,7 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{herdr, ssh};
-use crate::domain::{backup, dag, model, path, review, ssh_config, status, timeline};
+use crate::domain::{backup, model, path, review, ssh_config, status, timeline};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -372,22 +372,18 @@ impl From<TaskType> for model::TaskType {
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Planned,
-    Ready,
     InProgress,
     InReview,
     Done,
-    Cancelled,
 }
 
 impl From<status::TaskStatus> for TaskStatus {
     fn from(status: status::TaskStatus) -> Self {
         match status {
             status::TaskStatus::Planned => Self::Planned,
-            status::TaskStatus::Ready => Self::Ready,
             status::TaskStatus::InProgress => Self::InProgress,
             status::TaskStatus::InReview => Self::InReview,
             status::TaskStatus::Done => Self::Done,
-            status::TaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -396,11 +392,9 @@ impl From<TaskStatus> for status::TaskStatus {
     fn from(status: TaskStatus) -> Self {
         match status {
             TaskStatus::Planned => Self::Planned,
-            TaskStatus::Ready => Self::Ready,
             TaskStatus::InProgress => Self::InProgress,
             TaskStatus::InReview => Self::InReview,
             TaskStatus::Done => Self::Done,
-            TaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -441,22 +435,21 @@ pub struct TaskEvent {
 #[serde(rename_all = "camelCase")]
 pub struct TaskMilestones {
     pub planned_at: Option<Timestamp>,
-    pub ready_at: Option<Timestamp>,
     pub started_at: Option<Timestamp>,
     pub review_at: Option<Timestamp>,
     pub completed_at: Option<Timestamp>,
-    pub cancelled_at: Option<Timestamp>,
+    /// The latest pause, unless the task was started again after it.
+    pub paused_at: Option<Timestamp>,
 }
 
 impl From<timeline::Milestones> for TaskMilestones {
     fn from(milestones: timeline::Milestones) -> Self {
         Self {
             planned_at: milestones.planned_at.map(Timestamp),
-            ready_at: milestones.ready_at.map(Timestamp),
             started_at: milestones.started_at.map(Timestamp),
             review_at: milestones.review_at.map(Timestamp),
             completed_at: milestones.completed_at.map(Timestamp),
-            cancelled_at: milestones.cancelled_at.map(Timestamp),
+            paused_at: milestones.paused_at.map(Timestamp),
         }
     }
 }
@@ -495,7 +488,6 @@ impl From<&model::Task> for Task {
 #[serde(rename_all = "snake_case")]
 pub enum ReviewOutcome {
     Completed,
-    Cancelled,
     OpenedForReview,
     Started,
     WorkedOn,
@@ -506,7 +498,6 @@ impl From<review::Outcome> for ReviewOutcome {
     fn from(outcome: review::Outcome) -> Self {
         match outcome {
             review::Outcome::Completed => Self::Completed,
-            review::Outcome::Cancelled => Self::Cancelled,
             review::Outcome::OpenedForReview => Self::OpenedForReview,
             review::Outcome::Started => Self::Started,
             review::Outcome::WorkedOn => Self::WorkedOn,
@@ -558,26 +549,6 @@ pub struct TaskEdit {
     pub task_type: TaskType,
     pub title: String,
     pub description: String,
-}
-
-/// A task whose status moved between `planned` and `ready` because of a change to
-/// its dependencies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct StatusChange {
-    pub task_id: TaskId,
-    pub from: TaskStatus,
-    pub to: TaskStatus,
-}
-
-impl From<&dag::StatusChange> for StatusChange {
-    fn from(change: &dag::StatusChange) -> Self {
-        Self {
-            task_id: change.task.into(),
-            from: change.from.into(),
-            to: change.to.into(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]

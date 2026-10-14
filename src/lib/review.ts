@@ -3,7 +3,6 @@ import { formatDate } from "@/lib/timeline";
 
 export const outcomeLabels: Record<ReviewOutcome, string> = {
   completed: "Completed",
-  cancelled: "Cancelled",
   opened_for_review: "Opened for review",
   started: "Started",
   worked_on: "Worked on",
@@ -331,7 +330,6 @@ const csvColumns = [
   "Started",
   "In review",
   "Completed",
-  "Cancelled",
   "Merged",
   "Pull request",
   "Commits in period",
@@ -355,7 +353,6 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[]): stri
     time(task.milestones.startedAt),
     time(task.milestones.reviewAt),
     time(task.milestones.completedAt),
-    time(task.milestones.cancelledAt),
     time(task.pullRequestMergedAt),
     task.pullRequestUrl,
     commits.length,

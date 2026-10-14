@@ -1,10 +1,11 @@
 use super::*;
-use crate::domain::dag::StatusChange;
+use crate::domain::dag;
 use crate::domain::model::{
     CommitRecord, HostPath, Machine, MachineLabel, MachineSettings, Task, TaskType, Workspace,
     WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
+use crate::domain::status::TaskStatus;
 use TaskStatus::*;
 
 fn local_location(path: &str) -> WorkspaceLocation {
@@ -43,6 +44,10 @@ fn add_task(storage: &mut Storage, workspace: &Workspace, title: &str) -> Task {
 
 fn status(storage: &Storage, task: &Task) -> TaskStatus {
     storage.get_task(task.id).unwrap().unwrap().status
+}
+
+fn ready(storage: &Storage, task: &Task) -> bool {
+    dag::is_ready(&storage.list_all_tasks().unwrap(), task.id).unwrap()
 }
 
 fn commit(task: TaskId, sha: &str, committed_at: i64) -> CommitRecord {
@@ -146,7 +151,7 @@ fn entities_survive_reopening_the_database_file() {
             .iter()
             .map(|event| event.status)
             .collect::<Vec<_>>(),
-        [Ready, Planned, Ready, InProgress]
+        [Planned, InProgress]
     );
     assert_eq!(
         storage.get_task(started.id).unwrap(),
@@ -273,14 +278,8 @@ fn dependencies_across_workspaces_share_one_dag() {
     let ui = add_task(&mut storage, &app, "Build UI on the API");
     let docs = add_task(&mut storage, &library, "Document the UI");
 
-    assert_eq!(
-        storage.add_dependency(ui.id, api.id).unwrap(),
-        [StatusChange {
-            task: ui.id,
-            from: Ready,
-            to: Planned
-        }]
-    );
+    storage.add_dependency(ui.id, api.id).unwrap();
+    assert!(!ready(&storage, &ui));
     assert_eq!(storage.list_all_tasks().unwrap().len(), 3);
     assert_eq!(
         storage.get_task(ui.id).unwrap().unwrap().depends_on,
@@ -310,9 +309,9 @@ fn dependencies_across_workspaces_share_one_dag() {
     // Finishing the library task releases the app task.
     storage.set_task_status(api.id, InProgress).unwrap();
     storage.set_task_status(api.id, InReview).unwrap();
-    assert_eq!(status(&storage, &ui), Planned);
+    assert!(!ready(&storage, &ui));
     assert_eq!(storage.complete_task(api.id, Some(1)).unwrap().status, Done);
-    assert_eq!(status(&storage, &ui), Ready);
+    assert!(ready(&storage, &ui));
 
     // Once the dependent has started, removing the library drops the edge only.
     storage.set_task_status(ui.id, InProgress).unwrap();
@@ -324,33 +323,21 @@ fn dependencies_across_workspaces_share_one_dag() {
 }
 
 #[test]
-fn dependency_changes_update_readiness() {
+fn dependency_changes_decide_whether_a_task_can_start() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let a = add_task(&mut storage, &workspace, "A");
     let b = add_task(&mut storage, &workspace, "B");
-    assert_eq!(status(&storage, &b), Ready);
-
-    assert_eq!(
-        storage.add_dependency(b.id, a.id).unwrap(),
-        [StatusChange {
-            task: b.id,
-            from: Ready,
-            to: Planned
-        }]
-    );
     assert_eq!(status(&storage, &b), Planned);
-    assert_eq!(storage.add_dependency(b.id, a.id).unwrap(), []);
+    assert!(ready(&storage, &b));
 
-    assert_eq!(
-        storage.remove_dependency(b.id, a.id).unwrap(),
-        [StatusChange {
-            task: b.id,
-            from: Planned,
-            to: Ready
-        }]
-    );
-    assert_eq!(status(&storage, &b), Ready);
+    storage.add_dependency(b.id, a.id).unwrap();
+    storage.add_dependency(b.id, a.id).unwrap();
+    assert!(!ready(&storage, &b));
+    assert_eq!(status(&storage, &b), Planned);
+
+    storage.remove_dependency(b.id, a.id).unwrap();
+    assert!(ready(&storage, &b));
     assert!(
         storage
             .get_task(b.id)
@@ -359,10 +346,11 @@ fn dependency_changes_update_readiness() {
             .depends_on
             .is_empty()
     );
+    assert_eq!(timeline(&storage, &b).len(), 1);
 }
 
 #[test]
-fn status_changes_follow_transitions_and_release_dependents() {
+fn status_changes_follow_transitions_and_wait_for_dependencies() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let a = add_task(&mut storage, &workspace, "A");
@@ -374,11 +362,11 @@ fn status_changes_follow_transitions_and_release_dependents() {
 
     assert!(matches!(
         storage.set_task_status(b.id, InProgress),
-        Err(StorageError::Transition(error)) if error.from == Planned && error.to == InProgress
+        Err(StorageError::DependenciesNotDone(id)) if id == b.id
     ));
     assert!(matches!(
-        storage.set_task_status(a.id, Ready),
-        Err(StorageError::DerivedStatus(Ready))
+        storage.set_task_status(a.id, Planned),
+        Err(StorageError::Transition(error)) if error.from == Planned && error.to == Planned
     ));
     assert!(matches!(
         storage.set_task_status(TaskId(999), Done),
@@ -386,25 +374,25 @@ fn status_changes_follow_transitions_and_release_dependents() {
     ));
     assert_eq!(status(&storage, &b), Planned);
 
-    assert_eq!(storage.set_task_status(a.id, InProgress).unwrap(), []);
+    assert_eq!(
+        storage.set_task_status(a.id, InProgress).unwrap().status,
+        InProgress
+    );
     assert!(matches!(
         storage.set_task_status(a.id, Done),
         Err(StorageError::Transition(error)) if error.from == InProgress && error.to == Done
     ));
-    assert_eq!(storage.set_task_status(a.id, InReview).unwrap(), []);
-    assert_eq!(status(&storage, &b), Planned);
-    assert_eq!(
-        storage.set_task_status(a.id, Done).unwrap(),
-        [StatusChange {
-            task: b.id,
-            from: Planned,
-            to: Ready
-        }]
-    );
-    assert_eq!(status(&storage, &c), Planned);
+    storage.set_task_status(a.id, InReview).unwrap();
+    assert!(!ready(&storage, &b));
+    storage.set_task_status(a.id, Done).unwrap();
+    assert!(ready(&storage, &b));
+    assert!(!ready(&storage, &c));
     storage.set_task_status(b.id, InProgress).unwrap();
-    assert_eq!(storage.set_task_status(b.id, Cancelled).unwrap(), []);
-    assert_eq!(status(&storage, &c), Planned);
+    assert_eq!(
+        storage.set_task_status(b.id, Planned).unwrap().status,
+        Planned
+    );
+    assert!(!ready(&storage, &c));
     assert!(matches!(
         storage.set_task_status(b.id, Done),
         Err(StorageError::Transition(_))
@@ -412,15 +400,11 @@ fn status_changes_follow_transitions_and_release_dependents() {
 }
 
 #[test]
-fn a_reopened_task_waits_for_its_dependencies_again_and_keeps_its_worktree() {
+fn a_paused_task_keeps_its_work_and_starts_again_once_its_dependencies_are_done() {
     let (mut storage, now) = clocked_storage(100);
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let a = add_task(&mut storage, &workspace, "A");
     let b = add_task(&mut storage, &workspace, "B");
-    assert!(matches!(
-        storage.reopen_task(a.id),
-        Err(StorageError::Transition(error)) if error.from == Ready && error.to == Planned
-    ));
 
     set_now(&now, 200);
     storage.set_task_status(a.id, InProgress).unwrap();
@@ -429,32 +413,29 @@ fn a_reopened_task_waits_for_its_dependencies_again_and_keeps_its_worktree() {
     started.herdr_workspace_id = Some("w1".to_owned());
     storage.update_task(&started).unwrap();
     set_now(&now, 300);
-    storage.set_task_status(a.id, Cancelled).unwrap();
+    let paused = storage.set_task_status(a.id, Planned).unwrap();
+    assert_eq!(paused.status, Planned);
+    assert_eq!(paused.branch.as_deref(), Some("feat/a-1"));
+    assert_eq!(paused.herdr_workspace_id.as_deref(), Some("w1"));
 
     set_now(&now, 400);
-    let reopened = storage.reopen_task(a.id).unwrap();
-    assert_eq!(reopened.status, Ready);
-    assert_eq!(reopened.branch.as_deref(), Some("feat/a-1"));
-    assert_eq!(reopened.herdr_workspace_id.as_deref(), Some("w1"));
+    storage.add_dependency(a.id, b.id).unwrap();
+    assert!(matches!(
+        storage.set_task_status(a.id, InProgress),
+        Err(StorageError::DependenciesNotDone(_))
+    ));
+    storage.remove_dependency(a.id, b.id).unwrap();
+    set_now(&now, 500);
+    storage.set_task_status(a.id, InProgress).unwrap();
     assert_eq!(
         timeline(&storage, &a),
         [
-            (Ready, 100),
+            (Planned, 100),
             (InProgress, 200),
-            (Cancelled, 300),
-            (Planned, 400),
-            (Ready, 400)
+            (Planned, 300),
+            (InProgress, 500)
         ]
     );
-
-    set_now(&now, 500);
-    storage.add_dependency(a.id, b.id).unwrap();
-    assert_eq!(status(&storage, &a), Planned);
-
-    storage.set_task_status(b.id, Cancelled).unwrap();
-    let reopened = storage.reopen_task(b.id).unwrap();
-    assert_eq!(reopened.status, Ready);
-    assert_eq!(status(&storage, &a), Planned);
 }
 
 #[test]
@@ -468,14 +449,8 @@ fn deleting_a_task_releases_its_dependents() {
         .replace_commit_records(a.id, &[commit(a.id, "aaa", 1)])
         .unwrap();
 
-    assert_eq!(
-        storage.delete_task(a.id).unwrap(),
-        [StatusChange {
-            task: b.id,
-            from: Planned,
-            to: Ready
-        }]
-    );
+    storage.delete_task(a.id).unwrap();
+    assert!(ready(&storage, &b));
     assert_eq!(storage.get_task(a.id).unwrap(), None);
     assert!(
         storage
@@ -650,7 +625,7 @@ fn clear_task_worktree_keeps_the_branch_and_status() {
     let started = storage
         .start_task(task.id, &checkout(path, "feat/add-login-1"), "w7")
         .unwrap();
-    storage.set_task_status(task.id, Cancelled).unwrap();
+    storage.set_task_status(task.id, Planned).unwrap();
 
     let cleared = storage.clear_task_worktree(task.id).unwrap();
 
@@ -659,7 +634,7 @@ fn clear_task_worktree_keeps_the_branch_and_status() {
         (&None, &None)
     );
     assert_eq!(cleared.branch, started.branch);
-    assert_eq!(cleared.status, Cancelled);
+    assert_eq!(cleared.status, Planned);
     assert_eq!(storage.get_task(task.id).unwrap().unwrap(), cleared);
     assert!(matches!(
         storage.clear_task_worktree(TaskId(999)),
@@ -714,7 +689,7 @@ fn start_task_writes_nothing_when_it_is_rejected() {
 
     assert!(matches!(
         storage.start_task(second.id, &checkout(posix, "feat/x"), "w1"),
-        Err(StorageError::Transition(_))
+        Err(StorageError::DependenciesNotDone(id)) if id == second.id
     ));
     assert!(matches!(
         storage.start_task(first.id, &checkout(windows, "feat/x"), "w1"),
@@ -731,7 +706,7 @@ fn start_task_writes_nothing_when_it_is_rejected() {
             (None, None, None)
         );
     }
-    assert_eq!(status(&storage, &first), Ready);
+    assert_eq!(status(&storage, &first), Planned);
     assert_eq!(status(&storage, &second), Planned);
 }
 
@@ -757,23 +732,17 @@ fn open_pull_request_stores_commits_and_url_and_keeps_dependents_waiting() {
     assert_eq!(in_review.status, InReview);
     assert_eq!(in_review.pull_request_url.as_deref(), Some(pr));
     assert_eq!(storage.get_task(task.id).unwrap().unwrap(), in_review);
-    assert_eq!(status(&storage, &dependent), Planned);
+    assert!(!ready(&storage, &dependent));
 
     let updated = storage
         .open_pull_request(task.id, &commits, pr, None)
         .unwrap();
     assert_eq!(updated, in_review);
     assert_eq!(storage.list_commit_records(task.id).unwrap(), commits);
-    assert_eq!(status(&storage, &dependent), Planned);
+    assert!(!ready(&storage, &dependent));
 
-    assert_eq!(
-        storage.set_task_status(task.id, Done).unwrap(),
-        [StatusChange {
-            task: dependent.id,
-            from: Planned,
-            to: Ready
-        }]
-    );
+    storage.set_task_status(task.id, Done).unwrap();
+    assert!(ready(&storage, &dependent));
     assert!(matches!(
         storage.open_pull_request(task.id, &commits, pr, None),
         Err(StorageError::Transition(_))
@@ -820,7 +789,7 @@ fn open_pull_request_writes_nothing_when_it_is_rejected() {
             None
         );
     }
-    assert_eq!(status(&storage, &ready), Ready);
+    assert_eq!(status(&storage, &ready), Planned);
     assert_eq!(status(&storage, &started), InProgress);
     assert_eq!(storage.list_commit_records(ready.id).unwrap(), []);
     assert_eq!(
@@ -885,7 +854,7 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
     let (mut storage, now) = clocked_storage(100);
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let task = add_task(&mut storage, &workspace, "Add login");
-    assert_eq!(timeline(&storage, &task), [(Ready, 100)]);
+    assert_eq!(timeline(&storage, &task), [(Planned, 100)]);
     assert_eq!(storage.get_task(task.id).unwrap().unwrap(), task);
 
     set_now(&now, 200);
@@ -905,7 +874,7 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
     assert_eq!(
         timeline(&storage, &task),
         [
-            (Ready, 100),
+            (Planned, 100),
             (InProgress, 200),
             (InReview, 300),
             (Done, 400)
@@ -917,17 +886,16 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
         crate::domain::timeline::milestones(&done.timeline),
         crate::domain::timeline::Milestones {
             planned_at: Some(100),
-            ready_at: Some(100),
             started_at: Some(200),
             review_at: Some(300),
             completed_at: Some(400),
-            cancelled_at: None,
+            paused_at: None,
         }
     );
 }
 
 #[test]
-fn readiness_changes_are_recorded_and_rejected_changes_record_nothing() {
+fn only_status_changes_are_recorded_and_rejected_changes_record_nothing() {
     let (mut storage, now) = clocked_storage(100);
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let a = add_task(&mut storage, &workspace, "A");
@@ -944,18 +912,20 @@ fn readiness_changes_are_recorded_and_rejected_changes_record_nothing() {
             .open_pull_request(a.id, &[], "https://x/pull/1", None)
             .is_err()
     );
-    assert_eq!(timeline(&storage, &a), [(Ready, 100)]);
-    assert_eq!(timeline(&storage, &b), [(Ready, 100), (Planned, 200)]);
+    assert_eq!(timeline(&storage, &a), [(Planned, 100)]);
+    assert_eq!(timeline(&storage, &b), [(Planned, 100)]);
 
     for (at, status) in [(300, InProgress), (400, InReview), (500, Done)] {
         set_now(&now, at);
         storage.set_task_status(a.id, status).unwrap();
     }
     set_now(&now, 600);
-    storage.set_task_status(b.id, Cancelled).unwrap();
+    storage.set_task_status(b.id, InProgress).unwrap();
+    set_now(&now, 650);
+    storage.set_task_status(b.id, Planned).unwrap();
     assert_eq!(
         timeline(&storage, &b),
-        [(Ready, 100), (Planned, 200), (Ready, 500), (Cancelled, 600)]
+        [(Planned, 100), (InProgress, 600), (Planned, 650)]
     );
 
     set_now(&now, 700);
@@ -965,10 +935,7 @@ fn readiness_changes_are_recorded_and_rejected_changes_record_nothing() {
     storage.add_dependency(c.id, d.id).unwrap();
     set_now(&now, 720);
     storage.remove_dependency(c.id, d.id).unwrap();
-    assert_eq!(
-        timeline(&storage, &c),
-        [(Ready, 700), (Planned, 710), (Ready, 720)]
-    );
+    assert_eq!(timeline(&storage, &c), [(Planned, 700)]);
 
     let events_before = row_count(&storage, "task_events");
     storage.delete_task(a.id).unwrap();

@@ -43,42 +43,35 @@ export const commands = {
 	 */
 	listTasks: () => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks")),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
-	/**  Creates a task without dependencies, so it starts out `ready`. */
+	/**  Creates a `planned` task without dependencies. */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(__TAURI_INVOKE("update_task", { task })),
 	/**
-	 *  Moves a task to `in_progress` or `cancelled` and returns the readiness changes this
-	 *  caused in other tasks. `in_review` and `done` are reached only through
-	 *  `open_pull_request` and `complete_task`, which check the pull request.
+	 *  Pauses an `in_progress` or `in_review` task: it becomes `planned` again and keeps
+	 *  its branch, worktree, herdr workspace, commit records, and pull request, so starting
+	 *  it again resumes the work.
 	 */
-	setTaskStatus: (id: TaskId, status: TaskStatus) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("set_task_status", { id, status })),
+	pauseTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("pause_task", { id })),
 	/**
-	 *  Reopens a `cancelled` task, which becomes `planned`, or `ready` when all its
-	 *  dependencies are done. It keeps its branch and worktree, so starting it again resumes
-	 *  the work.
-	 */
-	reopenTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("reopen_task", { id })),
-	/**
-	 *  Deletes a task with its dependency edges and commit records and returns the
-	 *  readiness changes this caused in its dependents. A task that still has a worktree
+	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
 	 *  task is kept.
 	 */
-	deleteTask: (id: TaskId, force: boolean) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
+	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
 	 *  self and cyclic edges.
 	 */
-	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
-	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
+	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
+	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
 	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(__TAURI_INVOKE("list_commit_records", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(__TAURI_INVOKE("herdr_status")),
 	/**
-	 *  Creates the worktree of a `ready` task through herdr and moves the task to
-	 *  `in_progress`. Requires a worktree root for the machine of the task's workspace.
-	 *  An empty repository first gets an initial commit on the workspace's base branch.
-	 *  A reopened task resumes on its branch, in its worktree if it still has one.
+	 *  Creates the worktree of a `planned` task whose dependencies are done through herdr
+	 *  and moves the task to `in_progress`. Requires a worktree root for the machine of the
+	 *  task's workspace. An empty repository first gets an initial commit on the workspace's
+	 *  base branch. A paused task resumes on its branch, in its worktree if it still has one.
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
@@ -279,17 +272,7 @@ export type ReviewEntry = {
  *  What happened to a task during a reviewed period: the most advanced milestone it
  *  reached in the period, or `worked_on` when it only got commits.
  */
-export type ReviewOutcome = "completed" | "cancelled" | "opened_for_review" | "started" | "worked_on" | "planned";
-
-/**
- *  A task whose status moved between `planned` and `ready` because of a change to
- *  its dependencies.
- */
-export type StatusChange = {
-	taskId: TaskId,
-	from: TaskStatus,
-	to: TaskStatus,
-};
+export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
 
 export type Task = {
 	id: TaskId,
@@ -347,14 +330,14 @@ export type TaskId = number;
  */
 export type TaskMilestones = {
 	plannedAt: Timestamp | null,
-	readyAt: Timestamp | null,
 	startedAt: Timestamp | null,
 	reviewAt: Timestamp | null,
 	completedAt: Timestamp | null,
-	cancelledAt: Timestamp | null,
+	/**  The latest pause, unless the task was started again after it. */
+	pausedAt: Timestamp | null,
 };
 
-export type TaskStatus = "planned" | "ready" | "in_progress" | "in_review" | "done" | "cancelled";
+export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
 
 export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore";
 

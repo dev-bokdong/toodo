@@ -29,7 +29,6 @@ import { cn } from "@/lib/utils";
 
 const outcomeStyles: Record<ReviewOutcome, string> = {
   completed: "text-emerald-700 dark:text-emerald-300",
-  cancelled: "text-muted-foreground",
   opened_for_review: "text-violet-700 dark:text-violet-300",
   started: "text-amber-700 dark:text-amber-300",
   worked_on: "text-sky-700 dark:text-sky-300",

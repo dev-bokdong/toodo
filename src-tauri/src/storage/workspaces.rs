@@ -139,9 +139,9 @@ impl Storage {
     }
 
     /// Deletes a workspace together with its tasks, dependencies, and commit records.
-    /// Rejected while a `planned` or `ready` task of another workspace depends on one of
-    /// its tasks, which would otherwise silently become ready; dependencies of tasks that
-    /// already started are dropped with the workspace.
+    /// Rejected while a `planned` task of another workspace depends on one of its tasks,
+    /// which would otherwise silently become ready to start; dependencies of tasks being
+    /// worked on or done are dropped with the workspace.
     pub fn delete_workspace(&mut self, id: WorkspaceId) -> Result<()> {
         let tx = self.conn.transaction()?;
         let dependent: Option<(i64, i64)> = tx
@@ -151,7 +151,7 @@ impl Storage {
                  JOIN tasks t ON t.id = d.task_id
                  JOIN tasks p ON p.id = d.depends_on_id
                  WHERE p.workspace_id = ?1 AND t.workspace_id <> ?1
-                   AND t.status IN ('planned', 'ready')
+                   AND t.status = 'planned'
                  ORDER BY d.task_id, d.depends_on_id
                  LIMIT 1",
                 [id.0],

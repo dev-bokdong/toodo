@@ -5,7 +5,7 @@ const milestoneLabels: [keyof TaskMilestones, string][] = [
   ["startedAt", "Started"],
   ["reviewAt", "In review"],
   ["completedAt", "Completed"],
-  ["cancelledAt", "Cancelled"],
+  ["pausedAt", "Paused"],
 ];
 
 /** Calendar date of `at` in the local time zone, as `YYYY-MM-DD`. */
