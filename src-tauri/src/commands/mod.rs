@@ -157,6 +157,7 @@ impl From<StorageError> for CommandError {
             }
             StorageError::Dependency(_)
             | StorageError::WorkspaceHasDependents { .. }
+            | StorageError::BaseBranchInReview { .. }
             | StorageError::Transition(_)
             | StorageError::DependenciesNotDone(_) => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
