@@ -161,10 +161,12 @@ Commits are discovered from the task branch, typically as
 
 ## Timeline View
 
-The dependency graph of a workspace is drawn on a time axis instead of as a free-form
-layered DAG, so the same picture shows both what depended on what and when it happened.
-Prerequisites from other workspaces are drawn too, labeled with their workspace, and an
-"All workspaces" view draws the tasks of every workspace together.
+The dependency graph is drawn on a time axis instead of as a free-form layered DAG, so
+the same picture shows both what depended on what and when it happened. The timeline
+belongs to the "All workspaces" view, where it is the default (a workspace's own view is
+a task list): it draws the tasks of every workspace together, each bar labeled with its
+workspace, and can be narrowed to one workspace. Narrowed, prerequisites from other
+workspaces are still drawn, dimmed and labeled with their workspace.
 
 - It reads like a Gantt chart: a time axis header (coarse dates above fine dates or
   hours) stays at the top while the rows scroll, and a cursor marks the current time,

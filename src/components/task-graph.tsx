@@ -15,7 +15,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
-import type { Task, TaskStatus, Timestamp } from "@/lib/bindings";
+import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 import { useAddDependency, useRemoveDependency } from "@/lib/queries";
 import {
   canAddDependency,
@@ -36,7 +36,7 @@ import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
-  { bar: TimelineBar; statusLabel: string; statusStyle: string; workspace: string | null },
+  { bar: TimelineBar; statusLabel: string; statusStyle: string; workspace: string | null; dimmed: boolean },
   "bar"
 >;
 
@@ -80,6 +80,7 @@ function useNow(): Timestamp {
 export function TaskGraph({
   tasks,
   allTasks,
+  dimmed,
   workspaceLabel,
   statusLabels,
   statusStyles,
@@ -88,6 +89,8 @@ export function TaskGraph({
   tasks: Task[];
   /** Tasks of every workspace, which new dependencies are checked against. */
   allTasks: Task[];
+  /** Tasks drawn only for context, such as prerequisites outside the shown workspace. */
+  dimmed: ReadonlySet<TaskId>;
   /** Workspace name shown on a bar, or null to leave it out. */
   workspaceLabel: (task: Task) => string | null;
   statusLabels: Record<TaskStatus, string>;
@@ -124,6 +127,7 @@ export function TaskGraph({
       statusLabel: statusLabels[bar.task.status],
       statusStyle: statusStyles[bar.task.status],
       workspace: workspaceLabel(bar.task),
+      dimmed: dimmed.has(bar.task.id),
     },
     deletable: false,
     width: bar.width,
@@ -393,14 +397,15 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
   );
 }
 
-function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace } }: NodeProps<BarNode>) {
+function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace, dimmed } }: NodeProps<BarNode>) {
   const { task, phases, pending, lead } = bar;
   const summary = reachedMilestones(task.milestones)
     .map(({ label, at }) => `${label} ${formatDate(at)}`)
     .join(", ");
   return (
     <div
-      className="relative h-full w-full"
+      data-dimmed={dimmed || undefined}
+      className={cn("relative h-full w-full", dimmed && "opacity-40")}
       title={`${workspace === null ? "" : `${workspace} `}#${task.id} ${task.title}\n${summary}`}
     >
       <Handle type="target" position={Position.Left} />
