@@ -53,6 +53,11 @@ export const commands = {
 	 */
 	pauseTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("pause_task", { id })),
 	/**
+	 *  Stores what the user wrote about the outcome of a `done` task, for reviews. The note
+	 *  is trimmed; an empty one clears it.
+	 */
+	setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("set_completion_note", { id, note })),
+	/**
 	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
@@ -96,7 +101,8 @@ export const commands = {
 	openPullRequest: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("open_pull_request", { id })),
 	/**
 	 *  Moves an `in_review` task to `done` once its pull request is merged, which may make
-	 *  its dependents `ready`. Its herdr workspace is closed; the worktree stays on disk.
+	 *  its dependents `ready`. The size, reviews, and commits of the pull request are
+	 *  recorded for reviews. Its herdr workspace is closed; the worktree stays on disk.
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
@@ -251,6 +257,22 @@ export type NewWorkspace = {
 	defaultBaseBranch: string | null,
 };
 
+/**  A merged pull request as GitHub reported it when it completed its task. */
+export type PullRequestSnapshot = {
+	number: number,
+	title: string,
+	additions: number,
+	deletions: number,
+	changedFiles: number,
+	/**  The commit the merge put on the base branch. */
+	mergeCommitSha: string | null,
+	/**  Submitted reviews by anyone but the author of the pull request. */
+	reviewCount: number,
+	/**  Distinct reviewers other than the author of the pull request. */
+	reviewerCount: number,
+	firstReviewedAt: Timestamp | null,
+};
+
 /**  Subdirectories of a directory on a remote machine, for the folder browser. */
 export type RemoteDirectory = {
 	/**  Absolute POSIX path of the listed directory. */
@@ -289,6 +311,13 @@ export type Task = {
 	pullRequestUrl: string | null,
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
+	/**
+	 *  The pull request as GitHub reported it when its merge completed the task; `null`
+	 *  for tasks completed before Toodo recorded it.
+	 */
+	pullRequest: PullRequestSnapshot | null,
+	/**  What the user wrote about the outcome of a `done` task. */
+	completionNote: string | null,
 	/**
 	 *  Status history, oldest event first. Empty for tasks created before Toodo
 	 *  recorded it.

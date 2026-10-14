@@ -310,7 +310,13 @@ fn dependencies_across_workspaces_share_one_dag() {
     storage.set_task_status(api.id, InProgress).unwrap();
     storage.set_task_status(api.id, InReview).unwrap();
     assert!(!ready(&storage, &ui));
-    assert_eq!(storage.complete_task(api.id, Some(1)).unwrap().status, Done);
+    assert_eq!(
+        storage
+            .complete_task(api.id, Some(1), None, &[])
+            .unwrap()
+            .status,
+        Done
+    );
     assert!(ready(&storage, &ui));
 
     // Once the dependent has started, removing the library drops the edge only.
@@ -869,7 +875,9 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
     let pushed_again = storage.open_pull_request(task.id, &[], pr, None).unwrap();
     assert_eq!(pushed_again.timeline.len(), 3);
     set_now(&now, 400);
-    let done = storage.complete_task(task.id, Some(390)).unwrap();
+    let done = storage
+        .complete_task(task.id, Some(390), None, &[])
+        .unwrap();
 
     assert_eq!(
         timeline(&storage, &task),
@@ -906,7 +914,7 @@ fn only_status_changes_are_recorded_and_rejected_changes_record_nothing() {
     set_now(&now, 250);
     assert!(storage.add_dependency(a.id, b.id).is_err());
     assert!(storage.set_task_status(b.id, InProgress).is_err());
-    assert!(storage.complete_task(a.id, None).is_err());
+    assert!(storage.complete_task(a.id, None, None, &[]).is_err());
     assert!(
         storage
             .open_pull_request(a.id, &[], "https://x/pull/1", None)
@@ -983,7 +991,7 @@ fn base_branch_cannot_change_while_a_task_is_in_review() {
     );
 
     // Once the review is over, the branch can change again.
-    storage.complete_task(task.id, Some(1)).unwrap();
+    storage.complete_task(task.id, Some(1), None, &[]).unwrap();
     workspace.default_base_branch = "main".to_owned();
     storage.update_workspace(&workspace).unwrap();
 }

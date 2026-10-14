@@ -98,6 +98,8 @@ A unit of work inside a workspace.
 | `herdrWorkspaceId` | herdr workspace bound to the worktree, if any. |
 | `pullRequestUrl` | Set when the PR is opened, as the task moves to `in_review`. |
 | `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
+| `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
+| `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. |
 | `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
 
 ### Task Timeline
@@ -206,7 +208,8 @@ workspaces are still drawn, dimmed and labeled with their workspace.
 
 A report of the work recorded in a period, across all workspaces, for status updates and
 for the year-end report. It is built only from recorded facts (status history, commit
-records, pull request URLs); nothing is generated or guessed by an agent.
+records, pull request snapshots) and the completion notes the user wrote; nothing is
+generated or guessed by an agent.
 
 - The user picks a week (from any first day, by default the Monday of the current week),
   a calendar month, quarter, or year, or a custom range of days. The period runs from
@@ -224,11 +227,12 @@ records, pull request URLs); nothing is generated or guessed by an agent.
   | Planned | `plannedAt` |
 
 - Each task is listed once, under its outcome, with its workspace, the time of the
-  outcome, its pull request, and the commits it got in the period.
+  outcome, its pull request (with its size and review count once merged), its completion
+  note, and the commits it got in the period.
 - Tasks without status history appear only through their commits.
 - A summary leads the review: the count of tasks per outcome, the commits made in the
-  period, completed tasks by task type and by workspace, and the median durations of the
-  tasks completed in the period:
+  period, completed tasks by task type and by workspace, the summed size of their merged
+  pull requests, and the median durations of the tasks completed in the period:
 
   | Duration | From | To |
   | --- | --- | --- |
@@ -240,9 +244,11 @@ records, pull request URLs); nothing is generated or guessed by an agent.
   Cycle time includes pauses and active time leaves them out, so the two together show
   how long a task took and how long it was worked on. A task without one of the
   milestones (or without status history, for active time) is left out of that median. A period over several
-  calendar months also counts the tasks completed in each month.
+  calendar months also counts the tasks completed in each month. The review screen also
+  says how many completed tasks have no completion note yet.
 - The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
-  task with its milestones as local times and its active hours so far; UTF-8 with a byte
+  task with its milestones as local times, its active hours so far, the size and review
+  count of its pull request, and its completion note; UTF-8 with a byte
   order mark). The frontend
   builds the file, since it knows the local time zone, and the `save_report` command
   writes it to the path picked in the save dialog; it only writes `.md` and `.csv` files.

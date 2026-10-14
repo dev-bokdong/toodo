@@ -224,7 +224,13 @@ export function useHerdrEvents() {
   const queryClient = useQueryClient();
   useEffect(() => {
     const subscriptions = [
-      events.tasksChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.tasks })),
+      events.tasksChanged.listen(() =>
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+          // A task completed in the background got the commits of its pull request.
+          queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+        ]),
+      ),
       events.agentStatusesChanged.listen(({ payload }) =>
         queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses),
       ),
@@ -301,11 +307,29 @@ export function useCompleteTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.completeTask(id)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    // Completing records the commits of the merged pull request.
+    onSuccess: (task) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
+      ]),
   });
 }
 
 /** Checks out the branch of an active task that lost its worktree into a new herdr worktree. */
+/** Saves the completion note of a done task; an empty note clears it. */
+export function useSetCompletionNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: { id: TaskId; note: string }) => unwrap(commands.setCompletionNote(id, note)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
 export function useRestoreTaskWorktree() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -416,10 +416,55 @@ pub struct Task {
     pub pull_request_url: Option<String>,
     /// Merge time of the pull request reported by GitHub.
     pub pull_request_merged_at: Option<Timestamp>,
+    /// The pull request as GitHub reported it when its merge completed the task; `null`
+    /// for tasks completed before Toodo recorded it.
+    pub pull_request: Option<PullRequestSnapshot>,
+    /// What the user wrote about the outcome of a `done` task.
+    pub completion_note: Option<String>,
     /// Status history, oldest event first. Empty for tasks created before Toodo
     /// recorded it.
     pub timeline: Vec<TaskEvent>,
     pub milestones: TaskMilestones,
+}
+
+/// A merged pull request as GitHub reported it when it completed its task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestSnapshot {
+    #[specta(type = Number)]
+    pub number: i64,
+    pub title: String,
+    #[specta(type = Number)]
+    pub additions: i64,
+    #[specta(type = Number)]
+    pub deletions: i64,
+    #[specta(type = Number)]
+    pub changed_files: i64,
+    /// The commit the merge put on the base branch.
+    pub merge_commit_sha: Option<String>,
+    /// Submitted reviews by anyone but the author of the pull request.
+    #[specta(type = Number)]
+    pub review_count: i64,
+    /// Distinct reviewers other than the author of the pull request.
+    #[specta(type = Number)]
+    pub reviewer_count: i64,
+    pub first_reviewed_at: Option<Timestamp>,
+}
+
+impl From<&model::PullRequestSnapshot> for PullRequestSnapshot {
+    fn from(snapshot: &model::PullRequestSnapshot) -> Self {
+        Self {
+            number: snapshot.number,
+            title: snapshot.title.clone(),
+            additions: snapshot.additions,
+            deletions: snapshot.deletions,
+            changed_files: snapshot.changed_files,
+            merge_commit_sha: snapshot.merge_commit_sha.clone(),
+            review_count: snapshot.review_count,
+            reviewer_count: snapshot.reviewer_count,
+            first_reviewed_at: snapshot.first_reviewed_at.map(Timestamp),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -469,6 +514,8 @@ impl From<&model::Task> for Task {
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
+            pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
+            completion_note: task.completion_note.clone(),
             timeline: task
                 .timeline
                 .iter()

@@ -23,6 +23,8 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     herdrWorkspaceId: null,
     pullRequestUrl: null,
     pullRequestMergedAt: null,
+    pullRequest: null,
+    completionNote: null,
     timeline: [],
     milestones: {
       plannedAt: null,

@@ -8,6 +8,7 @@ import {
   commitSubject,
   durationKeys,
   durationLabels,
+  formatChanges,
   formatDuration,
   groupByOutcome,
   outcomeLabels,
@@ -16,6 +17,7 @@ import {
   periodLabel,
   periodNouns,
   periodTitles,
+  pullRequestStats,
   reviewCsv,
   reviewFileName,
   reviewMarkdown,
@@ -243,6 +245,14 @@ export function Review() {
                     <p className="truncate text-xs">
                       <span className="text-muted-foreground">Pull request </span>
                       <span className="select-all font-mono">{task.pullRequestUrl}</span>
+                      {task.pullRequest && (
+                        <span className="text-muted-foreground"> &middot; {pullRequestStats(task.pullRequest)}</span>
+                      )}
+                    </p>
+                  )}
+                  {task.completionNote && (
+                    <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line text-xs">
+                      {task.completionNote}
                     </p>
                   )}
                   {commits.length > 0 && (
@@ -289,6 +299,14 @@ function ReviewSummaryPanel({
           <dd className="text-lg font-semibold">{summary.commits}</dd>
         </div>
       </dl>
+      {summary.withoutNote > 0 && (
+        <p role="status" className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          {summary.withoutNote === 1
+            ? "1 completed task has no completion note."
+            : `${summary.withoutNote} completed tasks have no completion note.`}{" "}
+          Add notes in the task list so the report says what the work achieved.
+        </p>
+      )}
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         {durationKeys.map((key) => {
           const stat = summary[key];
@@ -303,6 +321,12 @@ function ReviewSummaryPanel({
             </div>
           );
         })}
+        {summary.changes && (
+          <div className="contents">
+            <dt className="text-muted-foreground">Changes in completed pull requests</dt>
+            <dd>{formatChanges(summary.changes)}</dd>
+          </div>
+        )}
         {summary.completedByType.length > 0 && (
           <div className="contents">
             <dt className="text-muted-foreground">Completed by type</dt>
