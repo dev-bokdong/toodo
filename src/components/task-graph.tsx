@@ -184,6 +184,18 @@ export function TaskGraph({
         </select>
         <ul aria-label="Phases" className="flex gap-2 text-muted-foreground">
           <li className="flex items-center gap-1">
+            <span className="size-2 rotate-45 border border-muted-foreground" />
+            Planned
+          </li>
+          <li className="flex items-center gap-1">
+            <span className="h-2 border-l-2 border-emerald-500" />
+            Ready
+          </li>
+          <li className="flex items-center gap-1">
+            <span className="w-3 border-t border-dashed border-muted-foreground" />
+            Waiting
+          </li>
+          <li className="flex items-center gap-1">
             <span className="h-2 w-3 rounded-sm border border-dashed border-muted-foreground" />
             Not started
           </li>
@@ -365,13 +377,29 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
 }
 
 function TimelineBarView({ data: { bar, statusLabel, statusStyle } }: NodeProps<BarNode>) {
-  const { task, phases, pending } = bar;
+  const { task, phases, pending, lead } = bar;
   const summary = reachedMilestones(task.milestones)
     .map(({ label, at }) => `${label} ${formatDate(at)}`)
     .join(", ");
   return (
     <div className="relative h-full w-full" title={`#${task.id} ${task.title}\n${summary}`}>
       <Handle type="target" position={Position.Left} />
+      {lead !== null && (
+        // The wait before the bar: from the planned time, through the time it became ready.
+        <div
+          aria-hidden
+          className="pointer-events-none absolute top-1/2"
+          style={{ left: lead.x, width: -lead.x }}
+        >
+          <div className="absolute inset-x-0 top-0 border-t border-dashed border-muted-foreground/70" />
+          {lead.planned && (
+            <span className="absolute -left-1 -top-1 size-2 rotate-45 border border-muted-foreground bg-background" />
+          )}
+          {lead.readyX !== null && (
+            <span className="absolute -top-1 h-2 border-l-2 border-emerald-500" style={{ left: lead.readyX - lead.x }} />
+          )}
+        </div>
+      )}
       <div
         className={cn(
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",

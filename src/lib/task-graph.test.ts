@@ -90,26 +90,27 @@ describe("layoutTimeline", () => {
   it("fixes a finished task from its start to its completion", () => {
     const layout = layoutTimeline([done], { now, scale: "day", period: null });
 
-    expect(layout.start).toBe(jan(3));
+    expect(layout.start).toBe(jan(1));
     expect(layout.bars).toEqual([
       {
         task: done,
         row: 0,
-        x: 0,
+        x: 2 * 48,
         width: 3 * 48,
         pending: false,
         phases: [
           { phase: "in_progress", x: 0, width: 2 * 48 },
           { phase: "in_review", x: 2 * 48, width: 48 },
         ],
+        lead: { x: -2 * 48, planned: true, readyX: null },
       },
     ]);
-    expect(layout.nowX).toBe(8 * 48);
+    expect(layout.nowX).toBe(10 * 48);
     expect(layout.ticks.slice(0, 2)).toEqual([
-      { at: jan(3), x: 0, label: "01-03" },
-      { at: jan(4), x: 48, label: "01-04" },
+      { at: jan(1), x: 0, label: "01-01" },
+      { at: jan(2), x: 48, label: "01-02" },
     ]);
-    expect(layout.majorTicks).toEqual([{ at: jan(3), x: 0, label: "2026-01" }]);
+    expect(layout.majorTicks).toEqual([{ at: jan(1), x: 0, label: "2026-01" }]);
   });
 
   it("ends a started task at now and puts a task not started at now", () => {
@@ -121,7 +122,8 @@ describe("layoutTimeline", () => {
       [2, 1],
       [3, 2],
     ]);
-    expect(bars.get(2)).toMatchObject({ x: 48, width: 7 * 48, pending: false });
+    expect(bars.get(2)).toMatchObject({ x: 3 * 48, width: 7 * 48, pending: false });
+    expect(bars.get(2)!.lead).toEqual({ x: -1.5 * 48, planned: true, readyX: null });
     expect(bars.get(2)!.phases).toEqual([{ phase: "in_progress", x: 0, width: 7 * 48 }]);
     expect(bars.get(3)).toMatchObject({ x: layout.nowX, width: 120, pending: true, phases: [] });
     expect(layout.rows).toBe(3);
@@ -139,7 +141,20 @@ describe("layoutTimeline", () => {
     expect(after.bars[1].x).toBe(after.nowX);
     expect(after.bars[0]).toEqual(before.bars[0]);
     expect(after.ticks.slice(0, 2).map((tick) => tick.label)).toEqual(["00:00", "01:00"]);
-    expect(after.majorTicks[0]).toEqual({ at: jan(3), x: 0, label: "2026-01-03" });
+    expect(after.majorTicks[0]).toEqual({ at: jan(1), x: 0, label: "2026-01-01" });
+  });
+
+  it("draws the wait from the planned time through the ready time up to the bar", () => {
+    const blocked = task(9, {
+      status: "ready",
+      dependsOn: [1],
+      milestones: milestones({ plannedAt: jan(2), readyAt: jan(6) }),
+    });
+
+    const layout = layoutTimeline([done, blocked], { now, scale: "day", period: null });
+
+    expect(layout.bars[1]).toMatchObject({ x: 10 * 48, pending: true });
+    expect(layout.bars[1].lead).toEqual({ x: -9 * 48, planned: true, readyX: -5 * 48 });
   });
 
   it("orders dependents after their prerequisites and queues waiting ones behind them", () => {
@@ -177,6 +192,7 @@ describe("layoutTimeline", () => {
     expect(layout.bars.map((bar) => bar.task.id)).toEqual([7]);
     expect(layout.bars[0].x).toBe(3);
     expect(layout.bars[0].phases).toEqual([{ phase: "in_progress", x: 0, width: 27 }]);
+    expect(layout.bars[0].lead).toEqual({ x: -3, planned: false, readyX: null });
     expect(layout.ticks.map((tick) => tick.label)).toEqual(
       Array.from({ length: 12 }, (_, month) => `2026-${String(month + 1).padStart(2, "0")}`),
     );

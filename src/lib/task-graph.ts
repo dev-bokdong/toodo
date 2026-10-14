@@ -67,6 +67,18 @@ export type TimelineBar = {
   pending: boolean;
   /** Phases, positioned relative to `x` at true scale. */
   phases: { phase: TimelinePhase; x: number; width: number }[];
+  /** The wait before the bar, from `plannedAt` to `x`; null when there was none. */
+  lead: TimelineLead | null;
+};
+
+/** Positions relative to the bar's `x`, so all of them are negative. */
+export type TimelineLead = {
+  /** Left end of the wait: `plannedAt`, or the left edge of the axis when it is earlier. */
+  x: number;
+  /** Whether `plannedAt` itself is on the axis and gets a marker. */
+  planned: boolean;
+  /** When the last prerequisite was done, if that happened after `plannedAt` during the wait. */
+  readyX: number | null;
 };
 
 export type TimelineTick = { at: Timestamp; x: number; label: string };
@@ -123,6 +135,25 @@ function taskPhases(task: Task, { start, end }: Period): { phase: TimelinePhase;
   return phases
     .map((phase) => ({ ...phase, start: Math.max(phase.start, start), end: Math.min(phase.end, end) }))
     .filter((phase) => phase.end > phase.start);
+}
+
+function taskLead(
+  task: Task,
+  x: number,
+  start: Timestamp,
+  scaleX: (at: Timestamp) => number,
+): TimelineLead | null {
+  const { plannedAt, readyAt } = task.milestones;
+  if (plannedAt === null || scaleX(Math.max(plannedAt, start)) >= x) {
+    return null;
+  }
+  const leadX = scaleX(Math.max(plannedAt, start));
+  const ready = readyAt !== null && readyAt > plannedAt && readyAt >= start ? scaleX(readyAt) : null;
+  return {
+    x: leadX - x,
+    planned: plannedAt >= start,
+    readyX: ready !== null && ready < x ? ready - x : null,
+  };
 }
 
 type Placed = { task: Task; interval: Period };
@@ -263,7 +294,8 @@ export function layoutTimeline(
   if (period !== null) {
     ({ start, end } = period);
   } else {
-    start = startOfLocalDay(Math.min(now, ...placed.map(({ interval }) => interval.start))).getTime() / 1000;
+    const first = placed.map(({ task, interval }) => Math.min(interval.start, task.milestones.plannedAt ?? interval.start));
+    start = startOfLocalDay(Math.min(now, ...first)).getTime() / 1000;
     const last = Math.max(now, ...placed.map(({ interval }) => interval.end));
     const endDay = startOfLocalDay(last);
     endDay.setDate(endDay.getDate() + 1);
@@ -295,7 +327,7 @@ export function layoutTimeline(
       }));
     }
     rightEdges.set(task.id, x + width);
-    return { task, row, x, width, pending, phases };
+    return { task, row, x, width, pending, phases, lead: taskLead(task, x, start, scaleX) };
   });
 
   const { minor, major } = tickUnits[scale];

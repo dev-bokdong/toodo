@@ -169,6 +169,10 @@ layered DAG, so the same picture shows both what depended on what and when it ha
     `cancelledAt`).
   A started bar is split into phases: in progress (`startedAt` to `reviewAt`) and in
   review (`reviewAt` to the end).
+- The wait before a bar is drawn lighter than the bar, so bar length still reads as
+  work: a marker at `plannedAt` and a dashed line from it to the bar, with a tick at
+  `readyAt` when the task became ready later than it was planned (its prerequisites
+  were done then). The axis starts early enough to show the earliest `plannedAt`.
 - Every task has its own row. Rows are in dependency order: a task comes after all the
   tasks it depends on, otherwise in order of start time. A task that has not started is
   also placed to the right of its prerequisites' bars, so a chain of waiting tasks reads
