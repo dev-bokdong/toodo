@@ -173,6 +173,16 @@ requests are left alone. A failed check (e.g. `gh` is not signed in, or a herdr 
 keeps the task `in_review` and is logged once until it changes; the next check tries
 again. The task list refreshes when a task is completed this way.
 
+In the same check, Toodo also looks up the pull request of the branch of every
+`in_progress` task that has a branch and a worktree (steps 2 and 3 of opening a pull
+request, `gh pr list --repo <repo> --head <branch> --state all`), so a pull request
+opened outside Toodo, e.g. by an agent in herdr, is picked up within a minute. An open
+or merged one into the workspace base branch is recorded as in step 5 without pushing,
+which moves the task to `in_review`; a merged one then completes the task in the same
+check. A branch without a pull request, or with a closed one only, leaves the task
+`in_progress`; a pull request into another base branch or a failed lookup is logged once
+until it changes.
+
 The worktree stays until the task is deleted (step 8).
 
 ### 8. Delete the task and its worktree
