@@ -53,6 +53,12 @@ export const commands = {
 	 */
 	setTaskStatus: (id: TaskId, status: TaskStatus) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("set_task_status", { id, status })),
 	/**
+	 *  Reopens a `cancelled` task, which becomes `planned`, or `ready` when all its
+	 *  dependencies are done. It keeps its branch and worktree, so starting it again resumes
+	 *  the work.
+	 */
+	reopenTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("reopen_task", { id })),
+	/**
 	 *  Deletes a task with its dependency edges and commit records and returns the
 	 *  readiness changes this caused in its dependents. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
@@ -72,6 +78,7 @@ export const commands = {
 	 *  Creates the worktree of a `ready` task through herdr and moves the task to
 	 *  `in_progress`. Requires a worktree root for the machine of the task's workspace.
 	 *  An empty repository first gets an initial commit on the workspace's base branch.
+	 *  A reopened task resumes on its branch, in its worktree if it still has one.
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),

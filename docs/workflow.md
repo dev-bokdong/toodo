@@ -11,7 +11,10 @@ planned --> ready --> in_progress --> in_review --> done
    +-- (a dependency is added that is not done yet)
 ```
 
-A `planned` task can also be cancelled. `done` and `cancelled` are final states.
+A `planned` task can also be cancelled. `done` is a final state. A `cancelled` task can
+be reopened ("Reopen"): it moves to `planned`, and on to `ready` when all its
+dependencies are done, so its dependencies can be changed before it is started again.
+It keeps its branch, worktree, herdr workspace, commit records, and pull request.
 
 Every state change, including the automatic moves between `planned` and `ready`, is
 recorded with its time in the task's status history, which feeds the timeline view and
@@ -24,7 +27,7 @@ year-end reports (see [architecture.md](architecture.md#task-timeline)).
 | `in_progress` | A worktree exists and implementation is happening in herdr. |
 | `in_review` | The task branch is pushed and its pull request is open, waiting to be merged. |
 | `done` | The pull request is merged; dependents can start from the updated base branch. |
-| `cancelled` | Task abandoned; its worktree may be removed. |
+| `cancelled` | Task abandoned; its worktree may be removed, or the task reopened. |
 
 ## Lifecycle
 
@@ -76,6 +79,13 @@ When the user starts a `ready` task, Toodo:
    fails, the task stays `ready` and nothing is stored.
 5. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
    `in_progress`, which records `startedAt`.
+
+A reopened task that already has a branch starts again on it instead: Toodo opens its
+kept worktree with `herdr worktree open --cwd <repository> --path <worktreePath>
+--no-focus`, which also finds the herdr workspace that still has it open. If the
+checkout is gone, the branch is checked out into a new worktree like "Restore worktree"
+(step 4), or created from `<baseBranch>` when neither the repository nor `origin` has it.
+`startedAt` stays the time of the first start.
 
 ### 4. Implement in herdr
 
@@ -163,10 +173,10 @@ The worktree stays until the task is deleted (step 8).
 
 ### 8. Delete the task and its worktree
 
-When the user deletes a `done` or `cancelled` task that still has a worktree
-("Delete"), Toodo first removes the worktree:
+When the user deletes a task that is not `in_progress` or `in_review` and still has a
+worktree ("Delete"), Toodo first removes the worktree:
 
-1. If the task still has a herdr workspace (a cancelled task), calls
+1. If the task still has a herdr workspace (a cancelled or reopened task), calls
    `herdr worktree remove --workspace <herdrWorkspaceId>` (prefixed with
    `--machine <profile-id>` for SSH workspaces), which deletes the checkout and closes
    its herdr workspace. The task branch is kept, locally and on `origin`.

@@ -33,6 +33,8 @@ impl TaskStatus {
                 | (Ready, Planned | InProgress | Cancelled)
                 | (InProgress, InReview | Cancelled)
                 | (InReview, Done | Cancelled)
+                // Reopening a cancelled task; readiness then moves it on to `ready`.
+                | (Cancelled, Planned)
         )
     }
 
@@ -87,6 +89,7 @@ mod tests {
             (InProgress, Cancelled),
             (InReview, Done),
             (InReview, Cancelled),
+            (Cancelled, Planned),
         ];
         for from in ALL {
             for to in ALL {

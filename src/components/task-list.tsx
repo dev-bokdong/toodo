@@ -9,6 +9,7 @@ import {
   useAddDependency,
   useAgentStatuses,
   useCancelTask,
+  useReopenTask,
   useCommitRecords,
   useCompleteTask,
   useCreateTask,
@@ -176,7 +177,7 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
 /** Statuses whose task can still be cancelled; `set_task_status` allows these. */
 const cancellableStatuses: TaskStatus[] = ["planned", "ready", "in_progress", "in_review"];
 
-/** Statuses whose task has no live worktree to lose, so it can be deleted. */
+/** Statuses whose task is not being worked on, so it can be deleted with its worktree. */
 const deletableStatuses: TaskStatus[] = ["planned", "ready", "done", "cancelled"];
 
 type Confirmation = "cancel" | "delete" | "force-delete";
@@ -223,6 +224,7 @@ function TaskRow({
   const openPullRequest = useOpenPullRequest();
   const completeTask = useCompleteTask();
   const cancelTask = useCancelTask();
+  const reopenTask = useReopenTask();
   const deleteTask = useDeleteTask();
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
@@ -236,7 +238,8 @@ function TaskRow({
   const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done" || task.status === "cancelled";
-  const removableWorktree = final && task.worktreePath !== null;
+  // A reopened task may still have the worktree it had before it was cancelled.
+  const removableWorktree = !active && task.worktreePath !== null;
   // A rejected delete means the worktree has local changes; offer to discard them.
   const dirtyWorktree =
     removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
@@ -249,6 +252,7 @@ function TaskRow({
     openPullRequest.error ??
     completeTask.error ??
     cancelTask.error ??
+    reopenTask.error ??
     deleteTask.error ??
     restoreWorktree.error ??
     addDependency.error ??
@@ -399,6 +403,18 @@ function TaskRow({
                     onClick={() => setConfirming("cancel")}
                   >
                     Cancel
+                  </Button>
+                )}
+                {task.status === "cancelled" && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`Reopen #${task.id}`}
+                    title="Plan the task again; it keeps its branch and worktree and can be started once its dependencies are done"
+                    disabled={reopenTask.isPending}
+                    onClick={() => reopenTask.mutate(task.id)}
+                  >
+                    Reopen
                   </Button>
                 )}
                 {deletableStatuses.includes(task.status) && (

@@ -9,7 +9,7 @@ use crate::domain::dag::{self, StatusChange};
 use crate::domain::model::{CommitRecord, HostPath, Task, TaskId, TaskType, WorkspaceId};
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
-use crate::domain::status::TaskStatus;
+use crate::domain::status::{TaskStatus, TransitionError};
 use crate::domain::timeline::TaskEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -491,6 +491,31 @@ impl Storage {
         let changes = sync_readiness(&tx, at)?;
         tx.commit()?;
         Ok(changes)
+    }
+
+    /// Reopens a `cancelled` task: moves it to `planned`, then to `ready` if all its
+    /// dependencies are done, recording both moves. Its branch, worktree, herdr workspace,
+    /// commit records, and pull request stay, so starting it again resumes the work.
+    pub fn reopen_task(&mut self, id: TaskId) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        if task.status != TaskStatus::Cancelled {
+            return Err(TransitionError {
+                from: task.status,
+                to: TaskStatus::Planned,
+            }
+            .into());
+        }
+        tx.execute(
+            "UPDATE tasks SET status = ?2 WHERE id = ?1",
+            params![id.0, TaskStatus::Planned.as_str()],
+        )?;
+        record_event(&tx, id, TaskStatus::Planned, at)?;
+        sync_readiness(&tx, at)?;
+        let reopened = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(reopened)
     }
 
     /// Deletes a task with its dependency edges, commit records, and status history, and

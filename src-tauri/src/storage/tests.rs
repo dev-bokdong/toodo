@@ -412,6 +412,52 @@ fn status_changes_follow_transitions_and_release_dependents() {
 }
 
 #[test]
+fn a_reopened_task_waits_for_its_dependencies_again_and_keeps_its_worktree() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+    assert!(matches!(
+        storage.reopen_task(a.id),
+        Err(StorageError::Transition(error)) if error.from == Ready && error.to == Planned
+    ));
+
+    set_now(&now, 200);
+    storage.set_task_status(a.id, InProgress).unwrap();
+    let mut started = storage.get_task(a.id).unwrap().unwrap();
+    started.branch = Some("feat/a-1".to_owned());
+    started.herdr_workspace_id = Some("w1".to_owned());
+    storage.update_task(&started).unwrap();
+    set_now(&now, 300);
+    storage.set_task_status(a.id, Cancelled).unwrap();
+
+    set_now(&now, 400);
+    let reopened = storage.reopen_task(a.id).unwrap();
+    assert_eq!(reopened.status, Ready);
+    assert_eq!(reopened.branch.as_deref(), Some("feat/a-1"));
+    assert_eq!(reopened.herdr_workspace_id.as_deref(), Some("w1"));
+    assert_eq!(
+        timeline(&storage, &a),
+        [
+            (Ready, 100),
+            (InProgress, 200),
+            (Cancelled, 300),
+            (Planned, 400),
+            (Ready, 400)
+        ]
+    );
+
+    set_now(&now, 500);
+    storage.add_dependency(a.id, b.id).unwrap();
+    assert_eq!(status(&storage, &a), Planned);
+
+    storage.set_task_status(b.id, Cancelled).unwrap();
+    let reopened = storage.reopen_task(b.id).unwrap();
+    assert_eq!(reopened.status, Ready);
+    assert_eq!(status(&storage, &a), Planned);
+}
+
+#[test]
 fn deleting_a_task_releases_its_dependents() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));

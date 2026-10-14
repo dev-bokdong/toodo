@@ -85,6 +85,15 @@ fn change_status(
     Ok(types::map_all(&changes))
 }
 
+/// Reopens a `cancelled` task, which becomes `planned`, or `ready` when all its
+/// dependencies are done. It keeps its branch and worktree, so starting it again resumes
+/// the work.
+#[tauri::command]
+#[specta::specta]
+pub fn reopen_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
+    Ok((&lock(&storage).reopen_task(id.into())?).into())
+}
+
 /// Deletes a task with its dependency edges and commit records and returns the
 /// readiness changes this caused in its dependents. A task that still has a worktree
 /// first removes it through herdr, which also closes its herdr workspace; the branch is

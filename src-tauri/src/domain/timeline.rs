@@ -24,6 +24,7 @@ pub struct Milestones {
     /// The first move to `in_review`, when the pull request was opened.
     pub review_at: Option<i64>,
     pub completed_at: Option<i64>,
+    /// The latest move to `cancelled`, unless the task was reopened after it.
     pub cancelled_at: Option<i64>,
 }
 
@@ -36,9 +37,13 @@ pub fn milestones(timeline: &[TaskEvent]) -> Milestones {
     for event in timeline {
         let started = milestones.started_at.is_some();
         match event.status {
-            TaskStatus::Planned if !started => milestones.ready_at = None,
-            TaskStatus::Ready if !started => milestones.ready_at = Some(event.at),
-            TaskStatus::Planned | TaskStatus::Ready => {}
+            TaskStatus::Planned | TaskStatus::Ready => {
+                // A cancelled task that was reopened is no longer cancelled.
+                milestones.cancelled_at = None;
+                if !started {
+                    milestones.ready_at = (event.status == TaskStatus::Ready).then_some(event.at);
+                }
+            }
             TaskStatus::InProgress => {
                 milestones.started_at.get_or_insert(event.at);
             }
@@ -114,5 +119,32 @@ mod tests {
                 cancelled_at: Some(30),
             }
         );
+    }
+
+    #[test]
+    fn a_reopened_task_is_no_longer_cancelled_and_keeps_its_first_start() {
+        let reopened = events(&[
+            (Ready, 10),
+            (InProgress, 20),
+            (Cancelled, 30),
+            (Planned, 40),
+            (Ready, 50),
+        ]);
+        assert_eq!(
+            milestones(&reopened),
+            Milestones {
+                planned_at: Some(10),
+                ready_at: Some(10),
+                started_at: Some(20),
+                review_at: None,
+                completed_at: None,
+                cancelled_at: None,
+            }
+        );
+
+        let mut restarted = reopened;
+        restarted.extend(events(&[(InProgress, 60), (Cancelled, 70)]));
+        assert_eq!(milestones(&restarted).started_at, Some(20));
+        assert_eq!(milestones(&restarted).cancelled_at, Some(70));
     }
 }
