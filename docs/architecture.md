@@ -7,8 +7,8 @@ starting point; refine it as implementation decisions are made.
 
 Besides driving the work itself, Toodo is the record used to compile a year-end
 performance report. For every task it must be able to answer when it was planned, when
-work on it started, when its pull request was opened, and when it was completed or
-cancelled, and show how tasks depended on each other over time. Timeline data is
+work on it started, when its pull request was opened, when it was paused, and when it
+was completed, and show how tasks depended on each other over time. Timeline data is
 therefore part of the domain, not a UI detail: it is recorded at the moment each change
 happens and never derived later from git or GitHub alone.
 
@@ -110,22 +110,24 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 | `status` | Status the task moved to. |
 | `at` | Time of the change, in seconds since the Unix epoch (UTC), from the clock of the machine running Toodo. Shown in the local time zone. |
 
-- Creating a task records its initial status (`planned` or `ready`). Every later status
-  change, including the automatic `planned`/`ready` recomputation after dependency
-  changes, records one event in the same transaction as the change itself.
+- Creating a task records its initial status (`planned`). Every later status change
+  records one event in the same transaction as the change itself. Dependency changes do
+  not change a status, so they record nothing.
 - Events are never edited or deleted on their own; they go away only when their task is
-  deleted. Cancelling a task keeps its history, so cancel rather than delete tasks that
-  should appear in a report.
+  deleted. A deleted task no longer appears in reports, so pause rather than delete a
+  task whose work should be reported.
 - The milestones used by the timeline view and reports are derived from the history:
 
   | Milestone | Derived from |
   | --- | --- |
   | `plannedAt` | The first event (task creation). |
-  | `readyAt` | The latest move to `ready` before `startedAt` (when the last dependency was done). |
-  | `startedAt` | The first move to `in_progress`. |
+  | `startedAt` | The first move to `in_progress`; resuming a paused task keeps it. |
   | `reviewAt` | The first move to `in_review` (pull request opened). |
   | `completedAt` | The move to `done`. |
-  | `cancelledAt` | The latest move to `cancelled`, cleared when the task is reopened. |
+  | `pausedAt` | The latest move back to `planned` after `startedAt`, cleared when the task is started again. |
+
+  When a task became ready to start is not recorded: it is the `completedAt` of its last
+  dependency to be done.
 
 - Tasks created before status history existed have no events; their milestones are
   unknown and are not guessed from git or GitHub.
@@ -137,11 +139,13 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   first. Edges must never form a cycle, including cycles that pass through several
   workspaces.
 - A task is **ready** when every task it depends on is `done`, in whichever workspace it
-  lives; finishing a task can release dependents in other workspaces.
-- A workspace cannot be deleted while a `planned` or `ready` task of another workspace
-  depends on one of its tasks, since that task would silently become ready. Dependencies
-  of tasks that already started are dropped with the workspace.
-- Dependents of a task can be planned at any time but only started once ready.
+  lives; finishing a task can release dependents in other workspaces. Readiness is
+  derived from the DAG whenever it is needed and is not a status.
+- A workspace cannot be deleted while a `planned` task of another workspace depends on
+  one of its tasks, since that task would silently become ready. Dependencies of tasks
+  being worked on or done are dropped with the workspace.
+- Dependents of a task can be planned at any time but only started (or resumed) once
+  ready.
 - A topological order of the DAG is the suggested execution order.
 
 ### CommitRecord
@@ -170,18 +174,18 @@ Prerequisites from other workspaces are drawn too, labeled with their workspace,
   hours) stays at the top while the rows scroll, and a cursor marks the current time,
   refreshed every 30 seconds.
 - Each task is a bar whose ends follow its status:
-  - Not started (`planned`, `ready`): a fixed-width bar attached to the current-time
-    cursor, moving with it.
-  - Started (`in_progress`, `in_review`): fixed at `startedAt`, its end attached to the
-    current-time cursor.
-  - Closed (`done`, `cancelled`): fixed from `startedAt` to `completedAt` (or
-    `cancelledAt`).
+  - Never started (`planned` without a branch or `startedAt`): a fixed-width bar
+    attached to the current-time cursor, moving with it.
+  - Being worked on (`in_progress`, `in_review`): fixed at `startedAt`, its end attached
+    to the current-time cursor.
+  - Paused or done (`planned` after a start, `done`): fixed from `startedAt` to
+    `pausedAt` (drawn faded) or `completedAt`.
   A started bar is split into phases: in progress (`startedAt` to `reviewAt`) and in
   review (`reviewAt` to the end).
 - The wait before a bar is drawn lighter than the bar, so bar length still reads as
   work: a marker at `plannedAt` and a dashed line from it to the bar, with a tick at
-  `readyAt` when the task became ready later than it was planned (its prerequisites
-  were done then). The axis starts early enough to show the earliest `plannedAt`.
+  the `completedAt` of its last prerequisite when the task became ready later than it
+  was planned. The axis starts early enough to show the earliest `plannedAt`.
 - Every task has its own row. Rows are in dependency order: a task comes after all the
   tasks it depends on, otherwise in order of start time. A task that has not started is
   also placed to the right of its prerequisites' bars, so a chain of waiting tasks reads
@@ -210,7 +214,6 @@ records, pull request URLs); nothing is generated or guessed by an agent.
   | Outcome | Reached in the period |
   | --- | --- |
   | Completed | `completedAt` |
-  | Cancelled | `cancelledAt` |
   | Opened for review | `reviewAt` |
   | Started | `startedAt` |
   | Worked on | No milestone, but at least one commit (`committedAt`) |
@@ -337,9 +340,8 @@ Toodo owns planning, task state, commit records, and pull requests.
   - Workspace and task IDs are never reused after a delete, because task IDs are part of
     branch and worktree names.
   - Writes that touch the task DAG run in one transaction: new edges are validated
-    against the DAG rules, and `planned`/`ready` statuses are recomputed from the
-    dependencies after every dependency, status, or task change. `planned` and `ready`
-    cannot be set directly.
+    against the DAG rules, and starting a task checks in the same transaction that all
+    its dependencies are done.
   - Every task status change appends a row to the task's status history in the same
     transaction (see [Task Timeline](#task-timeline)).
   - Deleting a workspace or task also deletes its tasks, dependency edges, commit

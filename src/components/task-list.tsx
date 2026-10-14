@@ -8,8 +8,6 @@ import {
   machineOf,
   useAddDependency,
   useAgentStatuses,
-  useCancelTask,
-  useReopenTask,
   useCommitRecords,
   useCompleteTask,
   useCreateTask,
@@ -18,6 +16,7 @@ import {
   useMachineSettings,
   useOpenPullRequest,
   useOpenTaskInHerdr,
+  usePauseTask,
   useRefreshCommitRecords,
   useRemoveDependency,
   useRestoreTaskWorktree,
@@ -27,6 +26,7 @@ import {
   useUpdateTask,
   useWorkspaces,
 } from "@/lib/queries";
+import { dependenciesDone, isPaused } from "@/lib/task-graph";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -48,20 +48,21 @@ const agentStyles: Record<AgentStatus, string> = {
 
 const statusLabels: Record<TaskStatus, string> = {
   planned: "Planned",
-  ready: "Ready",
   in_progress: "In progress",
   in_review: "In review",
   done: "Done",
-  cancelled: "Cancelled",
 };
+
+/** The status of `task`, naming a planned task that was worked on before "Paused". */
+function statusLabel(task: Task): string {
+  return isPaused(task) ? "Paused" : statusLabels[task.status];
+}
 
 const statusStyles: Record<TaskStatus, string> = {
   planned: "bg-muted text-muted-foreground",
-  ready: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200",
   in_progress: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
   in_review: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
-  cancelled: "bg-muted text-muted-foreground line-through",
 };
 
 /** What the task list needs to name tasks of other workspaces. */
@@ -164,7 +165,7 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
                   ? context.workspaceName(task.workspaceId)
                   : null
               }
-              statusLabels={statusLabels}
+              statusLabel={statusLabel}
               statusStyles={statusStyles}
             />
           )}
@@ -174,16 +175,12 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
   );
 }
 
-/** Statuses whose task can still be cancelled; `set_task_status` allows these. */
-const cancellableStatuses: TaskStatus[] = ["planned", "ready", "in_progress", "in_review"];
-
 /** Statuses whose task is not being worked on, so it can be deleted with its worktree. */
-const deletableStatuses: TaskStatus[] = ["planned", "ready", "done", "cancelled"];
+const deletableStatuses: TaskStatus[] = ["planned", "done"];
 
-type Confirmation = "cancel" | "delete" | "force-delete";
+type Confirmation = "delete" | "force-delete";
 
 const confirmLabels: Record<Confirmation, string> = {
-  cancel: "Confirm cancel",
   delete: "Confirm delete",
   "force-delete": "Confirm force delete",
 };
@@ -223,8 +220,7 @@ function TaskRow({
   const refreshCommits = useRefreshCommitRecords();
   const openPullRequest = useOpenPullRequest();
   const completeTask = useCompleteTask();
-  const cancelTask = useCancelTask();
-  const reopenTask = useReopenTask();
+  const pauseTask = usePauseTask();
   const deleteTask = useDeleteTask();
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
@@ -237,13 +233,15 @@ function TaskRow({
   const hasWorktree = active && task.worktreePath !== null;
   const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
-  const final = task.status === "done" || task.status === "cancelled";
-  // A reopened task may still have the worktree it had before it was cancelled.
+  const final = task.status === "done";
+  const paused = isPaused(task);
+  const startable = task.status === "planned" && dependenciesDone(task, context.byId);
+  // A paused task may still have the worktree it had while it was worked on.
   const removableWorktree = !active && task.worktreePath !== null;
   // A rejected delete means the worktree has local changes; offer to discard them.
   const dirtyWorktree =
     removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
-  const dependenciesEditable = task.status === "planned" || task.status === "ready";
+  const dependenciesEditable = task.status === "planned";
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const actionError =
     startTask.error ??
@@ -251,14 +249,13 @@ function TaskRow({
     refreshCommits.error ??
     openPullRequest.error ??
     completeTask.error ??
-    cancelTask.error ??
-    reopenTask.error ??
+    pauseTask.error ??
     deleteTask.error ??
     restoreWorktree.error ??
     addDependency.error ??
     removeDependency.error;
   const candidates = tasks.filter(
-    (other) => other.id !== task.id && other.status !== "cancelled" && !task.dependsOn.includes(other.id),
+    (other) => other.id !== task.id && !task.dependsOn.includes(other.id),
   );
   // Candidates grouped by workspace, the task's own workspace first.
   const candidateGroups = [...new Set([task.workspaceId, ...candidates.map((other) => other.workspaceId)])]
@@ -269,12 +266,7 @@ function TaskRow({
     .filter((group) => group.tasks.length > 0);
 
   function confirm(action: Confirmation) {
-    const onSettled = () => setConfirming(null);
-    if (action === "cancel") {
-      cancelTask.mutate(task.id, { onSettled });
-    } else {
-      deleteTask.mutate({ id: task.id, force: action === "force-delete" }, { onSettled });
-    }
+    deleteTask.mutate({ id: task.id, force: action === "force-delete" }, { onSettled: () => setConfirming(null) });
   }
 
   return (
@@ -379,7 +371,7 @@ function TaskRow({
                   size="xs"
                   variant="destructive"
                   aria-label={`${confirmLabels[confirming]} #${task.id}`}
-                  disabled={cancelTask.isPending || deleteTask.isPending}
+                  disabled={deleteTask.isPending}
                   onClick={() => confirm(confirming)}
                 >
                   {deleteTask.isPending ? "Deleting..." : confirmLabels[confirming]}
@@ -395,26 +387,16 @@ function TaskRow({
                     Edit
                   </Button>
                 )}
-                {cancellableStatuses.includes(task.status) && (
+                {active && (
                   <Button
                     size="xs"
                     variant="ghost"
-                    aria-label={`Cancel #${task.id}`}
-                    onClick={() => setConfirming("cancel")}
+                    aria-label={`Pause #${task.id}`}
+                    title="Stop working on the task; it keeps its branch, worktree, and pull request and can be resumed"
+                    disabled={pauseTask.isPending}
+                    onClick={() => pauseTask.mutate(task.id)}
                   >
-                    Cancel
-                  </Button>
-                )}
-                {task.status === "cancelled" && (
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    aria-label={`Reopen #${task.id}`}
-                    title="Plan the task again; it keeps its branch and worktree and can be started once its dependencies are done"
-                    disabled={reopenTask.isPending}
-                    onClick={() => reopenTask.mutate(task.id)}
-                  >
-                    Reopen
+                    Pause
                   </Button>
                 )}
                 {deletableStatuses.includes(task.status) && (
@@ -450,14 +432,15 @@ function TaskRow({
           </div>
         )}
       </div>
-      {task.status === "ready" && (
+      {task.status === "planned" && (
         <Button
           size="xs"
-          aria-label={`Start #${task.id}`}
-          disabled={!herdrRunning || startTask.isPending}
+          aria-label={`${paused ? "Resume" : "Start"} #${task.id}`}
+          title={startable ? undefined : "Waits until all its dependencies are done"}
+          disabled={!startable || !herdrRunning || startTask.isPending}
           onClick={() => startTask.mutate(task.id)}
         >
-          {startTask.isPending ? "Starting..." : "Start"}
+          {startTask.isPending ? "Starting..." : paused ? "Resume" : "Start"}
         </Button>
       )}
       {active && task.worktreePath === null && task.branch !== null && (
@@ -525,7 +508,7 @@ function TaskRow({
         </span>
       )}
       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", statusStyles[task.status])}>
-        {statusLabels[task.status]}
+        {statusLabel(task)}
       </span>
     </li>
   );
@@ -593,7 +576,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
 }
 
 function CommitList({ task }: { task: Task }) {
-  const recorded = task.status === "in_progress" || task.status === "in_review" || task.status === "done";
+  const recorded = task.status !== "planned" || isPaused(task);
   const commits = useCommitRecords(task.id, recorded);
 
   if (commits.isError) {

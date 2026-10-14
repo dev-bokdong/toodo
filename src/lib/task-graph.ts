@@ -4,7 +4,31 @@ import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
 
 /** Statuses whose dependencies can still change; the backend rejects edits for the others. */
-export const dependencyEditableStatuses: TaskStatus[] = ["planned", "ready"];
+export const dependencyEditableStatuses: TaskStatus[] = ["planned"];
+
+/** Whether every dependency of `task` is done, so it can be started. */
+export function dependenciesDone(task: Task, byId: ReadonlyMap<TaskId, Task>): boolean {
+  return task.dependsOn.every((id) => byId.get(id)?.status === "done");
+}
+
+/** A planned task that was worked on before: it keeps its branch and worktree. */
+export function isPaused(task: Task): boolean {
+  return task.status === "planned" && (task.milestones.startedAt !== null || task.branch !== null);
+}
+
+/** A planned task that has never been worked on. */
+function isPending(task: Task): boolean {
+  return task.status === "planned" && !isPaused(task);
+}
+
+/**
+ * When the last dependency of `task` was completed, if all of them are done; null without
+ * dependencies or when one is not done or not in `byId`.
+ */
+function readyAt(task: Task, byId: ReadonlyMap<TaskId, Task>): Timestamp | null {
+  const completed = task.dependsOn.map((id) => byId.get(id)?.milestones.completedAt ?? null);
+  return completed.length === 0 || completed.includes(null) ? null : Math.max(...(completed as Timestamp[]));
+}
 
 export function edgeId(source: TaskId, target: TaskId): string {
   return `${source}->${target}`;
@@ -33,7 +57,6 @@ export function canAddDependency(tasks: Task[], source: TaskId, target: TaskId):
   return (
     from !== undefined &&
     to !== undefined &&
-    from.status !== "cancelled" &&
     dependencyEditableStatuses.includes(to.status) &&
     !to.dependsOn.includes(source)
   );
@@ -63,7 +86,7 @@ export type TimelineBar = {
   row: number;
   x: number;
   width: number;
-  /** The task has not started, so its bar waits at the current time (or after its prerequisites). */
+  /** The task has never started, so its bar waits at the current time (or after its prerequisites). */
   pending: boolean;
   /** Phases, positioned relative to `x` at true scale. */
   phases: { phase: TimelinePhase; x: number; width: number }[];
@@ -103,25 +126,23 @@ export type TimelineLayout = {
 
 const day = 24 * 60 * 60;
 
-const pendingStatuses: TaskStatus[] = ["planned", "ready"];
-
 /**
- * The interval a task's bar covers. A task that has not started sits at `now`; a started
- * task runs from `startedAt` to `now`; a closed task ends at `completedAt` or
- * `cancelledAt`. Null when a started or closed task lacks the milestones to place it.
+ * The interval a task's bar covers. A task that has never started sits at `now`; a task
+ * being worked on runs from `startedAt` to `now`; a done or paused task ends at
+ * `completedAt` or `pausedAt`. Null when a started task lacks the milestones to place it.
  */
 export function taskInterval(task: Task, now: Timestamp): Period | null {
-  const { plannedAt, readyAt, startedAt, reviewAt, completedAt, cancelledAt } = task.milestones;
-  if (pendingStatuses.includes(task.status)) {
+  const { plannedAt, startedAt, reviewAt, completedAt, pausedAt } = task.milestones;
+  if (isPending(task)) {
     return { start: now, end: now };
   }
   const started = startedAt ?? reviewAt;
   if (task.status === "in_progress" || task.status === "in_review") {
     return started === null ? null : { start: Math.min(started, now), end: now };
   }
-  // A closed task without its closing milestone ends at its last known one.
-  const known = [plannedAt, readyAt, startedAt, reviewAt].filter((at): at is Timestamp => at !== null);
-  const end = completedAt ?? cancelledAt ?? (known.length > 0 ? Math.max(...known) : null);
+  // A done or paused task without its closing milestone ends at its last known one.
+  const known = [plannedAt, startedAt, reviewAt].filter((at): at is Timestamp => at !== null);
+  const end = (task.status === "done" ? completedAt : pausedAt) ?? (known.length > 0 ? Math.max(...known) : null);
   if (end === null) {
     return null;
   }
@@ -141,11 +162,12 @@ function taskPhases(task: Task, { start, end }: Period): { phase: TimelinePhase;
 
 function taskLead(
   task: Task,
+  readyAt: Timestamp | null,
   x: number,
   start: Timestamp,
   scaleX: (at: Timestamp) => number,
 ): TimelineLead | null {
-  const { plannedAt, readyAt } = task.milestones;
+  const { plannedAt } = task.milestones;
   if (plannedAt === null || scaleX(Math.max(plannedAt, start)) >= x) {
     return null;
   }
@@ -309,6 +331,7 @@ export function layoutTimeline(
   tasks: Task[],
   { now, scale, period }: { now: Timestamp; scale: TimelineScale; period: Period | null },
 ): TimelineLayout {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
   const unplaced: Task[] = [];
   const placed: Placed[] = [];
   for (const task of tasks) {
@@ -337,7 +360,7 @@ export function layoutTimeline(
   const rightEdges = new Map<TaskId, number>();
   const bars = dependencyOrder(placed).map(({ task, interval }, row): TimelineBar => {
     const clipped = { start: Math.max(interval.start, start), end: Math.min(interval.end, end) };
-    const pending = pendingStatuses.includes(task.status);
+    const pending = isPending(task);
     let x: number;
     let width: number;
     let phases: TimelineBar["phases"] = [];
@@ -358,7 +381,7 @@ export function layoutTimeline(
       }));
     }
     rightEdges.set(task.id, x + width);
-    return { task, row, x, width, pending, phases, lead: taskLead(task, x, start, scaleX) };
+    return { task, row, x, width, pending, phases, lead: taskLead(task, readyAt(task, byId), x, start, scaleX) };
   });
 
   return {

@@ -16,7 +16,7 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     taskType: "feat",
     title: `Task ${id}`,
     description: "",
-    status: "ready",
+    status: "planned",
     dependsOn: [],
     branch: null,
     worktreePath: null,
@@ -26,11 +26,10 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     timeline: [],
     milestones: {
       plannedAt: null,
-      readyAt: null,
       startedAt: null,
       reviewAt: null,
       completedAt: null,
-      cancelledAt: null,
+      pausedAt: null,
     },
     ...overrides,
   };
@@ -57,19 +56,19 @@ describe("canAddDependency", () => {
     task(1, { status: "done" }),
     task(2, { status: "planned", dependsOn: [1] }),
     task(3, { status: "in_progress" }),
-    task(4, { status: "cancelled" }),
+    task(4, { status: "in_review" }),
     task(5),
   ];
 
-  it("allows a new dependency for a planned or ready task", () => {
+  it("allows a new dependency for a planned task", () => {
     expect(canAddDependency(tasks, 3, 2)).toBe(true);
     expect(canAddDependency(tasks, 1, 5)).toBe(true);
   });
 
-  it("rejects self, duplicate, cancelled, and locked edges", () => {
+  it("rejects self, duplicate, and locked edges", () => {
     expect(canAddDependency(tasks, 5, 5)).toBe(false);
     expect(canAddDependency(tasks, 1, 2)).toBe(false);
-    expect(canAddDependency(tasks, 4, 5)).toBe(false);
+    expect(canAddDependency(tasks, 5, 4)).toBe(false);
     expect(canAddDependency(tasks, 5, 3)).toBe(false);
     expect(canAddDependency(tasks, 5, 42)).toBe(false);
   });
@@ -132,6 +131,22 @@ describe("layoutTimeline", () => {
     expect(layout.unplaced).toEqual([unknown]);
   });
 
+  it("fixes a paused task from its start to its pause", () => {
+    const paused = task(5, {
+      branch: "feat/task-5-5",
+      milestones: milestones({ plannedAt: jan(1), startedAt: jan(3), pausedAt: jan(5) }),
+    });
+
+    const layout = layoutTimeline([paused], { now, scale: "day", period: null });
+
+    expect(layout.bars[0]).toMatchObject({
+      x: 2 * 48,
+      width: 2 * 48,
+      pending: false,
+      phases: [{ phase: "in_progress", x: 0, width: 2 * 48 }],
+    });
+  });
+
   it("moves bars that wait at now along with the current time", () => {
     const at = (time: number) => layoutTimeline([done, waiting], { now: time, scale: "hour", period: null });
 
@@ -160,11 +175,10 @@ describe("layoutTimeline", () => {
     expect(after.majorTicks.map((tick) => tick.label)).toEqual(["2026-02"]);
   });
 
-  it("draws the wait from the planned time through the ready time up to the bar", () => {
+  it("draws the wait from the planned time through the completion of the last prerequisite", () => {
     const blocked = task(9, {
-      status: "ready",
       dependsOn: [1],
-      milestones: milestones({ plannedAt: jan(2), readyAt: jan(6) }),
+      milestones: milestones({ plannedAt: jan(2) }),
     });
 
     const layout = layoutTimeline([done, blocked], { now, scale: "day", period: null });
@@ -176,8 +190,8 @@ describe("layoutTimeline", () => {
   it("orders dependents after their prerequisites and queues waiting ones behind them", () => {
     const first = task(6, { status: "planned" });
     const second = task(5, { status: "planned", dependsOn: [6] });
-    const third = task(7, { status: "ready", dependsOn: [5, 1] });
-    const afterDone = task(8, { status: "ready", dependsOn: [1] });
+    const third = task(7, { dependsOn: [5, 1] });
+    const afterDone = task(8, { dependsOn: [1] });
 
     const layout = layoutTimeline([third, second, afterDone, first, done], { now, scale: "day", period: null });
 

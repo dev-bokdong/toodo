@@ -158,7 +158,7 @@ impl From<StorageError> for CommandError {
             StorageError::Dependency(_)
             | StorageError::WorkspaceHasDependents { .. }
             | StorageError::Transition(_)
-            | StorageError::DerivedStatus(_) => CommandErrorKind::Rejected,
+            | StorageError::DependenciesNotDone(_) => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::CommitTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,

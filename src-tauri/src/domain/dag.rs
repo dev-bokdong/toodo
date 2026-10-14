@@ -32,13 +32,6 @@ impl fmt::Display for DependencyError {
 
 impl std::error::Error for DependencyError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StatusChange {
-    pub task: TaskId,
-    pub from: TaskStatus,
-    pub to: TaskStatus,
-}
-
 fn index(tasks: &[Task]) -> HashMap<TaskId, &Task> {
     tasks.iter().map(|task| (task.id, task)).collect()
 }
@@ -109,31 +102,11 @@ fn dependencies_done(by_id: &HashMap<TaskId, &Task>, task: &Task) -> Result<bool
     Ok(all_done)
 }
 
+/// Whether all dependencies of `task` are done, so it can be started.
 pub fn is_ready(tasks: &[Task], task: TaskId) -> Result<bool, DependencyError> {
     let by_id = index(tasks);
     let task = by_id.get(&task).ok_or(DependencyError::UnknownTask(task))?;
     dependencies_done(&by_id, task)
-}
-
-/// Status changes that bring `planned` and `ready` tasks in line with their
-/// dependencies: `planned -> ready` once all dependencies are done, and
-/// `ready -> planned` when a dependency is no longer done or a new one was added.
-pub fn readiness_changes(tasks: &[Task]) -> Result<Vec<StatusChange>, DependencyError> {
-    let by_id = index(tasks);
-    let mut changes = Vec::new();
-    for task in tasks {
-        let to = match (task.status, dependencies_done(&by_id, task)?) {
-            (TaskStatus::Planned, true) => TaskStatus::Ready,
-            (TaskStatus::Ready, false) => TaskStatus::Planned,
-            _ => continue,
-        };
-        changes.push(StatusChange {
-            task: task.id,
-            from: task.status,
-            to,
-        });
-    }
-    Ok(changes)
 }
 
 /// Orders tasks so that every task comes after its dependencies. Ties are broken by
@@ -296,7 +269,7 @@ mod tests {
         let tasks = [
             task(1, Done, &[]),
             task(2, InProgress, &[]),
-            task(3, Cancelled, &[]),
+            task(3, InReview, &[]),
             task(4, Planned, &[1]),
             task(5, Planned, &[1, 2]),
             task(6, Planned, &[3]),
@@ -306,36 +279,6 @@ mod tests {
             .map(|id| is_ready(&tasks, TaskId(id)).unwrap())
             .collect();
         assert_eq!(ready, [true, false, false, true]);
-    }
-
-    #[test]
-    fn readiness_changes_promote_and_demote_tasks() {
-        let tasks = [
-            task(1, Done, &[]),
-            task(2, InProgress, &[]),
-            task(3, Planned, &[1]),
-            task(4, Ready, &[2]),
-            task(5, Ready, &[1]),
-            task(6, InProgress, &[2]),
-        ];
-        assert_eq!(
-            readiness_changes(&tasks).unwrap(),
-            [
-                StatusChange {
-                    task: TaskId(3),
-                    from: Planned,
-                    to: Ready
-                },
-                StatusChange {
-                    task: TaskId(4),
-                    from: Ready,
-                    to: Planned
-                },
-            ]
-        );
-        for change in readiness_changes(&tasks).unwrap() {
-            assert!(change.from.can_transition_to(change.to));
-        }
     }
 
     #[test]

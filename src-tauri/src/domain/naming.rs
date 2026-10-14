@@ -101,7 +101,7 @@ mod tests {
             task_type,
             title: title.to_owned(),
             description: String::new(),
-            status: TaskStatus::Ready,
+            status: TaskStatus::Planned,
             depends_on: BTreeSet::new(),
             branch: None,
             worktree_path: None,

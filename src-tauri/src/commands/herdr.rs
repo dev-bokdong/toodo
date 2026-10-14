@@ -11,7 +11,6 @@ use super::types::{HerdrStatus, Task, TaskId};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::adapters::herdr::{Herdr, HerdrError, NewWorktree};
-use crate::domain::dag::StatusChange;
 use crate::domain::model::{self, Machine, WorkspaceLocation};
 use crate::domain::naming;
 use crate::domain::status::TaskStatus;
@@ -23,10 +22,10 @@ pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> 
     Ok((&herdr.server_status()?).into())
 }
 
-/// Creates the worktree of a `ready` task through herdr and moves the task to
-/// `in_progress`. Requires a worktree root for the machine of the task's workspace.
-/// An empty repository first gets an initial commit on the workspace's base branch.
-/// A reopened task resumes on its branch, in its worktree if it still has one.
+/// Creates the worktree of a `planned` task whose dependencies are done through herdr
+/// and moves the task to `in_progress`. Requires a worktree root for the machine of the
+/// task's workspace. An empty repository first gets an initial commit on the workspace's
+/// base branch. A paused task resumes on its branch, in its worktree if it still has one.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn start_task(
@@ -76,12 +75,13 @@ fn start(
         task.status
             .transition_to(TaskStatus::InProgress)
             .map_err(StorageError::from)?;
+        storage.ensure_ready(id)?;
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         let settings = storage.get_machine_settings(&workspace.location.machine())?;
         let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
-        // A reopened task keeps the branch it got when it first started.
+        // A paused task keeps the branch it got when it first started.
         let resumed = task.branch.is_some();
         if let Some(branch) = task.branch {
             checkout.branch = branch;
@@ -232,7 +232,7 @@ pub(super) fn delete(
     herdr: &Herdr,
     id: model::TaskId,
     force: bool,
-) -> CommandResult<Vec<StatusChange>> {
+) -> CommandResult<()> {
     let task = lock(storage)
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
@@ -243,7 +243,7 @@ pub(super) fn delete(
 }
 
 /// Removes the worktree of a task that is not in progress or in review (a finished task,
-/// or a reopened one that kept its worktree) through herdr, which also closes
+/// or a paused one) through herdr, which also closes
 /// its herdr workspace, and forgets both on the task. The branch is kept. Without `force`,
 /// a worktree with modified or untracked files is rejected.
 fn remove_worktree(
@@ -582,6 +582,34 @@ mod tests {
     }
 
     #[test]
+    fn a_task_waiting_for_its_dependencies_does_not_start() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+        {
+            let mut storage = lock(&fixture.storage);
+            let prerequisite = storage
+                .create_task(&NewTask {
+                    workspace_id: fixture.task.workspace_id,
+                    task_type: TaskType::Feat,
+                    title: "Add accounts".to_owned(),
+                    description: String::new(),
+                })
+                .unwrap();
+            storage
+                .add_dependency(fixture.task.id, prerequisite.id)
+                .unwrap();
+        }
+        let before = stored(&fixture);
+
+        let error = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("dependencies are done"));
+        assert!(invocations(&runner).is_empty());
+        assert_eq!(stored(&fixture), before);
+    }
+
+    #[test]
     fn ssh_tasks_start_on_their_machine() {
         let devbox = MachineLabel::parse("devbox").unwrap();
         let fixture = fixture(
@@ -671,9 +699,9 @@ mod tests {
         })
     }
 
-    /// A local task started in herdr workspace `w27` and then cancelled; `results` follow
+    /// A local task started in herdr workspace `w27` and then paused; `results` follow
     /// the scripted `herdr worktree create`.
-    fn cancelled_task(results: Vec<Result<String, GitError>>) -> (Fixture, Herdr, Arc<FakeRunner>) {
+    fn paused_task(results: Vec<Result<String, GitError>>) -> (Fixture, Herdr, Arc<FakeRunner>) {
         let fixture = local_fixture(Some(r"D:\wt"));
         let (herdr, runner) = herdr(
             [Ok(CREATED.to_owned())]
@@ -683,14 +711,14 @@ mod tests {
         );
         start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
         lock(&fixture.storage)
-            .set_task_status(fixture.task.id, TaskStatus::Cancelled)
+            .set_task_status(fixture.task.id, TaskStatus::Planned)
             .unwrap();
         (fixture, herdr, runner)
     }
 
     #[test]
-    fn a_finished_task_removes_its_worktree_and_keeps_its_branch() {
-        let (fixture, herdr, runner) = cancelled_task(vec![Ok(REMOVED.to_owned())]);
+    fn a_paused_task_removes_its_worktree_and_keeps_its_branch() {
+        let (fixture, herdr, runner) = paused_task(vec![Ok(REMOVED.to_owned())]);
 
         let task = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
 
@@ -699,7 +727,7 @@ mod tests {
             (&None, &None)
         );
         assert_eq!(task.branch.as_deref(), Some("feat/add-login-1"));
-        assert_eq!(task.status, TaskStatus::Cancelled);
+        assert_eq!(task.status, TaskStatus::Planned);
         assert_eq!(stored(&fixture), task);
         assert_eq!(
             invocations(&runner)[1].args,
@@ -709,7 +737,7 @@ mod tests {
 
     #[test]
     fn a_dirty_worktree_is_kept_unless_forced() {
-        let (fixture, herdr, runner) = cancelled_task(vec![
+        let (fixture, herdr, runner) = paused_task(vec![
             herdr_failed("dirty_worktree_requires_force"),
             Ok(REMOVED.to_owned()),
         ]);
@@ -731,7 +759,7 @@ mod tests {
     #[test]
     fn a_worktree_herdr_no_longer_has_open_is_opened_again_to_remove_it() {
         let opened = r#"{"id":"cli:worktree:open","result":{"workspace":{"workspace_id":"w40"}}}"#;
-        let (fixture, herdr, runner) = cancelled_task(vec![
+        let (fixture, herdr, runner) = paused_task(vec![
             herdr_failed("workspace_not_found"),
             Ok(opened.to_owned()),
             Ok(REMOVED.to_owned()),
@@ -762,7 +790,7 @@ mod tests {
 
     #[test]
     fn a_worktree_that_is_already_gone_is_only_forgotten() {
-        let (fixture, herdr, runner) = cancelled_task(vec![
+        let (fixture, herdr, runner) = paused_task(vec![
             herdr_failed("workspace_not_found"),
             herdr_failed("worktree_not_found"),
         ]);
@@ -778,7 +806,7 @@ mod tests {
 
     #[test]
     fn other_herdr_failures_keep_the_worktree() {
-        let (fixture, herdr, _) = cancelled_task(vec![herdr_failed("worktree_remove_failed")]);
+        let (fixture, herdr, _) = paused_task(vec![herdr_failed("worktree_remove_failed")]);
         let before = stored(&fixture);
 
         let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
@@ -788,14 +816,11 @@ mod tests {
     }
 
     #[test]
-    fn only_finished_tasks_with_a_worktree_remove_it() {
+    fn only_tasks_not_being_worked_on_with_a_worktree_remove_it() {
         let fixture = local_fixture(Some(r"D:\wt"));
         let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
         let id = fixture.task.id;
 
-        lock(&fixture.storage)
-            .set_task_status(id, TaskStatus::Cancelled)
-            .unwrap();
         let error = remove_worktree(&fixture.storage, &herdr, id, false).unwrap_err();
         assert_eq!(error.message, format!("task {id} has no worktree"));
 
@@ -812,11 +837,10 @@ mod tests {
     }
 
     #[test]
-    fn a_reopened_task_restarts_in_its_kept_worktree() {
+    fn a_paused_task_restarts_in_its_kept_worktree() {
         let opened = r#"{"id":"cli:worktree:open","result":{"workspace":{"workspace_id":"w27"}}}"#;
-        let (fixture, herdr, runner) = cancelled_task(vec![Ok(opened.to_owned())]);
-        let mut renamed = lock(&fixture.storage).reopen_task(fixture.task.id).unwrap();
-        assert_eq!(renamed.status, TaskStatus::Ready);
+        let (fixture, herdr, runner) = paused_task(vec![Ok(opened.to_owned())]);
+        let mut renamed = stored(&fixture);
         renamed.title = "Add sign-in".to_owned();
         lock(&fixture.storage).update_task(&renamed).unwrap();
         let git = Git::new(Box::new(Arc::new(FakeRunner::new(Vec::new()))));
@@ -848,12 +872,11 @@ mod tests {
     }
 
     #[test]
-    fn a_reopened_task_without_its_worktree_checks_its_branch_out_again() {
-        let (fixture, herdr, runner) = cancelled_task(vec![
+    fn a_paused_task_without_its_worktree_checks_its_branch_out_again() {
+        let (fixture, herdr, runner) = paused_task(vec![
             herdr_failed("worktree_not_found"),
             Ok(RECREATED.to_owned()),
         ]);
-        lock(&fixture.storage).reopen_task(fixture.task.id).unwrap();
 
         let restarted = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
 
@@ -876,7 +899,7 @@ mod tests {
 
     #[test]
     fn deleting_a_task_removes_its_worktree_first() {
-        let (fixture, herdr, runner) = cancelled_task(vec![Ok(REMOVED.to_owned())]);
+        let (fixture, herdr, runner) = paused_task(vec![Ok(REMOVED.to_owned())]);
 
         delete(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
 
@@ -892,7 +915,7 @@ mod tests {
 
     #[test]
     fn a_dirty_worktree_keeps_the_task_unless_the_delete_is_forced() {
-        let (fixture, herdr, runner) = cancelled_task(vec![
+        let (fixture, herdr, runner) = paused_task(vec![
             herdr_failed("dirty_worktree_requires_force"),
             Ok(REMOVED.to_owned()),
         ]);

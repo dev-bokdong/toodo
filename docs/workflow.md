@@ -5,29 +5,32 @@ This document describes how a task moves from planning to a pull request.
 ## Task States
 
 ```
-planned --> ready --> in_progress --> in_review --> done
-   ^          |            |              |
-   |          +------------+--------------+--> cancelled
-   +-- (a dependency is added that is not done yet)
+          Start / Resume          Open PR             merged
+planned -----------------> in_progress ---------> in_review ---------> done
+   ^                           |                      |
+   +------------ Pause --------+----------------------+
 ```
-
-A `planned` task can also be cancelled. `done` is a final state. A `cancelled` task can
-be reopened ("Reopen"): it moves to `planned`, and on to `ready` when all its
-dependencies are done, so its dependencies can be changed before it is started again.
-It keeps its branch, worktree, herdr workspace, commit records, and pull request.
-
-Every state change, including the automatic moves between `planned` and `ready`, is
-recorded with its time in the task's status history, which feeds the timeline view and
-year-end reports (see [architecture.md](architecture.md#task-timeline)).
 
 | State | Meaning |
 | --- | --- |
-| `planned` | Task exists; one or more dependencies are not `done` yet. |
-| `ready` | All dependencies are `done`; the task can be started. |
+| `planned` | Nobody works on the task: it was not started yet, or it was paused. |
 | `in_progress` | A worktree exists and implementation is happening in herdr. |
 | `in_review` | The task branch is pushed and its pull request is open, waiting to be merged. |
 | `done` | The pull request is merged; dependents can start from the updated base branch. |
-| `cancelled` | Task abandoned; its worktree may be removed, or the task reopened. |
+
+Whether a `planned` task can be started is not a state: it can be started once every
+task it depends on is `done` (it is **ready**), and its dependencies can change while it
+is `planned`. The UI names a `planned` task that was worked on before "Paused" and
+offers "Resume" instead of "Start".
+
+Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
+keeps its branch, worktree, herdr workspace, commit records, and pull request, so
+resuming it continues the same work (see step 3). `done` is a final state. A task that
+is abandoned is deleted (step 8); a paused one stays in the reports.
+
+Every state change is recorded with its time in the task's status history, which feeds
+the timeline view and year-end reports (see
+[architecture.md](architecture.md#task-timeline)).
 
 ## Lifecycle
 
@@ -54,13 +57,13 @@ rejected while a not-yet-started task of another workspace depends on one of its
 
 The user creates tasks and declares dependencies between them, also on tasks of other
 workspaces (a library task that an application task needs first). Toodo rejects any
-dependency that would create a cycle and computes which tasks are `ready`. The creation
+dependency that would create a cycle and shows which tasks are ready. The creation
 time is recorded as the task's `plannedAt`. The sidebar's "All workspaces" entry lists
 the tasks of every workspace in one list and one timeline.
 
 ### 3. Prepare the worktree
 
-When the user starts a `ready` task, Toodo:
+When the user starts a `planned` task whose dependencies are all `done`, Toodo:
 
 1. Resolves the worktree directory as
    `<worktreeRoot>/<workspace-name>/<task-type>-<task-name>-<task-id>`, where
@@ -72,15 +75,15 @@ When the user starts a `ready` task, Toodo:
    and no local `<baseBranch>`, points `HEAD` at `<baseBranch>`, creates an empty
    `Initial commit` on it (staged files stay staged), and pushes it to `origin` when that
    remote exists, so the base branch exists for the worktree and the pull request. If
-   any of this fails, the task stays `ready`.
+   any of this fails, the task stays `planned`.
 4. Calls `herdr worktree create --cwd <repository> --path <dir> --branch <branch>
    --base <baseBranch> --no-focus` (prefixed with `--machine <label>` for SSH
    workspaces) to create the git worktree and open it as a herdr workspace. If herdr
-   fails, the task stays `ready` and nothing is stored.
+   fails, the task stays `planned` and nothing is stored.
 5. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
    `in_progress`, which records `startedAt`.
 
-A reopened task that already has a branch starts again on it instead: Toodo opens its
+A paused task that already has a branch resumes on it instead ("Resume"): Toodo opens its
 kept worktree with `herdr worktree open --cwd <repository> --path <worktreePath>
 --no-focus`, which also finds the herdr workspace that still has it open. If the
 checkout is gone, the branch is checked out into a new worktree like "Restore worktree"
@@ -157,10 +160,10 @@ completes the task: Toodo closes its herdr workspace (`herdr workspace close
 <herdrWorkspaceId>`), which keeps the worktree checkout on disk, then moves the task to
 `done` (recording `completedAt`), stores `pullRequestMergedAt`, and clears
 `herdrWorkspaceId` in one transaction, which may make dependent tasks
-`ready`. A workspace herdr no longer has is treated as already closed; any other herdr
+ready to start. A workspace herdr no longer has is treated as already closed; any other herdr
 failure keeps the task `in_review`, and completing it again is safe. An open pull request is rejected until it is
 merged; a pull request closed without merging is rejected too, so the user reopens it or
-cancels the task.
+pauses the task.
 
 The user rarely needs to complete a task by hand: while the app runs, Toodo checks the
 pull request of every `in_review` task once a minute and completes each task whose pull
@@ -176,7 +179,7 @@ The worktree stays until the task is deleted (step 8).
 When the user deletes a task that is not `in_progress` or `in_review` and still has a
 worktree ("Delete"), Toodo first removes the worktree:
 
-1. If the task still has a herdr workspace (a cancelled or reopened task), calls
+1. If the task still has a herdr workspace (a paused task), calls
    `herdr worktree remove --workspace <herdrWorkspaceId>` (prefixed with
    `--machine <profile-id>` for SSH workspaces), which deletes the checkout and closes
    its herdr workspace. The task branch is kept, locally and on `origin`.

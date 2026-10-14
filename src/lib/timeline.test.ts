@@ -14,16 +14,15 @@ describe("reachedMilestones", () => {
     expect(
       reachedMilestones({
         plannedAt: 10,
-        readyAt: 10,
         startedAt: 20,
         reviewAt: null,
         completedAt: null,
-        cancelledAt: 30,
+        pausedAt: 30,
       }),
     ).toEqual([
       { label: "Planned", at: 10 },
       { label: "Started", at: 20 },
-      { label: "Cancelled", at: 30 },
+      { label: "Paused", at: 30 },
     ]);
   });
 });

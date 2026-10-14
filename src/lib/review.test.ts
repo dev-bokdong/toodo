@@ -43,11 +43,10 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       timeline: [],
       milestones: {
         plannedAt: null,
-        readyAt: null,
         startedAt: null,
         reviewAt: null,
         completedAt: null,
-        cancelledAt: null,
+        pausedAt: null,
       },
       ...overrides,
     },
@@ -341,9 +340,9 @@ describe("reviewCsv", () => {
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Planned,Started,In review,Completed,Cancelled,Merged,Pull request,Commits in period",
-          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,2026-10-01 09:00,,,2026-10-13 15:00,,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0',
-          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,0",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Planned,Started,In review,Completed,Merged,Pull request,Commits in period",
+          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0',
+          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,0",
         ].join("\r\n") +
         "\r\n",
     );

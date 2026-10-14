@@ -21,6 +21,7 @@ import {
   canAddDependency,
   dependencyEdges,
   dependencyEditableStatuses,
+  isPaused,
   layoutTimeline,
   timelineAxis,
   timelineScales,
@@ -81,7 +82,7 @@ export function TaskGraph({
   tasks,
   allTasks,
   workspaceLabel,
-  statusLabels,
+  statusLabel,
   statusStyles,
 }: {
   /** Tasks drawn on the timeline. */
@@ -90,7 +91,7 @@ export function TaskGraph({
   allTasks: Task[];
   /** Workspace name shown on a bar, or null to leave it out. */
   workspaceLabel: (task: Task) => string | null;
-  statusLabels: Record<TaskStatus, string>;
+  statusLabel: (task: Task) => string;
   statusStyles: Record<TaskStatus, string>;
 }) {
   const addDependency = useAddDependency();
@@ -121,7 +122,7 @@ export function TaskGraph({
     position: { x: bar.x, y: rowsTop + bar.row * rowHeight + (rowHeight - barHeight) / 2 },
     data: {
       bar,
-      statusLabel: statusLabels[bar.task.status],
+      statusLabel: statusLabel(bar.task),
       statusStyle: statusStyles[bar.task.status],
       workspace: workspaceLabel(bar.task),
     },
@@ -296,7 +297,7 @@ export function TaskGraph({
                     {task.title}
                   </span>
                   <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyles[task.status])}>
-                    {statusLabels[task.status]}
+                    {statusLabel(task)}
                   </span>
                 </li>
               ))}
@@ -424,7 +425,7 @@ function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace } }:
         className={cn(
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
           pending && "border-dashed border-muted-foreground/60 shadow-none",
-          task.status === "cancelled" && "opacity-60",
+          isPaused(task) && "opacity-60",
         )}
       >
         <div className="absolute inset-x-0 bottom-0 h-1.5">
@@ -441,7 +442,7 @@ function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace } }:
       <div
         className={cn(
           "relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground",
-          task.status === "cancelled" && "opacity-60",
+          isPaused(task) && "opacity-60",
         )}
         style={{ width: "max-content", minWidth: "100%" }}
       >

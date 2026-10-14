@@ -50,7 +50,6 @@ impl std::error::Error for EmptyPeriod {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Outcome {
     Completed,
-    Cancelled,
     OpenedForReview,
     Started,
     /// No milestone in the period, but commits were made.
@@ -87,7 +86,6 @@ pub fn review(period: Period, tasks: &[Task], commits: &[CommitRecord]) -> Vec<T
             let in_period = |at: Option<i64>| at.filter(|&at| period.contains(at));
             let (outcome, at) = [
                 (Outcome::Completed, in_period(reached.completed_at)),
-                (Outcome::Cancelled, in_period(reached.cancelled_at)),
                 (Outcome::OpenedForReview, in_period(reached.review_at)),
                 (Outcome::Started, in_period(reached.started_at)),
                 (
@@ -131,7 +129,7 @@ mod tests {
             task_type: TaskType::Feat,
             title: format!("Task {id}"),
             description: String::new(),
-            status: history.last().map_or(Ready, |&(status, _)| status),
+            status: history.last().map_or(Planned, |&(status, _)| status),
             depends_on: BTreeSet::new(),
             branch: None,
             worktree_path: None,
@@ -177,20 +175,20 @@ mod tests {
             task(
                 1,
                 &[
-                    (Ready, 1100),
+                    (Planned, 1100),
                     (InProgress, 1200),
                     (InReview, 1300),
                     (Done, 1400),
                 ],
             ),
-            task(2, &[(Ready, 100), (InProgress, 200), (InReview, 1500)]),
-            task(3, &[(Ready, 100), (InProgress, 1100), (Cancelled, 1150)]),
-            task(4, &[(Ready, 100), (InProgress, 1600)]),
+            task(2, &[(Planned, 100), (InProgress, 200), (InReview, 1500)]),
+            task(3, &[(Planned, 100), (InProgress, 1100), (Planned, 1150)]),
+            task(4, &[(Planned, 100), (InProgress, 1600)]),
             task(5, &[(Planned, 1700)]),
             task(
                 6,
                 &[
-                    (Ready, 100),
+                    (Planned, 100),
                     (InProgress, 200),
                     (InReview, 300),
                     (Done, 1050),
@@ -202,8 +200,8 @@ mod tests {
             [
                 (6, Outcome::Completed, 1050),
                 (1, Outcome::Completed, 1400),
-                (3, Outcome::Cancelled, 1150),
                 (2, Outcome::OpenedForReview, 1500),
+                (3, Outcome::Started, 1100),
                 (4, Outcome::Started, 1600),
                 (5, Outcome::Planned, 1700),
             ]
@@ -213,9 +211,9 @@ mod tests {
     #[test]
     fn the_period_includes_its_start_and_excludes_its_end() {
         let tasks = [
-            task(1, &[(Ready, 100), (InProgress, 1000)]),
-            task(2, &[(Ready, 100), (InProgress, 2000)]),
-            task(3, &[(Ready, 999), (InProgress, 1999)]),
+            task(1, &[(Planned, 100), (InProgress, 1000)]),
+            task(2, &[(Planned, 100), (InProgress, 2000)]),
+            task(3, &[(Planned, 999), (InProgress, 1999)]),
         ];
         let commits = [commit(2, "end", 2000), commit(2, "before", 999)];
         assert_eq!(
@@ -227,8 +225,8 @@ mod tests {
     #[test]
     fn commits_alone_make_a_task_worked_on_and_keep_only_the_period() {
         let tasks = [
-            task(1, &[(Ready, 100), (InProgress, 200)]),
-            task(2, &[(Ready, 100), (InProgress, 1100)]),
+            task(1, &[(Planned, 100), (InProgress, 200)]),
+            task(2, &[(Planned, 100), (InProgress, 1100)]),
             task(3, &[]),
         ];
         let commits = [
@@ -263,13 +261,13 @@ mod tests {
             task(
                 1,
                 &[
-                    (Ready, 100),
+                    (Planned, 100),
                     (InProgress, 200),
                     (InReview, 300),
                     (Done, 400),
                 ],
             ),
-            task(2, &[(Ready, 2500)]),
+            task(2, &[(Planned, 2500)]),
             task(3, &[]),
         ];
         let commits = [commit(1, "old", 300), commit(3, "later", 2100)];

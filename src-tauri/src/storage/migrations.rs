@@ -107,6 +107,28 @@ pub(super) const MIGRATIONS: &[&str] = &[
     CREATE INDEX task_events_task_id ON task_events (task_id);
     ALTER TABLE tasks ADD COLUMN pull_request_merged_at INTEGER;
     ",
+    // Version 4: four task statuses. Whether a task can start follows from its
+    // dependencies instead of a `ready` status, and a cancelled task becomes a paused,
+    // `planned` one. The first event of a task records its creation, so a leading `ready`
+    // event becomes `planned`; the other `ready` events are dropped, and so is every
+    // `planned` event that follows another one, which no longer marks a change. The
+    // CHECK constraints still allow the old values, which Toodo no longer writes.
+    r"
+    UPDATE tasks SET status = 'planned' WHERE status IN ('ready', 'cancelled');
+    UPDATE task_events SET status = 'planned' WHERE status = 'cancelled';
+    UPDATE task_events SET status = 'planned'
+        WHERE status = 'ready'
+          AND id IN (SELECT min(id) FROM task_events GROUP BY task_id);
+    DELETE FROM task_events WHERE status = 'ready';
+    DELETE FROM task_events WHERE id IN (
+        SELECT id FROM (
+            SELECT id, status,
+                   lag(status) OVER (PARTITION BY task_id ORDER BY id) AS previous
+            FROM task_events
+        )
+        WHERE status = 'planned' AND previous = 'planned'
+    );
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -222,7 +244,7 @@ mod tests {
         migrate(&mut conn).unwrap();
         conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
         let merged_at: Option<i64> = conn
             .query_row(
                 "SELECT pull_request_merged_at FROM tasks WHERE id = 1",
@@ -250,5 +272,72 @@ mod tests {
         .unwrap();
         conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
         assert_eq!(events(&conn), 0);
+    }
+
+    #[test]
+    fn version_4_turns_ready_and_cancelled_into_planned_and_drops_readiness_events() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..3] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status)
+                VALUES (1, 'feat', 'Ready', 'ready'),
+                       (1, 'feat', 'Waiting', 'planned'),
+                       (1, 'feat', 'Cancelled', 'cancelled'),
+                       (1, 'feat', 'Done', 'done');
+            INSERT INTO task_events (task_id, status, at)
+                VALUES (1, 'ready', 10), (1, 'planned', 20), (1, 'ready', 30),
+                       (2, 'planned', 10), (2, 'ready', 20), (2, 'planned', 30),
+                       (3, 'ready', 10), (3, 'in_progress', 20), (3, 'cancelled', 30),
+                       (3, 'planned', 40), (3, 'ready', 50),
+                       (4, 'ready', 10), (4, 'in_progress', 20), (4, 'in_review', 30),
+                       (4, 'done', 40);
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let statuses: Vec<String> = conn
+            .prepare("SELECT status FROM tasks ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(statuses, ["planned", "planned", "planned", "done"]);
+        let history = |task: i64| -> Vec<(String, i64)> {
+            conn.prepare("SELECT status, at FROM task_events WHERE task_id = ?1 ORDER BY id")
+                .unwrap()
+                .query_map([task], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let events = |raw: &[(&str, i64)]| -> Vec<(String, i64)> {
+            raw.iter()
+                .map(|&(status, at)| (status.to_owned(), at))
+                .collect()
+        };
+        assert_eq!(history(1), events(&[("planned", 10)]));
+        assert_eq!(history(2), events(&[("planned", 10)]));
+        assert_eq!(
+            history(3),
+            events(&[("planned", 10), ("in_progress", 20), ("planned", 30)])
+        );
+        assert_eq!(
+            history(4),
+            events(&[
+                ("planned", 10),
+                ("in_progress", 20),
+                ("in_review", 30),
+                ("done", 40)
+            ])
+        );
     }
 }
