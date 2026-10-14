@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::model::{
-    Machine, MachineLabel, MachineSettings, Workspace, WorkspaceId, WorkspaceLocation,
+    Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
 
@@ -139,13 +139,37 @@ impl Storage {
     }
 
     /// Deletes a workspace together with its tasks, dependencies, and commit records.
+    /// Rejected while a `planned` or `ready` task of another workspace depends on one of
+    /// its tasks, which would otherwise silently become ready; dependencies of tasks that
+    /// already started are dropped with the workspace.
     pub fn delete_workspace(&mut self, id: WorkspaceId) -> Result<()> {
-        let changed = self
-            .conn
-            .execute("DELETE FROM workspaces WHERE id = ?1", [id.0])?;
+        let tx = self.conn.transaction()?;
+        let dependent: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT d.task_id, d.depends_on_id
+                 FROM task_dependencies d
+                 JOIN tasks t ON t.id = d.task_id
+                 JOIN tasks p ON p.id = d.depends_on_id
+                 WHERE p.workspace_id = ?1 AND t.workspace_id <> ?1
+                   AND t.status IN ('planned', 'ready')
+                 ORDER BY d.task_id, d.depends_on_id
+                 LIMIT 1",
+                [id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((task, depends_on)) = dependent {
+            return Err(StorageError::WorkspaceHasDependents {
+                workspace: id,
+                task: TaskId(task),
+                depends_on: TaskId(depends_on),
+            });
+        }
+        let changed = tx.execute("DELETE FROM workspaces WHERE id = ?1", [id.0])?;
         if changed == 0 {
             return Err(StorageError::WorkspaceNotFound(id));
         }
+        tx.commit()?;
         Ok(())
     }
 

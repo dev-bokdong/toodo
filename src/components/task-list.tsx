@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { TaskGraph } from "@/components/task-graph";
 import { inputClass, describeLocation } from "@/components/workspace-list";
-import type { AgentStatus, Task, TaskStatus, TaskType, Workspace } from "@/lib/bindings";
+import type { AgentStatus, Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
   machineOf,
@@ -24,6 +24,7 @@ import {
   useStartTask,
   useTasks,
   useUpdateTask,
+  useWorkspaces,
 } from "@/lib/queries";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
@@ -62,35 +63,71 @@ const statusStyles: Record<TaskStatus, string> = {
   cancelled: "bg-muted text-muted-foreground line-through",
 };
 
-export function TaskList({ workspace }: { workspace: Workspace }) {
-  const tasks = useTasks(workspace.id);
+/** What the task list needs to name tasks of other workspaces. */
+type TaskContext = {
+  /** Tasks of every workspace, by ID. */
+  byId: ReadonlyMap<TaskId, Task>;
+  workspaceName: (id: WorkspaceId) => string;
+};
+
+/** `#id`, prefixed with the workspace name when the task belongs to another workspace than `of`. */
+function taskRef(id: TaskId, of: WorkspaceId, { byId, workspaceName }: TaskContext): string {
+  const other = byId.get(id);
+  return other === undefined || other.workspaceId === of ? `#${id}` : `${workspaceName(other.workspaceId)} #${id}`;
+}
+
+/**
+ * Tasks of `workspace`, or of every workspace when it is null. The dependency DAG spans
+ * workspaces, so a task may wait on a task of another workspace.
+ */
+export function TaskList({ workspace }: { workspace: Workspace | null }) {
+  const allTasks = useTasks();
+  const workspaces = useWorkspaces();
   const [view, setView] = useState<"list" | "timeline">("list");
+  const names = new Map(workspaces.data?.map((entry) => [entry.id, entry.name]));
+  const context: TaskContext = {
+    byId: new Map(allTasks.data?.map((task) => [task.id, task])),
+    workspaceName: (id) => names.get(id) ?? `Workspace ${id}`,
+  };
+  const tasks =
+    workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
+  // Prerequisites in other workspaces are drawn on the timeline too, so the wait is visible.
+  const external =
+    workspace === null
+      ? []
+      : (allTasks.data ?? []).filter(
+          (task) => task.workspaceId !== workspace.id && tasks?.some((own) => own.dependsOn.includes(task.id)),
+        );
 
   return (
     <section aria-labelledby="tasks-heading" className="flex flex-col gap-4">
       <header>
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
-          {workspace.name}
+          {workspace?.name ?? "All workspaces"}
         </h2>
         <p className="text-sm text-muted-foreground">
-          {describeLocation(workspace.location)} &middot; base {workspace.defaultBaseBranch}
+          {workspace
+            ? `${describeLocation(workspace.location)} \u00b7 base ${workspace.defaultBaseBranch}`
+            : "Tasks of every workspace and the dependencies between them."}
         </p>
       </header>
 
-      <WorktreeRootForm workspace={workspace} />
+      {workspace && <WorktreeRootForm workspace={workspace} />}
 
-      <NewTaskForm workspace={workspace} />
+      {workspace && <NewTaskForm workspace={workspace} />}
 
-      {tasks.isPending && <p className="text-sm text-muted-foreground">Loading tasks...</p>}
-      {tasks.isError && (
+      {allTasks.isPending && <p className="text-sm text-muted-foreground">Loading tasks...</p>}
+      {allTasks.isError && (
         <p role="alert" className="text-sm text-destructive">
-          Failed to load tasks: {tasks.error.message}
+          Failed to load tasks: {allTasks.error.message}
         </p>
       )}
-      {tasks.data?.length === 0 && (
-        <p className="text-sm text-muted-foreground">No tasks in this workspace yet.</p>
+      {tasks?.length === 0 && (
+        <p className="text-sm text-muted-foreground">
+          {workspace ? "No tasks in this workspace yet." : "No tasks yet."}
+        </p>
       )}
-      {tasks.data && tasks.data.length > 0 && (
+      {allTasks.data && tasks && tasks.length > 0 && (
         <>
           <div role="group" aria-label="Task view" className="flex gap-1">
             {(["list", "timeline"] as const).map((option) => (
@@ -107,14 +144,25 @@ export function TaskList({ workspace }: { workspace: Workspace }) {
           </div>
           {view === "list" ? (
             <ul aria-label="Tasks" className="flex flex-col divide-y rounded-lg border">
-              {tasks.data.map((task) => (
-                <TaskRow key={task.id} task={task} tasks={tasks.data} />
+              {tasks.map((task) => (
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  tasks={allTasks.data}
+                  context={context}
+                  showWorkspace={workspace === null}
+                />
               ))}
             </ul>
           ) : (
             <TaskGraph
-              workspaceId={workspace.id}
-              tasks={tasks.data}
+              tasks={[...tasks, ...external]}
+              allTasks={allTasks.data}
+              workspaceLabel={(task) =>
+                workspace === null || task.workspaceId !== workspace.id
+                  ? context.workspaceName(task.workspaceId)
+                  : null
+              }
               statusLabels={statusLabels}
               statusStyles={statusStyles}
             />
@@ -155,7 +203,18 @@ function TaskTimeline({ task }: { task: Task }) {
   );
 }
 
-function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
+function TaskRow({
+  task,
+  tasks,
+  context,
+  showWorkspace,
+}: {
+  task: Task;
+  /** Tasks of every workspace; any of them can become a prerequisite. */
+  tasks: Task[];
+  context: TaskContext;
+  showWorkspace: boolean;
+}) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
   const startTask = useStartTask();
@@ -183,7 +242,6 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
     removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
   const dependenciesEditable = task.status === "planned" || task.status === "ready";
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
-  const ref = { workspaceId: task.workspaceId, id: task.id };
   const actionError =
     startTask.error ??
     openTask.error ??
@@ -198,13 +256,20 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const candidates = tasks.filter(
     (other) => other.id !== task.id && other.status !== "cancelled" && !task.dependsOn.includes(other.id),
   );
+  // Candidates grouped by workspace, the task's own workspace first.
+  const candidateGroups = [...new Set([task.workspaceId, ...candidates.map((other) => other.workspaceId)])]
+    .map((workspaceId) => ({
+      workspaceId,
+      tasks: candidates.filter((other) => other.workspaceId === workspaceId),
+    }))
+    .filter((group) => group.tasks.length > 0);
 
   function confirm(action: Confirmation) {
     const onSettled = () => setConfirming(null);
     if (action === "cancel") {
-      cancelTask.mutate(ref, { onSettled });
+      cancelTask.mutate(task.id, { onSettled });
     } else {
-      deleteTask.mutate({ ...ref, force: action === "force-delete" }, { onSettled });
+      deleteTask.mutate({ id: task.id, force: action === "force-delete" }, { onSettled });
     }
   }
 
@@ -217,6 +282,11 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
         ) : (
           <>
             <div className="flex items-center gap-2">
+              {showWorkspace && (
+                <span className="shrink-0 rounded-md bg-muted px-1.5 text-xs text-muted-foreground">
+                  {context.workspaceName(task.workspaceId)}
+                </span>
+              )}
               <span className="rounded-md border px-1.5 text-xs font-medium">{task.taskType}</span>
               <span className="truncate text-sm font-medium">{task.title}</span>
             </div>
@@ -233,15 +303,19 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
           >
             {task.dependsOn.length > 0 && <span>Depends on</span>}
             {task.dependsOn.map((id) => (
-              <span key={id} className="inline-flex items-center gap-0.5 rounded-md border px-1 tabular-nums">
-                <span>#{id}</span>
+              <span
+                key={id}
+                className="inline-flex items-center gap-0.5 rounded-md border px-1 tabular-nums"
+                title={context.byId.get(id)?.title}
+              >
+                <span>{taskRef(id, task.workspaceId, context)}</span>
                 {dependenciesEditable && (
                   <button
                     type="button"
                     aria-label={`Remove dependency #${id} from #${task.id}`}
                     className="px-0.5 hover:text-foreground disabled:opacity-50"
                     disabled={changingDependencies}
-                    onClick={() => removeDependency.mutate({ ...ref, dependsOn: id })}
+                    onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
                   >
                     {"\u00d7"}
                   </button>
@@ -256,15 +330,19 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
                 disabled={changingDependencies}
                 onChange={(e) => {
                   if (e.target.value) {
-                    addDependency.mutate({ ...ref, dependsOn: Number(e.target.value) });
+                    addDependency.mutate({ id: task.id, dependsOn: Number(e.target.value) });
                   }
                 }}
               >
                 <option value="">Add dependency...</option>
-                {candidates.map((other) => (
-                  <option key={other.id} value={other.id}>
-                    #{other.id} {other.title}
-                  </option>
+                {candidateGroups.map((group) => (
+                  <optgroup key={group.workspaceId} label={context.workspaceName(group.workspaceId)}>
+                    {group.tasks.map((other) => (
+                      <option key={other.id} value={other.id}>
+                        #{other.id} {other.title}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             )}

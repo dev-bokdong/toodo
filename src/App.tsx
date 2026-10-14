@@ -18,8 +18,9 @@ export default function App() {
   });
   const workspaces = useWorkspaces();
   useHerdrEvents();
-  const [selectedId, setSelectedId] = useState<WorkspaceId | null>(null);
+  const [selectedId, setSelectedId] = useState<WorkspaceId | "all" | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  const showingAll = selectedId === "all" && !reviewing;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
 
@@ -35,8 +36,20 @@ export default function App() {
         >
           Review
         </Button>
+        <Button
+          variant={showingAll ? "secondary" : "ghost"}
+          className="justify-start"
+          aria-pressed={showingAll}
+          disabled={!workspaces.data?.length}
+          onClick={() => {
+            setSelectedId("all");
+            setReviewing(false);
+          }}
+        >
+          All workspaces
+        </Button>
         <WorkspaceList
-          selectedId={reviewing ? null : (selected?.id ?? null)}
+          selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
           onSelect={(id) => {
             setSelectedId(id);
             setReviewing(false);
@@ -58,6 +71,8 @@ export default function App() {
           <HerdrBanner />
           {reviewing ? (
             <Review />
+          ) : showingAll && workspaces.data?.length ? (
+            <TaskList key="all" workspace={null} />
           ) : selected ? (
             <TaskList key={selected.id} workspace={selected} />
           ) : (

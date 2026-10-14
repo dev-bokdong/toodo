@@ -156,6 +156,7 @@ impl From<StorageError> for CommandError {
                 CommandErrorKind::NotFound
             }
             StorageError::Dependency(_)
+            | StorageError::WorkspaceHasDependents { .. }
             | StorageError::Transition(_)
             | StorageError::DerivedStatus(_) => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)

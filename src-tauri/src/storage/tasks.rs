@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
-use crate::domain::dag::{self, DependencyError, StatusChange};
+use crate::domain::dag::{self, StatusChange};
 use crate::domain::model::{CommitRecord, HostPath, Task, TaskId, TaskType, WorkspaceId};
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
@@ -183,6 +183,11 @@ fn workspace_tasks(conn: &Connection, workspace: WorkspaceId) -> Result<Vec<Task
     query_tasks(conn, "t.workspace_id = ?1", workspace.0)
 }
 
+/// Every task of every workspace: the dependency DAG spans workspaces.
+fn all_tasks(conn: &Connection) -> Result<Vec<Task>> {
+    query_tasks(conn, "?1 = 1", 1)
+}
+
 fn find_task(conn: &Connection, id: TaskId) -> Result<Option<Task>> {
     Ok(query_tasks(conn, "t.id = ?1", id.0)?.pop())
 }
@@ -212,10 +217,10 @@ fn stored_worktree_path<'a>(
     }
 }
 
-/// Applies [`dag::readiness_changes`] to the tasks of `workspace`, recording each change
-/// at `at`, and returns them.
-fn sync_readiness(conn: &Connection, workspace: WorkspaceId, at: i64) -> Result<Vec<StatusChange>> {
-    let changes = dag::readiness_changes(&workspace_tasks(conn, workspace)?)?;
+/// Applies [`dag::readiness_changes`] to all tasks, recording each change at `at`, and
+/// returns them. All tasks, because a dependent may belong to another workspace.
+fn sync_readiness(conn: &Connection, at: i64) -> Result<Vec<StatusChange>> {
+    let changes = dag::readiness_changes(&all_tasks(conn)?)?;
     for change in &changes {
         conn.execute(
             "UPDATE tasks SET status = ?2 WHERE id = ?1",
@@ -274,6 +279,11 @@ impl Storage {
     /// Tasks of `workspace` ordered by ID, each with its dependencies.
     pub fn list_tasks(&self, workspace: WorkspaceId) -> Result<Vec<Task>> {
         workspace_tasks(&self.conn, workspace)
+    }
+
+    /// Tasks of every workspace ordered by ID, each with its dependencies.
+    pub fn list_all_tasks(&self) -> Result<Vec<Task>> {
+        all_tasks(&self.conn)
     }
 
     /// Saves the editable fields of `task`: type, title, description, branch, worktree
@@ -364,7 +374,7 @@ impl Storage {
             params![id.0, status.as_str(), merged_at],
         )?;
         record_event(&tx, id, status, at)?;
-        sync_readiness(&tx, task.workspace_id, at)?;
+        sync_readiness(&tx, at)?;
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
@@ -478,7 +488,7 @@ impl Storage {
             params![id.0, status.as_str()],
         )?;
         record_event(&tx, id, status, at)?;
-        let changes = sync_readiness(&tx, task.workspace_id, at)?;
+        let changes = sync_readiness(&tx, at)?;
         tx.commit()?;
         Ok(changes)
     }
@@ -488,16 +498,19 @@ impl Storage {
     pub fn delete_task(&mut self, id: TaskId) -> Result<Vec<StatusChange>> {
         let at = self.now();
         let tx = self.conn.transaction()?;
-        let workspace = task_workspace(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.execute("DELETE FROM tasks WHERE id = ?1", [id.0])?;
-        let changes = sync_readiness(&tx, workspace, at)?;
+        let deleted = tx.execute("DELETE FROM tasks WHERE id = ?1", [id.0])?;
+        if deleted == 0 {
+            return Err(StorageError::TaskNotFound(id));
+        }
+        let changes = sync_readiness(&tx, at)?;
         tx.commit()?;
         Ok(changes)
     }
 
-    /// Makes `task` depend on `depends_on`. Rejects unknown tasks, self dependencies,
-    /// edges across workspaces, and edges that would close a cycle, writing nothing.
-    /// Returns the readiness changes the new edge caused.
+    /// Makes `task` depend on `depends_on`, which may belong to another workspace. Rejects
+    /// unknown tasks, self dependencies, and edges that would close a cycle anywhere in the
+    /// DAG of all workspaces, writing nothing. Returns the readiness changes the new edge
+    /// caused.
     pub fn add_dependency(
         &mut self,
         task: TaskId,
@@ -505,25 +518,12 @@ impl Storage {
     ) -> Result<Vec<StatusChange>> {
         let at = self.now();
         let tx = self.conn.transaction()?;
-        let workspace = if task == depends_on {
-            None
-        } else {
-            task_workspace(&tx, task)?
-        };
-        let mut tasks = match workspace {
-            Some(workspace) => workspace_tasks(&tx, workspace)?,
-            None => Vec::new(),
-        };
-        if !tasks.iter().any(|candidate| candidate.id == depends_on) {
-            tasks.extend(find_task(&tx, depends_on)?);
-        }
-        dag::validate_dependency(&tasks, task, depends_on)?;
-        let workspace = workspace.ok_or(DependencyError::UnknownTask(task))?;
+        dag::validate_dependency(&all_tasks(&tx)?, task, depends_on)?;
         tx.execute(
             "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
             [task.0, depends_on.0],
         )?;
-        let changes = sync_readiness(&tx, workspace, at)?;
+        let changes = sync_readiness(&tx, at)?;
         tx.commit()?;
         Ok(changes)
     }
@@ -537,12 +537,12 @@ impl Storage {
     ) -> Result<Vec<StatusChange>> {
         let at = self.now();
         let tx = self.conn.transaction()?;
-        let workspace = task_workspace(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
+        task_workspace(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
         tx.execute(
             "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             [task.0, depends_on.0],
         )?;
-        let changes = sync_readiness(&tx, workspace, at)?;
+        let changes = sync_readiness(&tx, at)?;
         tx.commit()?;
         Ok(changes)
     }
