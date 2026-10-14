@@ -79,7 +79,7 @@ export default function App() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6">
+        <main className="relative min-w-0 flex-1 overflow-y-auto px-8 py-6">
           <UpdateBanner />
           <HerdrBanner />
           {reviewing ? (
