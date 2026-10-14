@@ -56,7 +56,8 @@ The user creates tasks and declares dependencies between them, also on tasks of 
 workspaces (a library task that an application task needs first). Toodo rejects any
 dependency that would create a cycle and computes which tasks are `ready`. The creation
 time is recorded as the task's `plannedAt`. The sidebar's "All workspaces" entry lists
-the tasks of every workspace in one list and one timeline.
+the tasks of every workspace on one timeline (its default view, which can be narrowed to
+one workspace) and in one list.
 
 ### 3. Prepare the worktree
 

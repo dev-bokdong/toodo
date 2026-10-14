@@ -79,12 +79,14 @@ function taskRef(id: TaskId, of: WorkspaceId, { byId, workspaceName }: TaskConte
 
 /**
  * Tasks of `workspace`, or of every workspace when it is null. The dependency DAG spans
- * workspaces, so a task may wait on a task of another workspace.
+ * workspaces, so a task may wait on a task of another workspace. The timeline is only
+ * offered for every workspace, where it is the default view.
  */
 export function TaskList({ workspace }: { workspace: Workspace | null }) {
   const allTasks = useTasks();
   const workspaces = useWorkspaces();
-  const [view, setView] = useState<"list" | "timeline">("list");
+  const [view, setView] = useState<"list" | "timeline">("timeline");
+  const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
   const names = new Map(workspaces.data?.map((entry) => [entry.id, entry.name]));
   const context: TaskContext = {
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
@@ -92,12 +94,19 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
   };
   const tasks =
     workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
-  // Prerequisites in other workspaces are drawn on the timeline too, so the wait is visible.
-  const external =
-    workspace === null
+  const showTimeline = workspace === null && view === "timeline";
+  // Workspaces the timeline can be narrowed to; a filter whose workspace has no tasks left falls back to all.
+  const filterOptions = [...new Set(allTasks.data?.map((task) => task.workspaceId))].sort((a, b) =>
+    context.workspaceName(a).localeCompare(context.workspaceName(b)),
+  );
+  const filter = timelineWorkspace !== null && filterOptions.includes(timelineWorkspace) ? timelineWorkspace : null;
+  const filtered = filter === null ? tasks : tasks?.filter((task) => task.workspaceId === filter);
+  // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
+  const prerequisites =
+    filter === null
       ? []
-      : (allTasks.data ?? []).filter(
-          (task) => task.workspaceId !== workspace.id && tasks?.some((own) => own.dependsOn.includes(task.id)),
+      : (tasks ?? []).filter(
+          (task) => task.workspaceId !== filter && filtered?.some((own) => own.dependsOn.includes(task.id)),
         );
 
   return (
@@ -130,20 +139,41 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
       )}
       {allTasks.data && tasks && tasks.length > 0 && (
         <>
-          <div role="group" aria-label="Task view" className="flex gap-1">
-            {(["list", "timeline"] as const).map((option) => (
-              <Button
-                key={option}
-                size="xs"
-                variant={view === option ? "secondary" : "ghost"}
-                aria-pressed={view === option}
-                onClick={() => setView(option)}
-              >
-                {option === "list" ? "List" : "Timeline"}
-              </Button>
-            ))}
-          </div>
-          {view === "list" ? (
+          {workspace === null && (
+            <div className="flex flex-wrap items-center gap-2">
+              <div role="group" aria-label="Task view" className="flex gap-1">
+                {(["timeline", "list"] as const).map((option) => (
+                  <Button
+                    key={option}
+                    size="xs"
+                    variant={view === option ? "secondary" : "ghost"}
+                    aria-pressed={view === option}
+                    onClick={() => setView(option)}
+                  >
+                    {option === "list" ? "List" : "Timeline"}
+                  </Button>
+                ))}
+              </div>
+              {showTimeline && (
+                <select
+                  aria-label="Timeline workspace"
+                  className="h-6 rounded-md border bg-background px-1.5 text-xs"
+                  value={filter ?? "all"}
+                  onChange={(event) =>
+                    setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
+                  }
+                >
+                  <option value="all">All workspaces</option>
+                  {filterOptions.map((id) => (
+                    <option key={id} value={id}>
+                      {context.workspaceName(id)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+          {!showTimeline ? (
             <ul aria-label="Tasks" className="flex flex-col divide-y rounded-lg border">
               {tasks.map((task) => (
                 <TaskRow
@@ -157,12 +187,11 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
             </ul>
           ) : (
             <TaskGraph
-              tasks={[...tasks, ...external]}
+              tasks={[...(filtered ?? []), ...prerequisites]}
               allTasks={allTasks.data}
+              dimmed={new Set(prerequisites.map((task) => task.id))}
               workspaceLabel={(task) =>
-                workspace === null || task.workspaceId !== workspace.id
-                  ? context.workspaceName(task.workspaceId)
-                  : null
+                filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
               }
               statusLabels={statusLabels}
               statusStyles={statusStyles}

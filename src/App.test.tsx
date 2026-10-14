@@ -215,6 +215,7 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     expect(await screen.findByRole("heading", { name: "All workspaces" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
     const tasks = screen.getByRole("list", { name: "Tasks" });
     expect(within(tasks).getAllByRole("listitem")).toHaveLength(3);
     expect(within(tasks).getByText("Add low level API")).toBeInTheDocument();
@@ -309,17 +310,18 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Year review" })).not.toBeInTheDocument();
   });
 
-  it("shows the tasks of the selected workspace on a timeline", async () => {
+  it("shows the tasks of every workspace on a timeline, narrowed to one workspace on request", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
     const day = 24 * 60 * 60;
     const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
     const planned = (at: number) => ({ ...task(0, 1, "").milestones, plannedAt: at });
     const lastYear = new Date(2025, 5, 1).getTime() / 1000;
-    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
       data: [
+        task(5, 2, "Add herdr API", { status: "planned", dependsOn: [1], milestones: planned(plannedAt + day) }),
         task(1, 1, "Add storage", {
           status: "done",
           milestones: { ...planned(plannedAt), completedAt: plannedAt + 3 * day },
@@ -335,9 +337,12 @@ describe("App", () => {
     renderApp();
 
     await screen.findByRole("list", { name: "Tasks" });
-    fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
+    expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
 
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    expect(screen.getByRole("button", { name: "Timeline" })).toHaveAttribute("aria-pressed", "true");
+    expect(await within(timeline).findByText("Add herdr API")).toBeInTheDocument();
     expect(await within(timeline).findByText("Add UI")).toBeInTheDocument();
     expect(within(timeline).getByText("Add storage")).toBeInTheDocument();
     const unplaced = within(timeline).getByRole("complementary", { name: "Tasks without a planned date" });
@@ -357,6 +362,24 @@ describe("App", () => {
     expect(await within(timeline).findByText("Fix login")).toBeInTheDocument();
     expect(within(timeline).queryByText("Add UI")).not.toBeInTheDocument();
     expect(within(unplaced).getByText("Write docs")).toBeInTheDocument();
+    fireEvent.change(period, { target: { value: "all" } });
+
+    const filter = screen.getByRole("combobox", { name: "Timeline workspace" });
+    expect(within(filter).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All workspaces",
+      "herdr",
+      "toodo",
+    ]);
+    expect(within(timeline).getByText("Add storage").closest("[data-dimmed]")).toBeNull();
+    fireEvent.change(filter, { target: { value: "2" } });
+    expect(await within(timeline).findByText("Add herdr API")).toBeInTheDocument();
+    expect(within(timeline).queryByText("Add UI")).not.toBeInTheDocument();
+    expect(within(timeline).queryByText("Write docs")).not.toBeInTheDocument();
+    // The prerequisite in another workspace stays on the timeline, dimmed and labeled.
+    const prerequisite = within(timeline).getByText("Add storage").closest("[data-dimmed]");
+    expect(prerequisite).not.toBeNull();
+    expect(within(prerequisite as HTMLElement).getByText("toodo")).toBeInTheDocument();
+    expect(within(timeline).getByText("Add herdr API").closest("[data-dimmed]")).toBeNull();
   });
 
   it("shows command errors returned by the backend", async () => {
