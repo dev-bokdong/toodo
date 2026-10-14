@@ -7,6 +7,7 @@ import {
   layoutTimeline,
   relatedTasks,
   timelineAxis,
+  timelineEdgePath,
   timelineYears,
   yearPeriod,
 } from "@/lib/task-graph";
@@ -53,6 +54,16 @@ describe("dependencyEdges", () => {
     const tasks = [task(1), task(2, { dependsOn: [1, 9] })];
 
     expect(dependencyEdges(tasks)).toEqual([{ id: "1->2", source: 1, target: 2 }]);
+  });
+});
+
+describe("timelineEdgePath", () => {
+  it("runs along the gap above the target row toward a later dependent", () => {
+    expect(timelineEdgePath({ x: 100, y: 20 }, { x: 300, y: 60 }, 40)).toBe("M 100 20 H 108 V 40 H 292 V 60 H 300");
+  });
+
+  it("turns back for a dependent that started the moment its prerequisite finished", () => {
+    expect(timelineEdgePath({ x: 100, y: 20 }, { x: 100, y: 60 }, 40)).toBe("M 100 20 H 108 V 40 H 92 V 60 H 100");
   });
 });
 
