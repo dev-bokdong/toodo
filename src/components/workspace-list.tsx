@@ -7,6 +7,7 @@ import {
   useAddHerdrMachine,
   useAddSshHost,
   useCreateWorkspace,
+  useDeleteWorkspace,
   useHerdrMachines,
   useSshHosts,
   useWorkspaces,
@@ -138,20 +139,12 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
                 {items.length > 0 && (
                   <ul className="flex flex-col gap-1">
                     {items.map((workspace) => (
-                      <li key={workspace.id}>
-                        <button
-                          type="button"
-                          aria-current={workspace.id === selectedId ? "true" : undefined}
-                          onClick={() => onSelect(workspace.id)}
-                          className={cn(
-                            "flex w-full flex-col rounded-lg px-2.5 py-1.5 text-left hover:bg-sidebar-accent",
-                            workspace.id === selectedId && "bg-sidebar-accent",
-                          )}
-                        >
-                          <span className="truncate text-sm font-medium">{workspace.name}</span>
-                          <span className="truncate text-xs text-muted-foreground">{workspace.location.path}</span>
-                        </button>
-                      </li>
+                      <WorkspaceItem
+                        key={workspace.id}
+                        workspace={workspace}
+                        selected={workspace.id === selectedId}
+                        onSelect={onSelect}
+                      />
                     ))}
                   </ul>
                 )}
@@ -160,6 +153,85 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
           })}
       </div>
     </section>
+  );
+}
+
+type WorkspaceItemProps = {
+  workspace: Workspace;
+  selected: boolean;
+  onSelect: (id: WorkspaceId) => void;
+};
+
+/** A workspace in the list; removing it asks for confirmation first. */
+function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
+  const deleteWorkspace = useDeleteWorkspace();
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <li className="flex flex-col gap-1">
+      <div
+        className={cn(
+          "group flex items-center rounded-lg hover:bg-sidebar-accent",
+          selected && "bg-sidebar-accent",
+        )}
+      >
+        <button
+          type="button"
+          aria-current={selected ? "true" : undefined}
+          onClick={() => onSelect(workspace.id)}
+          className="flex min-w-0 flex-1 flex-col px-2.5 py-1.5 text-left"
+        >
+          <span className="truncate text-sm font-medium">{workspace.name}</span>
+          <span className="truncate text-xs text-muted-foreground">{workspace.location.path}</span>
+        </button>
+        {!confirming && (
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={`Remove ${workspace.name}`}
+            title="Remove the workspace and its tasks from Toodo"
+            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            onClick={() => {
+              deleteWorkspace.reset();
+              setConfirming(true);
+            }}
+          >
+            {"\u00d7"}
+          </Button>
+        )}
+      </div>
+      {confirming && (
+        <div
+          role="group"
+          aria-label={`Remove ${workspace.name}`}
+          className="flex flex-col gap-1.5 rounded-lg border p-2"
+        >
+          <p className="text-xs text-muted-foreground">
+            Remove {workspace.name} and its tasks from Toodo? The repository, worktrees, and herdr workspaces are
+            kept.
+          </p>
+          {deleteWorkspace.isError && (
+            <p role="alert" className="text-xs text-destructive">
+              {deleteWorkspace.error.message}
+            </p>
+          )}
+          <div className="flex gap-1">
+            <Button
+              size="xs"
+              variant="destructive"
+              aria-label={`Confirm remove ${workspace.name}`}
+              disabled={deleteWorkspace.isPending}
+              onClick={() => deleteWorkspace.mutate(workspace.id)}
+            >
+              {deleteWorkspace.isPending ? "Removing..." : "Remove"}
+            </Button>
+            <Button size="xs" variant="ghost" onClick={() => setConfirming(false)}>
+              Back
+            </Button>
+          </div>
+        </div>
+      )}
+    </li>
   );
 }
 

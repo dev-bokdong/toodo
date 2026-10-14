@@ -21,6 +21,7 @@ vi.mock("@/lib/bindings", () => ({
     appInfo: vi.fn(),
     listWorkspaces: vi.fn(),
     createWorkspace: vi.fn(),
+    deleteWorkspace: vi.fn(),
     listTasks: vi.fn(),
     createTask: vi.fn(),
     updateTask: vi.fn(),
@@ -169,7 +170,7 @@ describe("App", () => {
     expect(within(tasks).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
     expect(mocked.listTasks).toHaveBeenCalledWith(1);
 
-    fireEvent.click(screen.getByRole("button", { name: /herdr/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(mocked.listTasks).toHaveBeenLastCalledWith(2);
@@ -255,6 +256,37 @@ describe("App", () => {
     expect(within(devbox).getByText("/srv/herdr")).toBeInTheDocument();
     expect(within(devbox).getByText("Not saved in herdr")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Machine unsaved" })).toBeNull();
+  });
+
+  it("removes a workspace from the list only after confirming", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockImplementation(async (workspaceId) => ({
+      status: "ok",
+      data: workspaceId === 1 ? [task(1, 1, "Add storage")] : [task(3, 2, "Fix ssh")],
+    }));
+    mocked.deleteWorkspace
+      .mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "database is locked" } })
+      .mockResolvedValueOnce({ status: "ok", data: null });
+    renderApp();
+
+    expect(await screen.findByText("Add storage")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove toodo" }));
+    expect(mocked.deleteWorkspace).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.queryByRole("button", { name: "Confirm remove toodo" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove toodo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm remove toodo" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
+    expect(screen.getByRole("region", { name: "Machine Local" })).toHaveTextContent("toodo");
+
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [herdr] });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm remove toodo" }));
+
+    expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
+    expect(mocked.deleteWorkspace).toHaveBeenLastCalledWith(1);
+    expect(within(screen.getByRole("region", { name: "Machine Local" })).queryByRole("listitem")).toBeNull();
+    expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
   });
 
   it("opens a local repository picked in the folder dialog", async () => {

@@ -109,6 +109,18 @@ export function useCreateWorkspace() {
   });
 }
 
+/** Removes a workspace from Toodo with its tasks; the repository and herdr stay untouched. */
+export function useDeleteWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)),
+    onSuccess: (_, id) => {
+      queryClient.removeQueries({ queryKey: queryKeys.tasks(id) });
+      return queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true });
+    },
+  });
+}
+
 export function useTasks(workspaceId: WorkspaceId) {
   return useQuery({
     queryKey: queryKeys.tasks(workspaceId),
