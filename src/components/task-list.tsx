@@ -235,6 +235,9 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
               }
               statusLabel={statusLabel}
               statusStyle={statusStyle}
+              renderDetail={(selected) => (
+                <TaskRow key={selected.id} task={selected} tasks={allTasks.data ?? []} context={context} showWorkspace />
+              )}
             />
           )}
         </>

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { XIcon } from "lucide-react";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
   Handle,
@@ -11,6 +12,7 @@ import {
   type Edge,
   type EdgeChange,
   type Node,
+  type NodeChange,
   type NodeProps,
   type ReactFlowInstance,
 } from "@xyflow/react";
@@ -24,6 +26,7 @@ import {
   dependencyEditableStatuses,
   isPaused,
   layoutTimeline,
+  relatedTasks,
   timelineAxis,
   timelineScales,
   timelineYears,
@@ -88,6 +91,7 @@ export function TaskGraph({
   workspaceLabel,
   statusLabel,
   statusStyle,
+  renderDetail,
 }: {
   /** Tasks drawn on the timeline. */
   tasks: Task[];
@@ -99,10 +103,13 @@ export function TaskGraph({
   workspaceLabel: (task: Task) => string | null;
   statusLabel: (task: Task) => string;
   statusStyle: (task: Task) => string;
+  /** Details of the task selected on the timeline, with its actions. */
+  renderDetail: (task: Task) => ReactNode;
 }) {
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
+  const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
   const [scale, setScale] = useState<TimelineScale>("week");
   const [year, setYear] = useState<number | null>(null);
   const colorMode = useThemePreference();
@@ -111,6 +118,11 @@ export function TaskGraph({
   const layout = layoutTimeline(tasks, { now, scale, period: year === null ? null : yearPeriod(year) });
   const placed = new Set(layout.bars.map((bar) => bar.task.id));
   const dependencies = dependencyEdges(tasks).filter((edge) => placed.has(edge.source) && placed.has(edge.target));
+  // A task that left the timeline, through a filter or a deletion, is no longer selected.
+  const selectedTask = placed.has(selectedTaskId ?? -1) ? tasks.find((task) => task.id === selectedTaskId) : undefined;
+  // While a task is selected, everything outside its dependency chain fades.
+  const chain = selectedTask === undefined ? null : relatedTasks(tasks, selectedTask.id);
+  const inChain = (id: TaskId) => chain === null || chain.has(id);
   const changing = addDependency.isPending || removeDependency.isPending;
   const editable = (target: number) =>
     dependencyEditableStatuses.includes(tasks.find((task) => task.id === target)?.status ?? "done");
@@ -131,8 +143,9 @@ export function TaskGraph({
       statusLabel: statusLabel(bar.task),
       statusStyle: statusStyle(bar.task),
       workspace: workspaceLabel(bar.task),
-      dimmed: dimmed.has(bar.task.id),
+      dimmed: dimmed.has(bar.task.id) || !inChain(bar.task.id),
     },
+    selected: bar.task.id === selectedTask?.id,
     deletable: false,
     width: bar.width,
     height: barHeight,
@@ -144,6 +157,7 @@ export function TaskGraph({
     selected: selectedEdgeIds.has(edge.id),
     deletable: editable(edge.target),
     markerEnd: { type: MarkerType.ArrowClosed },
+    style: inChain(edge.source) && inChain(edge.target) ? undefined : { opacity: 0.2 },
   }));
   const selected = dependencies.filter((edge) => selectedEdgeIds.has(edge.id) && editable(edge.target));
 
@@ -163,7 +177,22 @@ export function TaskGraph({
     setSelectedEdgeIds(new Set());
   }
 
+  function changeNodes(changes: NodeChange<BarNode>[]) {
+    const picked = changes.filter((change) => change.type === "select" && change.selected).pop();
+    if (picked !== undefined && picked.type === "select") {
+      setSelectedTaskId(Number(picked.id));
+      setSelectedEdgeIds(new Set());
+    } else if (
+      changes.some((change) => change.type === "select" && !change.selected && Number(change.id) === selectedTaskId)
+    ) {
+      setSelectedTaskId(null);
+    }
+  }
+
   function changeEdges(changes: EdgeChange[]) {
+    if (changes.some((change) => change.type === "select" && change.selected)) {
+      setSelectedTaskId(null);
+    }
     setSelectedEdgeIds((current) => {
       const next = new Set(current);
       for (const change of changes) {
@@ -254,7 +283,14 @@ export function TaskGraph({
           {(addDependency.error ?? removeDependency.error)?.message}
         </p>
       )}
-      <div className="flex gap-2">
+      <div
+        className="flex gap-2"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setSelectedTaskId(null);
+          }
+        }}
+      >
         <div
           ref={container}
           className="min-w-0 flex-1 rounded-lg border"
@@ -282,6 +318,8 @@ export function TaskGraph({
               nodesConnectable={!changing}
               isValidConnection={(c) => canAddDependency(allTasks, Number(c.source), Number(c.target))}
               onConnect={connect}
+              onNodesChange={changeNodes}
+              onPaneClick={() => setSelectedTaskId(null)}
               onEdgesChange={changeEdges}
               onEdgesDelete={removeEdges}
               deleteKeyCode={["Backspace", "Delete"]}
@@ -293,23 +331,38 @@ export function TaskGraph({
             </ReactFlow>
           )}
         </div>
-        {layout.unplaced.length > 0 && (
-          <aside aria-label="Tasks without a planned date" className="flex w-56 shrink-0 flex-col gap-1 text-xs">
-            <h3 className="font-medium text-muted-foreground">Not on the timeline</h3>
-            <ul className="flex flex-col gap-1">
-              {layout.unplaced.map((task) => (
-                <li key={task.id} className="flex items-center gap-1.5 rounded-md border px-2 py-1">
-                  <span className="tabular-nums text-muted-foreground">#{task.id}</span>
-                  <span className="truncate" title={task.title}>
-                    {task.title}
-                  </span>
-                  <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyle(task))}>
-                    {statusLabel(task)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </aside>
+        {(selectedTask !== undefined || layout.unplaced.length > 0) && (
+          <div className={cn("flex shrink-0 flex-col gap-3", selectedTask === undefined ? "w-56" : "w-96")}>
+            {selectedTask !== undefined && (
+              <aside aria-label="Task details" className="flex flex-col gap-1 text-xs">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-medium text-muted-foreground">Task details</h3>
+                  <Button size="icon-xs" variant="ghost" aria-label="Close details" onClick={() => setSelectedTaskId(null)}>
+                    <XIcon />
+                  </Button>
+                </div>
+                <ul className="rounded-xl border bg-card shadow-xs">{renderDetail(selectedTask)}</ul>
+              </aside>
+            )}
+            {layout.unplaced.length > 0 && (
+              <aside aria-label="Tasks without a planned date" className="flex flex-col gap-1 text-xs">
+                <h3 className="font-medium text-muted-foreground">Not on the timeline</h3>
+                <ul className="flex flex-col gap-1">
+                  {layout.unplaced.map((task) => (
+                    <li key={task.id} className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+                      <span className="tabular-nums text-muted-foreground">#{task.id}</span>
+                      <span className="truncate" title={task.title}>
+                        {task.title}
+                      </span>
+                      <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyle(task))}>
+                        {statusLabel(task)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </aside>
+            )}
+          </div>
         )}
       </div>
     </section>
@@ -401,7 +454,10 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
   );
 }
 
-function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace, dimmed } }: NodeProps<BarNode>) {
+function TimelineBarView({
+  data: { bar, statusLabel, statusStyle, workspace, dimmed },
+  selected,
+}: NodeProps<BarNode>) {
   const { task, phases, pending, lead } = bar;
   const summary = reachedMilestones(task.milestones)
     .map(({ label, at }) => `${label} ${formatDate(at)}`)
@@ -432,6 +488,7 @@ function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace, dim
       <div
         className={cn(
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
+          selected && "ring-2 ring-primary",
           pending && "border-dashed border-muted-foreground/60 shadow-none",
           isPaused(task) && "opacity-60",
         )}

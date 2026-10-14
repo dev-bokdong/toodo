@@ -5,6 +5,7 @@ import {
   dependenciesDone,
   dependencyEdges,
   layoutTimeline,
+  relatedTasks,
   timelineAxis,
   timelineYears,
   yearPeriod,
@@ -52,6 +53,24 @@ describe("dependencyEdges", () => {
     const tasks = [task(1), task(2, { dependsOn: [1, 9] })];
 
     expect(dependencyEdges(tasks)).toEqual([{ id: "1->2", source: 1, target: 2 }]);
+  });
+});
+
+describe("relatedTasks", () => {
+  it("collects transitive prerequisites and dependents but not siblings", () => {
+    // 1 -> 2 -> 3, 1 -> 4, 5 -> 3, 6 alone.
+    const tasks = [
+      task(1),
+      task(2, { dependsOn: [1] }),
+      task(3, { dependsOn: [2, 5] }),
+      task(4, { dependsOn: [1] }),
+      task(5),
+      task(6),
+    ];
+
+    expect([...relatedTasks(tasks, 2)].sort()).toEqual([1, 2, 3]);
+    expect([...relatedTasks(tasks, 1)].sort()).toEqual([1, 2, 3, 4]);
+    expect([...relatedTasks(tasks, 6)]).toEqual([6]);
   });
 });
 
