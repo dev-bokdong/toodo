@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { formatDate } from "@/lib/timeline";
+import { weekPeriod } from "@/lib/week-review";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   commands,
@@ -52,6 +53,7 @@ vi.mock("@/lib/bindings", () => ({
     saveBackupSettings: vi.fn(),
     exportDatabase: vi.fn(),
     restoreDatabase: vi.fn(),
+    weekReview: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -183,6 +185,68 @@ describe("App", () => {
     expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(mocked.listTasks).toHaveBeenLastCalledWith(2);
+  });
+
+  it("reviews the chosen week across workspaces and copies it as Markdown", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 14, 10));
+    const at = new Date(2026, 9, 13, 15).getTime() / 1000;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.weekReview.mockImplementation(async (start) => ({
+      status: "ok",
+      data:
+        start === weekPeriod("2026-10-12").start
+          ? [
+              {
+                task: task(1, 1, "Add storage", {
+                  status: "done",
+                  pullRequestUrl: "https://github.com/acme/toodo/pull/7",
+                }),
+                outcome: "completed",
+                at,
+                commits: [{ ...commit(1, "0123456789", "Add the storage schema\n\nBody"), committedAt: at }],
+              },
+              { task: task(3, 2, "Fix ssh"), outcome: "worked_on", at, commits: [] },
+            ]
+          : [],
+    }));
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Week review" }));
+
+    expect(screen.getByRole("heading", { name: "Week review" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-12");
+    const completed = await screen.findByRole("region", { name: "Completed" });
+    expect(within(completed).getByText("Add storage")).toBeInTheDocument();
+    expect(within(completed).getByText(`toodo · ${formatDate(at)}`)).toBeInTheDocument();
+    expect(within(completed).getByText("https://github.com/acme/toodo/pull/7")).toBeInTheDocument();
+    expect(within(completed).getByRole("list", { name: "Commits of #1 this week" })).toHaveTextContent(
+      "0123456Add the storage schema",
+    );
+    const workedOn = screen.getByRole("region", { name: "Worked on" });
+    expect(within(workedOn).getByText(`herdr · ${formatDate(at)}`)).toBeInTheDocument();
+    const { start, end } = weekPeriod("2026-10-12");
+    expect(mocked.weekReview).toHaveBeenCalledWith(start, end);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+    expect(await screen.findByText("Copied as Markdown.")).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "## Completed (1)\n\n- [feat] Add storage (toodo, 2026-10-13, https://github.com/acme/toodo/pull/7)",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
+    expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-05");
+    expect(mocked.weekReview).toHaveBeenLastCalledWith(weekPeriod("2026-10-05").start, start);
+
+    fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
+    expect(await screen.findByRole("heading", { name: "toodo" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Week review" })).not.toBeInTheDocument();
   });
 
   it("shows the tasks of the selected workspace on a timeline", async () => {

@@ -6,6 +6,7 @@ pub mod completion;
 pub mod events;
 pub mod herdr;
 pub mod machines;
+pub mod review;
 pub mod tasks;
 pub mod types;
 pub mod workspaces;

@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{Result, Storage, StorageError};
 use crate::domain::model::{CommitRecord, TaskId};
+use crate::domain::review::Period;
 
 impl Storage {
     /// Replaces the commit records of `task` with `records`, keeping their order. Every
@@ -32,6 +33,27 @@ impl Storage {
                     message: row.get(1)?,
                     author: row.get(2)?,
                     committed_at: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(records)
+    }
+
+    /// Commit records of every task committed in `period`, oldest first.
+    pub fn list_commit_records_in(&self, period: Period) -> Result<Vec<CommitRecord>> {
+        let mut statement = self.conn.prepare(
+            "SELECT task_id, sha, message, author, committed_at FROM commit_records
+             WHERE committed_at >= ?1 AND committed_at < ?2
+             ORDER BY committed_at, task_id, position",
+        )?;
+        let records = statement
+            .query_map([period.start(), period.end()], |row| {
+                Ok(CommitRecord {
+                    task_id: TaskId(row.get(0)?),
+                    sha: row.get(1)?,
+                    message: row.get(2)?,
+                    author: row.get(3)?,
+                    committed_at: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

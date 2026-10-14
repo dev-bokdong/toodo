@@ -734,6 +734,33 @@ fn open_pull_request_writes_nothing_when_it_is_rejected() {
     );
 }
 
+#[test]
+fn commit_records_in_a_period_span_every_task_oldest_first() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let toodo = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let server = add_workspace(&mut storage, "Server", ssh_location("devbox", "/srv/app"));
+    let a = add_task(&mut storage, &toodo, "A");
+    let b = add_task(&mut storage, &server, "B");
+    storage
+        .replace_commit_records(
+            a.id,
+            &[commit(a.id, "a-end", 200), commit(a.id, "a-in", 150)],
+        )
+        .unwrap();
+    storage
+        .replace_commit_records(
+            b.id,
+            &[commit(b.id, "b-start", 100), commit(b.id, "b-before", 99)],
+        )
+        .unwrap();
+
+    let period = crate::domain::review::Period::new(100, 200).unwrap();
+    assert_eq!(
+        storage.list_commit_records_in(period).unwrap(),
+        [commit(b.id, "b-start", 100), commit(a.id, "a-in", 150)]
+    );
+}
+
 /// Storage whose clock reads `now`, so status changes get known timestamps.
 fn clocked_storage(start: i64) -> (Storage, std::sync::Arc<std::sync::atomic::AtomicI64>) {
     let mut storage = Storage::open_in_memory().unwrap();

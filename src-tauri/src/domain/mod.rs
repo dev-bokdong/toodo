@@ -6,6 +6,7 @@ pub mod model;
 pub mod naming;
 pub mod path;
 pub mod remote;
+pub mod review;
 pub mod slug;
 pub mod ssh_config;
 pub mod status;
