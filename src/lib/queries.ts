@@ -230,17 +230,6 @@ export function useRestoreTaskWorktree() {
   });
 }
 
-/** Removes the worktree of a `done` or `cancelled` task through herdr; `force` discards local changes. */
-export function useRemoveTaskWorktree() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, force }: { id: TaskId; force: boolean }) =>
-      unwrap(commands.removeTaskWorktree(id, force)),
-    onSuccess: (task) =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
-  });
-}
-
 export function useUpdateTask() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -271,8 +260,11 @@ export function useCancelTask() {
   );
 }
 
+/** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */
 export function useDeleteTask() {
-  return useWorkspaceTasksMutation(({ id }: WorkspaceTask) => unwrap(commands.deleteTask(id)));
+  return useWorkspaceTasksMutation(({ id, force }: WorkspaceTask & { force: boolean }) =>
+    unwrap(commands.deleteTask(id, force)),
+  );
 }
 
 type Dependency = WorkspaceTask & { dependsOn: TaskId };

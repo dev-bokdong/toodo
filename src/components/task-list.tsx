@@ -19,7 +19,6 @@ import {
   useOpenTaskInHerdr,
   useRefreshCommitRecords,
   useRemoveDependency,
-  useRemoveTaskWorktree,
   useRestoreTaskWorktree,
   useSaveMachineSettings,
   useStartTask,
@@ -132,13 +131,12 @@ const cancellableStatuses: TaskStatus[] = ["planned", "ready", "in_progress", "i
 /** Statuses whose task has no live worktree to lose, so it can be deleted. */
 const deletableStatuses: TaskStatus[] = ["planned", "ready", "done", "cancelled"];
 
-type Confirmation = "cancel" | "delete" | "remove-worktree" | "force-remove-worktree";
+type Confirmation = "cancel" | "delete" | "force-delete";
 
 const confirmLabels: Record<Confirmation, string> = {
   cancel: "Confirm cancel",
   delete: "Confirm delete",
-  "remove-worktree": "Confirm remove worktree",
-  "force-remove-worktree": "Confirm force remove",
+  "force-delete": "Confirm force delete",
 };
 
 function TaskTimeline({ task }: { task: Task }) {
@@ -169,7 +167,6 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const deleteTask = useDeleteTask();
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
-  const removeWorktree = useRemoveTaskWorktree();
   const restoreWorktree = useRestoreTaskWorktree();
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
@@ -181,9 +178,9 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done" || task.status === "cancelled";
   const removableWorktree = final && task.worktreePath !== null;
-  // A rejected removal means the worktree has local changes; offer to discard them.
+  // A rejected delete means the worktree has local changes; offer to discard them.
   const dirtyWorktree =
-    removableWorktree && removeWorktree.error instanceof CommandFailure && removeWorktree.error.kind === "rejected";
+    removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
   const dependenciesEditable = task.status === "planned" || task.status === "ready";
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const ref = { workspaceId: task.workspaceId, id: task.id };
@@ -195,7 +192,6 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
     completeTask.error ??
     cancelTask.error ??
     deleteTask.error ??
-    removeWorktree.error ??
     restoreWorktree.error ??
     addDependency.error ??
     removeDependency.error;
@@ -205,10 +201,10 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
 
   function confirm(action: Confirmation) {
     const onSettled = () => setConfirming(null);
-    if (action === "remove-worktree" || action === "force-remove-worktree") {
-      removeWorktree.mutate({ id: task.id, force: action === "force-remove-worktree" }, { onSettled });
+    if (action === "cancel") {
+      cancelTask.mutate(ref, { onSettled });
     } else {
-      (action === "cancel" ? cancelTask : deleteTask).mutate(ref, { onSettled });
+      deleteTask.mutate({ ...ref, force: action === "force-delete" }, { onSettled });
     }
   }
 
@@ -301,10 +297,10 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
                   size="xs"
                   variant="destructive"
                   aria-label={`${confirmLabels[confirming]} #${task.id}`}
-                  disabled={cancelTask.isPending || deleteTask.isPending || removeWorktree.isPending}
+                  disabled={cancelTask.isPending || deleteTask.isPending}
                   onClick={() => confirm(confirming)}
                 >
-                  {removeWorktree.isPending ? "Removing..." : confirmLabels[confirming]}
+                  {deleteTask.isPending ? "Deleting..." : confirmLabels[confirming]}
                 </Button>
                 <Button size="xs" variant="ghost" onClick={() => setConfirming(null)}>
                   Back
@@ -327,38 +323,32 @@ function TaskRow({ task, tasks }: { task: Task; tasks: Task[] }) {
                     Cancel
                   </Button>
                 )}
-                {removableWorktree && (
+                {deletableStatuses.includes(task.status) && (
                   <Button
                     size="xs"
                     variant="ghost"
-                    aria-label={`Remove worktree of #${task.id}`}
-                    title="Remove the worktree and close its herdr workspace; the branch is kept"
-                    disabled={!herdrRunning}
-                    onClick={() => setConfirming("remove-worktree")}
+                    aria-label={`Delete #${task.id}`}
+                    title={
+                      removableWorktree
+                        ? "Delete the task and remove its worktree and herdr workspace; the branch is kept"
+                        : undefined
+                    }
+                    disabled={removableWorktree && !herdrRunning}
+                    onClick={() => setConfirming("delete")}
                   >
-                    Remove worktree
+                    Delete
                   </Button>
                 )}
                 {dirtyWorktree && (
                   <Button
                     size="xs"
                     variant="ghost"
-                    aria-label={`Force remove worktree of #${task.id}`}
-                    title="Remove the worktree and discard its modified and untracked files"
+                    aria-label={`Force delete #${task.id}`}
+                    title="Delete the task and discard the modified and untracked files of its worktree"
                     disabled={!herdrRunning}
-                    onClick={() => setConfirming("force-remove-worktree")}
+                    onClick={() => setConfirming("force-delete")}
                   >
-                    Force remove
-                  </Button>
-                )}
-                {deletableStatuses.includes(task.status) && (
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    aria-label={`Delete #${task.id}`}
-                    onClick={() => setConfirming("delete")}
-                  >
-                    Delete
+                    Force delete
                   </Button>
                 )}
               </>

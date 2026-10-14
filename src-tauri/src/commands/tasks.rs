@@ -5,7 +5,7 @@ use tauri::State;
 use super::types::{
     self, CommitRecord, NewTask, StatusChange, Task, TaskEdit, TaskId, TaskStatus, WorkspaceId,
 };
-use super::{CommandError, CommandResult, StorageState, lock};
+use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
 use crate::storage::{Storage, StorageError};
 
 /// Tasks of a workspace ordered by ID, each with its dependencies.
@@ -92,14 +92,24 @@ fn change_status(
 }
 
 /// Deletes a task with its dependency edges and commit records and returns the
-/// readiness changes this caused in its dependents.
-#[tauri::command]
+/// readiness changes this caused in its dependents. A task that still has a worktree
+/// first removes it through herdr, which also closes its herdr workspace; the branch is
+/// kept. Without `force`, a worktree with modified or untracked files is rejected and the
+/// task is kept.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn delete_task(
     storage: State<'_, StorageState>,
+    herdr: State<'_, HerdrState>,
     id: TaskId,
+    force: bool,
 ) -> CommandResult<Vec<StatusChange>> {
-    Ok(types::map_all(&lock(&storage).delete_task(id.into())?))
+    Ok(types::map_all(&super::herdr::delete(
+        &storage,
+        &herdr,
+        id.into(),
+        force,
+    )?))
 }
 
 /// Makes `task_id` depend on `depends_on`. Rejects self, cross-workspace, and cyclic

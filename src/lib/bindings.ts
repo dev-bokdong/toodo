@@ -51,9 +51,12 @@ export const commands = {
 	setTaskStatus: (id: TaskId, status: TaskStatus) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("set_task_status", { id, status })),
 	/**
 	 *  Deletes a task with its dependency edges and commit records and returns the
-	 *  readiness changes this caused in its dependents.
+	 *  readiness changes this caused in its dependents. A task that still has a worktree
+	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
+	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
+	 *  task is kept.
 	 */
-	deleteTask: (id: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("delete_task", { id })),
+	deleteTask: (id: TaskId, force: boolean) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`. Rejects self, cross-workspace, and cyclic
 	 *  edges.
@@ -75,12 +78,6 @@ export const commands = {
 	 *  is taken from `origin` when the repository no longer has it.
 	 */
 	restoreTaskWorktree: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("restore_task_worktree", { id })),
-	/**
-	 *  Removes the worktree of a `done` or `cancelled` task through herdr, which also closes
-	 *  its herdr workspace, and forgets both on the task. The branch is kept. Without `force`,
-	 *  a worktree with modified or untracked files is rejected.
-	 */
-	removeTaskWorktree: (id: TaskId, force: boolean) => typedError<Task, CommandError>(__TAURI_INVOKE("remove_task_worktree", { id, force })),
 	/**
 	 *  Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 	 *  the base branch and stores them as its commit records.

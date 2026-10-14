@@ -149,12 +149,12 @@ failure keeps the task `in_review`, and completing it again is safe. An open pul
 merged; a pull request closed without merging is rejected too, so the user reopens it or
 cancels the task.
 
-Removing the worktree is a separate cleanup step (step 8).
+The worktree stays until the task is deleted (step 8).
 
-### 8. Clean up the worktree
+### 8. Delete the task and its worktree
 
-When the user removes the worktree of a `done` or `cancelled` task ("Remove worktree"),
-Toodo:
+When the user deletes a `done` or `cancelled` task that still has a worktree
+("Delete"), Toodo first removes the worktree:
 
 1. If the task still has a herdr workspace (a cancelled task), calls
    `herdr worktree remove --workspace <herdrWorkspaceId>` (prefixed with
@@ -166,9 +166,10 @@ Toodo:
    `herdr worktree open --cwd <repository> --path <worktreePath> --no-focus` and removes
    it through the new workspace. If herdr cannot find the checkout either, it is already
    gone and nothing is removed.
-3. Clears `worktreePath` and `herdrWorkspaceId` on the task. Its status, branch, commit
-   records, and pull request stay.
+3. Clears `worktreePath` and `herdrWorkspaceId` on the task, then deletes the task with
+   its dependency edges, commit records, and status history.
 
-A checkout with modified or untracked files is rejected and kept; the user can then
-force the removal ("Force remove", `--force`), which discards those files. Any other
-herdr failure keeps the task unchanged.
+A checkout with modified or untracked files is rejected and kept together with the task;
+the user can then force the delete ("Force delete", `--force`), which discards those
+files. Any other herdr failure keeps the task unchanged. A task without a worktree is
+deleted without running herdr.
