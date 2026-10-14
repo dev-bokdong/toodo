@@ -223,7 +223,14 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
               statusLabel={statusLabel}
               statusStyle={statusStyle}
               renderDetail={(selected) => (
-                <TaskRow key={selected.id} task={selected} tasks={allTasks.data ?? []} context={context} showWorkspace />
+                <TaskRow
+                  key={selected.id}
+                  task={selected}
+                  tasks={allTasks.data ?? []}
+                  context={context}
+                  showWorkspace
+                  detailed
+                />
               )}
             />
           )}
@@ -243,10 +250,26 @@ const confirmLabels: Record<Confirmation, string> = {
   "force-delete": "Confirm force delete",
 };
 
-function TaskTimeline({ task }: { task: Task }) {
+function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
   const milestones = reachedMilestones(task.milestones);
   if (milestones.length === 0) {
     return null;
+  }
+  if (detailed) {
+    return (
+      <DetailField label="Timeline">
+        <dl aria-label={`Timeline of #${task.id}`} className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+          {milestones.map(({ label, at }) => (
+            <div key={label} className="contents">
+              <dt className="text-muted-foreground">{label}</dt>
+              <dd>
+                <time dateTime={new Date(at * 1000).toISOString()}>{new Date(at * 1000).toLocaleString()}</time>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </DetailField>
+    );
   }
   return (
     <p aria-label={`Timeline of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
@@ -264,12 +287,15 @@ function TaskRow({
   tasks,
   context,
   showWorkspace,
+  detailed = false,
 }: {
   task: Task;
   /** Tasks of every workspace; any of them can become a prerequisite. */
   tasks: Task[];
   context: TaskContext;
   showWorkspace: boolean;
+  /** Shown on its own, as in the timeline's details sheet: nothing is cut off and fields are labeled. */
+  detailed?: boolean;
 }) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
@@ -331,12 +357,12 @@ function TaskRow({
   }
 
   return (
-    <li className="flex flex-col gap-1.5 px-4 py-3">
+    <li className={cn("flex flex-col", detailed ? "gap-3 p-4" : "gap-1.5 px-4 py-3")}>
       {editing ? (
         <TaskEditForm task={task} onDone={() => setEditing(false)} />
       ) : (
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <div className="flex min-w-0 items-center gap-2">
+        <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
+          <div className={cn("flex min-w-0 items-center gap-2", detailed && "flex-wrap")}>
             <StatusBadge task={task} />
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             {showWorkspace && (
@@ -345,9 +371,11 @@ function TaskRow({
               </span>
             )}
             <span className="shrink-0 rounded-md border px-1.5 font-mono text-xs">{task.taskType}</span>
-            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={task.title}>
-              {task.title}
-            </span>
+            {!detailed && (
+              <span className="min-w-0 flex-1 truncate text-sm font-medium" title={task.title}>
+                {task.title}
+              </span>
+            )}
             {final && task.completionNote === null && (
               <span
                 aria-label={`#${task.id} needs a completion note`}
@@ -359,7 +387,17 @@ function TaskRow({
             )}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
-          {task.description && <p className="line-clamp-2 text-xs text-muted-foreground">{task.description}</p>}
+          {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}
+          {task.description && (
+            <p
+              className={cn(
+                "text-muted-foreground",
+                detailed ? "whitespace-pre-line break-words text-sm" : "line-clamp-2 text-xs",
+              )}
+            >
+              {task.description}
+            </p>
+          )}
         </div>
       )}
       {(task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
@@ -434,8 +472,28 @@ function TaskRow({
           start this task.
         </p>
       )}
-      <TaskTimeline task={task} />
-      {task.branch && (
+      <TaskTimeline task={task} detailed={detailed} />
+      {detailed && task.branch && (
+        <DetailField label="Branch">
+          <span className="break-all font-mono select-all">{task.branch}</span>
+        </DetailField>
+      )}
+      {detailed && task.worktreePath && (
+        <DetailField label="Worktree">
+          <span className="break-all font-mono select-all">{task.worktreePath}</span>
+        </DetailField>
+      )}
+      {detailed && task.pullRequestUrl && (
+        <DetailField label="Pull request">
+          <span className="break-all font-mono select-all">{task.pullRequestUrl}</span>
+          {task.pullRequest && (
+            <span aria-label={`Pull request of #${task.id}`} className="text-muted-foreground">
+              {pullRequestStats(task.pullRequest)}
+            </span>
+          )}
+        </DetailField>
+      )}
+      {!detailed && task.branch && (
         <p
           className="flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground"
           title={task.worktreePath ?? undefined}
@@ -447,7 +505,7 @@ function TaskRow({
           </span>
         </p>
       )}
-      {task.pullRequestUrl && (
+      {!detailed && task.pullRequestUrl && (
         <p className="flex min-w-0 items-center gap-1 text-xs">
           <GitPullRequest aria-hidden className="size-3 shrink-0 text-muted-foreground" />
           <span className="sr-only">Pull request </span>
@@ -459,7 +517,7 @@ function TaskRow({
           )}
         </p>
       )}
-      <CommitList task={task} />
+      <CommitList task={task} detailed={detailed} />
       {final && !editing && <CompletionNote task={task} />}
       {actionError && (
         <p role="alert" className="text-xs text-destructive">
@@ -842,7 +900,17 @@ function CompletionNote({ task }: { task: Task }) {
   );
 }
 
-function CommitList({ task }: { task: Task }) {
+/** A labeled block of the task details sheet. */
+function DetailField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <section aria-label={label} className="flex flex-col gap-0.5 text-xs">
+      <h4 className="font-medium text-muted-foreground">{label}</h4>
+      {children}
+    </section>
+  );
+}
+
+function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
   const recorded = task.status !== "planned" || isPaused(task);
   const commits = useCommitRecords(task.id, recorded);
 
@@ -856,16 +924,17 @@ function CommitList({ task }: { task: Task }) {
   if (!commits.data || commits.data.length === 0) {
     return null;
   }
-  return (
-    <ul aria-label={`Commits of #${task.id}`} className="mt-1 flex flex-col gap-0.5">
+  const list = (
+    <ul aria-label={`Commits of #${task.id}`} className={cn("flex flex-col gap-0.5", !detailed && "mt-1")}>
       {commits.data.map((commit) => (
         <li key={commit.sha} className="flex gap-2 text-xs" title={commit.author}>
           <code className="shrink-0 text-muted-foreground">{commit.sha.slice(0, 7)}</code>
-          <span className="truncate">{commit.message.split("\n", 1)[0]}</span>
+          <span className={detailed ? "min-w-0 break-words" : "truncate"}>{commit.message.split("\n", 1)[0]}</span>
         </li>
       ))}
     </ul>
   );
+  return detailed ? <DetailField label={`Commits (${commits.data.length})`}>{list}</DetailField> : list;
 }
 
 /** A dashed placeholder for a list with nothing in it yet. */

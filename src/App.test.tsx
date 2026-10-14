@@ -416,6 +416,7 @@ describe("App", () => {
     fireEvent.click(bar("Add UI"));
     const details = await within(timeline).findByRole("complementary", { name: "Task details" });
     expect(within(details).getByRole("button", { name: "Start #2" })).toBeInTheDocument();
+    expect(within(details).getByRole("heading", { name: "Add UI" })).toBeInTheDocument();
     expect(bar("Write docs").querySelector("[data-dimmed]")).not.toBeNull();
     expect(bar("Add storage").querySelector("[data-dimmed]")).toBeNull();
     expect(bar("Add UI").querySelector("[data-dimmed]")).toBeNull();
