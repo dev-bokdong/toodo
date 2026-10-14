@@ -29,6 +29,7 @@ vi.mock("@/lib/bindings", () => ({
     createTask: vi.fn(),
     updateTask: vi.fn(),
     setTaskStatus: vi.fn(),
+    reopenTask: vi.fn(),
     deleteTask: vi.fn(),
     addDependency: vi.fn(),
     removeDependency: vi.fn(),
@@ -886,6 +887,30 @@ describe("App", () => {
 
     expect(await screen.findByText("No tasks in this workspace yet.")).toBeInTheDocument();
     expect(mocked.deleteTask).toHaveBeenCalledWith(1, false);
+  });
+
+  it("reopens a cancelled task so it can be started again", async () => {
+    const cancelled = task(1, 1, "Add login", {
+      status: "cancelled",
+      branch: "feat/add-login-1",
+      worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
+      herdrWorkspaceId: "w27",
+    });
+    const reopened = { ...cancelled, status: "ready" as const };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [cancelled] });
+    mocked.reopenTask.mockResolvedValue({ status: "ok", data: reopened });
+    renderApp();
+
+    const reopen = await screen.findByRole("button", { name: "Reopen #1" });
+    expect(screen.queryByRole("button", { name: "Start #1" })).not.toBeInTheDocument();
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [reopened] });
+    fireEvent.click(reopen);
+
+    expect(await screen.findByRole("button", { name: "Start #1" })).toBeInTheDocument();
+    expect(mocked.reopenTask).toHaveBeenCalledWith(1);
+    expect(screen.queryByRole("button", { name: "Reopen #1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete #1" })).toBeInTheDocument();
   });
 
   it("deletes a task with its worktree, forcing it only after a rejection", async () => {

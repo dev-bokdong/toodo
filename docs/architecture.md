@@ -125,7 +125,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   | `startedAt` | The first move to `in_progress`. |
   | `reviewAt` | The first move to `in_review` (pull request opened). |
   | `completedAt` | The move to `done`. |
-  | `cancelledAt` | The move to `cancelled`. |
+  | `cancelledAt` | The latest move to `cancelled`, cleared when the task is reopened. |
 
 - Tasks created before status history existed have no events; their milestones are
   unknown and are not guessed from git or GitHub.

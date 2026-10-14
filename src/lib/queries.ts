@@ -325,6 +325,11 @@ export function useCancelTask() {
   return useTasksMutation((id: TaskId) => unwrap(commands.setTaskStatus(id, "cancelled")));
 }
 
+/** Reopens a cancelled task, which waits for its dependencies again and keeps its worktree. */
+export function useReopenTask() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.reopenTask(id)));
+}
+
 /** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */
 export function useDeleteTask() {
   return useTasksMutation(({ id, force }: { id: TaskId; force: boolean }) =>
