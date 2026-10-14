@@ -48,7 +48,7 @@ export const queryKeys = {
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
-  weekReview: (start: Timestamp, end: Timestamp) => ["week-review", start, end] as const,
+  review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
 };
@@ -176,10 +176,18 @@ export function useTasks(workspaceId: WorkspaceId) {
 }
 
 /** Tasks of every workspace with a milestone or commit in `[start, end)`. */
-export function useWeekReview(start: Timestamp, end: Timestamp) {
+export function useReview(start: Timestamp, end: Timestamp) {
   return useQuery({
-    queryKey: queryKeys.weekReview(start, end),
-    queryFn: () => unwrap(commands.weekReview(start, end)),
+    queryKey: queryKeys.review(start, end),
+    queryFn: () => unwrap(commands.reviewPeriod(start, end)),
+  });
+}
+
+/** Writes a Markdown or CSV report to a path picked in the save dialog. */
+export function useSaveReport() {
+  return useMutation({
+    mutationFn: ({ path, contents }: { path: string; contents: string }) =>
+      unwrap(commands.saveReport(path, contents)),
   });
 }
 

@@ -99,10 +99,15 @@ export const commands = {
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
-	 *  ordered by outcome, then by time. The caller picks the period, normally the seven
-	 *  days from a week's start in the local time zone.
+	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
+	 *  month, or a year in the local time zone.
 	 */
-	weekReview: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(__TAURI_INVOKE("week_review", { start, end })),
+	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(__TAURI_INVOKE("review_period", { start, end })),
+	/**
+	 *  Writes a report built by the frontend to `path`, replacing any file there. Only
+	 *  Markdown (`.md`) and CSV (`.csv`) files are written.
+	 */
+	saveReport: (path: string, contents: string) => typedError<null, CommandError>(__TAURI_INVOKE("save_report", { path, contents })),
 	getBackupSettings: () => __TAURI_INVOKE<BackupSettings>("get_backup_settings"),
 	/**
 	 *  Saves the automatic backup settings, then writes an automatic backup if one is now

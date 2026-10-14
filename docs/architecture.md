@@ -185,15 +185,16 @@ layered DAG, so the same picture shows both what depended on what and when it ha
 - Dependencies can still be added and removed in this view, with the same rules as in
   the task list.
 
-## Week Review
+## Review
 
-A report of the work recorded in one week, across all workspaces, for status updates and
-as material for the year-end report. It is built only from recorded facts (status
-history, commit records, pull request URLs); nothing is generated or guessed by an agent.
+A report of the work recorded in a period, across all workspaces, for status updates and
+for the year-end report. It is built only from recorded facts (status history, commit
+records, pull request URLs); nothing is generated or guessed by an agent.
 
-- The user picks the week's first day (by default the Monday of the current week); the
-  week runs from local midnight of that day to local midnight seven days later, as the
-  half-open period `[start, end)` passed to the `week_review` command.
+- The user picks a week (from any first day, by default the Monday of the current week),
+  a calendar month, quarter, or year, or a custom range of days. The period runs from
+  local midnight of its first day to local midnight after its last day, as the half-open
+  period `[start, end)` passed to the `review_period` command.
 - A task is in the review when it reached a milestone or got a commit in the period.
   Its outcome is the most advanced milestone reached in the period, in this order:
 
@@ -209,7 +210,22 @@ history, commit records, pull request URLs); nothing is generated or guessed by 
 - Each task is listed once, under its outcome, with its workspace, the time of the
   outcome, its pull request, and the commits it got in the period.
 - Tasks without status history appear only through their commits.
-- The review can be copied as Markdown.
+- A summary leads the review: the count of tasks per outcome, the commits made in the
+  period, completed tasks by task type and by workspace, and the median durations of the
+  tasks completed in the period:
+
+  | Duration | From | To |
+  | --- | --- | --- |
+  | Lead time | `plannedAt` | `completedAt` |
+  | Cycle time | `startedAt` | `completedAt` |
+  | Review time | `reviewAt` | `pullRequestMergedAt`, else `completedAt` |
+
+  A task without one of the milestones is left out of that median. A period over several
+  calendar months also counts the tasks completed in each month.
+- The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
+  task with its milestones as local times; UTF-8 with a byte order mark). The frontend
+  builds the file, since it knows the local time zone, and the `save_report` command
+  writes it to the path picked in the save dialog; it only writes `.md` and `.csv` files.
 
 ## Runtime Context
 
@@ -360,5 +376,3 @@ Out of the first scope; revisit when needed.
 - Native WSL repository support.
 - Correcting timeline timestamps by hand, for example to enter work done before the task
   was created in Toodo.
-- Reports over periods other than a week (for example a year), or in other formats
-  such as CSV; the [Week Review](#week-review) covers one week as Markdown.

@@ -3,8 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { formatDate } from "@/lib/timeline";
-import { weekPeriod } from "@/lib/week-review";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   commands,
   events,
@@ -53,7 +53,8 @@ vi.mock("@/lib/bindings", () => ({
     saveBackupSettings: vi.fn(),
     exportDatabase: vi.fn(),
     restoreDatabase: vi.fn(),
-    weekReview: vi.fn(),
+    reviewPeriod: vi.fn(),
+    saveReport: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -64,6 +65,8 @@ vi.mock("@/lib/bindings", () => ({
 const mocked = vi.mocked(commands);
 const mockedEvents = vi.mocked(events, { deep: true });
 const mockedOpenDialog = vi.mocked(openDialog);
+const mockedSaveDialog = vi.mocked(saveDialog);
+const weekPeriod = (day: string) => periodBounds(weekStarting(day));
 
 const toodo: Workspace = {
   id: 1,
@@ -187,7 +190,7 @@ describe("App", () => {
     expect(mocked.listTasks).toHaveBeenLastCalledWith(2);
   });
 
-  it("reviews the chosen week across workspaces and copies it as Markdown", async () => {
+  it("reviews the chosen period across workspaces, copies it as Markdown, and saves it as CSV", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 9, 14, 10));
     const at = new Date(2026, 9, 13, 15).getTime() / 1000;
@@ -195,10 +198,13 @@ describe("App", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
-    mocked.weekReview.mockImplementation(async (start) => ({
+    const year = periodBounds(periodContaining("year", "2026-10-12"));
+    mocked.saveReport.mockResolvedValue({ status: "ok", data: null });
+    mockedSaveDialog.mockResolvedValue("C:\\reports\\review.csv");
+    mocked.reviewPeriod.mockImplementation(async (start) => ({
       status: "ok",
       data:
-        start === weekPeriod("2026-10-12").start
+        start === weekPeriod("2026-10-12").start || start === year.start
           ? [
               {
                 task: task(1, 1, "Add storage", {
@@ -215,7 +221,7 @@ describe("App", () => {
     }));
     renderApp();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Week review" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
 
     expect(screen.getByRole("heading", { name: "Week review" })).toBeInTheDocument();
     expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-12");
@@ -229,7 +235,10 @@ describe("App", () => {
     const workedOn = screen.getByRole("region", { name: "Worked on" });
     expect(within(workedOn).getByText(`herdr · ${formatDate(at)}`)).toBeInTheDocument();
     const { start, end } = weekPeriod("2026-10-12");
-    expect(mocked.weekReview).toHaveBeenCalledWith(start, end);
+    expect(mocked.reviewPeriod).toHaveBeenCalledWith(start, end);
+    const summary = screen.getByRole("region", { name: "Summary" });
+    expect(within(summary).getByText("Completed by type").nextSibling).toHaveTextContent("feat 1");
+    expect(within(summary).queryByRole("list", { name: "Completed per month" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
     expect(await screen.findByText("Copied as Markdown.")).toBeInTheDocument();
@@ -242,11 +251,29 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
     expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
     expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-05");
-    expect(mocked.weekReview).toHaveBeenLastCalledWith(weekPeriod("2026-10-05").start, start);
+    expect(mocked.reviewPeriod).toHaveBeenLastCalledWith(weekPeriod("2026-10-05").start, start);
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Review period" })).getByRole("button", { name: "Year" }));
+    expect(screen.getByRole("heading", { name: "Year review" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Completed" })).toBeInTheDocument();
+    expect(mocked.reviewPeriod).toHaveBeenLastCalledWith(year.start, year.end);
+    const months = within(screen.getByRole("region", { name: "Summary" })).getByRole("list", {
+      name: "Completed per month",
+    });
+    expect(within(months).getAllByRole("listitem")).toHaveLength(12);
+    expect(within(months).getAllByRole("listitem")[9]).toHaveTextContent("2026-101");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save as CSV" }));
+    expect(await screen.findByText("Saved to C:\\reports\\review.csv")).toBeInTheDocument();
+    expect(mockedSaveDialog).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "toodo-review-2026.csv" }));
+    expect(mocked.saveReport).toHaveBeenCalledWith(
+      "C:\\reports\\review.csv",
+      expect.stringContaining(",toodo,feat,Add storage,Completed,"),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     expect(await screen.findByRole("heading", { name: "toodo" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Week review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Year review" })).not.toBeInTheDocument();
   });
 
   it("shows the tasks of the selected workspace on a timeline", async () => {

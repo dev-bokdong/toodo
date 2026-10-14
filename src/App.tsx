@@ -2,11 +2,11 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
+import { Review } from "@/components/review";
 import { TaskList } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
-import { WeekReview } from "@/components/week-review";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
@@ -33,7 +33,7 @@ export default function App() {
           aria-pressed={reviewing}
           onClick={() => setReviewing(true)}
         >
-          Week review
+          Review
         </Button>
         <WorkspaceList
           selectedId={reviewing ? null : (selected?.id ?? null)}
@@ -57,7 +57,7 @@ export default function App() {
           <UpdateBanner />
           <HerdrBanner />
           {reviewing ? (
-            <WeekReview />
+            <Review />
           ) : selected ? (
             <TaskList key={selected.id} workspace={selected} />
           ) : (
