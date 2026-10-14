@@ -1,4 +1,6 @@
-.omo/
+.omo/*
+!.omo/plans/
+!.omo/omo.jsonc
 .codegraph/
 # Logs
 logs

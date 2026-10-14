@@ -101,13 +101,16 @@ mod tests {
             task_type,
             title: title.to_owned(),
             description: String::new(),
-            status: TaskStatus::Ready,
+            status: TaskStatus::Planned,
             depends_on: BTreeSet::new(),
             branch: None,
             worktree_path: None,
             herdr_workspace_id: None,
             pull_request_url: None,
             pull_request_merged_at: None,
+            pull_request: None,
+            resolution: None,
+            completion_note: None,
             timeline: Vec::new(),
         }
     }

@@ -32,7 +32,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::tasks::get_task,
             commands::tasks::create_task,
             commands::tasks::update_task,
-            commands::tasks::set_task_status,
+            commands::tasks::pause_task,
+            commands::tasks::set_completion_note,
             commands::tasks::delete_task,
             commands::tasks::add_dependency,
             commands::tasks::remove_dependency,
@@ -44,7 +45,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::completion::refresh_commit_records,
             commands::completion::open_pull_request,
             commands::completion::complete_task,
+            commands::completion::conclude_task,
             commands::events::list_agent_statuses,
+            commands::review::review_period,
+            commands::review::save_report,
             commands::backup::get_backup_settings,
             commands::backup::save_backup_settings,
             commands::backup::list_backups,
@@ -98,6 +102,7 @@ pub fn run() {
             app.manage::<commands::events::AgentStatusState>(Mutex::default());
             commands::events::spawn(app.handle().clone())?;
             commands::backup::spawn(app.handle().clone())?;
+            commands::completion::spawn(app.handle().clone())?;
             Ok(())
         })
         .run(tauri::generate_context!())

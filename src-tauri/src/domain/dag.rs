@@ -1,20 +1,17 @@
-//! Rules for the task dependency DAG of one workspace: edge validation (no self, cross-
-//! workspace, or cyclic edges), readiness, and topological order.
+//! Rules for the task dependency DAG: edge validation (no self or cyclic edges), readiness,
+//! and topological order. The DAG spans all workspaces: a task may depend on a task of
+//! another workspace, such as a library change that an application change needs first.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
-use super::model::{Task, TaskId};
+use super::model::{Task, TaskId, TaskResolution};
 use super::status::TaskStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyError {
     UnknownTask(TaskId),
     SelfDependency(TaskId),
-    CrossWorkspace {
-        task: TaskId,
-        depends_on: TaskId,
-    },
     /// The tasks along a dependency loop, starting and ending with the same task. Each
     /// task depends on the one after it.
     Cycle(Vec<TaskId>),
@@ -25,10 +22,6 @@ impl fmt::Display for DependencyError {
         match self {
             Self::UnknownTask(id) => write!(f, "unknown task {id}"),
             Self::SelfDependency(id) => write!(f, "task {id} cannot depend on itself"),
-            Self::CrossWorkspace { task, depends_on } => write!(
-                f,
-                "task {task} cannot depend on task {depends_on} from another workspace"
-            ),
             Self::Cycle(path) => {
                 let path: Vec<String> = path.iter().map(TaskId::to_string).collect();
                 write!(f, "dependency cycle: {}", path.join(" -> "))
@@ -38,13 +31,6 @@ impl fmt::Display for DependencyError {
 }
 
 impl std::error::Error for DependencyError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StatusChange {
-    pub task: TaskId,
-    pub from: TaskStatus,
-    pub to: TaskStatus,
-}
 
 fn index(tasks: &[Task]) -> HashMap<TaskId, &Task> {
     tasks.iter().map(|task| (task.id, task)).collect()
@@ -59,12 +45,10 @@ pub fn validate_dependency(
         return Err(DependencyError::SelfDependency(task));
     }
     let by_id = index(tasks);
-    let dependent = by_id.get(&task).ok_or(DependencyError::UnknownTask(task))?;
-    let dependency = by_id
-        .get(&depends_on)
-        .ok_or(DependencyError::UnknownTask(depends_on))?;
-    if dependent.workspace_id != dependency.workspace_id {
-        return Err(DependencyError::CrossWorkspace { task, depends_on });
+    for id in [task, depends_on] {
+        if !by_id.contains_key(&id) {
+            return Err(DependencyError::UnknownTask(id));
+        }
     }
     if let Some(path) = dependency_path(&by_id, depends_on, task) {
         let mut cycle = vec![task];
@@ -113,36 +97,19 @@ fn dependencies_done(by_id: &HashMap<TaskId, &Task>, task: &Task) -> Result<bool
         let dependency = by_id
             .get(dependency)
             .ok_or(DependencyError::UnknownTask(*dependency))?;
-        all_done &= dependency.status == TaskStatus::Done;
+        // Work that was not adopted is not there to build on.
+        all_done &= dependency.status == TaskStatus::Done
+            && dependency.resolution != Some(TaskResolution::NotAdopted);
     }
     Ok(all_done)
 }
 
+/// Whether all dependencies of `task` are done and none of them was concluded without
+/// being adopted, so it can be started.
 pub fn is_ready(tasks: &[Task], task: TaskId) -> Result<bool, DependencyError> {
     let by_id = index(tasks);
     let task = by_id.get(&task).ok_or(DependencyError::UnknownTask(task))?;
     dependencies_done(&by_id, task)
-}
-
-/// Status changes that bring `planned` and `ready` tasks in line with their
-/// dependencies: `planned -> ready` once all dependencies are done, and
-/// `ready -> planned` when a dependency is no longer done or a new one was added.
-pub fn readiness_changes(tasks: &[Task]) -> Result<Vec<StatusChange>, DependencyError> {
-    let by_id = index(tasks);
-    let mut changes = Vec::new();
-    for task in tasks {
-        let to = match (task.status, dependencies_done(&by_id, task)?) {
-            (TaskStatus::Planned, true) => TaskStatus::Ready,
-            (TaskStatus::Ready, false) => TaskStatus::Planned,
-            _ => continue,
-        };
-        changes.push(StatusChange {
-            task: task.id,
-            from: task.status,
-            to,
-        });
-    }
-    Ok(changes)
 }
 
 /// Orders tasks so that every task comes after its dependencies. Ties are broken by
@@ -232,6 +199,9 @@ mod tests {
             herdr_workspace_id: None,
             pull_request_url: None,
             pull_request_merged_at: None,
+            pull_request: None,
+            resolution: None,
+            completion_note: None,
             timeline: Vec::new(),
         }
     }
@@ -285,16 +255,14 @@ mod tests {
     }
 
     #[test]
-    fn cross_workspace_and_unknown_dependencies_are_rejected() {
+    fn cross_workspace_dependencies_are_accepted_and_unknown_ones_rejected() {
         let mut other = task(2, Done, &[]);
         other.workspace_id = WorkspaceId(2);
         let tasks = [task(1, Planned, &[]), other];
+        assert_eq!(validate_dependency(&tasks, TaskId(1), TaskId(2)), Ok(()));
         assert_eq!(
-            validate_dependency(&tasks, TaskId(1), TaskId(2)),
-            Err(DependencyError::CrossWorkspace {
-                task: TaskId(1),
-                depends_on: TaskId(2)
-            })
+            validate_dependency(&tasks, TaskId(9), TaskId(1)),
+            Err(DependencyError::UnknownTask(TaskId(9)))
         );
         assert_eq!(
             validate_dependency(&tasks, TaskId(1), TaskId(9)),
@@ -307,7 +275,7 @@ mod tests {
         let tasks = [
             task(1, Done, &[]),
             task(2, InProgress, &[]),
-            task(3, Cancelled, &[]),
+            task(3, InReview, &[]),
             task(4, Planned, &[1]),
             task(5, Planned, &[1, 2]),
             task(6, Planned, &[3]),
@@ -320,33 +288,19 @@ mod tests {
     }
 
     #[test]
-    fn readiness_changes_promote_and_demote_tasks() {
+    fn a_dependency_that_was_not_adopted_keeps_its_dependents_waiting() {
+        let mut merged = task(1, Done, &[]);
+        merged.resolution = Some(TaskResolution::Merged);
+        let mut not_adopted = task(2, Done, &[]);
+        not_adopted.resolution = Some(TaskResolution::NotAdopted);
         let tasks = [
-            task(1, Done, &[]),
-            task(2, InProgress, &[]),
+            merged,
+            not_adopted,
             task(3, Planned, &[1]),
-            task(4, Ready, &[2]),
-            task(5, Ready, &[1]),
-            task(6, InProgress, &[2]),
+            task(4, Planned, &[1, 2]),
         ];
-        assert_eq!(
-            readiness_changes(&tasks).unwrap(),
-            [
-                StatusChange {
-                    task: TaskId(3),
-                    from: Planned,
-                    to: Ready
-                },
-                StatusChange {
-                    task: TaskId(4),
-                    from: Ready,
-                    to: Planned
-                },
-            ]
-        );
-        for change in readiness_changes(&tasks).unwrap() {
-            assert!(change.from.can_transition_to(change.to));
-        }
+        assert!(is_ready(&tasks, TaskId(3)).unwrap());
+        assert!(!is_ready(&tasks, TaskId(4)).unwrap());
     }
 
     #[test]

@@ -37,38 +37,47 @@ export const commands = {
 	 *  absent. ssh runs on a blocking thread because connecting can take seconds.
 	 */
 	listRemoteDirectories: (machine: string, path: string | null) => typedError<RemoteDirectory, CommandError>(__TAURI_INVOKE("list_remote_directories", { machine, path })),
-	/**  Tasks of a workspace ordered by ID, each with its dependencies. */
-	listTasks: (workspaceId: WorkspaceId) => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks", { workspaceId })),
+	/**
+	 *  Tasks of every workspace ordered by ID, each with its dependencies, which may belong
+	 *  to another workspace.
+	 */
+	listTasks: () => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks")),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
-	/**  Creates a task without dependencies, so it starts out `ready`. */
+	/**  Creates a `planned` task without dependencies. */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(__TAURI_INVOKE("update_task", { task })),
 	/**
-	 *  Moves a task to `in_progress` or `cancelled` and returns the readiness changes this
-	 *  caused in other tasks. `in_review` and `done` are reached only through
-	 *  `open_pull_request` and `complete_task`, which check the pull request.
+	 *  Pauses an `in_progress` or `in_review` task: it becomes `planned` again and keeps
+	 *  its branch, worktree, herdr workspace, commit records, and pull request, so starting
+	 *  it again resumes the work.
 	 */
-	setTaskStatus: (id: TaskId, status: TaskStatus) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("set_task_status", { id, status })),
+	pauseTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("pause_task", { id })),
 	/**
-	 *  Deletes a task with its dependency edges and commit records and returns the
-	 *  readiness changes this caused in its dependents. A task that still has a worktree
+	 *  Stores what the user wrote about the outcome of a `done` task, for reviews. The note
+	 *  is trimmed; an empty one clears it, except for a task that was not adopted, whose note
+	 *  is its required conclusion.
+	 */
+	setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("set_completion_note", { id, note })),
+	/**
+	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
 	 *  task is kept.
 	 */
-	deleteTask: (id: TaskId, force: boolean) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
+	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
 	/**
-	 *  Makes `task_id` depend on `depends_on`. Rejects self, cross-workspace, and cyclic
-	 *  edges.
+	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
+	 *  self and cyclic edges.
 	 */
-	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
-	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
+	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
+	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
 	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(__TAURI_INVOKE("list_commit_records", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(__TAURI_INVOKE("herdr_status")),
 	/**
-	 *  Creates the worktree of a `ready` task through herdr and moves the task to
-	 *  `in_progress`. Requires a worktree root for the machine of the task's workspace.
-	 *  An empty repository first gets an initial commit on the workspace's base branch.
+	 *  Creates the worktree of a `planned` task whose dependencies are done through herdr
+	 *  and moves the task to `in_progress`. Requires a worktree root for the machine of the
+	 *  task's workspace. An empty repository first gets an initial commit on the workspace's
+	 *  base branch. A paused task resumes on its branch, in its worktree if it still has one.
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
@@ -93,10 +102,30 @@ export const commands = {
 	openPullRequest: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("open_pull_request", { id })),
 	/**
 	 *  Moves an `in_review` task to `done` once its pull request is merged, which may make
-	 *  its dependents `ready`. Its herdr workspace is closed; the worktree stays on disk.
+	 *  its dependents `ready`. The size, reviews, and commits of the pull request are
+	 *  recorded for reviews. Its herdr workspace is closed; the worktree stays on disk.
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
+	/**
+	 *  Concludes an `in_progress` or `in_review` task without merging, e.g. research whose
+	 *  result is not adopted: the task becomes `done` as `not_adopted` with `note`, the
+	 *  conclusion, as its completion note. The commits of its branch are recorded, an open
+	 *  pull request is closed with the conclusion as a comment, and its herdr workspace is
+	 *  closed. The branch and worktree stay, and its dependents keep waiting.
+	 */
+	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("conclude_task", { id, note })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
+	/**
+	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
+	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
+	 *  month, or a year in the local time zone.
+	 */
+	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(__TAURI_INVOKE("review_period", { start, end })),
+	/**
+	 *  Writes a report built by the frontend to `path`, replacing any file there. Only
+	 *  Markdown (`.md`) and CSV (`.csv`) files are written.
+	 */
+	saveReport: (path: string, contents: string) => typedError<null, CommandError>(__TAURI_INVOKE("save_report", { path, contents })),
 	getBackupSettings: () => __TAURI_INVOKE<BackupSettings>("get_backup_settings"),
 	/**
 	 *  Saves the automatic backup settings, then writes an automatic backup if one is now
@@ -237,6 +266,22 @@ export type NewWorkspace = {
 	defaultBaseBranch: string | null,
 };
 
+/**  A merged pull request as GitHub reported it when it completed its task. */
+export type PullRequestSnapshot = {
+	number: number,
+	title: string,
+	additions: number,
+	deletions: number,
+	changedFiles: number,
+	/**  The commit the merge put on the base branch. */
+	mergeCommitSha: string | null,
+	/**  Submitted reviews by anyone but the author of the pull request. */
+	reviewCount: number,
+	/**  Distinct reviewers other than the author of the pull request. */
+	reviewerCount: number,
+	firstReviewedAt: Timestamp | null,
+};
+
 /**  Subdirectories of a directory on a remote machine, for the folder browser. */
 export type RemoteDirectory = {
 	/**  Absolute POSIX path of the listed directory. */
@@ -244,15 +289,21 @@ export type RemoteDirectory = {
 	directories: string[],
 };
 
-/**
- *  A task whose status moved between `planned` and `ready` because of a change to
- *  its dependencies.
- */
-export type StatusChange = {
-	taskId: TaskId,
-	from: TaskStatus,
-	to: TaskStatus,
+/**  A task with activity in a reviewed period. */
+export type ReviewEntry = {
+	task: Task,
+	outcome: ReviewOutcome,
+	/**  Time of the outcome: the milestone, or the latest commit for `worked_on`. */
+	at: Timestamp,
+	/**  Commits of the task made in the period, oldest first. */
+	commits: CommitRecord[],
 };
+
+/**
+ *  What happened to a task during a reviewed period: the most advanced milestone it
+ *  reached in the period, or `worked_on` when it only got commits.
+ */
+export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
 
 export type Task = {
 	id: TaskId,
@@ -261,6 +312,8 @@ export type Task = {
 	title: string,
 	description: string,
 	status: TaskStatus,
+	/**  How the task ended; set exactly when it is `done`. */
+	resolution: TaskResolution | null,
 	/**  Tasks this task depends on, in ascending ID order. */
 	dependsOn: TaskId[],
 	branch: string | null,
@@ -269,6 +322,16 @@ export type Task = {
 	pullRequestUrl: string | null,
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
+	/**
+	 *  The pull request as GitHub reported it when its merge completed the task; `null`
+	 *  for tasks completed before Toodo recorded it.
+	 */
+	pullRequest: PullRequestSnapshot | null,
+	/**
+	 *  What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
+	 *  why it was not adopted.
+	 */
+	completionNote: string | null,
 	/**
 	 *  Status history, oldest event first. Empty for tasks created before Toodo
 	 *  recorded it.
@@ -310,16 +373,26 @@ export type TaskId = number;
  */
 export type TaskMilestones = {
 	plannedAt: Timestamp | null,
-	readyAt: Timestamp | null,
 	startedAt: Timestamp | null,
 	reviewAt: Timestamp | null,
 	completedAt: Timestamp | null,
-	cancelledAt: Timestamp | null,
+	/**  The latest pause, unless the task was started again after it. */
+	pausedAt: Timestamp | null,
 };
 
-export type TaskStatus = "planned" | "ready" | "in_progress" | "in_review" | "done" | "cancelled";
+/**  How a `done` task ended. */
+export type TaskResolution = 
+/**  Its pull request was merged. */
+"merged" | 
+/**
+ *  Concluded without merging; the completion note says why. Dependents stay
+ *  waiting.
+ */
+"not_adopted";
 
-export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore";
+export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
+
+export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore" | "rnd";
 
 /**  Tasks of the workspace changed outside a command, e.g. herdr removed a worktree. */
 export type TasksChanged = {

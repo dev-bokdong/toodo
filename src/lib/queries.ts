@@ -12,6 +12,8 @@ import {
   type NewWorkspace,
   type TaskEdit,
   type TaskId,
+  type Timestamp,
+  type Workspace,
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
@@ -38,7 +40,8 @@ async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
 
 export const queryKeys = {
   workspaces: ["workspaces"] as const,
-  tasks: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "tasks"] as const,
+  /** Tasks of every workspace: dependencies cross workspaces, so they are loaded together. */
+  tasks: ["task-list"] as const,
   herdrStatus: ["herdr-status"] as const,
   agentStatuses: ["agent-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
@@ -47,6 +50,7 @@ export const queryKeys = {
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
+  review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
 };
@@ -154,22 +158,49 @@ export function useCreateWorkspace() {
   });
 }
 
+/** Saves an edited workspace, such as a new default base branch. */
+export function useUpdateWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (workspace: Workspace) => unwrap(commands.updateWorkspace(workspace)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+  });
+}
+
 /** Removes a workspace from Toodo with its tasks; the repository and herdr stay untouched. */
 export function useDeleteWorkspace() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)),
-    onSuccess: (_, id) => {
-      queryClient.removeQueries({ queryKey: queryKeys.tasks(id) });
-      return queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true });
-    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+      ]),
   });
 }
 
-export function useTasks(workspaceId: WorkspaceId) {
+/** Tasks of every workspace; a status change may release dependents in other workspaces. */
+export function useTasks() {
   return useQuery({
-    queryKey: queryKeys.tasks(workspaceId),
-    queryFn: () => unwrap(commands.listTasks(workspaceId)),
+    queryKey: queryKeys.tasks,
+    queryFn: () => unwrap(commands.listTasks()),
+  });
+}
+
+/** Tasks of every workspace with a milestone or commit in `[start, end)`. */
+export function useReview(start: Timestamp, end: Timestamp) {
+  return useQuery({
+    queryKey: queryKeys.review(start, end),
+    queryFn: () => unwrap(commands.reviewPeriod(start, end)),
+  });
+}
+
+/** Writes a Markdown or CSV report to a path picked in the save dialog. */
+export function useSaveReport() {
+  return useMutation({
+    mutationFn: ({ path, contents }: { path: string; contents: string }) =>
+      unwrap(commands.saveReport(path, contents)),
   });
 }
 
@@ -193,8 +224,12 @@ export function useHerdrEvents() {
   const queryClient = useQueryClient();
   useEffect(() => {
     const subscriptions = [
-      events.tasksChanged.listen(({ payload }) =>
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks(payload.workspaceId) }),
+      events.tasksChanged.listen(() =>
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+          // A task completed in the background got the commits of its pull request.
+          queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+        ]),
       ),
       events.agentStatusesChanged.listen(({ payload }) =>
         queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses),
@@ -228,8 +263,7 @@ export function useStartTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.startTask(id)),
-    onSuccess: (task) =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
   });
 }
 
@@ -262,7 +296,7 @@ export function useOpenPullRequest() {
     mutationFn: (id: TaskId) => unwrap(commands.openPullRequest(id)),
     onSuccess: (task) =>
       Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
         queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
       ]),
   });
@@ -273,7 +307,43 @@ export function useCompleteTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.completeTask(id)),
-    onSuccess: (task) => queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+    // Completing records the commits of the merged pull request.
+    onSuccess: (task) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
+      ]),
+  });
+}
+
+/**
+ * Concludes an active task without merging it, e.g. research that is not adopted: it becomes
+ * `done` as `not_adopted` with `note` as its conclusion, and its open pull request is closed.
+ */
+export function useConcludeTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: { id: TaskId; note: string }) => unwrap(commands.concludeTask(id, note)),
+    // Concluding records the commits of the branch.
+    onSuccess: (task) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
+/** Saves the completion note of a done task; an empty note clears it. */
+export function useSetCompletionNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: { id: TaskId; note: string }) => unwrap(commands.setCompletionNote(id, note)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
   });
 }
 
@@ -282,8 +352,7 @@ export function useRestoreTaskWorktree() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.restoreTaskWorktree(id)),
-    onSuccess: (task) =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
   });
 }
 
@@ -291,58 +360,46 @@ export function useUpdateTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (task: TaskEdit) => unwrap(commands.updateTask(task)),
-    onSuccess: (task) =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
   });
 }
 
-/** A task of `workspaceId`; carried along so the workspace's task list can be refetched. */
-type WorkspaceTask = { workspaceId: WorkspaceId; id: TaskId };
-
-/** Commands that may change the status of several tasks of a workspace. */
-function useWorkspaceTasksMutation<T extends { workspaceId: WorkspaceId }>(
-  mutationFn: (variables: T) => Promise<unknown>,
-) {
+/** Commands that change tasks that other tasks, possibly in other workspaces, may wait on. */
+function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn,
-    onSuccess: (_, { workspaceId }) =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(workspaceId) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
   });
 }
 
-export function useCancelTask() {
-  return useWorkspaceTasksMutation(({ id }: WorkspaceTask) =>
-    unwrap(commands.setTaskStatus(id, "cancelled")),
-  );
+/** Pauses a started task: it becomes planned again and keeps its branch and worktree. */
+export function usePauseTask() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.pauseTask(id)));
 }
 
 /** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */
 export function useDeleteTask() {
-  return useWorkspaceTasksMutation(({ id, force }: WorkspaceTask & { force: boolean }) =>
+  return useTasksMutation(({ id, force }: { id: TaskId; force: boolean }) =>
     unwrap(commands.deleteTask(id, force)),
   );
 }
 
-type Dependency = WorkspaceTask & { dependsOn: TaskId };
+/** The edge `id -> dependsOn`; `dependsOn` may be a task of another workspace. */
+type Dependency = { id: TaskId; dependsOn: TaskId };
 
 export function useAddDependency() {
-  return useWorkspaceTasksMutation(({ id, dependsOn }: Dependency) =>
-    unwrap(commands.addDependency(id, dependsOn)),
-  );
+  return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.addDependency(id, dependsOn)));
 }
 
 export function useRemoveDependency() {
-  return useWorkspaceTasksMutation(({ id, dependsOn }: Dependency) =>
-    unwrap(commands.removeDependency(id, dependsOn)),
-  );
+  return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.removeDependency(id, dependsOn)));
 }
 
 export function useCreateTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (task: NewTask) => unwrap(commands.createTask(task)),
-    onSuccess: (task) =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(task.workspaceId) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
   });
 }

@@ -7,7 +7,7 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{herdr, ssh};
-use crate::domain::{backup, dag, model, path, ssh_config, status, timeline};
+use crate::domain::{backup, model, path, review, ssh_config, status, timeline};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -338,6 +338,7 @@ pub enum TaskType {
     Docs,
     Test,
     Chore,
+    Rnd,
 }
 
 impl From<model::TaskType> for TaskType {
@@ -350,6 +351,7 @@ impl From<model::TaskType> for TaskType {
             model::TaskType::Docs => Self::Docs,
             model::TaskType::Test => Self::Test,
             model::TaskType::Chore => Self::Chore,
+            model::TaskType::Rnd => Self::Rnd,
         }
     }
 }
@@ -364,6 +366,27 @@ impl From<TaskType> for model::TaskType {
             TaskType::Docs => Self::Docs,
             TaskType::Test => Self::Test,
             TaskType::Chore => Self::Chore,
+            TaskType::Rnd => Self::Rnd,
+        }
+    }
+}
+
+/// How a `done` task ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskResolution {
+    /// Its pull request was merged.
+    Merged,
+    /// Concluded without merging; the completion note says why. Dependents stay
+    /// waiting.
+    NotAdopted,
+}
+
+impl From<model::TaskResolution> for TaskResolution {
+    fn from(resolution: model::TaskResolution) -> Self {
+        match resolution {
+            model::TaskResolution::Merged => Self::Merged,
+            model::TaskResolution::NotAdopted => Self::NotAdopted,
         }
     }
 }
@@ -372,22 +395,18 @@ impl From<TaskType> for model::TaskType {
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Planned,
-    Ready,
     InProgress,
     InReview,
     Done,
-    Cancelled,
 }
 
 impl From<status::TaskStatus> for TaskStatus {
     fn from(status: status::TaskStatus) -> Self {
         match status {
             status::TaskStatus::Planned => Self::Planned,
-            status::TaskStatus::Ready => Self::Ready,
             status::TaskStatus::InProgress => Self::InProgress,
             status::TaskStatus::InReview => Self::InReview,
             status::TaskStatus::Done => Self::Done,
-            status::TaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -396,11 +415,9 @@ impl From<TaskStatus> for status::TaskStatus {
     fn from(status: TaskStatus) -> Self {
         match status {
             TaskStatus::Planned => Self::Planned,
-            TaskStatus::Ready => Self::Ready,
             TaskStatus::InProgress => Self::InProgress,
             TaskStatus::InReview => Self::InReview,
             TaskStatus::Done => Self::Done,
-            TaskStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -414,6 +431,8 @@ pub struct Task {
     pub title: String,
     pub description: String,
     pub status: TaskStatus,
+    /// How the task ended; set exactly when it is `done`.
+    pub resolution: Option<TaskResolution>,
     /// Tasks this task depends on, in ascending ID order.
     pub depends_on: Vec<TaskId>,
     pub branch: Option<String>,
@@ -422,10 +441,56 @@ pub struct Task {
     pub pull_request_url: Option<String>,
     /// Merge time of the pull request reported by GitHub.
     pub pull_request_merged_at: Option<Timestamp>,
+    /// The pull request as GitHub reported it when its merge completed the task; `null`
+    /// for tasks completed before Toodo recorded it.
+    pub pull_request: Option<PullRequestSnapshot>,
+    /// What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
+    /// why it was not adopted.
+    pub completion_note: Option<String>,
     /// Status history, oldest event first. Empty for tasks created before Toodo
     /// recorded it.
     pub timeline: Vec<TaskEvent>,
     pub milestones: TaskMilestones,
+}
+
+/// A merged pull request as GitHub reported it when it completed its task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestSnapshot {
+    #[specta(type = Number)]
+    pub number: i64,
+    pub title: String,
+    #[specta(type = Number)]
+    pub additions: i64,
+    #[specta(type = Number)]
+    pub deletions: i64,
+    #[specta(type = Number)]
+    pub changed_files: i64,
+    /// The commit the merge put on the base branch.
+    pub merge_commit_sha: Option<String>,
+    /// Submitted reviews by anyone but the author of the pull request.
+    #[specta(type = Number)]
+    pub review_count: i64,
+    /// Distinct reviewers other than the author of the pull request.
+    #[specta(type = Number)]
+    pub reviewer_count: i64,
+    pub first_reviewed_at: Option<Timestamp>,
+}
+
+impl From<&model::PullRequestSnapshot> for PullRequestSnapshot {
+    fn from(snapshot: &model::PullRequestSnapshot) -> Self {
+        Self {
+            number: snapshot.number,
+            title: snapshot.title.clone(),
+            additions: snapshot.additions,
+            deletions: snapshot.deletions,
+            changed_files: snapshot.changed_files,
+            merge_commit_sha: snapshot.merge_commit_sha.clone(),
+            review_count: snapshot.review_count,
+            reviewer_count: snapshot.reviewer_count,
+            first_reviewed_at: snapshot.first_reviewed_at.map(Timestamp),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -441,22 +506,21 @@ pub struct TaskEvent {
 #[serde(rename_all = "camelCase")]
 pub struct TaskMilestones {
     pub planned_at: Option<Timestamp>,
-    pub ready_at: Option<Timestamp>,
     pub started_at: Option<Timestamp>,
     pub review_at: Option<Timestamp>,
     pub completed_at: Option<Timestamp>,
-    pub cancelled_at: Option<Timestamp>,
+    /// The latest pause, unless the task was started again after it.
+    pub paused_at: Option<Timestamp>,
 }
 
 impl From<timeline::Milestones> for TaskMilestones {
     fn from(milestones: timeline::Milestones) -> Self {
         Self {
             planned_at: milestones.planned_at.map(Timestamp),
-            ready_at: milestones.ready_at.map(Timestamp),
             started_at: milestones.started_at.map(Timestamp),
             review_at: milestones.review_at.map(Timestamp),
             completed_at: milestones.completed_at.map(Timestamp),
-            cancelled_at: milestones.cancelled_at.map(Timestamp),
+            paused_at: milestones.paused_at.map(Timestamp),
         }
     }
 }
@@ -470,12 +534,15 @@ impl From<&model::Task> for Task {
             title: task.title.clone(),
             description: task.description.clone(),
             status: task.status.into(),
+            resolution: task.resolution.map(TaskResolution::from),
             depends_on: task.depends_on.iter().copied().map(TaskId::from).collect(),
             branch: task.branch.clone(),
             worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
+            pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
+            completion_note: task.completion_note.clone(),
             timeline: task
                 .timeline
                 .iter()
@@ -487,6 +554,42 @@ impl From<&model::Task> for Task {
             milestones: timeline::milestones(&task.timeline).into(),
         }
     }
+}
+
+/// What happened to a task during a reviewed period: the most advanced milestone it
+/// reached in the period, or `worked_on` when it only got commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewOutcome {
+    Completed,
+    OpenedForReview,
+    Started,
+    WorkedOn,
+    Planned,
+}
+
+impl From<review::Outcome> for ReviewOutcome {
+    fn from(outcome: review::Outcome) -> Self {
+        match outcome {
+            review::Outcome::Completed => Self::Completed,
+            review::Outcome::OpenedForReview => Self::OpenedForReview,
+            review::Outcome::Started => Self::Started,
+            review::Outcome::WorkedOn => Self::WorkedOn,
+            review::Outcome::Planned => Self::Planned,
+        }
+    }
+}
+
+/// A task with activity in a reviewed period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewEntry {
+    pub task: Task,
+    pub outcome: ReviewOutcome,
+    /// Time of the outcome: the milestone, or the latest commit for `worked_on`.
+    pub at: Timestamp,
+    /// Commits of the task made in the period, oldest first.
+    pub commits: Vec<CommitRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
@@ -520,26 +623,6 @@ pub struct TaskEdit {
     pub task_type: TaskType,
     pub title: String,
     pub description: String,
-}
-
-/// A task whose status moved between `planned` and `ready` because of a change to
-/// its dependencies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct StatusChange {
-    pub task_id: TaskId,
-    pub from: TaskStatus,
-    pub to: TaskStatus,
-}
-
-impl From<&dag::StatusChange> for StatusChange {
-    fn from(change: &dag::StatusChange) -> Self {
-        Self {
-            task_id: change.task.into(),
-            from: change.from.into(),
-            to: change.to.into(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]

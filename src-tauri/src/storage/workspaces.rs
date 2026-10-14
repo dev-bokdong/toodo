@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::model::{
-    Machine, MachineLabel, MachineSettings, Workspace, WorkspaceId, WorkspaceLocation,
+    Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
 
@@ -117,9 +117,30 @@ impl Storage {
         rows.into_iter().map(WorkspaceRow::into_workspace).collect()
     }
 
+    /// Saves the workspace. Its base branch cannot change while one of its tasks is in
+    /// review: the open pull request targets the current branch.
     pub fn update_workspace(&mut self, workspace: &Workspace) -> Result<()> {
         let (kind, path, herdr_machine) = location_columns(&workspace.location);
-        let changed = self.conn.execute(
+        let tx = self.conn.transaction()?;
+        let in_review: Option<i64> = tx
+            .query_row(
+                "SELECT t.id
+                 FROM tasks t
+                 JOIN workspaces w ON w.id = t.workspace_id
+                 WHERE w.id = ?1 AND t.status = 'in_review' AND w.default_base_branch <> ?2
+                 ORDER BY t.id
+                 LIMIT 1",
+                params![workspace.id.0, workspace.default_base_branch],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(task) = in_review {
+            return Err(StorageError::BaseBranchInReview {
+                workspace: workspace.id,
+                task: TaskId(task),
+            });
+        }
+        let changed = tx.execute(
             "UPDATE workspaces
              SET name = ?2, kind = ?3, path = ?4, herdr_machine = ?5, default_base_branch = ?6
              WHERE id = ?1",
@@ -135,17 +156,42 @@ impl Storage {
         if changed == 0 {
             return Err(StorageError::WorkspaceNotFound(workspace.id));
         }
+        tx.commit()?;
         Ok(())
     }
 
     /// Deletes a workspace together with its tasks, dependencies, and commit records.
+    /// Rejected while a `planned` task of another workspace depends on one of its tasks,
+    /// which would otherwise silently become ready to start; dependencies of tasks being
+    /// worked on or done are dropped with the workspace.
     pub fn delete_workspace(&mut self, id: WorkspaceId) -> Result<()> {
-        let changed = self
-            .conn
-            .execute("DELETE FROM workspaces WHERE id = ?1", [id.0])?;
+        let tx = self.conn.transaction()?;
+        let dependent: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT d.task_id, d.depends_on_id
+                 FROM task_dependencies d
+                 JOIN tasks t ON t.id = d.task_id
+                 JOIN tasks p ON p.id = d.depends_on_id
+                 WHERE p.workspace_id = ?1 AND t.workspace_id <> ?1
+                   AND t.status = 'planned'
+                 ORDER BY d.task_id, d.depends_on_id
+                 LIMIT 1",
+                [id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((task, depends_on)) = dependent {
+            return Err(StorageError::WorkspaceHasDependents {
+                workspace: id,
+                task: TaskId(task),
+                depends_on: TaskId(depends_on),
+            });
+        }
+        let changed = tx.execute("DELETE FROM workspaces WHERE id = ?1", [id.0])?;
         if changed == 0 {
             return Err(StorageError::WorkspaceNotFound(id));
         }
+        tx.commit()?;
         Ok(())
     }
 

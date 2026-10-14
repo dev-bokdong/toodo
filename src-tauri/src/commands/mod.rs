@@ -6,6 +6,7 @@ pub mod completion;
 pub mod events;
 pub mod herdr;
 pub mod machines;
+pub mod review;
 pub mod tasks;
 pub mod types;
 pub mod workspaces;
@@ -155,8 +156,10 @@ impl From<StorageError> for CommandError {
                 CommandErrorKind::NotFound
             }
             StorageError::Dependency(_)
+            | StorageError::WorkspaceHasDependents { .. }
+            | StorageError::BaseBranchInReview { .. }
             | StorageError::Transition(_)
-            | StorageError::DerivedStatus(_) => CommandErrorKind::Rejected,
+            | StorageError::DependenciesNotDone(_) => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::CommitTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,

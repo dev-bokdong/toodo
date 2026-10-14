@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { XIcon } from "lucide-react";
+import { compactSelectClass } from "@/components/workspace-list";
 import {
   Handle,
   MarkerType,
@@ -10,18 +12,22 @@ import {
   type Edge,
   type EdgeChange,
   type Node,
+  type NodeChange,
   type NodeProps,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { AgentBadge } from "@/components/agent-badge";
 import { Button } from "@/components/ui/button";
-import type { Task, TaskStatus, Timestamp, WorkspaceId } from "@/lib/bindings";
-import { useAddDependency, useRemoveDependency } from "@/lib/queries";
+import type { AgentStatus, Task, TaskId, Timestamp } from "@/lib/bindings";
+import { useAddDependency, useAgentStatuses, useRemoveDependency } from "@/lib/queries";
 import {
   canAddDependency,
   dependencyEdges,
   dependencyEditableStatuses,
+  isPaused,
   layoutTimeline,
+  relatedTasks,
   timelineAxis,
   timelineScales,
   timelineYears,
@@ -35,7 +41,17 @@ import { useThemePreference } from "@/lib/theme";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
-type BarNode = Node<{ bar: TimelineBar; statusLabel: string; statusStyle: string }, "bar">;
+type BarNode = Node<
+  {
+    bar: TimelineBar;
+    statusLabel: string;
+    statusStyle: string;
+    workspace: string | null;
+    dimmed: boolean;
+    agentStatus: AgentStatus | null;
+  },
+  "bar"
+>;
 
 const nodeTypes = { bar: TimelineBarView };
 
@@ -55,11 +71,13 @@ const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", w
 const phaseStyles: Record<TimelinePhase, string> = {
   in_progress: "bg-blue-500",
   in_review: "bg-violet-500",
+  paused: "bg-muted-foreground/30",
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
   in_progress: "In progress",
   in_review: "In review",
+  paused: "Paused",
 };
 
 const pad = (value: number) => String(value).padStart(2, "0");
@@ -75,19 +93,32 @@ function useNow(): Timestamp {
 }
 
 export function TaskGraph({
-  workspaceId,
   tasks,
-  statusLabels,
-  statusStyles,
+  allTasks,
+  dimmed,
+  workspaceLabel,
+  statusLabel,
+  statusStyle,
+  renderDetail,
 }: {
-  workspaceId: WorkspaceId;
+  /** Tasks drawn on the timeline. */
   tasks: Task[];
-  statusLabels: Record<TaskStatus, string>;
-  statusStyles: Record<TaskStatus, string>;
+  /** Tasks of every workspace, which new dependencies are checked against. */
+  allTasks: Task[];
+  /** Tasks drawn only for context, such as prerequisites outside the shown workspace. */
+  dimmed: ReadonlySet<TaskId>;
+  /** Workspace name shown on a bar, or null to leave it out. */
+  workspaceLabel: (task: Task) => string | null;
+  statusLabel: (task: Task) => string;
+  statusStyle: (task: Task) => string;
+  /** Details of the task selected on the timeline, with its actions. */
+  renderDetail: (task: Task) => ReactNode;
 }) {
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
+  const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
+  const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
   const [scale, setScale] = useState<TimelineScale>("week");
   const [year, setYear] = useState<number | null>(null);
   const colorMode = useThemePreference();
@@ -96,6 +127,11 @@ export function TaskGraph({
   const layout = layoutTimeline(tasks, { now, scale, period: year === null ? null : yearPeriod(year) });
   const placed = new Set(layout.bars.map((bar) => bar.task.id));
   const dependencies = dependencyEdges(tasks).filter((edge) => placed.has(edge.source) && placed.has(edge.target));
+  // A task that left the timeline, through a filter or a deletion, is no longer selected.
+  const selectedTask = placed.has(selectedTaskId ?? -1) ? tasks.find((task) => task.id === selectedTaskId) : undefined;
+  // While a task is selected, everything outside its dependency chain fades.
+  const chain = selectedTask === undefined ? null : relatedTasks(tasks, selectedTask.id);
+  const inChain = (id: TaskId) => chain === null || chain.has(id);
   const changing = addDependency.isPending || removeDependency.isPending;
   const editable = (target: number) =>
     dependencyEditableStatuses.includes(tasks.find((task) => task.id === target)?.status ?? "done");
@@ -111,7 +147,15 @@ export function TaskGraph({
     id: String(bar.task.id),
     type: "bar",
     position: { x: bar.x, y: rowsTop + bar.row * rowHeight + (rowHeight - barHeight) / 2 },
-    data: { bar, statusLabel: statusLabels[bar.task.status], statusStyle: statusStyles[bar.task.status] },
+    data: {
+      bar,
+      statusLabel: statusLabel(bar.task),
+      statusStyle: statusStyle(bar.task),
+      workspace: workspaceLabel(bar.task),
+      dimmed: dimmed.has(bar.task.id) || !inChain(bar.task.id),
+      agentStatus: agentStatusOf(bar.task),
+    },
+    selected: bar.task.id === selectedTask?.id,
     deletable: false,
     width: bar.width,
     height: barHeight,
@@ -123,7 +167,15 @@ export function TaskGraph({
     selected: selectedEdgeIds.has(edge.id),
     deletable: editable(edge.target),
     markerEnd: { type: MarkerType.ArrowClosed },
+    style: inChain(edge.source) && inChain(edge.target) ? undefined : { opacity: 0.2 },
   }));
+  function agentStatusOf(task: Task): AgentStatus | null {
+    if (task.status !== "in_progress" && task.status !== "in_review") {
+      return null;
+    }
+    return agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status ?? null;
+  }
+
   const selected = dependencies.filter((edge) => selectedEdgeIds.has(edge.id) && editable(edge.target));
 
   function showLatest(instance: ReactFlowInstance<BarNode>) {
@@ -132,17 +184,32 @@ export function TaskGraph({
   }
 
   function connect({ source, target }: Connection) {
-    addDependency.mutate({ workspaceId, id: Number(target), dependsOn: Number(source) });
+    addDependency.mutate({ id: Number(target), dependsOn: Number(source) });
   }
 
   function removeEdges(removed: { source: string; target: string }[]) {
     for (const edge of removed) {
-      removeDependency.mutate({ workspaceId, id: Number(edge.target), dependsOn: Number(edge.source) });
+      removeDependency.mutate({ id: Number(edge.target), dependsOn: Number(edge.source) });
     }
     setSelectedEdgeIds(new Set());
   }
 
+  function changeNodes(changes: NodeChange<BarNode>[]) {
+    const picked = changes.filter((change) => change.type === "select" && change.selected).pop();
+    if (picked !== undefined && picked.type === "select") {
+      setSelectedTaskId(Number(picked.id));
+      setSelectedEdgeIds(new Set());
+    } else if (
+      changes.some((change) => change.type === "select" && !change.selected && Number(change.id) === selectedTaskId)
+    ) {
+      setSelectedTaskId(null);
+    }
+  }
+
   function changeEdges(changes: EdgeChange[]) {
+    if (changes.some((change) => change.type === "select" && change.selected)) {
+      setSelectedTaskId(null);
+    }
     setSelectedEdgeIds((current) => {
       const next = new Set(current);
       for (const change of changes) {
@@ -176,7 +243,7 @@ export function TaskGraph({
         </div>
         <select
           aria-label="Timeline period"
-          className="h-6 rounded-md border bg-background px-1.5"
+          className={compactSelectClass}
           value={year ?? "all"}
           onChange={(event) => setYear(event.target.value === "all" ? null : Number(event.target.value))}
         >
@@ -233,7 +300,14 @@ export function TaskGraph({
           {(addDependency.error ?? removeDependency.error)?.message}
         </p>
       )}
-      <div className="flex gap-2">
+      <div
+        className="flex gap-2"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setSelectedTaskId(null);
+          }
+        }}
+      >
         <div
           ref={container}
           className="min-w-0 flex-1 rounded-lg border"
@@ -259,8 +333,10 @@ export function TaskGraph({
               translateExtent={translateExtent}
               nodesDraggable={false}
               nodesConnectable={!changing}
-              isValidConnection={(c) => canAddDependency(tasks, Number(c.source), Number(c.target))}
+              isValidConnection={(c) => canAddDependency(allTasks, Number(c.source), Number(c.target))}
               onConnect={connect}
+              onNodesChange={changeNodes}
+              onPaneClick={() => setSelectedTaskId(null)}
               onEdgesChange={changeEdges}
               onEdgesDelete={removeEdges}
               deleteKeyCode={["Backspace", "Delete"]}
@@ -272,23 +348,38 @@ export function TaskGraph({
             </ReactFlow>
           )}
         </div>
-        {layout.unplaced.length > 0 && (
-          <aside aria-label="Tasks without a planned date" className="flex w-56 shrink-0 flex-col gap-1 text-xs">
-            <h3 className="font-medium text-muted-foreground">Not on the timeline</h3>
-            <ul className="flex flex-col gap-1">
-              {layout.unplaced.map((task) => (
-                <li key={task.id} className="flex items-center gap-1.5 rounded-md border px-2 py-1">
-                  <span className="tabular-nums text-muted-foreground">#{task.id}</span>
-                  <span className="truncate" title={task.title}>
-                    {task.title}
-                  </span>
-                  <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyles[task.status])}>
-                    {statusLabels[task.status]}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </aside>
+        {(selectedTask !== undefined || layout.unplaced.length > 0) && (
+          <div className={cn("flex shrink-0 flex-col gap-3", selectedTask === undefined ? "w-56" : "w-96")}>
+            {selectedTask !== undefined && (
+              <aside aria-label="Task details" className="flex flex-col gap-1 text-xs">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-medium text-muted-foreground">Task details</h3>
+                  <Button size="icon-xs" variant="ghost" aria-label="Close details" onClick={() => setSelectedTaskId(null)}>
+                    <XIcon />
+                  </Button>
+                </div>
+                <ul className="rounded-xl border bg-card shadow-xs">{renderDetail(selectedTask)}</ul>
+              </aside>
+            )}
+            {layout.unplaced.length > 0 && (
+              <aside aria-label="Tasks without a planned date" className="flex flex-col gap-1 text-xs">
+                <h3 className="font-medium text-muted-foreground">Not on the timeline</h3>
+                <ul className="flex flex-col gap-1">
+                  {layout.unplaced.map((task) => (
+                    <li key={task.id} className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+                      <span className="tabular-nums text-muted-foreground">#{task.id}</span>
+                      <span className="truncate" title={task.title}>
+                        {task.title}
+                      </span>
+                      <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyle(task))}>
+                        {statusLabel(task)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </aside>
+            )}
+          </div>
         )}
       </div>
     </section>
@@ -380,13 +471,20 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
   );
 }
 
-function TimelineBarView({ data: { bar, statusLabel, statusStyle } }: NodeProps<BarNode>) {
+function TimelineBarView({
+  data: { bar, statusLabel, statusStyle, workspace, dimmed, agentStatus },
+  selected,
+}: NodeProps<BarNode>) {
   const { task, phases, pending, lead } = bar;
   const summary = reachedMilestones(task.milestones)
     .map(({ label, at }) => `${label} ${formatDate(at)}`)
     .join(", ");
   return (
-    <div className="relative h-full w-full" title={`#${task.id} ${task.title}\n${summary}`}>
+    <div
+      data-dimmed={dimmed || undefined}
+      className={cn("relative h-full w-full", dimmed && "opacity-40")}
+      title={`${workspace === null ? "" : `${workspace} `}#${task.id} ${task.title}\n${summary}`}
+    >
       <Handle type="target" position={Position.Left} />
       {lead !== null && (
         // The wait before the bar: from the planned time, through the time it became ready.
@@ -407,14 +505,15 @@ function TimelineBarView({ data: { bar, statusLabel, statusStyle } }: NodeProps<
       <div
         className={cn(
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
+          selected && "ring-2 ring-primary",
           pending && "border-dashed border-muted-foreground/60 shadow-none",
-          task.status === "cancelled" && "opacity-60",
+          isPaused(task) && "opacity-60",
         )}
       >
         <div className="absolute inset-x-0 bottom-0 h-1.5">
           {phases.map((phase) => (
             <span
-              key={phase.phase}
+              key={phase.x}
               className={cn("absolute inset-y-0", phaseStyles[phase.phase])}
               style={{ left: phase.x, width: phase.width }}
             />
@@ -425,13 +524,15 @@ function TimelineBarView({ data: { bar, statusLabel, statusStyle } }: NodeProps<
       <div
         className={cn(
           "relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground",
-          task.status === "cancelled" && "opacity-60",
+          isPaused(task) && "opacity-60",
         )}
         style={{ width: "max-content", minWidth: "100%" }}
       >
+        {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className="font-medium">{task.title}</span>
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
+        {agentStatus !== null && <AgentBadge taskId={task.id} status={agentStatus} className="px-1.5 py-0" />}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>

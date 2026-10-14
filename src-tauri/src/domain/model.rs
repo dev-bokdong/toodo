@@ -147,6 +147,8 @@ pub enum TaskType {
     Docs,
     Test,
     Chore,
+    /// Research and development: work whose conclusion may be not to adopt it.
+    Rnd,
 }
 
 impl TaskType {
@@ -159,6 +161,7 @@ impl TaskType {
             Self::Docs => "docs",
             Self::Test => "test",
             Self::Chore => "chore",
+            Self::Rnd => "rnd",
         }
     }
 }
@@ -166,6 +169,25 @@ impl TaskType {
 impl fmt::Display for TaskType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// How a `done` task ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskResolution {
+    /// Its pull request was merged into the base branch.
+    Merged,
+    /// The work was concluded without merging, e.g. research whose result was not
+    /// adopted. Its completion note says why; dependents stay blocked.
+    NotAdopted,
+}
+
+impl TaskResolution {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Merged => "merged",
+            Self::NotAdopted => "not_adopted",
+        }
     }
 }
 
@@ -177,6 +199,8 @@ pub struct Task {
     pub title: String,
     pub description: String,
     pub status: TaskStatus,
+    /// How the task ended; `Some` exactly when it is `done`.
+    pub resolution: Option<TaskResolution>,
     pub depends_on: BTreeSet<TaskId>,
     pub branch: Option<String>,
     pub worktree_path: Option<HostPath>,
@@ -185,8 +209,32 @@ pub struct Task {
     /// Merge time of the pull request reported by GitHub, in seconds since the Unix
     /// epoch.
     pub pull_request_merged_at: Option<i64>,
+    /// What the pull request looked like when its merge completed the task.
+    pub pull_request: Option<PullRequestSnapshot>,
+    /// What the user wrote about the outcome of a `done` task, for later reviews.
+    pub completion_note: Option<String>,
     /// Status history, oldest event first.
     pub timeline: Vec<TaskEvent>,
+}
+
+/// A merged pull request as GitHub reported it when it completed its task, kept so
+/// reviews do not depend on GitHub later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestSnapshot {
+    pub number: i64,
+    pub title: String,
+    pub additions: i64,
+    pub deletions: i64,
+    pub changed_files: i64,
+    /// The commit the merge put on the base branch; with a squash merge the branch
+    /// commits never reach it.
+    pub merge_commit_sha: Option<String>,
+    /// Submitted reviews by anyone but the author of the pull request.
+    pub review_count: i64,
+    /// Distinct reviewers other than the author of the pull request.
+    pub reviewer_count: i64,
+    /// Submission time of the first of those reviews, in seconds since the Unix epoch.
+    pub first_reviewed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

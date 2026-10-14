@@ -7,8 +7,8 @@ starting point; refine it as implementation decisions are made.
 
 Besides driving the work itself, Toodo is the record used to compile a year-end
 performance report. For every task it must be able to answer when it was planned, when
-work on it started, when its pull request was opened, and when it was completed or
-cancelled, and show how tasks depended on each other over time. Timeline data is
+work on it started, when its pull request was opened, when it was paused, and when it
+was completed, and show how tasks depended on each other over time. Timeline data is
 therefore part of the domain, not a UI detail: it is recorded at the moment each change
 happens and never derived later from git or GitHub alone.
 
@@ -27,7 +27,7 @@ cloning a repository into a path or by opening a repository already cloned at a 
 | `kind` | `local` or `ssh`. |
 | `path` | Absolute path to the repository root: a Windows path for `local`, a POSIX path for `ssh`. Keep the two as distinct types. |
 | `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh.exe` host. |
-| `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). |
+| `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). Detected or entered at registration and editable afterwards from the workspace header, except while a task of the workspace is `in_review` (its open PR targets the current branch). |
 
 ### Machine Settings
 
@@ -52,6 +52,7 @@ A fixed set; users cannot define their own types for now.
 | `docs` | Documentation-only changes. |
 | `test` | Adding or changing tests only. |
 | `chore` | Build, tooling, dependency, or maintenance work. |
+| `rnd` | Research and development: exploring an approach whose result may be not to adopt it (see [Conclude without merging](workflow.md#7b-conclude-without-merging)). |
 
 ### Worktree Layout and Branch Naming
 
@@ -92,12 +93,15 @@ A unit of work inside a workspace.
 | `type` | Kind of change, one of the [task types](#task-types). Used in the worktree path and branch name. |
 | `title`, `description` | What should be implemented (English). |
 | `status` | See [workflow.md](workflow.md#task-states). |
+| `resolution` | How a `done` task ended: `merged` (completed by its merged pull request) or `not_adopted` (concluded without merging); `null` for every other status. Tasks done before Toodo recorded it are `merged`. |
 | `dependsOn` | IDs of tasks that must be completed first. |
 | `branch` | Branch created for the task's worktree. |
 | `worktreePath` | Directory of the task's worktree. |
 | `herdrWorkspaceId` | herdr workspace bound to the worktree, if any. |
 | `pullRequestUrl` | Set when the PR is opened, as the task moves to `in_review`. |
 | `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
+| `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
+| `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
 | `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
 
 ### Task Timeline
@@ -110,31 +114,42 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 | `status` | Status the task moved to. |
 | `at` | Time of the change, in seconds since the Unix epoch (UTC), from the clock of the machine running Toodo. Shown in the local time zone. |
 
-- Creating a task records its initial status (`planned` or `ready`). Every later status
-  change, including the automatic `planned`/`ready` recomputation after dependency
-  changes, records one event in the same transaction as the change itself.
+- Creating a task records its initial status (`planned`). Every later status change
+  records one event in the same transaction as the change itself. Dependency changes do
+  not change a status, so they record nothing.
 - Events are never edited or deleted on their own; they go away only when their task is
-  deleted. Cancelling a task keeps its history, so cancel rather than delete tasks that
-  should appear in a report.
+  deleted. A deleted task no longer appears in reports, so pause rather than delete a
+  task whose work should be reported.
 - The milestones used by the timeline view and reports are derived from the history:
 
   | Milestone | Derived from |
   | --- | --- |
   | `plannedAt` | The first event (task creation). |
-  | `readyAt` | The latest move to `ready` before `startedAt` (when the last dependency was done). |
-  | `startedAt` | The first move to `in_progress`. |
+  | `startedAt` | The first move to `in_progress`; resuming a paused task keeps it. |
   | `reviewAt` | The first move to `in_review` (pull request opened). |
   | `completedAt` | The move to `done`. |
-  | `cancelledAt` | The move to `cancelled`. |
+  | `pausedAt` | The latest move back to `planned` after `startedAt`, cleared when the task is started again. |
+
+  When a task became ready to start is not recorded: it is the `completedAt` of its last
+  dependency to be done.
 
 - Tasks created before status history existed have no events; their milestones are
   unknown and are not guessed from git or GitHub.
 
 ### Task Dependencies (DAG)
 
-- `dependsOn` edges must stay within one workspace and must never form a cycle.
-- A task is **ready** when every task it depends on is `done`.
-- Dependents of a task can be planned at any time but only started once ready.
+- There is one DAG across all workspaces: a task may depend on a task of another
+  workspace, for example an application change that needs a low-level library change
+  first. Edges must never form a cycle, including cycles that pass through several
+  workspaces.
+- A task is **ready** when every task it depends on is `done`, in whichever workspace it
+  lives; finishing a task can release dependents in other workspaces. Readiness is
+  derived from the DAG whenever it is needed and is not a status.
+- A workspace cannot be deleted while a `planned` task of another workspace depends on
+  one of its tasks, since that task would silently become ready. Dependencies of tasks
+  being worked on or done are dropped with the workspace.
+- Dependents of a task can be planned at any time but only started (or resumed) once
+  ready.
 - A topological order of the DAG is the suggested execution order.
 
 ### CommitRecord
@@ -154,25 +169,31 @@ Commits are discovered from the task branch, typically as
 
 ## Timeline View
 
-The dependency graph of a workspace is drawn on a time axis instead of as a free-form
-layered DAG, so the same picture shows both what depended on what and when it happened.
+The dependency graph is drawn on a time axis instead of as a free-form layered DAG, so
+the same picture shows both what depended on what and when it happened. The timeline
+belongs to the "All workspaces" view, where it is the default (a workspace's own view is
+a task list): it draws the tasks of every workspace together, each bar labeled with its
+workspace, and can be narrowed to one workspace. Narrowed, prerequisites from other
+workspaces are still drawn, dimmed and labeled with their workspace.
 
 - It reads like a Gantt chart: a time axis header (coarse dates above fine dates or
   hours) stays at the top while the rows scroll, and a cursor marks the current time,
   refreshed every 30 seconds.
 - Each task is a bar whose ends follow its status:
-  - Not started (`planned`, `ready`): a fixed-width bar attached to the current-time
-    cursor, moving with it.
-  - Started (`in_progress`, `in_review`): fixed at `startedAt`, its end attached to the
-    current-time cursor.
-  - Closed (`done`, `cancelled`): fixed from `startedAt` to `completedAt` (or
-    `cancelledAt`).
-  A started bar is split into phases: in progress (`startedAt` to `reviewAt`) and in
-  review (`reviewAt` to the end).
+  - Never started (`planned` without a branch or `startedAt`): a fixed-width bar
+    attached to the current-time cursor, moving with it.
+  - Being worked on (`in_progress`, `in_review`): fixed at `startedAt`, its end attached
+    to the current-time cursor.
+  - Paused or done (`planned` after a start, `done`): fixed from `startedAt` to
+    `pausedAt` (drawn faded) or `completedAt`.
+  A started bar is split into phases from the status history: in progress, in review,
+  and paused (back in `planned` until the task was resumed), so a paused and resumed
+  task shows its pause as a gap. Without history the phases come from the milestones:
+  in progress (`startedAt` to `reviewAt`) and in review (`reviewAt` to the end).
 - The wait before a bar is drawn lighter than the bar, so bar length still reads as
   work: a marker at `plannedAt` and a dashed line from it to the bar, with a tick at
-  `readyAt` when the task became ready later than it was planned (its prerequisites
-  were done then). The axis starts early enough to show the earliest `plannedAt`.
+  the `completedAt` of its last prerequisite when the task became ready later than it
+  was planned. The axis starts early enough to show the earliest `plannedAt`.
 - Every task has its own row. Rows are in dependency order: a task comes after all the
   tasks it depends on, otherwise in order of start time. A task that has not started is
   also placed to the right of its prerequisites' bars, so a chain of waiting tasks reads
@@ -184,6 +205,58 @@ layered DAG, so the same picture shows both what depended on what and when it ha
   status history existed) are listed beside the timeline instead of on it.
 - Dependencies can still be added and removed in this view, with the same rules as in
   the task list.
+
+## Review
+
+A report of the work recorded in a period, across all workspaces, for status updates and
+for the year-end report. It is built only from recorded facts (status history, commit
+records, pull request snapshots) and the completion notes the user wrote; nothing is
+generated or guessed by an agent.
+
+- The user picks a week (from any first day, by default the Monday of the current week),
+  a calendar month, quarter, or year, or a custom range of days. The period runs from
+  local midnight of its first day to local midnight after its last day, as the half-open
+  period `[start, end)` passed to the `review_period` command.
+- A task is in the review when it reached a milestone or got a commit in the period.
+  Its outcome is the most advanced milestone reached in the period, in this order:
+
+  | Outcome | Reached in the period |
+  | --- | --- |
+  | Completed | `completedAt` |
+  | Opened for review | `reviewAt` |
+  | Started | `startedAt` |
+  | Worked on | No milestone, but at least one commit (`committedAt`) |
+  | Planned | `plannedAt` |
+
+- Each task is listed once, under its outcome, with its workspace, the time of the
+  outcome, its pull request (with its size and review count once merged), its completion
+  note, and the commits it got in the period.
+- Tasks without status history appear only through their commits.
+- A summary leads the review: the count of tasks per outcome, the commits made in the
+  period, completed tasks by task type and by workspace, the summed size of their merged
+  pull requests, and the median durations of the tasks completed in the period:
+
+  | Duration | From | To |
+  | --- | --- | --- |
+  | Lead time | `plannedAt` | `completedAt` |
+  | Cycle time | `startedAt` | `completedAt` |
+  | Active time | `startedAt` | `completedAt`, counting only time `in_progress` or `in_review` |
+  | Review time | `reviewAt` | `pullRequestMergedAt`, else `completedAt` |
+
+  Cycle time includes pauses and active time leaves them out, so the two together show
+  how long a task took and how long it was worked on. A task without one of the
+  milestones (or without status history, for active time) is left out of that median. A period over several
+  calendar months also counts the tasks completed in each month. The review screen also
+  says how many completed tasks have no completion note yet, and how many completed
+  tasks were concluded without merging (not adopted); the Markdown report marks those
+  tasks "not adopted" and lists their conclusion.
+- The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
+  task with its milestones as local times, its resolution (`Merged` or `Not adopted`), its
+  active hours so far, the size and review count of its pull request, and its completion
+  note; UTF-8 with a byte
+  order mark). The frontend
+  builds the file, since it knows the local time zone, and the `save_report` command
+  writes it to the path picked in the save dialog; it only writes `.md` and `.csv` files.
 
 ## Runtime Context
 
@@ -286,9 +359,8 @@ Toodo owns planning, task state, commit records, and pull requests.
   - Workspace and task IDs are never reused after a delete, because task IDs are part of
     branch and worktree names.
   - Writes that touch the task DAG run in one transaction: new edges are validated
-    against the DAG rules, and `planned`/`ready` statuses are recomputed from the
-    dependencies after every dependency, status, or task change. `planned` and `ready`
-    cannot be set directly.
+    against the DAG rules, and starting a task checks in the same transaction that all
+    its dependencies are done.
   - Every task status change appends a row to the task's status history in the same
     transaction (see [Task Timeline](#task-timeline)).
   - Deleting a workspace or task also deletes its tasks, dependency edges, commit
@@ -334,5 +406,3 @@ Out of the first scope; revisit when needed.
 - Native WSL repository support.
 - Correcting timeline timestamps by hand, for example to enter work done before the task
   was created in Toodo.
-- Exporting a report (for example Markdown or CSV) of the tasks completed in a period,
-  with their milestones, pull requests, and commits.

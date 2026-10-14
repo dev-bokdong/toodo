@@ -16,7 +16,8 @@ into a performance report.
 - **Implementation in herdr**: the work itself happens in herdr panes and agents
   attached to the task's worktree.
 - **Commit tracking**: record the commits (SHA, message, author, time) made for a task.
-- **Completion and PR**: completing a task opens a pull request for its branch.
+- **Completion and PR**: a task's branch is pushed and a pull request opened for it;
+  once that pull request is merged on GitHub, Toodo completes the task automatically.
 - **Timeline**: every status change is timestamped; the dependency graph is drawn on a
   time axis showing when each task was planned, started, reviewed, and completed.
 
