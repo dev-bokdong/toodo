@@ -20,6 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AgentBadge } from "@/components/agent-badge";
+import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import type { AgentStatus, Task, TaskId, Timestamp } from "@/lib/bindings";
 import { useAddDependency, useAgentStatuses, useRemoveDependency } from "@/lib/queries";
@@ -538,7 +539,7 @@ function TimelineBarView({
     <div
       data-dimmed={dimmed || undefined}
       className={cn("relative h-full w-full", dimmed && "opacity-40")}
-      title={`${workspace === null ? "" : `${workspace} `}#${task.id} ${task.title}\n${summary}`}
+      title={`${workspace === null ? "" : `${workspace} `}${task.taskType} #${task.id} ${task.title}\n${summary}`}
     >
       <Handle type="target" position={Position.Left} />
       {lead !== null && (
@@ -585,6 +586,7 @@ function TimelineBarView({
         style={{ width: "max-content", minWidth: "100%" }}
       >
         {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
+        <TaskTypeBadge type={task.taskType} className="bg-card px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className="font-medium">{task.title}</span>
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>

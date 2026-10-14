@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { TaskGraph } from "@/components/task-graph";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
+import { TaskTypeBadge } from "@/components/task-type-badge";
 import type { Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
@@ -386,7 +387,7 @@ function TaskRow({
                 {context.workspaceName(task.workspaceId)}
               </span>
             )}
-            <span className="shrink-0 rounded-md border px-1.5 font-mono text-xs">{task.taskType}</span>
+            <TaskTypeBadge type={task.taskType} />
             {!detailed && (
               <span className="min-w-0 flex-1 truncate text-sm font-medium" title={task.title}>
                 {task.title}

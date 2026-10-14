@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
 import type { ReviewEntry, ReviewOutcome, Workspace } from "@/lib/bindings";
@@ -235,7 +236,7 @@ export function Review() {
               {group.entries.map(({ task, at, commits }) => (
                 <li key={task.id} className="flex flex-col gap-1 px-3 py-2">
                   <div className="flex items-center gap-2">
-                    <span className="rounded-md border px-1.5 text-xs font-medium">{task.taskType}</span>
+                    <TaskTypeBadge type={task.taskType} />
                     <span className="truncate text-sm font-medium">{task.title}</span>
                     {task.resolution === "not_adopted" && (
                       <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-200">
