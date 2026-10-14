@@ -15,7 +15,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
-import type { Task, TaskStatus, Timestamp, WorkspaceId } from "@/lib/bindings";
+import type { Task, TaskStatus, Timestamp } from "@/lib/bindings";
 import { useAddDependency, useRemoveDependency } from "@/lib/queries";
 import {
   canAddDependency,
@@ -35,7 +35,10 @@ import { useThemePreference } from "@/lib/theme";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
-type BarNode = Node<{ bar: TimelineBar; statusLabel: string; statusStyle: string }, "bar">;
+type BarNode = Node<
+  { bar: TimelineBar; statusLabel: string; statusStyle: string; workspace: string | null },
+  "bar"
+>;
 
 const nodeTypes = { bar: TimelineBarView };
 
@@ -75,13 +78,18 @@ function useNow(): Timestamp {
 }
 
 export function TaskGraph({
-  workspaceId,
   tasks,
+  allTasks,
+  workspaceLabel,
   statusLabels,
   statusStyles,
 }: {
-  workspaceId: WorkspaceId;
+  /** Tasks drawn on the timeline. */
   tasks: Task[];
+  /** Tasks of every workspace, which new dependencies are checked against. */
+  allTasks: Task[];
+  /** Workspace name shown on a bar, or null to leave it out. */
+  workspaceLabel: (task: Task) => string | null;
   statusLabels: Record<TaskStatus, string>;
   statusStyles: Record<TaskStatus, string>;
 }) {
@@ -111,7 +119,12 @@ export function TaskGraph({
     id: String(bar.task.id),
     type: "bar",
     position: { x: bar.x, y: rowsTop + bar.row * rowHeight + (rowHeight - barHeight) / 2 },
-    data: { bar, statusLabel: statusLabels[bar.task.status], statusStyle: statusStyles[bar.task.status] },
+    data: {
+      bar,
+      statusLabel: statusLabels[bar.task.status],
+      statusStyle: statusStyles[bar.task.status],
+      workspace: workspaceLabel(bar.task),
+    },
     deletable: false,
     width: bar.width,
     height: barHeight,
@@ -132,12 +145,12 @@ export function TaskGraph({
   }
 
   function connect({ source, target }: Connection) {
-    addDependency.mutate({ workspaceId, id: Number(target), dependsOn: Number(source) });
+    addDependency.mutate({ id: Number(target), dependsOn: Number(source) });
   }
 
   function removeEdges(removed: { source: string; target: string }[]) {
     for (const edge of removed) {
-      removeDependency.mutate({ workspaceId, id: Number(edge.target), dependsOn: Number(edge.source) });
+      removeDependency.mutate({ id: Number(edge.target), dependsOn: Number(edge.source) });
     }
     setSelectedEdgeIds(new Set());
   }
@@ -259,7 +272,7 @@ export function TaskGraph({
               translateExtent={translateExtent}
               nodesDraggable={false}
               nodesConnectable={!changing}
-              isValidConnection={(c) => canAddDependency(tasks, Number(c.source), Number(c.target))}
+              isValidConnection={(c) => canAddDependency(allTasks, Number(c.source), Number(c.target))}
               onConnect={connect}
               onEdgesChange={changeEdges}
               onEdgesDelete={removeEdges}
@@ -380,13 +393,16 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
   );
 }
 
-function TimelineBarView({ data: { bar, statusLabel, statusStyle } }: NodeProps<BarNode>) {
+function TimelineBarView({ data: { bar, statusLabel, statusStyle, workspace } }: NodeProps<BarNode>) {
   const { task, phases, pending, lead } = bar;
   const summary = reachedMilestones(task.milestones)
     .map(({ label, at }) => `${label} ${formatDate(at)}`)
     .join(", ");
   return (
-    <div className="relative h-full w-full" title={`#${task.id} ${task.title}\n${summary}`}>
+    <div
+      className="relative h-full w-full"
+      title={`${workspace === null ? "" : `${workspace} `}#${task.id} ${task.title}\n${summary}`}
+    >
       <Handle type="target" position={Position.Left} />
       {lead !== null && (
         // The wait before the bar: from the planned time, through the time it became ready.
@@ -429,6 +445,7 @@ function TimelineBarView({ data: { bar, statusLabel, statusStyle } }: NodeProps<
         )}
         style={{ width: "max-content", minWidth: "100%" }}
       >
+        {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className="font-medium">{task.title}</span>
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>

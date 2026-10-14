@@ -1,5 +1,6 @@
-//! Rules for the task dependency DAG of one workspace: edge validation (no self, cross-
-//! workspace, or cyclic edges), readiness, and topological order.
+//! Rules for the task dependency DAG: edge validation (no self or cyclic edges), readiness,
+//! and topological order. The DAG spans all workspaces: a task may depend on a task of
+//! another workspace, such as a library change that an application change needs first.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -11,10 +12,6 @@ use super::status::TaskStatus;
 pub enum DependencyError {
     UnknownTask(TaskId),
     SelfDependency(TaskId),
-    CrossWorkspace {
-        task: TaskId,
-        depends_on: TaskId,
-    },
     /// The tasks along a dependency loop, starting and ending with the same task. Each
     /// task depends on the one after it.
     Cycle(Vec<TaskId>),
@@ -25,10 +22,6 @@ impl fmt::Display for DependencyError {
         match self {
             Self::UnknownTask(id) => write!(f, "unknown task {id}"),
             Self::SelfDependency(id) => write!(f, "task {id} cannot depend on itself"),
-            Self::CrossWorkspace { task, depends_on } => write!(
-                f,
-                "task {task} cannot depend on task {depends_on} from another workspace"
-            ),
             Self::Cycle(path) => {
                 let path: Vec<String> = path.iter().map(TaskId::to_string).collect();
                 write!(f, "dependency cycle: {}", path.join(" -> "))
@@ -59,12 +52,10 @@ pub fn validate_dependency(
         return Err(DependencyError::SelfDependency(task));
     }
     let by_id = index(tasks);
-    let dependent = by_id.get(&task).ok_or(DependencyError::UnknownTask(task))?;
-    let dependency = by_id
-        .get(&depends_on)
-        .ok_or(DependencyError::UnknownTask(depends_on))?;
-    if dependent.workspace_id != dependency.workspace_id {
-        return Err(DependencyError::CrossWorkspace { task, depends_on });
+    for id in [task, depends_on] {
+        if !by_id.contains_key(&id) {
+            return Err(DependencyError::UnknownTask(id));
+        }
     }
     if let Some(path) = dependency_path(&by_id, depends_on, task) {
         let mut cycle = vec![task];
@@ -285,16 +276,14 @@ mod tests {
     }
 
     #[test]
-    fn cross_workspace_and_unknown_dependencies_are_rejected() {
+    fn cross_workspace_dependencies_are_accepted_and_unknown_ones_rejected() {
         let mut other = task(2, Done, &[]);
         other.workspace_id = WorkspaceId(2);
         let tasks = [task(1, Planned, &[]), other];
+        assert_eq!(validate_dependency(&tasks, TaskId(1), TaskId(2)), Ok(()));
         assert_eq!(
-            validate_dependency(&tasks, TaskId(1), TaskId(2)),
-            Err(DependencyError::CrossWorkspace {
-                task: TaskId(1),
-                depends_on: TaskId(2)
-            })
+            validate_dependency(&tasks, TaskId(9), TaskId(1)),
+            Err(DependencyError::UnknownTask(TaskId(9)))
         );
         assert_eq!(
             validate_dependency(&tasks, TaskId(1), TaskId(9)),

@@ -2,22 +2,16 @@
 
 use tauri::State;
 
-use super::types::{
-    self, CommitRecord, NewTask, StatusChange, Task, TaskEdit, TaskId, TaskStatus, WorkspaceId,
-};
+use super::types::{self, CommitRecord, NewTask, StatusChange, Task, TaskEdit, TaskId, TaskStatus};
 use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
 use crate::storage::{Storage, StorageError};
 
-/// Tasks of a workspace ordered by ID, each with its dependencies.
+/// Tasks of every workspace ordered by ID, each with its dependencies, which may belong
+/// to another workspace.
 #[tauri::command]
 #[specta::specta]
-pub fn list_tasks(
-    storage: State<'_, StorageState>,
-    workspace_id: WorkspaceId,
-) -> CommandResult<Vec<Task>> {
-    Ok(types::map_all(
-        &lock(&storage).list_tasks(workspace_id.into())?,
-    ))
+pub fn list_tasks(storage: State<'_, StorageState>) -> CommandResult<Vec<Task>> {
+    Ok(types::map_all(&lock(&storage).list_all_tasks()?))
 }
 
 #[tauri::command]
@@ -112,8 +106,8 @@ pub fn delete_task(
     )?))
 }
 
-/// Makes `task_id` depend on `depends_on`. Rejects self, cross-workspace, and cyclic
-/// edges.
+/// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
+/// self and cyclic edges.
 #[tauri::command]
 #[specta::specta]
 pub fn add_dependency(

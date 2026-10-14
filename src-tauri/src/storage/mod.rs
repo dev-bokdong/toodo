@@ -89,6 +89,13 @@ pub enum StorageError {
         supported: i64,
     },
     WorkspaceNotFound(WorkspaceId),
+    /// A workspace cannot be deleted while a task of another workspace still waits on
+    /// one of its tasks: deleting the prerequisite would make the dependent ready.
+    WorkspaceHasDependents {
+        workspace: WorkspaceId,
+        task: TaskId,
+        depends_on: TaskId,
+    },
     TaskNotFound(TaskId),
     Dependency(DependencyError),
     Transition(TransitionError),
@@ -117,6 +124,15 @@ impl fmt::Display for StorageError {
                 "database schema version {found} is newer than the supported version {supported}"
             ),
             Self::WorkspaceNotFound(id) => write!(f, "workspace {} does not exist", id.0),
+            Self::WorkspaceHasDependents {
+                workspace,
+                task,
+                depends_on,
+            } => write!(
+                f,
+                "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}",
+                workspace.0
+            ),
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),
             Self::Dependency(error) => error.fmt(f),
             Self::Transition(error) => error.fmt(f),

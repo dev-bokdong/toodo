@@ -132,8 +132,15 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 
 ### Task Dependencies (DAG)
 
-- `dependsOn` edges must stay within one workspace and must never form a cycle.
-- A task is **ready** when every task it depends on is `done`.
+- There is one DAG across all workspaces: a task may depend on a task of another
+  workspace, for example an application change that needs a low-level library change
+  first. Edges must never form a cycle, including cycles that pass through several
+  workspaces.
+- A task is **ready** when every task it depends on is `done`, in whichever workspace it
+  lives; finishing a task can release dependents in other workspaces.
+- A workspace cannot be deleted while a `planned` or `ready` task of another workspace
+  depends on one of its tasks, since that task would silently become ready. Dependencies
+  of tasks that already started are dropped with the workspace.
 - Dependents of a task can be planned at any time but only started once ready.
 - A topological order of the DAG is the suggested execution order.
 
@@ -156,6 +163,8 @@ Commits are discovered from the task branch, typically as
 
 The dependency graph of a workspace is drawn on a time axis instead of as a free-form
 layered DAG, so the same picture shows both what depended on what and when it happened.
+Prerequisites from other workspaces are drawn too, labeled with their workspace, and an
+"All workspaces" view draws the tasks of every workspace together.
 
 - It reads like a Gantt chart: a time axis header (coarse dates above fine dates or
   hours) stays at the top while the rows scroll, and a cursor marks the current time,

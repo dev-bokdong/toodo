@@ -157,19 +157,17 @@ describe("App", () => {
 
   it("lists workspaces and the tasks of the selected one", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
-    mocked.listTasks.mockImplementation(async (workspaceId) => ({
+    mocked.listTasks.mockResolvedValue({
       status: "ok",
-      data:
-        workspaceId === 1
-          ? [
-              task(1, 1, "Add storage", {
-                status: "done",
-                milestones: { ...task(1, 1, "").milestones, plannedAt: 1760000000, completedAt: 1760500000 },
-              }),
-              task(2, 1, "Add UI", { status: "planned", dependsOn: [1] }),
-            ]
-          : [task(3, 2, "Fix ssh")],
-    }));
+      data: [
+        task(1, 1, "Add storage", {
+          status: "done",
+          milestones: { ...task(1, 1, "").milestones, plannedAt: 1760000000, completedAt: 1760500000 },
+        }),
+        task(2, 1, "Add UI", { status: "planned", dependsOn: [1] }),
+        task(3, 2, "Fix ssh"),
+      ],
+    });
     renderApp();
 
     const tasks = await screen.findByRole("list", { name: "Tasks" });
@@ -182,12 +180,46 @@ describe("App", () => {
     expect(timeline).toHaveTextContent(`Completed ${formatDate(1760500000)}`);
     expect(timeline).not.toHaveTextContent("Cancelled");
     expect(within(tasks).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
-    expect(mocked.listTasks).toHaveBeenCalledWith(1);
+    expect(within(tasks).queryByText("Fix ssh")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
-    expect(mocked.listTasks).toHaveBeenLastCalledWith(2);
+    expect(screen.queryByText("Add storage")).not.toBeInTheDocument();
+  });
+
+  it("plans dependencies across workspaces and lists every workspace together", async () => {
+    const api = task(1, 1, "Add low level API");
+    const ui = task(3, 2, "Build UI");
+    const docs = task(4, 2, "Write docs");
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [api, ui, docs] });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: [{ taskId: 3, from: "ready", to: "planned" }] });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^herdr/ }));
+    const add = await screen.findByRole("combobox", { name: "Add dependency to #3" });
+    const groups = within(add).getAllByRole("group");
+    expect(groups.map((group) => group.getAttribute("label"))).toEqual(["herdr", "toodo"]);
+    expect(within(groups[1]).getByRole("option", { name: "#1 Add low level API" })).toBeInTheDocument();
+
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [api, { ...ui, status: "planned", dependsOn: [1] }, docs],
+    });
+    fireEvent.change(add, { target: { value: "1" } });
+    const dependencies = await screen.findByRole("group", { name: "Dependencies of #3" });
+    await waitFor(() => expect(within(dependencies).getByText("toodo #1")).toBeInTheDocument());
+    expect(mocked.addDependency).toHaveBeenCalledWith(3, 1);
+
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    expect(await screen.findByRole("heading", { name: "All workspaces" })).toBeInTheDocument();
+    const tasks = screen.getByRole("list", { name: "Tasks" });
+    expect(within(tasks).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(tasks).getByText("Add low level API")).toBeInTheDocument();
+    expect(within(tasks).getByText("Write docs")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Dependencies of #3" })).getByText("toodo #1")).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "New task" })).not.toBeInTheDocument();
   });
 
   it("reviews the chosen period across workspaces, copies it as Markdown, and saves it as CSV", async () => {
@@ -360,10 +392,10 @@ describe("App", () => {
 
   it("removes a workspace from the list only after confirming", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
-    mocked.listTasks.mockImplementation(async (workspaceId) => ({
+    mocked.listTasks.mockResolvedValue({
       status: "ok",
-      data: workspaceId === 1 ? [task(1, 1, "Add storage")] : [task(3, 2, "Fix ssh")],
-    }));
+      data: [task(1, 1, "Add storage"), task(3, 2, "Fix ssh")],
+    });
     mocked.deleteWorkspace
       .mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "database is locked" } })
       .mockResolvedValueOnce({ status: "ok", data: null });

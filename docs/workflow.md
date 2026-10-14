@@ -44,13 +44,16 @@ where the user answers herdr's setup prompts.
 
 Git runs locally as `git.exe` and remotely as `ssh.exe <machine> git ...`. The default
 base branch is the one the user enters, or else the branch `origin/HEAD` points to, or
-else the checked-out branch. Deleting a workspace never deletes its repository.
+else the checked-out branch. Deleting a workspace never deletes its repository, and is
+rejected while a not-yet-started task of another workspace depends on one of its tasks.
 
 ### 2. Plan tasks
 
-The user creates tasks and declares dependencies between them. Toodo rejects any
+The user creates tasks and declares dependencies between them, also on tasks of other
+workspaces (a library task that an application task needs first). Toodo rejects any
 dependency that would create a cycle and computes which tasks are `ready`. The creation
-time is recorded as the task's `plannedAt`.
+time is recorded as the task's `plannedAt`. The sidebar's "All workspaces" entry lists
+the tasks of every workspace in one list and one timeline.
 
 ### 3. Prepare the worktree
 

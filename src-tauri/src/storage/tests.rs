@@ -237,11 +237,9 @@ fn workspace_updates_and_cascading_deletes() {
 fn rejected_dependencies_write_nothing() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
-    let other = add_workspace(&mut storage, "Other", local_location(r"C:\src\other"));
     let a = add_task(&mut storage, &workspace, "A");
     let b = add_task(&mut storage, &workspace, "B");
     let c = add_task(&mut storage, &workspace, "C");
-    let foreign = add_task(&mut storage, &other, "Foreign");
     storage.add_dependency(b.id, a.id).unwrap();
     storage.add_dependency(c.id, b.id).unwrap();
     let before = storage.list_tasks(workspace.id).unwrap();
@@ -253,14 +251,6 @@ fn rejected_dependencies_write_nothing() {
             DependencyError::Cycle(vec![a.id, c.id, b.id, a.id]),
         ),
         (a.id, a.id, DependencyError::SelfDependency(a.id)),
-        (
-            a.id,
-            foreign.id,
-            DependencyError::CrossWorkspace {
-                task: a.id,
-                depends_on: foreign.id,
-            },
-        ),
         (a.id, TaskId(999), DependencyError::UnknownTask(TaskId(999))),
         (TaskId(999), a.id, DependencyError::UnknownTask(TaskId(999))),
     ];
@@ -272,6 +262,65 @@ fn rejected_dependencies_write_nothing() {
     }
     assert_eq!(storage.list_tasks(workspace.id).unwrap(), before);
     assert_eq!(row_count(&storage, "task_dependencies"), 2);
+}
+
+#[test]
+fn dependencies_across_workspaces_share_one_dag() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let library = add_workspace(&mut storage, "Library", local_location(r"C:\src\lib"));
+    let app = add_workspace(&mut storage, "App", local_location(r"C:\src\app"));
+    let api = add_task(&mut storage, &library, "Add low level API");
+    let ui = add_task(&mut storage, &app, "Build UI on the API");
+    let docs = add_task(&mut storage, &library, "Document the UI");
+
+    assert_eq!(
+        storage.add_dependency(ui.id, api.id).unwrap(),
+        [StatusChange {
+            task: ui.id,
+            from: Ready,
+            to: Planned
+        }]
+    );
+    assert_eq!(storage.list_all_tasks().unwrap().len(), 3);
+    assert_eq!(
+        storage.get_task(ui.id).unwrap().unwrap().depends_on,
+        [api.id].into()
+    );
+
+    // A loop through two workspaces is a cycle like any other.
+    storage.add_dependency(docs.id, ui.id).unwrap();
+    match storage.add_dependency(api.id, docs.id) {
+        Err(StorageError::Dependency(error)) => assert_eq!(
+            error,
+            DependencyError::Cycle(vec![api.id, docs.id, ui.id, api.id])
+        ),
+        other => panic!("expected a cycle, got {other:?}"),
+    }
+
+    // The library workspace cannot go while the app task still waits on it.
+    let tasks_before = storage.list_all_tasks().unwrap();
+    assert!(matches!(
+        storage.delete_workspace(library.id),
+        Err(StorageError::WorkspaceHasDependents { workspace, task, depends_on })
+            if workspace == library.id && task == ui.id && depends_on == api.id
+    ));
+    assert_eq!(storage.list_all_tasks().unwrap(), tasks_before);
+    assert_eq!(row_count(&storage, "task_dependencies"), 2);
+
+    // Finishing the library task releases the app task.
+    storage.set_task_status(api.id, InProgress).unwrap();
+    storage.set_task_status(api.id, InReview).unwrap();
+    assert_eq!(status(&storage, &ui), Planned);
+    assert_eq!(storage.complete_task(api.id, Some(1)).unwrap().status, Done);
+    assert_eq!(status(&storage, &ui), Ready);
+
+    // Once the dependent has started, removing the library drops the edge only.
+    storage.set_task_status(ui.id, InProgress).unwrap();
+    storage.delete_workspace(library.id).unwrap();
+    assert_eq!(storage.get_task(api.id).unwrap(), None);
+    let ui = storage.get_task(ui.id).unwrap().unwrap();
+    assert_eq!(ui.status, InProgress);
+    assert!(ui.depends_on.is_empty());
 }
 
 #[test]

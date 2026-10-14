@@ -37,8 +37,11 @@ export const commands = {
 	 *  absent. ssh runs on a blocking thread because connecting can take seconds.
 	 */
 	listRemoteDirectories: (machine: string, path: string | null) => typedError<RemoteDirectory, CommandError>(__TAURI_INVOKE("list_remote_directories", { machine, path })),
-	/**  Tasks of a workspace ordered by ID, each with its dependencies. */
-	listTasks: (workspaceId: WorkspaceId) => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks", { workspaceId })),
+	/**
+	 *  Tasks of every workspace ordered by ID, each with its dependencies, which may belong
+	 *  to another workspace.
+	 */
+	listTasks: () => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks")),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
 	/**  Creates a task without dependencies, so it starts out `ready`. */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
@@ -58,8 +61,8 @@ export const commands = {
 	 */
 	deleteTask: (id: TaskId, force: boolean) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
 	/**
-	 *  Makes `task_id` depend on `depends_on`. Rejects self, cross-workspace, and cyclic
-	 *  edges.
+	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
+	 *  self and cyclic edges.
 	 */
 	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<StatusChange[], CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
