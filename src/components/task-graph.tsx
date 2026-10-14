@@ -80,6 +80,9 @@ const phaseLabels: Record<TimelinePhase, string> = {
   paused: "Paused",
 };
 
+/** The bar of a finished task is tinted green; its phase strip still shows how the work went. */
+const doneBarStyle = "border-emerald-500 bg-emerald-100 dark:bg-emerald-950";
+
 const pad = (value: number) => String(value).padStart(2, "0");
 
 /** The current time in Unix seconds, refreshed every `nowRefreshMs`. */
@@ -277,6 +280,10 @@ export function TaskGraph({
               {phaseLabels[phase]}
             </li>
           ))}
+          <li className="flex items-center gap-1">
+            <span className={cn("h-2 w-3 rounded-sm border", doneBarStyle)} />
+            Done
+          </li>
         </ul>
       </div>
       <div className="flex min-h-7 flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -507,6 +514,7 @@ function TimelineBarView({
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
           selected && "ring-2 ring-primary",
           pending && "border-dashed border-muted-foreground/60 shadow-none",
+          task.status === "done" && doneBarStyle,
           isPaused(task) && "opacity-60",
         )}
       >
