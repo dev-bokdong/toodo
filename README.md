@@ -37,6 +37,31 @@ into a performance report.
 Tauri 2, Rust (tokio), React + TypeScript, React Flow, SQLite.
 See [AGENTS.md](AGENTS.md#platform-and-stack) for details.
 
+## Releases and Updates
+
+Installed copies update themselves: on startup (and every six hours) Toodo checks
+`https://github.com/bok-dong/toodo/releases/latest/download/latest.json` and offers an
+"Install and restart" banner when a newer version is published.
+
+To publish a release:
+
+1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and
+   `package.json` to the same value, e.g. `0.2.0`, and commit.
+2. Push a matching tag: `git tag v0.2.0 && git push origin v0.2.0`.
+3. The `Release` workflow (`.github/workflows/release.yml`) builds the MSI and NSIS
+   installers on Windows, signs the updater artifacts, and publishes a GitHub release with
+   `latest.json` (pointing at the NSIS installer).
+
+Updater artifacts are signed with a minisign key; the public key is in
+`src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). The workflow reads the private key
+from the repository secrets `TAURI_SIGNING_PRIVATE_KEY` (key file content) and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty if the key has no password). If the private
+key is lost, installed copies can no longer be updated and must be reinstalled by hand.
+
+Local `npm run tauri build` does not create updater artifacts and needs no key; to
+reproduce a release build locally, set `TAURI_SIGNING_PRIVATE_KEY` and pass
+`--config src-tauri/tauri.release.conf.json`.
+
 ## Status
 
 Early bootstrap. Setup instructions will be added with the project scaffold.

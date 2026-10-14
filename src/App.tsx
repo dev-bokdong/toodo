@@ -4,6 +4,7 @@ import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { TaskList } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { UpdateBanner } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
@@ -36,6 +37,7 @@ export default function App() {
           <ThemeToggle />
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-3">
+          <UpdateBanner />
           <HerdrBanner />
           {selected ? (
             <TaskList key={selected.id} workspace={selected} />

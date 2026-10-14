@@ -95,6 +95,8 @@ Run from the repository root unless noted. Package manager is npm.
 - Dev (full app): `npm run tauri dev`
 - Dev (frontend only, browser): `npm run dev`
 - Build installers (MSI/NSIS, on Windows): `npm run tauri build`
+- Release (signed auto-update): bump the version, push a `v<version>` tag; see the
+  "Releases and Updates" section of `README.md`
 - Test (frontend): `npm test`
 - Test (Rust, also regenerates `src/lib/bindings.ts`): `cargo test` in `src-tauri/`
 - Typecheck (frontend): `npm run typecheck`

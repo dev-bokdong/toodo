@@ -15,6 +15,8 @@ import {
 } from "@/lib/bindings";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
+vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
