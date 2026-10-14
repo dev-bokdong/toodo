@@ -111,6 +111,26 @@ export const timelinePendingWidth = 120;
 export const timelineBarMinWidth = 4;
 /** Horizontal space kept between a prerequisite's bar and a waiting dependent's bar. */
 export const timelineBarGap = 16;
+/** Length of the straight runs where a dependency line leaves a bar and enters the next one. */
+export const timelineEdgeStub = 8;
+
+type Point = { x: number; y: number };
+
+/**
+ * SVG path of a dependency line on the timeline, from the right end of the prerequisite's bar
+ * (`source`) to the left end of the dependent's bar (`target`), like a finish-to-start link in
+ * a Gantt chart. It leaves to the right, drops into the gap above the target's row, runs along
+ * that gap (backwards when the dependent started before the stub's end, as when it started the
+ * moment its prerequisite finished), drops to the target and enters it from the left. Every
+ * segment stays visible however close the bars are in time; `rowHeight` is the distance
+ * between row centers.
+ */
+export function timelineEdgePath(source: Point, target: Point, rowHeight: number): string {
+  const out = source.x + timelineEdgeStub;
+  const into = target.x - timelineEdgeStub;
+  const gap = target.y - rowHeight / 2;
+  return `M ${source.x} ${source.y} H ${out} V ${gap} H ${into} V ${target.y} H ${target.x}`;
+}
 
 /** A half-open time range `[start, end)`, in Unix seconds. */
 export type Period = { start: Timestamp; end: Timestamp };

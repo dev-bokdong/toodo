@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { XIcon } from "lucide-react";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
+  BaseEdge,
   Handle,
   MarkerType,
   Position,
@@ -11,6 +12,7 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -29,6 +31,7 @@ import {
   layoutTimeline,
   relatedTasks,
   timelineAxis,
+  timelineEdgePath,
   timelineScales,
   timelineYears,
   yearPeriod,
@@ -54,6 +57,7 @@ type BarNode = Node<
 >;
 
 const nodeTypes = { bar: TimelineBarView };
+const edgeTypes = { timeline: TimelineEdge };
 
 /** Height of the axis header: a row of coarse ticks above a row of fine ticks. */
 const axisRowHeight = 18;
@@ -167,6 +171,7 @@ export function TaskGraph({
     id: edge.id,
     source: String(edge.source),
     target: String(edge.target),
+    type: "timeline",
     selected: selectedEdgeIds.has(edge.id),
     deletable: editable(edge.target),
     markerEnd: { type: MarkerType.ArrowClosed },
@@ -330,6 +335,7 @@ export function TaskGraph({
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               onInit={showLatest}
               minZoom={1}
               maxZoom={1}
@@ -475,6 +481,18 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
         )}
       </div>
     </div>
+  );
+}
+
+/** A dependency line routed between the rows, so it shows even when the bars meet in time. */
+function TimelineEdge({ sourceX, sourceY, targetX, targetY, markerEnd, style, interactionWidth }: EdgeProps) {
+  const path = timelineEdgePath({ x: sourceX, y: sourceY }, { x: targetX, y: targetY }, rowHeight);
+  return (
+    <>
+      {/* A halo in the background color keeps the line apart from bar borders and crossing lines. */}
+      <path d={path} className="fill-none stroke-background" strokeWidth={5} style={{ opacity: style?.opacity }} />
+      <BaseEdge path={path} markerEnd={markerEnd} style={style} interactionWidth={interactionWidth} />
+    </>
   );
 }
 
