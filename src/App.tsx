@@ -4,13 +4,14 @@ import { ChartColumn, FolderPlus, Layers, ListTodo } from "lucide-react";
 import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { Review } from "@/components/review";
-import { EmptyState, TaskList } from "@/components/task-list";
+import { EmptyState, TaskList, type TaskDraft } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
+import type { TimelineScale } from "@/lib/task-graph";
 
 export default function App() {
   const appInfo = useQuery({
@@ -19,8 +20,12 @@ export default function App() {
   });
   const workspaces = useWorkspaces();
   useHerdrEvents();
-  const [selectedId, setSelectedId] = useState<WorkspaceId | "all" | null>(null);
+  const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
   const [reviewing, setReviewing] = useState(false);
+  // Kept here so switching workspaces or views does not reset them.
+  const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
+  const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
+  const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
   const showingAll = selectedId === "all" && !reviewing;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
@@ -85,9 +90,16 @@ export default function App() {
           {reviewing ? (
             <Review />
           ) : showingAll && workspaces.data?.length ? (
-            <TaskList key="all" workspace={null} />
+            <TaskList key="all" workspace={null} timelineScale={timelineScale} onTimelineScaleChange={setTimelineScale} />
           ) : selected ? (
-            <TaskList key={selected.id} workspace={selected} />
+            <TaskList
+              key={selected.id}
+              workspace={selected}
+              timelineScale={timelineScale}
+              onTimelineScaleChange={setTimelineScale}
+              draft={drafts.get(selected.id)}
+              onDraftChange={(draft) => setDraft(selected.id, draft)}
+            />
           ) : (
             !workspaces.isPending && (
               <EmptyState

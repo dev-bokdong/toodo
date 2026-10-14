@@ -49,7 +49,7 @@ import {
   useWorkspaces,
 } from "@/lib/queries";
 import { pullRequestStats } from "@/lib/review";
-import { dependenciesDone, isNotAdopted, isPaused } from "@/lib/task-graph";
+import { dependenciesDone, isNotAdopted, isPaused, type TimelineScale } from "@/lib/task-graph";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -104,7 +104,21 @@ function taskRef(id: TaskId, of: WorkspaceId, { byId, workspaceName }: TaskConte
  * workspaces, so a task may wait on a task of another workspace. The timeline is only
  * offered for every workspace, where it is the default view.
  */
-export function TaskList({ workspace }: { workspace: Workspace | null }) {
+export function TaskList({
+  workspace,
+  timelineScale,
+  onTimelineScaleChange,
+  draft = emptyDraft,
+  onDraftChange,
+}: {
+  workspace: Workspace | null;
+  /** Timeline scale, owned by the caller so it survives switching workspaces and views. */
+  timelineScale: TimelineScale;
+  onTimelineScaleChange: (scale: TimelineScale) => void;
+  /** The new task being written in this workspace, owned by the caller so it survives switching away. */
+  draft?: TaskDraft;
+  onDraftChange?: (draft: TaskDraft) => void;
+}) {
   const allTasks = useTasks();
   const workspaces = useWorkspaces();
   const [view, setView] = useState<"list" | "timeline">("timeline");
@@ -146,7 +160,7 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
 
       {workspace && <WorktreeRootForm workspace={workspace} />}
 
-      {workspace && <NewTaskForm workspace={workspace} />}
+      {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 
       {allTasks.isPending && <p className="text-sm text-muted-foreground">Loading tasks...</p>}
       {allTasks.isError && (
@@ -222,6 +236,8 @@ export function TaskList({ workspace }: { workspace: Workspace | null }) {
               }
               statusLabel={statusLabel}
               statusStyle={statusStyle}
+              scale={timelineScale}
+              onScaleChange={onTimelineScaleChange}
               renderDetail={(selected) => (
                 <TaskRow
                   key={selected.id}
@@ -1126,22 +1142,30 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   );
 }
 
-function NewTaskForm({ workspace }: { workspace: Workspace }) {
+export type TaskDraft = { taskType: TaskType; title: string; description: string };
+
+const emptyDraft: TaskDraft = { taskType: "feat", title: "", description: "" };
+
+function NewTaskForm({
+  workspace,
+  draft,
+  onChange,
+}: {
+  workspace: Workspace;
+  draft: TaskDraft;
+  onChange: (draft: TaskDraft) => void;
+}) {
   const createTask = useCreateTask();
-  const [taskType, setTaskType] = useState<TaskType>("feat");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const { taskType, title, description } = draft;
+  const setTaskType = (value: TaskType) => onChange({ ...draft, taskType: value });
+  const setTitle = (value: string) => onChange({ ...draft, title: value });
+  const setDescription = (value: string) => onChange({ ...draft, description: value });
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     createTask.mutate(
       { workspaceId: workspace.id, taskType, title, description },
-      {
-        onSuccess: () => {
-          setTitle("");
-          setDescription("");
-        },
-      },
+      { onSuccess: () => onChange({ ...draft, title: "", description: "" }) },
     );
   }
 

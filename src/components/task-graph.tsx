@@ -109,6 +109,8 @@ export function TaskGraph({
   workspaceLabel,
   statusLabel,
   statusStyle,
+  scale,
+  onScaleChange,
   renderDetail,
 }: {
   /** Tasks drawn on the timeline. */
@@ -121,6 +123,8 @@ export function TaskGraph({
   workspaceLabel: (task: Task) => string | null;
   statusLabel: (task: Task) => string;
   statusStyle: (task: Task) => string;
+  scale: TimelineScale;
+  onScaleChange: (scale: TimelineScale) => void;
   /** Details of the task selected on the timeline, with its actions. */
   renderDetail: (task: Task) => ReactNode;
 }) {
@@ -129,7 +133,6 @@ export function TaskGraph({
   const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
   const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
-  const [scale, setScale] = useState<TimelineScale>("week");
   const [year, setYear] = useState<number | null>(null);
   const colorMode = useThemePreference();
   const container = useRef<HTMLDivElement>(null);
@@ -268,7 +271,7 @@ export function TaskGraph({
               size="xs"
               variant={scale === option ? "secondary" : "ghost"}
               aria-pressed={scale === option}
-              onClick={() => setScale(option)}
+              onClick={() => onScaleChange(option)}
             >
               {scaleLabels[option]}
             </Button>

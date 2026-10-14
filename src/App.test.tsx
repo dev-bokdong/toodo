@@ -131,6 +131,12 @@ function renderApp() {
   );
 }
 
+/** Renders the app and opens one workspace, since the app starts on All workspaces. */
+async function renderWorkspace(name: RegExp = /^toodo/) {
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name }));
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -173,7 +179,7 @@ describe("App", () => {
         task(3, 2, "Fix ssh"),
       ],
     });
-    renderApp();
+    await renderWorkspace();
 
     const tasks = await screen.findByRole("list", { name: "Tasks" });
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
@@ -338,7 +344,7 @@ describe("App", () => {
         }),
       ],
     });
-    renderApp();
+    await renderWorkspace();
 
     await screen.findByRole("list", { name: "Tasks" });
     expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
@@ -400,7 +406,7 @@ describe("App", () => {
         task(3, 1, "Write docs", { milestones: planned }),
       ],
     });
-    renderApp();
+    await renderWorkspace();
 
     await screen.findByRole("list", { name: "Tasks" });
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
@@ -454,7 +460,7 @@ describe("App", () => {
       { taskId: 1, status: "working" },
       { taskId: 2, status: "idle" },
     ]);
-    renderApp();
+    await renderWorkspace();
 
     await screen.findByRole("list", { name: "Tasks" });
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
@@ -508,6 +514,36 @@ describe("App", () => {
     expect(screen.queryByRole("region", { name: "Machine unsaved" })).toBeNull();
   });
 
+  it("starts on All workspaces and keeps the timeline scale and task drafts while navigating", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add storage"), task(3, 2, "Fix ssh")] });
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "All workspaces" })).toBeInTheDocument();
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    fireEvent.click(within(timeline).getByRole("button", { name: "Day" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
+    fireEvent.change(await screen.findByLabelText("Task title"), { target: { value: "Half-written task" } });
+    fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "fix" } });
+    fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
+    expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Task title")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
+    expect(await screen.findByLabelText("Task title")).toHaveValue("Half-written task");
+    expect(screen.getByLabelText("Task type")).toHaveValue("fix");
+
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    expect(
+      within(await screen.findByRole("region", { name: "Task timeline" })).getByRole("button", { name: "Day" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
+    expect(
+      within(await screen.findByRole("region", { name: "Task timeline" })).getByRole("button", { name: "Day" }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("removes a workspace from the list only after confirming", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
     mocked.listTasks.mockResolvedValue({
@@ -517,7 +553,7 @@ describe("App", () => {
     mocked.deleteWorkspace
       .mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "database is locked" } })
       .mockResolvedValueOnce({ status: "ok", data: null });
-    renderApp();
+    await renderWorkspace();
 
     expect(await screen.findByText("Add storage")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Remove toodo" }));
@@ -654,7 +690,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.createTask.mockResolvedValue({ status: "ok", data: task(5, 1, "Write docs") });
-    renderApp();
+    await renderWorkspace();
 
     await screen.findByText("No tasks in this workspace yet.");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Write docs")] });
@@ -682,7 +718,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [task(1, 1, "Add login")] });
     mocked.startTask.mockResolvedValue({ status: "ok", data: started });
     mocked.openTaskInHerdr.mockResolvedValue({ status: "ok", data: null });
-    renderApp();
+    await renderWorkspace();
 
     const start = await screen.findByRole("button", { name: "Start #1" });
     await waitFor(() => expect(start).toBeEnabled());
@@ -707,7 +743,7 @@ describe("App", () => {
       ],
     });
     mocked.listAgentStatuses.mockResolvedValue([{ taskId: 1, status: "working" }]);
-    renderApp();
+    await renderWorkspace();
 
     const tasks = await screen.findByRole("list", { name: "Tasks" });
     expect(await within(tasks).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
@@ -737,10 +773,12 @@ describe("App", () => {
     const lost = task(1, 1, "Add login", { status: "in_progress", branch: "feat/add-login-1" });
     const restored = { ...lost, worktreePath: "D:\\wt\\toodo\\feat-add-login-1", herdrWorkspaceId: "w31" };
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
-    mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [lost] });
-    mocked.listTasks.mockResolvedValue({ status: "ok", data: [restored] });
-    mocked.restoreTaskWorktree.mockResolvedValue({ status: "ok", data: restored });
-    renderApp();
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [lost] });
+    mocked.restoreTaskWorktree.mockImplementation(async () => {
+      mocked.listTasks.mockResolvedValue({ status: "ok", data: [restored] });
+      return { status: "ok", data: restored };
+    });
+    await renderWorkspace();
 
     const restore = await screen.findByRole("button", { name: "Restore worktree of #1" });
     expect(screen.queryByRole("button", { name: "Open pull request for #1" })).not.toBeInTheDocument();
@@ -759,7 +797,7 @@ describe("App", () => {
       status: "error",
       error: { kind: "invalidInput", message: "worktree root is not set for machine local" },
     });
-    renderApp();
+    await renderWorkspace();
 
     const start = await screen.findByRole("button", { name: "Start #1" });
     await waitFor(() => expect(start).toBeEnabled());
@@ -773,7 +811,7 @@ describe("App", () => {
     mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: false, version: null } });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
-    renderApp();
+    await renderWorkspace();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("herdr is not available");
     expect(await screen.findByRole("button", { name: "Start #1" })).toBeDisabled();
@@ -788,7 +826,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [herdr] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.saveMachineSettings.mockImplementation(async (settings) => ({ status: "ok", data: settings }));
-    renderApp();
+    await renderWorkspace(/^herdr/);
 
     expect(await screen.findByText("Set a worktree root to start tasks on this machine.")).toBeInTheDocument();
     const root = screen.getByLabelText("Worktree root on devbox");
@@ -819,7 +857,7 @@ describe("App", () => {
         saved = { ...workspace, defaultBaseBranch: workspace.defaultBaseBranch.trim() };
         return { status: "ok", data: saved };
       });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Change base branch" }));
     const branch = screen.getByLabelText("Base branch", { selector: "input" });
@@ -853,7 +891,7 @@ describe("App", () => {
       status: "ok",
       data: [task(3, 1, "Login", { status: "in_review" }), task(4, 2, "Other", { status: "in_review" })],
     });
-    renderApp();
+    await renderWorkspace();
 
     expect(await screen.findByText("Locked while #3 is in review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Change base branch" })).toBeDisabled();
@@ -872,7 +910,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
     mocked.refreshCommitRecords.mockResolvedValue({ status: "ok", data: [first] });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Refresh commits of #1" }));
     const commits = await screen.findByRole("list", { name: "Commits of #1" });
@@ -914,7 +952,7 @@ describe("App", () => {
       status: "error",
       error: { kind: "rejected", message: "branch feat/add-login-1 has no commits that are not on main" },
     });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open pull request for #1" }));
 
@@ -940,7 +978,7 @@ describe("App", () => {
       status: "error",
       error: { kind: "rejected", message: "pull request https://github.com/acme/toodo/pull/12 is not merged yet" },
     });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
 
@@ -969,7 +1007,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
-    renderApp();
+    await renderWorkspace();
 
     expect(await screen.findByLabelText("#1 needs a completion note")).toHaveTextContent("Needs note");
     expect(screen.getByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
@@ -1003,7 +1041,7 @@ describe("App", () => {
     const dependent = task(2, 1, "Use the new cache", { dependsOn: [1] });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [research, dependent] });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Conclude #1 without merging" }));
     const conclude = screen.getByRole("button", { name: "Conclude without merge" });
@@ -1042,7 +1080,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
-    renderApp();
+    await renderWorkspace();
 
     const add = await screen.findByRole("combobox", { name: "Add dependency to #2" });
     expect(within(add).getByRole("option", { name: "#1 Add storage" })).toBeInTheDocument();
@@ -1076,7 +1114,7 @@ describe("App", () => {
       status: "error",
       error: { kind: "rejected", message: "dependency would create a cycle: #1 -> #2 -> #1" },
     });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.change(await screen.findByRole("combobox", { name: "Add dependency to #1" }), {
       target: { value: "2" },
@@ -1093,7 +1131,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
     mocked.updateTask.mockResolvedValue({ status: "ok", data: edited });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
     const form = screen.getByRole("form", { name: "Edit task #1" });
@@ -1130,7 +1168,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
     mocked.pauseTask.mockResolvedValue({ status: "ok", data: paused });
     mocked.deleteTask.mockResolvedValue({ status: "ok", data: null });
-    renderApp();
+    await renderWorkspace();
 
     const pause = await screen.findByRole("button", { name: "Pause #1" });
     expect(screen.queryByRole("button", { name: "Delete #1" })).not.toBeInTheDocument();
@@ -1167,7 +1205,7 @@ describe("App", () => {
         error: { kind: "rejected", message: "the worktree of task 1 has modified or untracked files" },
       })
       .mockResolvedValueOnce({ status: "ok", data: null });
-    renderApp();
+    await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Delete #1" }));
     expect(mocked.deleteTask).not.toHaveBeenCalled();
