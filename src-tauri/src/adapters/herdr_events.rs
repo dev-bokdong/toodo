@@ -1,6 +1,6 @@
-//! Subscribes to events of the local herdr server through its socket API
-//! (`events.subscribe`): newline-delimited JSON over a Unix domain socket, or a named pipe
-//! on Windows.
+//! Subscribes to events of a herdr server through its socket API (`events.subscribe`):
+//! newline-delimited JSON over a Unix domain socket, or a named pipe on Windows. The
+//! socket of a remote herdr server is reached through `ssh -W`.
 //!
 //! One connection carries one subscription: herdr acknowledges it with
 //! `subscription_started` and then pushes one event per line. herdr closes the connection
@@ -12,8 +12,11 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
+
+use crate::domain::model::MachineLabel;
 
 /// Subscriptions that do not depend on a pane.
 const LIFECYCLE_SUBSCRIPTIONS: [&str; 7] = [
@@ -141,6 +144,113 @@ impl Connector for LocalSocket {
                 .write(true)
                 .open(&self.endpoint)?,
         ))
+    }
+}
+
+/// The Unix domain socket of a remote herdr server, reached through
+/// `ssh -W <socket path> <host>`: OpenSSH forwards its standard input and output to the
+/// socket, so the remote machine needs nothing besides herdr and sshd.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshSocket {
+    host: MachineLabel,
+    socket_path: String,
+}
+
+impl SshSocket {
+    pub fn new(host: MachineLabel, socket_path: String) -> Self {
+        Self { host, socket_path }
+    }
+
+    fn args(&self) -> Vec<String> {
+        [
+            "-o",
+            "BatchMode=yes",
+            "-W",
+            &self.socket_path,
+            "--",
+            self.host.as_str(),
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+}
+
+impl Connector for SshSocket {
+    fn connect(&self) -> io::Result<Box<dyn Connection>> {
+        let mut command = Command::new("ssh");
+        command.args(self.args());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        Ok(Box::new(ChildConnection::spawn(command)?))
+    }
+}
+
+/// A connection carried by the standard input and output of a child process.
+struct ChildConnection {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+}
+
+impl ChildConnection {
+    fn spawn(mut command: Command) -> io::Result<Self> {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let missing = || io::Error::other("child process has no piped standard streams");
+        Ok(Self {
+            stdin: child.stdin.take().ok_or_else(missing)?,
+            stdout: child.stdout.take().ok_or_else(missing)?,
+            stderr: child.stderr.take().ok_or_else(missing)?,
+            child,
+        })
+    }
+}
+
+impl Read for ChildConnection {
+    /// At the end of the output, a failed process is reported as an error carrying what
+    /// it printed on standard error, e.g. why `ssh` could not connect.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.stdout.read(buf)?;
+        if read == 0 && !buf.is_empty() {
+            let mut stderr = String::new();
+            self.stderr.read_to_string(&mut stderr)?;
+            let status = self.child.wait()?;
+            if !status.success() {
+                let stderr = stderr.trim();
+                return Err(io::Error::other(if stderr.is_empty() {
+                    format!("exited with {status}")
+                } else {
+                    stderr.to_owned()
+                }));
+            }
+        }
+        Ok(read)
+    }
+}
+
+impl Write for ChildConnection {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.stdin.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stdin.flush()
+    }
+}
+
+impl Drop for ChildConnection {
+    fn drop(&mut self) {
+        // The process may have exited already, in which case there is nothing to stop.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -465,6 +575,49 @@ mod tests {
             subscribe(&connector, &BTreeSet::new(), ignore),
             Err(EventStreamError::Io { .. })
         ));
+    }
+
+    #[test]
+    fn remote_sockets_are_reached_through_ssh_without_prompts() {
+        let socket = SshSocket::new(
+            MachineLabel::parse("devbox").unwrap(),
+            "/home/u/.config/herdr/herdr.sock".to_owned(),
+        );
+        assert_eq!(
+            socket.args(),
+            [
+                "-o",
+                "BatchMode=yes",
+                "-W",
+                "/home/u/.config/herdr/herdr.sock",
+                "--",
+                "devbox",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[cfg(unix)]
+    fn shell(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_connections_carry_the_stream_and_report_failures() {
+        let mut echo = ChildConnection::spawn(shell("read line; echo \"got $line\"")).unwrap();
+        echo.write_all(b"ping\n").unwrap();
+        echo.flush().unwrap();
+        let mut output = String::new();
+        echo.read_to_string(&mut output).unwrap();
+        assert_eq!(output, "got ping\n");
+
+        let mut failing =
+            ChildConnection::spawn(shell("echo 'connect failed' >&2; exit 255")).unwrap();
+        let error = failing.read_to_string(&mut String::new()).unwrap_err();
+        assert_eq!(error.to_string(), "connect failed");
     }
 
     #[test]

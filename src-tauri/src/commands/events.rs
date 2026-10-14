@@ -1,6 +1,8 @@
-//! Keeps Toodo in sync with the local herdr server through its event subscription.
+//! Keeps Toodo in sync with herdr servers through their event subscriptions.
 //!
-//! A background thread subscribes to herdr events and:
+//! One background thread watches the local herdr server, and one more each machine that
+//! hosts an SSH workspace, whose herdr server is reached through `ssh -W`. Each thread
+//! subscribes to herdr events and, for the tasks of its machine:
 //! - forgets the worktree of a task whose worktree was removed in herdr,
 //! - remembers the new herdr workspace of a task whose worktree was opened again,
 //! - keeps the agent status of each task with a herdr workspace, read again from
@@ -8,12 +10,12 @@
 //!
 //! and tells the frontend through the [`TasksChanged`] and [`AgentStatusesChanged`]
 //! events. When the subscription ends, e.g. herdr stopped or reported `events_lost`, it
-//! subscribes again after a growing delay and reconciles with a fresh pane list. Only
-//! the local herdr server is watched: tasks of SSH workspaces get no events.
+//! subscribes again after a growing delay and reconciles with a fresh pane list. herdr
+//! IDs are scoped to one server, so events of one machine never touch tasks of another.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -24,16 +26,16 @@ use tauri_specta::Event;
 
 use super::types::{AgentStatus, TaskAgentStatus, WorkspaceId};
 use super::{HerdrState, StorageState, lock};
-use crate::adapters::herdr::{self, Herdr, HerdrError, ServerStatus};
+use crate::adapters::herdr::{self, Herdr, HerdrError};
 use crate::adapters::herdr_events::{
-    Connector, EventStreamError, Flow, HerdrEvent, LocalSocket, Message, subscribe,
+    Connector, EventStreamError, Flow, HerdrEvent, LocalSocket, Message, SshSocket, subscribe,
 };
-use crate::domain::model::{self, HostPath, WorkspaceLocation};
-use crate::domain::path::WindowsPath;
-use crate::storage::StorageError;
+use crate::domain::model::{self, HostPath, Machine};
+use crate::domain::path::{PosixPath, WindowsPath};
+use crate::storage::{Storage, StorageError};
 
-/// Agent statuses of tasks, ordered by task ID.
-pub type AgentStatusState = Mutex<Vec<TaskAgentStatus>>;
+/// Agent statuses of the tasks of each watched machine.
+pub type AgentStatusState = Mutex<HashMap<Machine, Vec<TaskAgentStatus>>>;
 
 /// Tasks of the workspace changed outside a command, e.g. herdr removed a worktree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
@@ -51,11 +53,20 @@ pub struct AgentStatusesChanged {
 #[tauri::command]
 #[specta::specta]
 pub fn list_agent_statuses(statuses: State<'_, AgentStatusState>) -> Vec<TaskAgentStatus> {
-    lock_statuses(&statuses).clone()
+    all_statuses(&lock_statuses(&statuses))
 }
 
-fn lock_statuses(statuses: &AgentStatusState) -> MutexGuard<'_, Vec<TaskAgentStatus>> {
+fn lock_statuses(
+    statuses: &AgentStatusState,
+) -> MutexGuard<'_, HashMap<Machine, Vec<TaskAgentStatus>>> {
     statuses.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The agent statuses of all machines, ordered by task ID.
+fn all_statuses(by_machine: &HashMap<Machine, Vec<TaskAgentStatus>>) -> Vec<TaskAgentStatus> {
+    let mut statuses: Vec<TaskAgentStatus> = by_machine.values().flatten().cloned().collect();
+    statuses.sort_by_key(|status| status.task_id.0);
+    statuses
 }
 
 /// Where changes are announced; the app emits them to the frontend.
@@ -128,6 +139,8 @@ pub struct SessionEnd {
 }
 
 pub struct EventSync<'a> {
+    /// The machine whose herdr server is subscribed to.
+    pub machine: Machine,
     pub storage: &'a StorageState,
     pub herdr: &'a Herdr,
     pub statuses: &'a AgentStatusState,
@@ -184,7 +197,7 @@ impl EventSync<'_> {
     /// Reads the panes again, publishes the agent status of each task, and returns the
     /// IDs of the panes.
     fn refresh_agents(&self) -> Result<BTreeSet<String>, SyncError> {
-        let panes = self.herdr.list_panes()?;
+        let panes = self.herdr.list_panes(&self.machine)?;
         let mut by_workspace: BTreeMap<&str, herdr::AgentStatus> = BTreeMap::new();
         for pane in &panes {
             let status = by_workspace
@@ -192,7 +205,7 @@ impl EventSync<'_> {
                 .or_insert(pane.status);
             *status = (*status).max(pane.status);
         }
-        let mut statuses: Vec<TaskAgentStatus> = local_tasks(&lock(self.storage))?
+        let mut statuses: Vec<TaskAgentStatus> = machine_tasks(&lock(self.storage), &self.machine)?
             .into_iter()
             .filter_map(|task| {
                 let status = by_workspace.get(task.herdr_workspace_id.as_deref()?)?;
@@ -209,15 +222,17 @@ impl EventSync<'_> {
 
     fn publish(&self, statuses: Vec<TaskAgentStatus>) {
         let mut current = lock_statuses(self.statuses);
-        if *current != statuses {
-            *current = statuses;
-            self.notifier.agent_statuses_changed(&current);
+        let machine = current.entry(self.machine.clone()).or_default();
+        if *machine != statuses {
+            *machine = statuses;
+            self.notifier
+                .agent_statuses_changed(&all_statuses(&current));
         }
     }
 
     fn apply_worktree_event(&self, event: &HerdrEvent) -> Result<(), StorageError> {
         let mut storage = lock(self.storage);
-        let tasks = local_tasks(&storage)?;
+        let tasks = machine_tasks(&storage, &self.machine)?;
         match event {
             HerdrEvent::WorktreeRemoved { workspace_id, .. } => {
                 for task in tasks
@@ -229,13 +244,9 @@ impl EventSync<'_> {
                 }
             }
             HerdrEvent::WorktreeOpened { workspace_id, path } => {
-                let Ok(path) = WindowsPath::parse(path) else {
-                    return Ok(());
-                };
                 for task in tasks.iter().filter(|task| {
                     task.herdr_workspace_id.as_ref() != Some(workspace_id)
-                        && matches!(&task.worktree_path, Some(HostPath::Windows(worktree))
-                            if worktree.as_str().eq_ignore_ascii_case(path.as_str()))
+                        && is_checkout(task.worktree_path.as_ref(), path)
                 }) {
                     storage.set_task_herdr_workspace(task.id, workspace_id)?;
                     self.notifier.tasks_changed(task.workspace_id);
@@ -247,33 +258,126 @@ impl EventSync<'_> {
     }
 }
 
-/// Tasks of workspaces on this machine, the only ones the local herdr server knows.
-fn local_tasks(storage: &crate::storage::Storage) -> Result<Vec<model::Task>, StorageError> {
+/// Whether `path`, as reported by herdr, is the worktree checkout: case-insensitively on
+/// Windows.
+fn is_checkout(worktree: Option<&HostPath>, path: &str) -> bool {
+    match worktree {
+        Some(HostPath::Windows(worktree)) => WindowsPath::parse(path)
+            .is_ok_and(|path| worktree.as_str().eq_ignore_ascii_case(path.as_str())),
+        Some(HostPath::Posix(worktree)) => {
+            PosixPath::parse(path).is_ok_and(|path| path.as_str() == worktree.as_str())
+        }
+        None => false,
+    }
+}
+
+/// Tasks of the workspaces on `machine`, the only ones its herdr server knows.
+fn machine_tasks(storage: &Storage, machine: &Machine) -> Result<Vec<model::Task>, StorageError> {
     let mut tasks = Vec::new();
     for workspace in storage.list_workspaces()? {
-        if matches!(workspace.location, WorkspaceLocation::Local { .. }) {
+        if workspace.location.machine() == *machine {
             tasks.extend(storage.list_tasks(workspace.id)?);
         }
     }
     Ok(tasks)
 }
 
-const FIRST_RETRY: Duration = Duration::from_secs(1);
-const MAX_RETRY: Duration = Duration::from_secs(30);
-
-/// Starts the background thread that keeps the subscription to the local herdr server.
-pub fn spawn(app: AppHandle) -> std::io::Result<()> {
-    thread::Builder::new()
-        .name("herdr-events".to_owned())
-        .spawn(move || run(&app))
-        .map(drop)
+/// Machines that host at least one SSH workspace.
+fn ssh_machines(storage: &Storage) -> Result<HashSet<Machine>, StorageError> {
+    Ok(storage
+        .list_workspaces()?
+        .into_iter()
+        .map(|workspace| workspace.location.machine())
+        .filter(|machine| *machine != Machine::Local)
+        .collect())
 }
 
-fn run(app: &AppHandle) {
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+const MAX_RETRY: Duration = Duration::from_secs(30);
+/// How often the workspaces are checked for machines to start watching.
+const MACHINE_SCAN: Duration = Duration::from_secs(5);
+
+/// Starts the background threads that keep the subscriptions to the local herdr server
+/// and to the herdr server of every machine with an SSH workspace.
+pub fn spawn(app: AppHandle) -> std::io::Result<()> {
+    let local = app.clone();
+    thread::Builder::new()
+        .name("herdr-events-local".to_owned())
+        .spawn(move || watch(&local, &Machine::Local))?;
+    thread::Builder::new()
+        .name("herdr-events-machines".to_owned())
+        .spawn(move || watch_machines(&app))?;
+    Ok(())
+}
+
+/// Starts a watching thread for each machine that gets an SSH workspace. A thread ends
+/// once its machine has no workspace left, and starts again if one is added later.
+fn watch_machines(app: &AppHandle) {
+    let watched: Arc<Mutex<HashSet<Machine>>> = Arc::default();
+    let mut last_error = String::new();
+    loop {
+        let storage = app.state::<StorageState>();
+        let machines = ssh_machines(&lock(&storage));
+        match machines {
+            Ok(machines) => {
+                last_error.clear();
+                for machine in machines {
+                    let mut running = watched.lock().unwrap_or_else(PoisonError::into_inner);
+                    if !running.insert(machine.clone()) {
+                        continue;
+                    }
+                    let (app, watched) = (app.clone(), watched.clone());
+                    let thread_machine = machine.clone();
+                    let spawned = thread::Builder::new()
+                        .name(format!("herdr-events-{machine}"))
+                        .spawn(move || {
+                            watch(&app, &thread_machine);
+                            watched
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .remove(&thread_machine);
+                        });
+                    if let Err(error) = spawned {
+                        running.remove(&machine);
+                        eprintln!("toodo: failed to watch herdr events of {machine}: {error}");
+                    }
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if message != last_error {
+                    eprintln!("toodo: failed to list machines to watch: {message}");
+                    last_error = message;
+                }
+            }
+        }
+        thread::sleep(MACHINE_SCAN);
+    }
+}
+
+/// The event socket of the herdr server of `machine`, or `None` while it is not running.
+fn connector(herdr: &Herdr, machine: &Machine) -> Result<Option<Box<dyn Connector>>, HerdrError> {
+    let status = match machine {
+        Machine::Local => herdr.server_status()?,
+        Machine::Ssh(host) => herdr.remote_server_status(host)?,
+    };
+    let (true, Some(socket)) = (status.running, status.socket) else {
+        return Ok(None);
+    };
+    Ok(Some(match machine {
+        Machine::Local => Box::new(LocalSocket::new(&socket)),
+        Machine::Ssh(host) => Box::new(SshSocket::new(host.clone(), socket)),
+    }))
+}
+
+/// Keeps the subscription to the herdr server of `machine`. Returns once an SSH machine
+/// has no workspace left; the local server is watched for as long as the app runs.
+fn watch(app: &AppHandle, machine: &Machine) {
     let storage = app.state::<StorageState>();
     let herdr = app.state::<HerdrState>();
     let statuses = app.state::<AgentStatusState>();
     let sync = EventSync {
+        machine: machine.clone(),
         storage: &storage,
         herdr: &herdr,
         statuses: &statuses,
@@ -282,13 +386,21 @@ fn run(app: &AppHandle) {
     let mut delay = FIRST_RETRY;
     let mut last_error = String::new();
     loop {
-        let end = match herdr.server_status() {
-            Ok(ServerStatus {
-                running: true,
-                socket: Some(socket),
-                ..
-            }) => sync.run_once(&LocalSocket::new(&socket)),
-            Ok(_) => SessionEnd {
+        if *machine != Machine::Local {
+            match ssh_machines(&lock(&storage)) {
+                Ok(machines) if !machines.contains(machine) => {
+                    sync.clear_agents();
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("toodo: failed to check the workspaces of {machine}: {error}");
+                }
+            }
+        }
+        let end = match connector(&herdr, machine) {
+            Ok(Some(connector)) => sync.run_once(connector.as_ref()),
+            Ok(None) => SessionEnd {
                 started: false,
                 error: Some(SyncError::NotRunning),
             },
@@ -309,7 +421,7 @@ fn run(app: &AppHandle) {
         sync.clear_agents();
         let message = error.to_string();
         if message != last_error {
-            eprintln!("toodo: herdr events unavailable, retrying: {message}");
+            eprintln!("toodo: herdr events of {machine} unavailable, retrying: {message}");
             last_error = message;
         }
         thread::sleep(delay);
@@ -326,7 +438,7 @@ mod tests {
     use crate::adapters::git::GitError;
     use crate::adapters::git::fake::FakeRunner;
     use crate::adapters::herdr_events::fake::FakeConnector;
-    use crate::domain::model::{MachineLabel, TaskType};
+    use crate::domain::model::{MachineLabel, TaskType, WorkspaceLocation};
     use crate::domain::naming::TaskCheckout;
     use crate::domain::path::PosixPath;
     use crate::storage::{NewTask, NewWorkspace, Storage};
@@ -423,7 +535,12 @@ mod tests {
     const STARTED: &str = r#"{"id":"toodo:events","result":{"type":"subscription_started"}}"#;
 
     fn sync<'a>(fixture: &'a Fixture, herdr: &'a Herdr) -> EventSync<'a> {
+        sync_on(Machine::Local, fixture, herdr)
+    }
+
+    fn sync_on<'a>(machine: Machine, fixture: &'a Fixture, herdr: &'a Herdr) -> EventSync<'a> {
         EventSync {
+            machine,
             storage: &fixture.storage,
             herdr,
             statuses: &fixture.statuses,
@@ -528,7 +645,77 @@ mod tests {
     }
 
     fn list_statuses(fixture: &Fixture) -> Vec<TaskAgentStatus> {
-        lock_statuses(&fixture.statuses).clone()
+        all_statuses(&lock_statuses(&fixture.statuses))
+    }
+
+    fn devbox() -> Machine {
+        Machine::Ssh(MachineLabel::parse("devbox").unwrap())
+    }
+
+    /// herdr answers for `devbox`: each pane list is preceded by the machine lookup.
+    fn devbox_herdr(pane_lists: &[&str]) -> Herdr {
+        let machines = r#"[{"id":"m2","label":"devbox","target":"devbox","session":"default","enabled":true,"selected":false}]"#;
+        let results = pane_lists.iter().flat_map(|panes| {
+            [
+                Ok(machines.to_owned()),
+                Ok(format!(
+                    r#"{{"id":"cli:pane:list","result":{{"panes":[{panes}]}}}}"#
+                )),
+            ]
+        });
+        Herdr::new(Box::new(Arc::new(FakeRunner::new(
+            results.collect::<Vec<Result<String, GitError>>>(),
+        ))))
+    }
+
+    #[test]
+    fn ssh_machines_apply_events_to_their_own_tasks_only() {
+        let fixture = fixture();
+        let empty = String::new();
+        let herdr = devbox_herdr(&[&empty, &empty, &empty, &empty]);
+        let opened = r#"{"data":{"already_open":false,"type":"worktree_opened","workspace":{"workspace_id":"w9"},"worktree":{"path":"/wt/toodo/feat-add-login-2"}},"event":"worktree_opened"}"#;
+        let removed = r#"{"data":{"forced":false,"type":"worktree_removed","workspace_id":"w9","worktree":{"path":"/wt/toodo/feat-add-login-2"}},"event":"worktree_removed"}"#;
+        let connector = FakeConnector::new([Ok(format!("{STARTED}\n{opened}\n{removed}\n"))]);
+        let end = sync_on(devbox(), &fixture, &herdr).run_once(&connector);
+        assert!(end.started);
+        let remote = task(&fixture, fixture.remote.id);
+        assert_eq!(remote.worktree_path, None);
+        assert_eq!(remote.herdr_workspace_id, None);
+        let local = task(&fixture, fixture.local.id);
+        assert_eq!(local.herdr_workspace_id.as_deref(), Some("w1"));
+        assert_eq!(local.worktree_path, fixture.local.worktree_path);
+        assert_eq!(
+            *fixture.recorder.tasks_changed.lock().unwrap(),
+            [fixture.remote.workspace_id, fixture.remote.workspace_id]
+        );
+    }
+
+    #[test]
+    fn agent_statuses_of_all_machines_are_published_together() {
+        let fixture = fixture();
+        let working = pane("w1:p1", "w1", "working");
+        let local_herdr = herdr(&[&working]);
+        let failed = FakeConnector::new([Err(io::Error::other("no socket"))]);
+        sync(&fixture, &local_herdr).run_once(&failed);
+        let blocked = pane("w1:p1", "w1", "blocked");
+        let remote_herdr = devbox_herdr(&[&blocked]);
+        let failed = FakeConnector::new([Err(io::Error::other("no socket"))]);
+        let remote = sync_on(devbox(), &fixture, &remote_herdr);
+        remote.run_once(&failed);
+        let both = statuses(&[
+            (fixture.local.id, AgentStatus::Working),
+            (fixture.remote.id, AgentStatus::Blocked),
+        ]);
+        assert_eq!(list_statuses(&fixture), both);
+        assert_eq!(
+            fixture.recorder.statuses.lock().unwrap().last(),
+            Some(&both)
+        );
+        remote.clear_agents();
+        assert_eq!(
+            list_statuses(&fixture),
+            statuses(&[(fixture.local.id, AgentStatus::Working)])
+        );
     }
 
     #[test]

@@ -232,8 +232,17 @@ Toodo owns planning, task state, commit records, and pull requests.
     `src-tauri/src/commands/events.rs`): newline-delimited JSON over the server socket
     that `herdr status --json` reports as `server.socket`. On Windows herdr serves it as
     the named pipe `\\.\pipe\<socket path>`; elsewhere it is a Unix domain socket.
-    - A background thread keeps one `events.subscribe` connection to the local herdr
-      server for `worktree.created`, `worktree.opened`, `worktree.removed`,
+    - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -W
+      <socket path> -- <host>`, which forwards ssh's standard input and output to the
+      remote socket. The socket path comes from running the remote herdr over SSH
+      (`herdr --session <saved session> status --json`, looked up on `PATH`, then in
+      `~/.local/bin`, Homebrew, `/usr/local/bin`, and the Nix profile), because
+      `herdr --machine <id> status server --json` reports a `machine:<id>/<session>`
+      placeholder instead (verified on herdr 0.9.3).
+    - One background thread keeps one `events.subscribe` connection to the local herdr
+      server, and one more to the herdr server of each machine that hosts an SSH
+      workspace (checked every 5 s; a machine's thread ends when its last workspace is
+      deleted). Each subscribes to `worktree.created`, `worktree.opened`, `worktree.removed`,
       `workspace.closed`, `pane.created`, `pane.closed`, `pane.agent_detected`, and
       `pane.agent_status_changed` of every pane. Agent status subscriptions name one
       pane each and a connection takes one subscription, so a new pane means a new
@@ -242,11 +251,14 @@ Toodo owns planning, task state, commit records, and pull requests.
       pane-scoped ones keep the dotted name (`pane.agent_status_changed`). Neither
       `workspace.updated` nor `pane.updated` reports agent status changes (verified on
       herdr 0.9.3).
-    - `worktree.removed` forgets the worktree and herdr workspace of the local task bound
-      to that herdr workspace; `worktree.created`/`worktree.opened` stores the new herdr
-      workspace of the local task with that worktree path. The frontend gets a
+    - herdr IDs are scoped to one server, so a thread only touches the tasks of its own
+      machine. `worktree.removed` forgets the worktree and herdr workspace of the task
+      bound to that herdr workspace; `worktree.created`/`worktree.opened` stores the new
+      herdr workspace of the task with that worktree path (compared case-insensitively
+      for Windows paths). The frontend gets a
       `TasksChanged` event and refetches the workspace's tasks.
-    - Agent status is read again with `herdr pane list` on every pane or agent event
+    - Agent status is read again with `herdr [--machine <id>] pane list` on every pane
+      or agent event
       instead of being patched from the event, as herdr recommends. The status of a task
       is the most urgent one among the panes of its herdr workspace (blocked, working,
       done, idle) and reaches the frontend through `list_agent_statuses` and the
@@ -254,7 +266,6 @@ Toodo owns planning, task state, commit records, and pull requests.
     - When the subscription ends (herdr stopped, `events_lost`, `pane_not_found`), agent
       statuses are cleared and the thread subscribes again after 1 s, doubling up to
       30 s while the server stays unreachable.
-    - Only the local herdr server is watched; tasks of SSH workspaces get no events yet.
   - Toodo does not embed a terminal; it focuses the herdr workspace instead.
   - Relevant commands:
   - `herdr worktree create|open|list|remove`: manage worktree-backed herdr workspaces.

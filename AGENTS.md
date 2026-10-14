@@ -123,7 +123,8 @@ updated `src/lib/bindings.ts` together with the Rust change.
     `herdr workspace focus`, `herdr agent prompt|wait`), which herdr recommends for
     portable Windows behavior. CLI output is the JSON `{"id", "result"}` envelope of the
     socket API; parse it as JSON, never scrape text.
-  - Events come from the socket API (`events.subscribe`) over the Windows named pipe:
+  - Events come from the socket API (`events.subscribe`) over the Windows named pipe,
+    and from saved SSH machines over `ssh -W <remote socket path>`:
     `worktree.created`, `worktree.removed`, `pane.agent_status_changed`.
   - Remote workspaces map to saved herdr SSH machines (`herdr machine ...`), found by
     their SSH target. Toodo adds one by running `herdr machine add <host>` in a console

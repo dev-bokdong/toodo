@@ -13,7 +13,9 @@ use std::fmt;
 
 use serde_json::Value;
 
-use super::git::{GitError, Invocation, Runner, describe, is_plain_word};
+use super::git::{
+    GitError, Invocation, Runner, describe, is_plain_word, shell_quote, ssh_invocation,
+};
 use crate::domain::model::{Machine, MachineLabel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,32 +164,32 @@ impl Herdr {
     pub fn server_status(&self) -> Result<ServerStatus, HerdrError> {
         let invocation = invocation(None, &["status", "--json"]);
         let output = self.runner.run(&invocation)?;
-        let server = parse(&invocation, &output)?.get("server").cloned();
-        let running = server
-            .as_ref()
-            .and_then(|server| server.get("running"))
-            .and_then(Value::as_bool)
-            .ok_or_else(|| unexpected(&invocation, &output))?;
-        let version = server
-            .as_ref()
-            .and_then(|server| server.get("version"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let socket = server
-            .as_ref()
-            .and_then(|server| server.get("socket"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        Ok(ServerStatus {
-            running,
-            version,
-            socket,
-        })
+        server_status(&invocation, &output)
     }
 
-    /// Panes of the local herdr server with the status of their agents.
-    pub fn list_panes(&self) -> Result<Vec<PaneAgent>, HerdrError> {
-        let invocation = invocation(None, &["pane", "list"]);
+    /// Status of the herdr server of the saved herdr machine for the SSH host, read by
+    /// running the remote herdr over SSH: `herdr --machine` reports a routing placeholder
+    /// instead of the remote socket path. Like herdr, the remote herdr is looked up on
+    /// `PATH`, then in the usual install directories.
+    pub fn remote_server_status(&self, host: &MachineLabel) -> Result<ServerStatus, HerdrError> {
+        let saved = self.saved_machine(host)?;
+        let script = format!(
+            "for herdr in \"$(command -v herdr)\" \"$HOME/.local/bin/herdr\" \
+             /opt/homebrew/bin/herdr /usr/local/bin/herdr \"$HOME/.nix-profile/bin/herdr\"; do \
+             if [ -n \"$herdr\" ] && [ -x \"$herdr\" ]; then \
+             exec \"$herdr\" --session {} status --json; fi; done; \
+             echo 'herdr is not installed on this machine' >&2; exit 127",
+            shell_quote(&saved.session)
+        );
+        let invocation = ssh_invocation(host, format!("sh -c {}", shell_quote(&script)));
+        let output = self.runner.run(&invocation)?;
+        server_status(&invocation, &output)
+    }
+
+    /// Panes of the herdr server of `machine` with the status of their agents.
+    pub fn list_panes(&self, machine: &Machine) -> Result<Vec<PaneAgent>, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(profile_id.as_deref(), &["pane", "list"]);
         let output = self.runner.run(&invocation)?;
         let pane = |row: &Value| {
             Some(PaneAgent {
@@ -367,9 +369,14 @@ impl Herdr {
     /// Among enabled profiles whose SSH target is the host, the one on herdr's default
     /// session wins.
     fn profile_id(&self, machine: &Machine) -> Result<Option<String>, HerdrError> {
-        let Machine::Ssh(host) = machine else {
-            return Ok(None);
-        };
+        match machine {
+            Machine::Local => Ok(None),
+            Machine::Ssh(host) => Ok(Some(self.saved_machine(host)?.id)),
+        }
+    }
+
+    /// The saved herdr machine whose SSH target is `host`, as chosen by [`Self::profile_id`].
+    fn saved_machine(&self, host: &MachineLabel) -> Result<SavedMachine, HerdrError> {
         let profiles = self.list_machines()?;
         let matching: Vec<_> = profiles
             .iter()
@@ -381,7 +388,7 @@ impl Herdr {
             .find(|profile| profile.session == DEFAULT_SESSION)
             .or_else(|| enabled.next());
         match (chosen, matching.first()) {
-            (Some(profile), _) => Ok(Some(profile.id.clone())),
+            (Some(profile), _) => Ok((**profile).clone()),
             (None, Some(disabled)) => Err(HerdrError::MachineDisabled {
                 host: host.as_str().to_owned(),
                 profile_id: disabled.id.clone(),
@@ -421,6 +428,28 @@ impl SavedMachine {
             enabled: row.get("enabled")?.as_bool()?,
         })
     }
+}
+
+/// The `server` object of `herdr status --json`.
+fn server_status(invocation: &Invocation, output: &str) -> Result<ServerStatus, HerdrError> {
+    let server = parse(invocation, output)?.get("server").cloned();
+    let running = server
+        .as_ref()
+        .and_then(|server| server.get("running"))
+        .and_then(Value::as_bool)
+        .ok_or_else(|| unexpected(invocation, output))?;
+    let text = |key: &str| {
+        server
+            .as_ref()
+            .and_then(|server| server.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    Ok(ServerStatus {
+        running,
+        version: text("version"),
+        socket: text("socket"),
+    })
 }
 
 /// `herdr [--machine <profile-id>] <args>`.
@@ -880,7 +909,7 @@ mod tests {
             status,
         };
         assert_eq!(
-            herdr.list_panes().unwrap(),
+            herdr.list_panes(&Machine::Local).unwrap(),
             [
                 pane("w1:p1", "w1", AgentStatus::Working),
                 pane("w1:p2", "w1", AgentStatus::Unknown),
@@ -888,13 +917,61 @@ mod tests {
             ]
         );
         assert!(matches!(
-            herdr.list_panes(),
+            herdr.list_panes(&Machine::Local),
             Err(HerdrError::UnexpectedOutput { .. })
         ));
         assert_eq!(
             runner.invocations.lock().unwrap()[0].args,
             ["pane", "list"].map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn panes_of_ssh_machines_are_listed_through_the_saved_machine() {
+        let (herdr, runner) = herdr(vec![
+            machine_list(&[saved("m2", "devbox", "default", true)]),
+            Ok(r#"{"id":"cli:pane:list","result":{"panes":[]}}"#.to_owned()),
+        ]);
+        assert_eq!(herdr.list_panes(&devbox()).unwrap(), []);
+        assert_eq!(
+            runner.invocations.lock().unwrap()[1].args,
+            ["--machine", "m2", "pane", "list"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn remote_server_status_runs_the_remote_herdr_of_the_saved_session() {
+        let (herdr, runner) = herdr(vec![
+            machine_list(&[saved("m2", "devbox", "agents", true)]),
+            Ok(
+                r#"{"server":{"running":true,"version":"0.9.3","socket":"/home/u/.config/herdr/sessions/agents/herdr.sock"}}"#
+                    .to_owned(),
+            ),
+            machine_list(&[]),
+        ]);
+        let host = MachineLabel::parse("devbox").unwrap();
+        assert_eq!(
+            herdr.remote_server_status(&host).unwrap(),
+            ServerStatus {
+                running: true,
+                version: Some("0.9.3".to_owned()),
+                socket: Some("/home/u/.config/herdr/sessions/agents/herdr.sock".to_owned()),
+            }
+        );
+        assert_eq!(
+            herdr.remote_server_status(&host),
+            Err(HerdrError::MachineNotSaved {
+                host: "devbox".to_owned()
+            })
+        );
+        let invocation = runner.invocations.lock().unwrap()[1].clone();
+        assert_eq!(invocation.program, "ssh");
+        assert_eq!(
+            invocation.args[..4],
+            ["-o", "BatchMode=yes", "--", "devbox"].map(str::to_owned)
+        );
+        assert!(invocation.args[4].starts_with("sh -c '"));
+        assert!(invocation.args[4].contains(r#"--session '\''agents'\'' status --json"#));
     }
 
     #[test]
