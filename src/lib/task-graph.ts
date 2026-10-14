@@ -74,6 +74,31 @@ export function canAddDependency(tasks: Task[], source: TaskId, target: TaskId):
   );
 }
 
+/**
+ * `id` with every task it transitively depends on and every task that transitively depends
+ * on it, among `tasks`.
+ */
+export function relatedTasks(tasks: Task[], id: TaskId): Set<TaskId> {
+  const related = new Set<TaskId>([id]);
+  const walk = (next: (current: TaskId) => TaskId[]) => {
+    const pending = [id];
+    const seen = new Set<TaskId>([id]);
+    for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+      for (const other of next(current)) {
+        if (!seen.has(other)) {
+          seen.add(other);
+          related.add(other);
+          pending.push(other);
+        }
+      }
+    }
+  };
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  walk((current) => byId.get(current)?.dependsOn.filter((other) => byId.has(other)) ?? []);
+  walk((current) => tasks.filter((task) => task.dependsOn.includes(current)).map((task) => task.id));
+  return related;
+}
+
 export type TimelineScale = "hour" | "day" | "week" | "month";
 
 export const timelineScales: TimelineScale[] = ["hour", "day", "week", "month"];

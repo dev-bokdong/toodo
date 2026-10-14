@@ -386,6 +386,55 @@ describe("App", () => {
     expect(within(timeline).getByText("Add herdr API").closest("[data-dimmed]")).toBeNull();
   });
 
+  it("opens the details of a task clicked on the timeline and fades tasks outside its chain", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const planned = { ...task(0, 1, "").milestones, plannedAt };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { status: "done", milestones: { ...planned, completedAt: plannedAt + 3600 } }),
+        task(2, 1, "Add UI", { dependsOn: [1], milestones: planned }),
+        task(3, 1, "Write docs", { milestones: planned }),
+      ],
+    });
+    renderApp();
+
+    await screen.findByRole("list", { name: "Tasks" });
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    // The details panel names other tasks too, as dependency choices; look only at the bars.
+    const bar = (title: string) =>
+      within(timeline.querySelector(".react-flow__nodes") as HTMLElement)
+        .getByText(title)
+        .closest(".react-flow__node") as HTMLElement;
+    await within(timeline).findByText("Add UI");
+    expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument();
+
+    fireEvent.click(bar("Add UI"));
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByRole("button", { name: "Start #2" })).toBeInTheDocument();
+    expect(bar("Write docs").querySelector("[data-dimmed]")).not.toBeNull();
+    expect(bar("Add storage").querySelector("[data-dimmed]")).toBeNull();
+    expect(bar("Add UI").querySelector("[data-dimmed]")).toBeNull();
+
+    fireEvent.click(bar("Write docs"));
+    expect(await within(details).findByRole("button", { name: "Start #3" })).toBeInTheDocument();
+    expect(bar("Add UI").querySelector("[data-dimmed]")).not.toBeNull();
+
+    fireEvent.keyDown(within(details).getByRole("button", { name: "Close details" }), { key: "Escape" });
+    await waitFor(() =>
+      expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument(),
+    );
+    expect(bar("Add UI").querySelector("[data-dimmed]")).toBeNull();
+
+    fireEvent.click(bar("Add UI"));
+    fireEvent.click(await within(timeline).findByRole("button", { name: "Close details" }));
+    expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument();
+  });
+
   it("shows the agent status of active tasks on the timeline", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
