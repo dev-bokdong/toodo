@@ -30,6 +30,7 @@ vi.mock("@/lib/bindings", () => ({
     createTask: vi.fn(),
     updateTask: vi.fn(),
     pauseTask: vi.fn(),
+    setCompletionNote: vi.fn(),
     deleteTask: vi.fn(),
     addDependency: vi.fn(),
     removeDependency: vi.fn(),
@@ -97,6 +98,8 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     herdrWorkspaceId: null,
     pullRequestUrl: null,
     pullRequestMergedAt: null,
+    pullRequest: null,
+    completionNote: null,
     timeline: [],
     milestones: {
       plannedAt: null,
@@ -852,6 +855,48 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
     expect(screen.getByText("In review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
+  });
+
+  it("asks for a completion note on a done task and saves it", async () => {
+    const done = task(1, 1, "Add login", {
+      status: "done",
+      branch: "feat/add-login-1",
+      pullRequestUrl: "https://github.com/acme/toodo/pull/12",
+      pullRequest: {
+        number: 12,
+        title: "Add login",
+        additions: 120,
+        deletions: 30,
+        changedFiles: 4,
+        mergeCommitSha: "abc123",
+        reviewCount: 2,
+        reviewerCount: 1,
+        firstReviewedAt: 1700000000,
+      },
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    expect(await screen.findByLabelText("#1 needs a completion note")).toHaveTextContent("Needs note");
+    expect(screen.getByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
+    fireEvent.click(screen.getByRole("button", { name: "Add completion note to #1" }));
+    const save = screen.getByRole("button", { name: "Save note" });
+    expect(save).toBeDisabled();
+
+    const noted = { ...done, completionNote: "Cut sign-in time in half" };
+    mocked.setCompletionNote.mockResolvedValue({ status: "ok", data: noted });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [noted] });
+    fireEvent.change(screen.getByRole("textbox", { name: "Completion note for #1" }), {
+      target: { value: "Cut sign-in time in half" },
+    });
+    fireEvent.click(save);
+
+    expect(await screen.findByLabelText("Completion note of #1")).toHaveTextContent("Cut sign-in time in half");
+    expect(screen.queryByLabelText("#1 needs a completion note")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Completion note for #1" })).not.toBeInTheDocument();
+    expect(mocked.setCompletionNote).toHaveBeenCalledWith(1, "Cut sign-in time in half");
   });
 
   it("adds and removes task dependencies", async () => {

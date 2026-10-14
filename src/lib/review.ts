@@ -1,4 +1,11 @@
-import type { ReviewEntry, ReviewOutcome, TaskType, Timestamp, Workspace } from "@/lib/bindings";
+import type {
+  PullRequestSnapshot,
+  ReviewEntry,
+  ReviewOutcome,
+  TaskType,
+  Timestamp,
+  Workspace,
+} from "@/lib/bindings";
 import { activeSeconds, formatDate } from "@/lib/timeline";
 
 export const outcomeLabels: Record<ReviewOutcome, string> = {
@@ -155,6 +162,31 @@ export function commitSubject(message: string): string {
   return message.split("\n", 1)[0];
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
+
+/** The number, size, and reviews of a merged pull request, e.g. `#12, +10/-3 in 2 files, 1 review`. */
+export function pullRequestStats(pullRequest: PullRequestSnapshot): string {
+  return `#${pullRequest.number}, +${pullRequest.additions}/-${pullRequest.deletions} in ${plural(
+    pullRequest.changedFiles,
+    "file",
+  )}, ${plural(pullRequest.reviewCount, "review")}`;
+}
+
+/** A completion note on one line, for list items and CSV cells. */
+function oneLine(note: string): string {
+  return note.split(/\s*\n\s*/).join(" ");
+}
+
+/** Size of the merged pull requests of completed tasks, summed. */
+export interface ChangeStat {
+  pullRequests: number;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+}
+
 /** The median of durations in seconds over the tasks that reached both milestones. */
 export interface DurationStat {
   median: number;
@@ -176,6 +208,10 @@ export interface ReviewSummary {
   reviewTime: DurationStat | null;
   /** Tasks completed in each calendar month of the period; `null` for a period within one month. */
   completedPerMonth: { month: string; count: number }[] | null;
+  /** Merged pull requests of completed tasks; `null` when none was recorded. */
+  changes: ChangeStat | null;
+  /** Completed tasks the user has not written a completion note for. */
+  withoutNote: number;
 }
 
 function median(values: number[]): DurationStat | null {
@@ -206,6 +242,7 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const completed = entries.filter((entry) => entry.outcome === "completed");
   const months = periodMonths(period);
+  const pullRequests = completed.flatMap(({ task }) => (task.pullRequest ? [task.pullRequest] : []));
   return {
     outcomes: groupByOutcome(entries).map((group) => ({ outcome: group.outcome, count: group.entries.length })),
     commits: entries.reduce((total, entry) => total + entry.commits.length, 0),
@@ -234,7 +271,28 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
             month,
             count: completed.filter((entry) => formatDate(entry.at).startsWith(month)).length,
           })),
+    changes:
+      pullRequests.length === 0
+        ? null
+        : pullRequests.reduce(
+            (total, pullRequest) => ({
+              pullRequests: total.pullRequests + 1,
+              additions: total.additions + pullRequest.additions,
+              deletions: total.deletions + pullRequest.deletions,
+              changedFiles: total.changedFiles + pullRequest.changedFiles,
+            }),
+            { pullRequests: 0, additions: 0, deletions: 0, changedFiles: 0 },
+          ),
+    withoutNote: completed.filter(({ task }) => task.completionNote === null).length,
   };
+}
+
+/** The summed size of merged pull requests, e.g. `+120/-30 in 9 files (3 pull requests)`. */
+export function formatChanges(changes: ChangeStat): string {
+  return `+${changes.additions}/-${changes.deletions} in ${plural(changes.changedFiles, "file")} (${plural(
+    changes.pullRequests,
+    "pull request",
+  )})`;
 }
 
 function periodMonths(period: ReviewPeriod): string[] {
@@ -294,6 +352,9 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
         .join(", ")}`,
     );
   }
+  if (summary.changes) {
+    lines.push(`- Changes in completed pull requests: ${formatChanges(summary.changes)}`);
+  }
   for (const key of durationKeys) {
     lines.push(`- ${durationLabels[key]}: ${formatStat(summary[key])}`);
   }
@@ -308,7 +369,9 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
     for (const { task, at, commits } of group.entries) {
       const details = [names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`, formatDate(at)];
       if (task.pullRequestUrl) details.push(task.pullRequestUrl);
+      if (task.pullRequest) details.push(pullRequestStats(task.pullRequest));
       lines.push(`- [${task.taskType}] ${task.title} (${details.join(", ")})`);
+      if (task.completionNote) lines.push(`  - Note: ${oneLine(task.completionNote)}`);
       for (const commit of commits) {
         lines.push(`  - \`${commit.sha.slice(0, 7)}\` ${commitSubject(commit.message)}`);
       }
@@ -345,6 +408,11 @@ const csvColumns = [
   "Pull request",
   "Commits in period",
   "Active hours",
+  "Additions",
+  "Deletions",
+  "Changed files",
+  "Reviews",
+  "Completion note",
 ];
 
 /**
@@ -370,6 +438,11 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: 
     task.pullRequestUrl,
     commits.length,
     activeHours(activeSeconds(task.timeline, now)),
+    task.pullRequest?.additions ?? null,
+    task.pullRequest?.deletions ?? null,
+    task.pullRequest?.changedFiles ?? null,
+    task.pullRequest?.reviewCount ?? null,
+    task.completionNote && oneLine(task.completionNote),
   ]);
   return `\uFEFF${[csvColumns, ...rows].map((row) => row.map(csvField).join(",")).join("\r\n")}\r\n`;
 }

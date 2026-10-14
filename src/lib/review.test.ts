@@ -40,6 +40,8 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       herdrWorkspaceId: null,
       pullRequestUrl: null,
       pullRequestMergedAt: null,
+      pullRequest: null,
+      completionNote: null,
       timeline: [],
       milestones: {
         plannedAt: null,
@@ -61,6 +63,20 @@ function completed(id: number, at: number, milestones: Partial<Task["milestones"
   base.task.milestones = { ...base.task.milestones, ...milestones, completedAt: at };
   base.at = at;
   return base;
+}
+
+function snapshot(number: number): NonNullable<Task["pullRequest"]> {
+  return {
+    number,
+    title: `Pull request ${number}`,
+    additions: 120,
+    deletions: 30,
+    changedFiles: 4,
+    mergeCommitSha: "abc123",
+    reviewCount: 2,
+    reviewerCount: 1,
+    firstReviewedAt: null,
+  };
 }
 
 const toodo: Workspace = {
@@ -340,6 +356,24 @@ describe("reviewMarkdown", () => {
     expect(markdown).toContain("| Month | Completed |\n| --- | --- |\n| 2026-10 | 0 |\n| 2026-11 | 1 |\n| 2026-12 | 0 |\n");
   });
 
+  it("adds the size of merged pull requests and completion notes", () => {
+    const at = local(2026, 10, 13, 15);
+    const entries = [
+      completed(1, at, {}, { pullRequest: snapshot(12), completionNote: "Sign-in is twice as fast\nfor everyone" }),
+      completed(2, at, {}, { pullRequest: { ...snapshot(13), changedFiles: 1, reviewCount: 1 } }),
+      entry(3, "started"),
+    ];
+    const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo]);
+
+    expect(summarize(weekStarting("2026-10-12"), entries, [toodo]).withoutNote).toBe(1);
+
+    expect(markdown).toContain("- Changes in completed pull requests: +240/-60 in 5 files (2 pull requests)\n");
+    expect(markdown).toContain(
+      "- [feat] Task 1 (toodo, 2026-10-13, #12, +120/-30 in 4 files, 2 reviews)\n  - Note: Sign-in is twice as fast for everyone\n",
+    );
+    expect(markdown).toContain("- [feat] Task 2 (toodo, 2026-10-13, #13, +120/-30 in 1 file, 1 review)\n");
+  });
+
   it("says so when the period has no recorded activity", () => {
     expect(reviewMarkdown(periodContaining("year", "2026-01-01"), [], [toodo])).toBe(
       "# Year review: 2026\n\nNo recorded activity.\n",
@@ -354,6 +388,8 @@ describe("reviewCsv", () => {
       title: 'Fix "login", then\nlogout',
       pullRequestUrl: "https://github.com/acme/toodo/pull/3",
       pullRequestMergedAt: at - hour,
+      pullRequest: snapshot(3),
+      completionNote: "Cut login time\n  in half, finally",
     });
 
     done.task.timeline = [
@@ -370,9 +406,9 @@ describe("reviewCsv", () => {
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Planned,Started,In review,Completed,Merged,Pull request,Commits in period,Active hours",
-          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0,3',
-          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,0,0.5",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Planned,Started,In review,Completed,Merged,Pull request,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
+          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0,3,120,30,4,2,"Cut login time in half, finally"',
+          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,0,0.5,,,,,",
         ].join("\r\n") +
         "\r\n",
     );

@@ -75,6 +75,32 @@ fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
     Ok((&storage.set_task_status(id.into(), TaskStatus::Planned)?).into())
 }
 
+/// Stores what the user wrote about the outcome of a `done` task, for reviews. The note
+/// is trimmed; an empty one clears it.
+#[tauri::command]
+#[specta::specta]
+pub fn set_completion_note(
+    storage: State<'_, StorageState>,
+    id: TaskId,
+    note: String,
+) -> CommandResult<Task> {
+    note_completion(&mut lock(&storage), id, &note)
+}
+
+fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResult<Task> {
+    let task = storage
+        .get_task(id.into())?
+        .ok_or(StorageError::TaskNotFound(id.into()))?;
+    if task.status != TaskStatus::Done {
+        return Err(CommandError::rejected(format!(
+            "task {} is {}; only a done task has a completion note",
+            task.id, task.status
+        )));
+    }
+    let note = Some(note.trim()).filter(|note| !note.is_empty());
+    Ok((&storage.set_completion_note(id.into(), note)?).into())
+}
+
 /// Deletes a task with its dependency edges and commit records. A task that still has a worktree
 /// first removes it through herdr, which also closes its herdr workspace; the branch is
 /// kept. Without `force`, a worktree with modified or untracked files is rejected and the
@@ -192,6 +218,38 @@ mod tests {
             assert_eq!(paused.status, types::TaskStatus::Planned);
             assert_eq!(paused.branch.as_deref(), Some("feat/add-commands-1"));
         }
+    }
+
+    #[test]
+    fn only_a_done_task_gets_a_trimmed_completion_note_and_an_empty_one_clears_it() {
+        let (mut storage, task) = storage_with_task();
+        let error = note_completion(&mut storage, task.id.into(), "Shipped").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        let error = note_completion(&mut storage, TaskId(999), "Shipped").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+
+        for status in [
+            TaskStatus::InProgress,
+            TaskStatus::InReview,
+            TaskStatus::Done,
+        ] {
+            storage.set_task_status(task.id, status).unwrap();
+        }
+        let noted =
+            note_completion(&mut storage, task.id.into(), "  Cut login time in half\n").unwrap();
+        assert_eq!(
+            noted.completion_note.as_deref(),
+            Some("Cut login time in half")
+        );
+        let stored = storage.get_task(task.id).unwrap().unwrap();
+        assert_eq!(Task::from(&stored), noted);
+
+        let cleared = note_completion(&mut storage, task.id.into(), " ").unwrap();
+        assert_eq!(cleared.completion_note, None);
+        assert_eq!(
+            storage.get_task(task.id).unwrap().unwrap().completion_note,
+            None
+        );
     }
 
     #[test]

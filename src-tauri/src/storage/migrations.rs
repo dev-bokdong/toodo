@@ -129,6 +129,23 @@ pub(super) const MIGRATIONS: &[&str] = &[
         WHERE status = 'planned' AND previous = 'planned'
     );
     ",
+    // Version 5: what reviews need about a completed task beyond its history: the note
+    // the user writes about its outcome, and a snapshot of its merged pull request.
+    r"
+    ALTER TABLE tasks ADD COLUMN completion_note TEXT;
+    CREATE TABLE pull_request_snapshots (
+        task_id INTEGER PRIMARY KEY REFERENCES tasks (id) ON DELETE CASCADE,
+        number INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        additions INTEGER NOT NULL,
+        deletions INTEGER NOT NULL,
+        changed_files INTEGER NOT NULL,
+        merge_commit_sha TEXT,
+        review_count INTEGER NOT NULL,
+        reviewer_count INTEGER NOT NULL,
+        first_reviewed_at INTEGER
+    );
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -339,5 +356,52 @@ mod tests {
                 ("done", 40)
             ])
         );
+    }
+
+    #[test]
+    fn version_5_adds_no_note_and_no_snapshot_to_existing_tasks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status, pull_request_url)
+                VALUES (1, 'feat', 'A', 'done', 'https://github.com/acme/toodo/pull/1');
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let note: Option<String> = conn
+            .query_row(
+                "SELECT completion_note FROM tasks WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(note, None);
+        let snapshots = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM pull_request_snapshots", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(snapshots(&conn), 0);
+        conn.execute(
+            "INSERT INTO pull_request_snapshots (task_id, number, title, additions, deletions,
+                 changed_files, review_count, reviewer_count)
+             VALUES (1, 1, 'A', 1, 0, 1, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+        assert_eq!(snapshots(&conn), 0);
     }
 }

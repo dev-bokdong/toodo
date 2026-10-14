@@ -157,11 +157,16 @@ Review and merging happen on GitHub; Toodo never merges a pull request itself.
 When the user completes an `in_review` task, Toodo reads the state, base branch, and
 merge time of its pull request (`gh pr view <url> --json url,state,baseRefName,mergedAt`). A pull request into
 another branch than the workspace base branch is rejected. Only a merged pull request
-completes the task: Toodo closes its herdr workspace (`herdr workspace close
+completes the task. Toodo first reads what reviews need about it (`gh pr view <url> --json
+number,title,additions,deletions,changedFiles,mergeCommit,author,reviews,commits`); a
+failure keeps the task `in_review`, so a completed task always has this snapshot. It then
+closes its herdr workspace (`herdr workspace close
 <herdrWorkspaceId>`), which keeps the worktree checkout on disk, then moves the task to
-`done` (recording `completedAt`), stores `pullRequestMergedAt`, and clears
-`herdrWorkspaceId` in one transaction, which may make dependent tasks
-ready to start. A workspace herdr no longer has is treated as already closed; any other herdr
+`done` (recording `completedAt`), stores `pullRequestMergedAt` and the pull request
+snapshot, replaces the commit records with the commits of the pull request (so commits
+pushed after it was opened are recorded too; a pull request without commits keeps the
+records stored earlier), and clears `herdrWorkspaceId` in one transaction, which may make
+dependent tasks ready to start. A workspace herdr no longer has is treated as already closed; any other herdr
 failure keeps the task `in_review`, and completing it again is safe. An open pull request is rejected until it is
 merged; a pull request closed without merging is rejected too, so the user reopens it or
 pauses the task.
@@ -182,6 +187,13 @@ which moves the task to `in_review`; a merged one then completes the task in the
 check. A branch without a pull request, or with a closed one only, leaves the task
 `in_progress`; a pull request into another base branch or a failed lookup is logged once
 until it changes.
+
+Completion never waits for the user: dependents start as soon as the work is on the base
+branch, and `completedAt` stays the time of the merge check. Instead, a `done` task
+without a completion note is marked "Needs note" in the task list, where the user writes
+what the work achieved (the `set_completion_note` command; only `done` tasks have one,
+and an empty note clears it). The review counts completed tasks without a note so they
+can be filled in before a report is written.
 
 The worktree stays until the task is deleted (step 8).
 

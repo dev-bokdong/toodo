@@ -108,6 +108,8 @@ mod tests {
             herdr_workspace_id: None,
             pull_request_url: None,
             pull_request_merged_at: None,
+            pull_request: None,
+            completion_note: None,
             timeline: Vec::new(),
         }
     }

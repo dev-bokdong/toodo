@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   SquareTerminal,
+  StickyNote,
   Trash2,
   Upload,
   X,
@@ -37,12 +38,14 @@ import {
   useRemoveDependency,
   useRestoreTaskWorktree,
   useSaveMachineSettings,
+  useSetCompletionNote,
   useStartTask,
   useTasks,
   useUpdateTask,
   useUpdateWorkspace,
   useWorkspaces,
 } from "@/lib/queries";
+import { pullRequestStats } from "@/lib/review";
 import { dependenciesDone, isPaused } from "@/lib/task-graph";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
@@ -338,6 +341,15 @@ function TaskRow({
             <span className="min-w-0 flex-1 truncate text-sm font-medium" title={task.title}>
               {task.title}
             </span>
+            {final && task.completionNote === null && (
+              <span
+                aria-label={`#${task.id} needs a completion note`}
+                title="Write what this task achieved; reviews include the note"
+                className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+              >
+                Needs note
+              </span>
+            )}
             {active && agentStatus && (
               <span
                 aria-label={`Agent of #${task.id}`}
@@ -431,9 +443,15 @@ function TaskRow({
           <GitPullRequest aria-hidden className="size-3 shrink-0 text-muted-foreground" />
           <span className="sr-only">Pull request </span>
           <span className="truncate select-all font-mono">{task.pullRequestUrl}</span>
+          {task.pullRequest && (
+            <span aria-label={`Pull request of #${task.id}`} className="shrink-0 text-muted-foreground">
+              {pullRequestStats(task.pullRequest)}
+            </span>
+          )}
         </p>
       )}
       <CommitList task={task} />
+      {final && !editing && <CompletionNote task={task} />}
       {actionError && (
         <p role="alert" className="text-xs text-destructive">
           {actionError.message}
@@ -664,6 +682,80 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
       {updateTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {updateTask.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** The completion note of a done task, which reviews include, or a button to write one. */
+function CompletionNote({ task }: { task: Task }) {
+  const setNote = useSetCompletionNote();
+  const [editing, setEditing] = useState(false);
+  const [note, setNoteText] = useState("");
+  const saved = task.completionNote ?? "";
+
+  function edit() {
+    setNoteText(saved);
+    setEditing(true);
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setNote.mutate({ id: task.id, note }, { onSuccess: () => setEditing(false) });
+  }
+
+  if (!editing) {
+    return task.completionNote === null ? (
+      <Button
+        size="xs"
+        variant="outline"
+        className="self-start"
+        aria-label={`Add completion note to #${task.id}`}
+        onClick={edit}
+      >
+        <StickyNote />
+        Add note
+      </Button>
+    ) : (
+      <div className="flex items-start gap-1 rounded-md bg-muted/60 px-2 py-1">
+        <StickyNote aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+        <p aria-label={`Completion note of #${task.id}`} className="min-w-0 flex-1 whitespace-pre-line text-xs">
+          {task.completionNote}
+        </p>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label={`Edit completion note of #${task.id}`}
+          title="Edit note"
+          onClick={edit}
+        >
+          <Pencil />
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <form onSubmit={submit} aria-label={`Completion note form of #${task.id}`} className="flex flex-col gap-1">
+      <textarea
+        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
+        aria-label={`Completion note for #${task.id}`}
+        placeholder="What did this achieve? Impact, decisions, follow-ups. Reviews include this note."
+        value={note}
+        onChange={(e) => setNoteText(e.target.value)}
+        autoFocus
+      />
+      <div className="flex gap-1">
+        <Button type="submit" size="xs" disabled={setNote.isPending || note.trim() === saved}>
+          {setNote.isPending ? "Saving..." : "Save note"}
+        </Button>
+        <Button type="button" size="xs" variant="ghost" onClick={() => setEditing(false)}>
+          Discard
+        </Button>
+      </div>
+      {setNote.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {setNote.error.message}
         </p>
       )}
     </form>

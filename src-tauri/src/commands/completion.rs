@@ -64,7 +64,8 @@ pub fn open_pull_request(
 }
 
 /// Moves an `in_review` task to `done` once its pull request is merged, which may make
-/// its dependents `ready`. Its herdr workspace is closed; the worktree stays on disk.
+/// its dependents `ready`. The size, reviews, and commits of the pull request are
+/// recorded for reviews. Its herdr workspace is closed; the worktree stays on disk.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn complete_task(
@@ -275,6 +276,20 @@ fn complete_if_merged(
         PullRequestState::Open => return Ok(Completion::Open(pull_request_url)),
         PullRequestState::Closed => return Ok(Completion::Closed(pull_request_url)),
     }
+    // Read before anything changes: if `gh` fails, the task stays `in_review` and the
+    // next check tries again, so a completed task never lacks its snapshot.
+    let merged = github.merged_pull_request(&pull_request_url)?;
+    let commits: Vec<_> = merged
+        .commits
+        .into_iter()
+        .map(|commit| model::CommitRecord {
+            task_id: id,
+            sha: commit.sha,
+            message: commit.message,
+            author: commit.author,
+            committed_at: commit.committed_at,
+        })
+        .collect();
     // A workspace herdr no longer has was already closed, e.g. by the user.
     if let Some(workspace_id) = &task.herdr_workspace_id {
         match herdr.close_workspace(&location.machine(), workspace_id) {
@@ -284,7 +299,12 @@ fn complete_if_merged(
         }
     }
     Ok(Completion::Completed(Box::new(
-        lock(storage).complete_task(id, pull_request.merged_at)?,
+        lock(storage).complete_task(
+            id,
+            pull_request.merged_at,
+            Some(&merged.snapshot),
+            &commits,
+        )?,
     )))
 }
 
@@ -831,6 +851,25 @@ mod tests {
         Ok(pull_request_json(state, base))
     }
 
+    /// `gh pr view` output with the size, reviews, and commits of the merged pull
+    /// request, which has the commits `shas`.
+    fn merged_details(shas: &[&str]) -> Result<String, GitError> {
+        let commits = shas
+            .iter()
+            .map(|sha| {
+                format!(
+                    r#"{{"authors":[{{"email":"ada@example.com","name":"Ada"}}],"committedDate":"{}","messageBody":"","messageHeadline":"Commit {sha}","oid":"{sha}"}}"#,
+                    MERGED_AT.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(format!(
+            r#"{{"additions":10,"author":{{"login":"ada"}},"changedFiles":2,"commits":[{commits}],"deletions":3,"mergeCommit":{{"oid":"{SHA_B}"}},"number":12,"reviews":[{{"author":{{"login":"bob"}},"state":"APPROVED","submittedAt":"{}"}}],"title":"Add login"}}"#,
+            MERGED_AT.0
+        ))
+    }
+
     fn recorded_shas(fixture: &Fixture) -> Vec<String> {
         lock(&fixture.storage)
             .list_commit_records(fixture.task.id)
@@ -876,7 +915,11 @@ mod tests {
             )
             .unwrap();
         let git_runner = runner(vec![log(&[]), origin("git@github.com:acme/toodo.git")]);
-        let gh_runner = runner(vec![listed("MERGED", "main"), viewed("MERGED", "main")]);
+        let gh_runner = runner(vec![
+            listed("MERGED", "main"),
+            viewed("MERGED", "main"),
+            merged_details(&[]),
+        ]);
         let (git, github) = adapters(&git_runner, &gh_runner);
 
         let in_review = open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
@@ -898,6 +941,8 @@ mod tests {
         .unwrap();
         assert_eq!(completed.status, TaskStatus::Done);
         assert!(dependent_ready(&fixture));
+        // A pull request without commits keeps the commits recorded before.
+        assert_eq!(recorded_shas(&fixture), [SHA_A]);
     }
 
     #[test]
@@ -957,11 +1002,44 @@ mod tests {
     #[test]
     fn completing_a_task_with_a_merged_pull_request_finishes_it_and_releases_dependents() {
         let fixture = in_review_fixture();
-        let gh_runner = runner(vec![viewed("MERGED", "main")]);
+        lock(&fixture.storage)
+            .replace_commit_records(
+                fixture.task.id,
+                &[model::CommitRecord {
+                    task_id: fixture.task.id,
+                    sha: SHA_A.to_owned(),
+                    message: "Add login".to_owned(),
+                    author: "Ada <ada@example.com>".to_owned(),
+                    committed_at: 1,
+                }],
+            )
+            .unwrap();
+        let gh_runner = runner(vec![
+            viewed("MERGED", "main"),
+            merged_details(&[SHA_A, SHA_B]),
+        ]);
         let github = GitHub::new(Box::new(gh_runner.clone()));
         let (herdr, herdr_runner) = closing_herdr();
 
         let completed = complete(&fixture.storage, &github, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(
+            completed.pull_request,
+            Some(model::PullRequestSnapshot {
+                number: 12,
+                title: "Add login".to_owned(),
+                additions: 10,
+                deletions: 3,
+                changed_files: 2,
+                merge_commit_sha: Some(SHA_B.to_owned()),
+                review_count: 1,
+                reviewer_count: 1,
+                first_reviewed_at: Some(MERGED_AT.1),
+            })
+        );
+        // The commits pushed after the pull request was opened are recorded too.
+        assert_eq!(recorded_shas(&fixture), [SHA_A, SHA_B]);
+        assert_eq!(completed.completion_note, None);
 
         assert_eq!(completed.status, TaskStatus::Done);
         assert_eq!(completed.pull_request_url.as_deref(), Some(PR));
@@ -982,6 +1060,22 @@ mod tests {
             invocations(&gh_runner)[0].args,
             ["pr", "view", PR, "--json", "url,state,baseRefName,mergedAt"].map(str::to_owned)
         );
+        assert_eq!(invocations(&gh_runner)[1].args[..3], ["pr", "view", PR]);
+    }
+
+    #[test]
+    fn a_failure_to_read_the_merged_pull_request_keeps_the_task_in_review() {
+        let fixture = in_review_fixture();
+        let github = GitHub::new(Box::new(runner(vec![
+            viewed("MERGED", "main"),
+            Err(failed()),
+        ])));
+        let before = stored(&fixture, &fixture.task);
+
+        complete(&fixture.storage, &github, &no_herdr(), fixture.task.id).unwrap_err();
+
+        assert_eq!(stored(&fixture, &fixture.task), before);
+        assert!(!dependent_ready(&fixture));
     }
 
     #[test]
@@ -1021,7 +1115,10 @@ mod tests {
     #[test]
     fn a_herdr_workspace_that_is_already_closed_does_not_block_completion() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![viewed("MERGED", "main")])));
+        let github = GitHub::new(Box::new(runner(vec![
+            viewed("MERGED", "main"),
+            merged_details(&[]),
+        ])));
         let herdr = Herdr::new(Box::new(runner(vec![Err(GitError::Failed {
             command: "herdr workspace close".to_owned(),
             stderr:
@@ -1049,7 +1146,11 @@ mod tests {
     #[test]
     fn a_merged_pull_request_completes_its_task_automatically() {
         let fixture = in_review_fixture();
-        let gh_runner = runner(vec![viewed("OPEN", "main"), viewed("MERGED", "main")]);
+        let gh_runner = runner(vec![
+            viewed("OPEN", "main"),
+            viewed("MERGED", "main"),
+            merged_details(&[]),
+        ]);
         let github = GitHub::new(Box::new(gh_runner.clone()));
         let (herdr, herdr_runner) = closing_herdr();
         let recorder = Recorder::default();
@@ -1092,7 +1193,7 @@ mod tests {
             &recorder,
             &mut failures,
         );
-        assert_eq!(invocations(&gh_runner).len(), 2);
+        assert_eq!(invocations(&gh_runner).len(), 3);
     }
 
     #[test]
@@ -1197,7 +1298,11 @@ mod tests {
     fn an_in_progress_task_whose_pull_request_was_merged_is_completed_in_one_check() {
         let fixture = local_fixture();
         let git_runner = runner(vec![origin("git@github.com:acme/toodo.git"), log(&[])]);
-        let gh_runner = runner(vec![listed("MERGED", "main"), viewed("MERGED", "main")]);
+        let gh_runner = runner(vec![
+            listed("MERGED", "main"),
+            viewed("MERGED", "main"),
+            merged_details(&[]),
+        ]);
         let (git, github) = adapters(&git_runner, &gh_runner);
         let (herdr, herdr_runner) = closing_herdr();
         let recorder = Recorder::default();
@@ -1264,7 +1369,10 @@ mod tests {
     #[test]
     fn a_herdr_failure_keeps_the_task_in_review() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![viewed("MERGED", "main")])));
+        let github = GitHub::new(Box::new(runner(vec![
+            viewed("MERGED", "main"),
+            merged_details(&[SHA_A]),
+        ])));
         let herdr = Herdr::new(Box::new(runner(vec![Err(GitError::Spawn {
             program: "herdr".to_owned(),
             message: "program not found".to_owned(),

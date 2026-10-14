@@ -33,6 +33,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::tasks::create_task,
             commands::tasks::update_task,
             commands::tasks::pause_task,
+            commands::tasks::set_completion_note,
             commands::tasks::delete_task,
             commands::tasks::add_dependency,
             commands::tasks::remove_dependency,

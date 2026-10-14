@@ -6,7 +6,9 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::dag;
-use crate::domain::model::{CommitRecord, HostPath, Task, TaskId, TaskType, WorkspaceId};
+use crate::domain::model::{
+    CommitRecord, HostPath, PullRequestSnapshot, Task, TaskId, TaskType, WorkspaceId,
+};
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
@@ -53,8 +55,11 @@ fn parse_task_status(raw: &str) -> Result<TaskStatus> {
 
 const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status,
         t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url,
-        t.pull_request_merged_at, w.kind
-    FROM tasks t JOIN workspaces w ON w.id = t.workspace_id";
+        t.pull_request_merged_at, w.kind, t.completion_note, s.number, s.title, s.additions,
+        s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
+        s.first_reviewed_at
+    FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
+        LEFT JOIN pull_request_snapshots s ON s.task_id = t.id";
 
 struct TaskRow {
     id: i64,
@@ -69,6 +74,8 @@ struct TaskRow {
     pull_request_url: Option<String>,
     pull_request_merged_at: Option<i64>,
     workspace_kind: String,
+    completion_note: Option<String>,
+    pull_request: Option<PullRequestSnapshot>,
 }
 
 impl TaskRow {
@@ -86,6 +93,21 @@ impl TaskRow {
             pull_request_url: row.get(9)?,
             pull_request_merged_at: row.get(10)?,
             workspace_kind: row.get(11)?,
+            completion_note: row.get(12)?,
+            pull_request: match row.get::<_, Option<i64>>(13)? {
+                None => None,
+                Some(number) => Some(PullRequestSnapshot {
+                    number,
+                    title: row.get(14)?,
+                    additions: row.get(15)?,
+                    deletions: row.get(16)?,
+                    changed_files: row.get(17)?,
+                    merge_commit_sha: row.get(18)?,
+                    review_count: row.get(19)?,
+                    reviewer_count: row.get(20)?,
+                    first_reviewed_at: row.get(21)?,
+                }),
+            },
         })
     }
 
@@ -112,6 +134,8 @@ impl TaskRow {
             herdr_workspace_id: self.herdr_workspace_id,
             pull_request_url: self.pull_request_url,
             pull_request_merged_at: self.pull_request_merged_at,
+            pull_request: self.pull_request,
+            completion_note: self.completion_note,
             timeline,
         })
     }
@@ -261,6 +285,8 @@ impl Storage {
             herdr_workspace_id: None,
             pull_request_url: None,
             pull_request_merged_at: None,
+            pull_request: None,
+            completion_note: None,
             timeline: vec![TaskEvent { status, at }],
         })
     }
@@ -359,11 +385,18 @@ impl Storage {
         Ok(started)
     }
 
-    /// Moves an `in_review` task to `done`, stores the merge time of its pull request,
-    /// and forgets its herdr workspace, which was closed, in one transaction. The
-    /// worktree path stays: the checkout is kept on disk until its worktree is removed.
-    /// Dependents whose other dependencies are done can then start.
-    pub fn complete_task(&mut self, id: TaskId, merged_at: Option<i64>) -> Result<Task> {
+    /// Moves an `in_review` task to `done`, stores the merge time and the snapshot of its
+    /// pull request, and forgets its herdr workspace, which was closed, in one
+    /// transaction. Non-empty `commits` (those of the merged pull request) replace its
+    /// commit records. The worktree path stays: the checkout is kept on disk until its
+    /// worktree is removed. Dependents whose other dependencies are done can then start.
+    pub fn complete_task(
+        &mut self,
+        id: TaskId,
+        merged_at: Option<i64>,
+        pull_request: Option<&PullRequestSnapshot>,
+        commits: &[CommitRecord],
+    ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
@@ -374,10 +407,49 @@ impl Storage {
              WHERE id = ?1",
             params![id.0, status.as_str(), merged_at],
         )?;
+        if let Some(snapshot) = pull_request {
+            tx.execute(
+                "INSERT OR REPLACE INTO pull_request_snapshots (task_id, number, title,
+                     additions, deletions, changed_files, merge_commit_sha, review_count,
+                     reviewer_count, first_reviewed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    id.0,
+                    snapshot.number,
+                    snapshot.title,
+                    snapshot.additions,
+                    snapshot.deletions,
+                    snapshot.changed_files,
+                    snapshot.merge_commit_sha,
+                    snapshot.review_count,
+                    snapshot.reviewer_count,
+                    snapshot.first_reviewed_at
+                ],
+            )?;
+        }
+        if !commits.is_empty() {
+            super::commits::write_commit_records(&tx, id, commits)?;
+        }
         record_event(&tx, id, status, at)?;
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
+    }
+
+    /// Stores what the user wrote about the outcome of a task; `None` clears it. Whether
+    /// the task may have a note is up to the caller.
+    pub fn set_completion_note(&mut self, id: TaskId, note: Option<&str>) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let updated = tx.execute(
+            "UPDATE tasks SET completion_note = ?2 WHERE id = ?1",
+            params![id.0, note],
+        )?;
+        if updated == 0 {
+            return Err(StorageError::TaskNotFound(id));
+        }
+        let noted = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(noted)
     }
 
     /// Forgets the worktree and herdr workspace of a task after its worktree was removed.
