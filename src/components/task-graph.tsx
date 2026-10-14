@@ -69,6 +69,9 @@ const barHeight = 30;
 const nowRefreshMs = 30_000;
 /** Ticks this far outside the visible area are still drawn, so labels never pop in at the edge. */
 const tickOverscan = 200;
+/** Width of the floating task details sheet, and its distance from the window edges. */
+const sheetWidth = 480;
+const sheetMargin = 16;
 
 const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", week: "Week", month: "Month" };
 
@@ -130,6 +133,7 @@ export function TaskGraph({
   const [year, setYear] = useState<number | null>(null);
   const colorMode = useThemePreference();
   const container = useRef<HTMLDivElement>(null);
+  const flow = useRef<ReactFlowInstance<BarNode> | null>(null);
   const now = useNow();
   const layout = layoutTimeline(tasks, { now, scale, period: year === null ? null : yearPeriod(year) });
   const placed = new Set(layout.bars.map((bar) => bar.task.id));
@@ -187,6 +191,7 @@ export function TaskGraph({
   const selected = dependencies.filter((edge) => selectedEdgeIds.has(edge.id) && editable(edge.target));
 
   function showLatest(instance: ReactFlowInstance<BarNode>) {
+    flow.current = instance;
     const visible = container.current?.clientWidth ?? 0;
     void instance.setViewport({ x: Math.min(16, visible - layout.width - 16), y: 0, zoom: 1 });
   }
@@ -202,11 +207,31 @@ export function TaskGraph({
     setSelectedEdgeIds(new Set());
   }
 
+  /** Pans the timeline so the bar of a task is not hidden under the floating details sheet. */
+  function reveal(id: TaskId) {
+    const instance = flow.current;
+    const box = container.current?.getBoundingClientRect();
+    const bar = layout.bars.find((candidate) => candidate.task.id === id);
+    if (instance === null || box === undefined || bar === undefined) {
+      return;
+    }
+    const sheetLeft = window.innerWidth - sheetMargin - Math.min(sheetWidth, window.innerWidth - 2 * sheetMargin);
+    const visibleRight = Math.min(box.right, sheetLeft) - 16;
+    const { x, y, zoom } = instance.getViewport();
+    const left = box.left + x + bar.x;
+    // Move the bar left until its right end is clear, but never past the panel's left edge.
+    const shift = Math.min(left + bar.width - visibleRight, left - box.left - 16);
+    if (shift > 0) {
+      void instance.setViewport({ x: x - shift, y, zoom }, { duration: 200 });
+    }
+  }
+
   function changeNodes(changes: NodeChange<BarNode>[]) {
     const picked = changes.filter((change) => change.type === "select" && change.selected).pop();
     if (picked !== undefined && picked.type === "select") {
       setSelectedTaskId(Number(picked.id));
       setSelectedEdgeIds(new Set());
+      reveal(Number(picked.id));
     } else if (
       changes.some((change) => change.type === "select" && !change.selected && Number(change.id) === selectedTaskId)
     ) {
@@ -361,21 +386,25 @@ export function TaskGraph({
             </ReactFlow>
           )}
         </div>
-        {(selectedTask !== undefined || layout.unplaced.length > 0) && (
-          <div className={cn("flex shrink-0 flex-col gap-3", selectedTask === undefined ? "w-56" : "w-96")}>
-            {selectedTask !== undefined && (
-              <aside aria-label="Task details" className="flex flex-col gap-1 text-xs">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-medium text-muted-foreground">Task details</h3>
-                  <Button size="icon-xs" variant="ghost" aria-label="Close details" onClick={() => setSelectedTaskId(null)}>
-                    <XIcon />
-                  </Button>
-                </div>
-                <ul className="rounded-xl border bg-card shadow-xs">{renderDetail(selectedTask)}</ul>
-              </aside>
-            )}
-            {layout.unplaced.length > 0 && (
-              <aside aria-label="Tasks without a planned date" className="flex flex-col gap-1 text-xs">
+        {selectedTask !== undefined && (
+          // A floating sheet over the window's right side: the timeline keeps its full width and
+          // the details get room to wrap instead of being cut off.
+          <aside
+            aria-label="Task details"
+            className="fixed inset-y-4 right-4 z-40 flex flex-col overflow-hidden rounded-xl border bg-card shadow-xl"
+            style={{ width: `min(${sheetWidth}px, calc(100vw - ${2 * sheetMargin}px))` }}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
+              <h3 className="text-xs font-medium text-muted-foreground">Task details</h3>
+              <Button size="icon-xs" variant="ghost" aria-label="Close details" onClick={() => setSelectedTaskId(null)}>
+                <XIcon />
+              </Button>
+            </div>
+            <ul className="min-h-0 flex-1 overflow-y-auto">{renderDetail(selectedTask)}</ul>
+          </aside>
+        )}
+        {layout.unplaced.length > 0 && (
+              <aside aria-label="Tasks without a planned date" className="flex w-56 shrink-0 flex-col gap-1 text-xs">
                 <h3 className="font-medium text-muted-foreground">Not on the timeline</h3>
                 <ul className="flex flex-col gap-1">
                   {layout.unplaced.map((task) => (
@@ -391,8 +420,6 @@ export function TaskGraph({
                   ))}
                 </ul>
               </aside>
-            )}
-          </div>
         )}
       </div>
     </section>
