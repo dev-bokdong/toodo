@@ -365,11 +365,14 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
           </div>
         ))}
         {layout.nowX !== null && (
-          <div
-            className="absolute top-0 h-full whitespace-nowrap border-l-2 border-red-500 bg-background pl-1 font-medium text-red-500"
-            style={{ left: layout.nowX }}
-          >
-            Now {pad(date.getHours())}:{pad(date.getMinutes())}
+          <div className="absolute top-0 h-full border-l-2 border-red-500" style={{ left: layout.nowX }}>
+            {/* Only the label row gets a background, so the fine ticks below stay visible. */}
+            <span
+              className="block whitespace-nowrap bg-background pl-1 font-medium text-red-500"
+              style={{ height: axisRowHeight }}
+            >
+              Now {pad(date.getHours())}:{pad(date.getMinutes())}
+            </span>
           </div>
         )}
       </div>
