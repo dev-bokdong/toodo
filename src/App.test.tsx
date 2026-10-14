@@ -192,7 +192,7 @@ describe("App", () => {
           milestones: { ...planned(plannedAt), completedAt: plannedAt + 3 * day },
         }),
         task(2, 1, "Add UI", { status: "planned", dependsOn: [1], milestones: planned(plannedAt + day) }),
-        task(3, 1, "Write docs"),
+        task(3, 1, "Write docs", { status: "in_progress" }),
         task(4, 1, "Fix login", {
           status: "done",
           milestones: { ...planned(lastYear), completedAt: lastYear + day },

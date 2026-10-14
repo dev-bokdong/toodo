@@ -84,55 +84,78 @@ describe("layoutTimeline", () => {
     status: "in_progress",
     milestones: milestones({ plannedAt: jan(2, 12), startedAt: jan(4) }),
   });
-  const later = task(3, { status: "planned", milestones: milestones({ plannedAt: jan(7) }) });
-  const unknown = task(4);
+  const waiting = task(3, { status: "planned", milestones: milestones({ plannedAt: jan(7) }) });
+  const unknown = task(4, { status: "in_progress" });
 
-  it("splits a finished task into its phases on the time axis", () => {
+  it("fixes a finished task from its start to its completion", () => {
     const layout = layoutTimeline([done], { now, scale: "day", period: null });
 
-    expect(layout.start).toBe(jan(1));
+    expect(layout.start).toBe(jan(3));
     expect(layout.bars).toEqual([
       {
         task: done,
-        lane: 0,
+        row: 0,
         x: 0,
-        width: 5 * 48,
+        width: 3 * 48,
+        pending: false,
         phases: [
-          { phase: "waiting", x: 0, width: 2 * 48 },
-          { phase: "in_progress", x: 2 * 48, width: 2 * 48 },
-          { phase: "in_review", x: 4 * 48, width: 48 },
+          { phase: "in_progress", x: 0, width: 2 * 48 },
+          { phase: "in_review", x: 2 * 48, width: 48 },
         ],
       },
     ]);
-    expect(layout.nowX).toBe(10 * 48);
+    expect(layout.nowX).toBe(8 * 48);
     expect(layout.ticks.slice(0, 2)).toEqual([
-      { at: jan(1), x: 0, label: "01-01" },
-      { at: jan(2), x: 48, label: "01-02" },
+      { at: jan(3), x: 0, label: "01-03" },
+      { at: jan(4), x: 48, label: "01-04" },
     ]);
+    expect(layout.majorTicks).toEqual([{ at: jan(3), x: 0, label: "2026-01" }]);
   });
 
-  it("extends open tasks to now and packs bars into the first free lane", () => {
-    const layout = layoutTimeline([later, unknown, open, done], { now, scale: "day", period: null });
+  it("ends a started task at now and puts a task not started at now", () => {
+    const layout = layoutTimeline([waiting, unknown, open, done], { now, scale: "day", period: null });
 
     const bars = new Map(layout.bars.map((bar) => [bar.task.id, bar]));
-    expect(layout.bars.map((bar) => bar.task.id)).toEqual([1, 2, 3]);
-    expect(bars.get(2)).toMatchObject({ lane: 1, x: 1.5 * 48, width: 8.5 * 48 });
-    expect(bars.get(2)!.phases.at(-1)).toEqual({ phase: "in_progress", x: 1.5 * 48, width: 7 * 48 });
-    expect(bars.get(3)).toMatchObject({ lane: 0, x: 6 * 48, width: 4 * 48 });
-    expect(layout.lanes).toBe(2);
+    expect(layout.bars.map((bar) => [bar.task.id, bar.row])).toEqual([
+      [1, 0],
+      [2, 1],
+      [3, 2],
+    ]);
+    expect(bars.get(2)).toMatchObject({ x: 48, width: 7 * 48, pending: false });
+    expect(bars.get(2)!.phases).toEqual([{ phase: "in_progress", x: 0, width: 7 * 48 }]);
+    expect(bars.get(3)).toMatchObject({ x: layout.nowX, width: 120, pending: true, phases: [] });
+    expect(layout.rows).toBe(3);
     expect(layout.unplaced).toEqual([unknown]);
   });
 
-  it("keeps short bars wide enough to read without overlapping in a lane", () => {
-    const first = task(5, { status: "planned", milestones: milestones({ plannedAt: jan(10) }) });
-    const second = task(6, { status: "planned", milestones: milestones({ plannedAt: jan(10, 12) }) });
+  it("moves bars that wait at now along with the current time", () => {
+    const at = (time: number) => layoutTimeline([done, waiting], { now: time, scale: "hour", period: null });
 
-    const layout = layoutTimeline([first, second], { now, scale: "week", period: null });
+    const before = at(jan(11, 9));
+    const after = at(jan(11, 10));
 
-    expect(layout.bars.map((bar) => [bar.task.id, bar.lane, bar.width])).toEqual([
-      [5, 0, 120],
-      [6, 1, 120],
-    ]);
+    expect(after.nowX! - before.nowX!).toBeCloseTo(40);
+    expect(before.bars[1].x).toBe(before.nowX);
+    expect(after.bars[1].x).toBe(after.nowX);
+    expect(after.bars[0]).toEqual(before.bars[0]);
+    expect(after.ticks.slice(0, 2).map((tick) => tick.label)).toEqual(["00:00", "01:00"]);
+    expect(after.majorTicks[0]).toEqual({ at: jan(3), x: 0, label: "2026-01-03" });
+  });
+
+  it("orders dependents after their prerequisites and queues waiting ones behind them", () => {
+    const first = task(6, { status: "planned" });
+    const second = task(5, { status: "planned", dependsOn: [6] });
+    const third = task(7, { status: "ready", dependsOn: [5, 1] });
+    const afterDone = task(8, { status: "ready", dependsOn: [1] });
+
+    const layout = layoutTimeline([third, second, afterDone, first, done], { now, scale: "day", period: null });
+
+    expect(layout.bars.map((bar) => bar.task.id)).toEqual([1, 6, 5, 7, 8]);
+    const x = new Map(layout.bars.map((bar) => [bar.task.id, bar.x]));
+    expect(x.get(6)).toBe(layout.nowX);
+    expect(x.get(5)).toBe(layout.nowX! + 120 + 16);
+    expect(x.get(7)).toBe(layout.nowX! + 2 * (120 + 16));
+    expect(x.get(8)).toBe(layout.nowX);
   });
 
   it("narrows the axis to a period and clips the bars that cross it", () => {
@@ -144,6 +167,7 @@ describe("layoutTimeline", () => {
       status: "done",
       milestones: milestones({
         plannedAt: new Date(2025, 5, 1).getTime() / 1000,
+        startedAt: new Date(2025, 5, 1).getTime() / 1000,
         completedAt: new Date(2025, 5, 2).getTime() / 1000,
       }),
     });
@@ -151,14 +175,12 @@ describe("layoutTimeline", () => {
     const layout = layoutTimeline([crossing, before], { now, scale: "month", period: yearPeriod(2026) });
 
     expect(layout.bars.map((bar) => bar.task.id)).toEqual([7]);
-    expect(layout.bars[0].x).toBe(0);
-    expect(layout.bars[0].phases).toEqual([
-      { phase: "waiting", x: 0, width: 3 },
-      { phase: "in_progress", x: 3, width: 27 },
-    ]);
+    expect(layout.bars[0].x).toBe(3);
+    expect(layout.bars[0].phases).toEqual([{ phase: "in_progress", x: 0, width: 27 }]);
     expect(layout.ticks.map((tick) => tick.label)).toEqual(
       Array.from({ length: 12 }, (_, month) => `2026-${String(month + 1).padStart(2, "0")}`),
     );
+    expect(layout.majorTicks).toEqual([{ at: jan(1), x: 0, label: "2026" }]);
   });
 });
 

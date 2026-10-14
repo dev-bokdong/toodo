@@ -157,17 +157,27 @@ Commits are discovered from the task branch, typically as
 The dependency graph of a workspace is drawn on a time axis instead of as a free-form
 layered DAG, so the same picture shows both what depended on what and when it happened.
 
-- The horizontal axis is time. Each task is a bar from `plannedAt` to `completedAt`
-  (or `cancelledAt`); a task that is still open extends to now. The bar is split into
-  phases by its milestones: waiting (`plannedAt` to `startedAt`), in progress
-  (`startedAt` to `reviewAt`), and in review (`reviewAt` to `completedAt`).
-- Dependency edges run from the prerequisite's bar to the dependent's bar, so the order
-  of work reads left to right.
-- The vertical axis has no meaning beyond grouping: tasks are packed into lanes, each
-  placed in the first lane that is free for its whole interval, in order of `plannedAt`.
-- The visible range can be zoomed (day, week, month) and narrowed to a period such as a
-  calendar year, the unit of a performance report.
-- Tasks without a known `plannedAt` are listed beside the timeline instead of on it.
+- It reads like a Gantt chart: a time axis header (coarse dates above fine dates or
+  hours) stays at the top while the rows scroll, and a cursor marks the current time,
+  refreshed every 30 seconds.
+- Each task is a bar whose ends follow its status:
+  - Not started (`planned`, `ready`): a fixed-width bar attached to the current-time
+    cursor, moving with it.
+  - Started (`in_progress`, `in_review`): fixed at `startedAt`, its end attached to the
+    current-time cursor.
+  - Closed (`done`, `cancelled`): fixed from `startedAt` to `completedAt` (or
+    `cancelledAt`).
+  A started bar is split into phases: in progress (`startedAt` to `reviewAt`) and in
+  review (`reviewAt` to the end).
+- Every task has its own row. Rows are in dependency order: a task comes after all the
+  tasks it depends on, otherwise in order of start time. A task that has not started is
+  also placed to the right of its prerequisites' bars, so a chain of waiting tasks reads
+  left to right from the current time.
+- Dependency edges run from the prerequisite's bar to the dependent's bar.
+- The visible range can be zoomed (hour, day, week, month) and narrowed to a period such
+  as a calendar year, the unit of a performance report.
+- Started or closed tasks without the milestones to place them (tasks created before
+  status history existed) are listed beside the timeline instead of on it.
 - Dependencies can still be added and removed in this view, with the same rules as in
   the task list.
 

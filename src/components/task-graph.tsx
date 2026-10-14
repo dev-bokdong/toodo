@@ -1,10 +1,12 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Handle,
   MarkerType,
   Position,
   ReactFlow,
   ViewportPortal,
+  useStore,
+  useViewport,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -14,7 +16,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
-import type { Task, TaskStatus, WorkspaceId } from "@/lib/bindings";
+import type { Task, TaskStatus, Timestamp, WorkspaceId } from "@/lib/bindings";
 import { useAddDependency, useRemoveDependency } from "@/lib/queries";
 import {
   canAddDependency,
@@ -25,6 +27,8 @@ import {
   timelineYears,
   yearPeriod,
   type TimelineBar,
+  type TimelineLayout,
+  type TimelineTick,
   type TimelinePhase,
   type TimelineScale,
 } from "@/lib/task-graph";
@@ -36,23 +40,40 @@ type BarNode = Node<{ bar: TimelineBar; statusLabel: string; statusStyle: string
 
 const nodeTypes = { bar: TimelineBarView };
 
-const axisHeight = 28;
-const laneHeight = 52;
-const barHeight = 40;
+/** Height of the axis header: a row of coarse ticks above a row of fine ticks. */
+const axisRowHeight = 18;
+const axisHeight = 2 * axisRowHeight;
+const rowsTop = axisHeight + 8;
+const rowHeight = 40;
+const barHeight = 30;
+/** How often the current-time cursor, and the bars attached to it, move. */
+const nowRefreshMs = 30_000;
+/** Ticks this far outside the visible area are still drawn, so labels never pop in at the edge. */
+const tickOverscan = 200;
 
-const scaleLabels: Record<TimelineScale, string> = { day: "Day", week: "Week", month: "Month" };
+const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", week: "Week", month: "Month" };
 
 const phaseStyles: Record<TimelinePhase, string> = {
-  waiting: "bg-muted-foreground/30",
   in_progress: "bg-blue-500",
   in_review: "bg-violet-500",
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
-  waiting: "Waiting",
   in_progress: "In progress",
   in_review: "In review",
 };
+
+const pad = (value: number) => String(value).padStart(2, "0");
+
+/** The current time in Unix seconds, refreshed every `nowRefreshMs`. */
+function useNow(): Timestamp {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Math.floor(Date.now() / 1000)), nowRefreshMs);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
 
 export function TaskGraph({
   workspaceId,
@@ -72,19 +93,19 @@ export function TaskGraph({
   const [year, setYear] = useState<number | null>(null);
   const colorMode = useThemePreference();
   const container = useRef<HTMLDivElement>(null);
-  const now = Math.floor(Date.now() / 1000);
+  const now = useNow();
   const layout = layoutTimeline(tasks, { now, scale, period: year === null ? null : yearPeriod(year) });
   const placed = new Set(layout.bars.map((bar) => bar.task.id));
   const dependencies = dependencyEdges(tasks).filter((edge) => placed.has(edge.source) && placed.has(edge.target));
   const changing = addDependency.isPending || removeDependency.isPending;
   const editable = (target: number) =>
     dependencyEditableStatuses.includes(tasks.find((task) => task.id === target)?.status ?? "done");
-  const height = axisHeight + layout.lanes * laneHeight;
+  const height = rowsTop + layout.rows * rowHeight;
 
   const nodes: BarNode[] = layout.bars.map((bar) => ({
     id: String(bar.task.id),
     type: "bar",
-    position: { x: bar.x, y: axisHeight + bar.lane * laneHeight },
+    position: { x: bar.x, y: rowsTop + bar.row * rowHeight + (rowHeight - barHeight) / 2 },
     data: { bar, statusLabel: statusLabels[bar.task.status], statusStyle: statusStyles[bar.task.status] },
     deletable: false,
     width: bar.width,
@@ -102,7 +123,7 @@ export function TaskGraph({
 
   function showLatest(instance: ReactFlowInstance<BarNode>) {
     const visible = container.current?.clientWidth ?? 0;
-    void instance.setViewport({ x: Math.min(16, visible - layout.width - 16), y: 8, zoom: 1 });
+    void instance.setViewport({ x: Math.min(16, visible - layout.width - 16), y: 0, zoom: 1 });
   }
 
   function connect({ source, target }: Connection) {
@@ -162,6 +183,10 @@ export function TaskGraph({
           ))}
         </select>
         <ul aria-label="Phases" className="flex gap-2 text-muted-foreground">
+          <li className="flex items-center gap-1">
+            <span className="h-2 w-3 rounded-sm border border-dashed border-muted-foreground" />
+            Not started
+          </li>
           {(Object.keys(phaseLabels) as TimelinePhase[]).map((phase) => (
             <li key={phase} className="flex items-center gap-1">
               <span className={cn("h-1.5 w-3 rounded-full", phaseStyles[phase])} />
@@ -171,7 +196,10 @@ export function TaskGraph({
         </ul>
       </div>
       <div className="flex min-h-7 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>Drag from a task's right handle to another task to make it a prerequisite.</span>
+        <span>
+          Tasks not started yet wait at the current time, after their prerequisites. Drag from a task's right handle
+          to another task to make it a prerequisite.
+        </span>
         {selected.length > 0 && (
           <Button
             size="xs"
@@ -222,26 +250,9 @@ export function TaskGraph({
               proOptions={{ hideAttribution: true }}
             >
               <ViewportPortal>
-                <div aria-hidden className="pointer-events-none absolute left-0 top-0 -z-10">
-                  {layout.ticks.map((tick) => (
-                    <div
-                      key={tick.at}
-                      className="absolute top-0 whitespace-nowrap border-l border-border text-[10px] text-muted-foreground"
-                      style={{ left: tick.x, height }}
-                    >
-                      <span className="pl-1">{tick.label}</span>
-                    </div>
-                  ))}
-                  {layout.nowX !== null && (
-                    <div
-                      className="absolute top-0 whitespace-nowrap border-l-2 border-dashed border-red-500 text-[10px] text-red-500"
-                      style={{ left: layout.nowX, height }}
-                    >
-                      <span className="absolute bottom-0 pl-1">Today</span>
-                    </div>
-                  )}
-                </div>
+                <TimelineGrid layout={layout} height={height} />
               </ViewportPortal>
+              <TimelineHeader layout={layout} now={now} />
             </ReactFlow>
           )}
         </div>
@@ -268,33 +279,127 @@ export function TaskGraph({
   );
 }
 
+/** Left and right ends, in flow coordinates, of the part of the timeline that is on screen. */
+function useVisibleRange(): { from: number; to: number } {
+  const { x } = useViewport();
+  const width = useStore((state) => state.width);
+  return { from: -x - tickOverscan, to: -x + width + tickOverscan };
+}
+
+/** Vertical grid lines at each fine tick and the current-time cursor, behind the bars. */
+function TimelineGrid({ layout, height }: { layout: TimelineLayout; height: number }) {
+  const { from, to } = useVisibleRange();
+  return (
+    <div aria-hidden className="pointer-events-none absolute left-0 top-0 -z-10">
+      {layout.ticks
+        .filter((tick) => tick.x >= from && tick.x <= to)
+        .map((tick) => (
+          <div key={tick.at} className="absolute top-0 border-l border-border/60" style={{ left: tick.x, height }} />
+        ))}
+      {layout.nowX !== null && (
+        <div className="absolute top-0 border-l-2 border-red-500" style={{ left: layout.nowX, height }} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The time axis above the rows, like a Gantt chart header: it follows horizontal panning
+ * but stays at the top when the rows scroll.
+ */
+function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestamp }) {
+  const { x } = useViewport();
+  const { from, to } = useVisibleRange();
+  const visible = (left: number, right: number) => right >= from && left <= to;
+  const majors = layout.majorTicks.map((tick, index): TimelineTick & { right: number } => ({
+    ...tick,
+    right: layout.majorTicks[index + 1]?.x ?? layout.width,
+  }));
+  const date = new Date(now * 1000);
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-x-0 top-0 overflow-hidden border-b bg-background text-[10px] text-muted-foreground"
+      style={{ height: axisHeight, zIndex: 5 }}
+    >
+      <div className="absolute left-0 top-0 h-full" style={{ transform: `translateX(${x}px)` }}>
+        {majors
+          .filter((tick) => visible(tick.x, tick.right))
+          .map((tick) => (
+            <div
+              key={tick.at}
+              className="absolute top-0 border-l border-border font-medium text-foreground"
+              style={{ left: tick.x, width: tick.right - tick.x, height: axisRowHeight }}
+            >
+              {/* Keep the label of a period that starts off screen at the left edge, while it fits. */}
+              <span
+                className="block whitespace-nowrap pl-1"
+                style={{ marginLeft: Math.max(0, Math.min(-x - tick.x, tick.right - tick.x - 80)) }}
+              >
+                {tick.label}
+              </span>
+            </div>
+          ))}
+        {layout.ticks
+          .filter((tick) => visible(tick.x, tick.x))
+          .map((tick) => (
+            <div
+              key={tick.at}
+              className="absolute whitespace-nowrap border-l border-border pl-1"
+              style={{ left: tick.x, top: axisRowHeight, height: axisRowHeight }}
+            >
+              {tick.label}
+            </div>
+          ))}
+        {layout.nowX !== null && (
+          <div
+            className="absolute top-0 h-full whitespace-nowrap border-l-2 border-red-500 bg-background pl-1 font-medium text-red-500"
+            style={{ left: layout.nowX }}
+          >
+            Now {pad(date.getHours())}:{pad(date.getMinutes())}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TimelineBarView({ data: { bar, statusLabel, statusStyle } }: NodeProps<BarNode>) {
-  const { task, phases } = bar;
+  const { task, phases, pending } = bar;
   const summary = reachedMilestones(task.milestones)
     .map(({ label, at }) => `${label} ${formatDate(at)}`)
     .join(", ");
   return (
-    <div
-      className={cn(
-        "relative flex h-full w-full items-start overflow-hidden rounded-md border bg-card px-1.5 pt-1 text-card-foreground shadow-sm",
-        task.status === "cancelled" && "opacity-60",
-      )}
-      title={`#${task.id} ${task.title}\n${summary}`}
-    >
+    <div className="relative h-full w-full" title={`#${task.id} ${task.title}\n${summary}`}>
       <Handle type="target" position={Position.Left} />
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 text-xs">
-        <span className="tabular-nums text-muted-foreground">#{task.id}</span>
-        <span className="truncate font-medium">{task.title}</span>
-        <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
+      <div
+        className={cn(
+          "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
+          pending && "border-dashed border-muted-foreground/60 shadow-none",
+          task.status === "cancelled" && "opacity-60",
+        )}
+      >
+        <div className="absolute inset-x-0 bottom-0 h-1.5">
+          {phases.map((phase) => (
+            <span
+              key={phase.phase}
+              className={cn("absolute inset-y-0", phaseStyles[phase.phase])}
+              style={{ left: phase.x, width: phase.width }}
+            />
+          ))}
+        </div>
       </div>
-      <div className="absolute inset-x-0 bottom-0 h-1.5">
-        {phases.map((phase) => (
-          <span
-            key={phase.phase}
-            className={cn("absolute inset-y-0", phaseStyles[phase.phase])}
-            style={{ left: phase.x, width: phase.width }}
-          />
-        ))}
+      {/* A bar narrower than its label lets the label run past its right end. */}
+      <div
+        className={cn(
+          "relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground",
+          task.status === "cancelled" && "opacity-60",
+        )}
+        style={{ width: "max-content", minWidth: "100%" }}
+      >
+        <span className="tabular-nums text-muted-foreground">#{task.id}</span>
+        <span className="font-medium">{task.title}</span>
+        <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
       </div>
       <Handle type="source" position={Position.Right} />
     </div>
