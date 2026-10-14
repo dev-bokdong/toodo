@@ -6,9 +6,21 @@
 //!
 //! They run on the async runtime because git and gh can take seconds. The database lock
 //! is not held while they run.
+//!
+//! A background thread also completes `in_review` tasks on its own: it checks their pull
+//! requests every minute and completes each task whose pull request was merged, as the
+//! `complete_task` command would, telling the frontend through [`TasksChanged`].
+//!
+//! [`TasksChanged`]: super::events::TasksChanged
 
-use tauri::State;
+use std::collections::HashMap;
+use std::io;
+use std::thread;
+use std::time::Duration;
 
+use tauri::{AppHandle, Manager, State};
+
+use super::events::Notifier;
 use super::herdr::{WORKSPACE_NOT_FOUND, has_code};
 use super::types::{self, CommitRecord, Task, TaskId};
 use super::{CommandError, CommandResult, GitHubState, GitState, HerdrState, StorageState, lock};
@@ -18,7 +30,7 @@ use crate::adapters::herdr::Herdr;
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
 use crate::domain::status::TaskStatus;
-use crate::storage::StorageError;
+use crate::storage::{Storage, StorageError};
 
 /// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 /// the base branch and stores them as its commit records.
@@ -206,6 +218,35 @@ fn complete(
     herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
+    match complete_if_merged(storage, github, herdr, id)? {
+        Completion::Completed(task) => Ok(*task),
+        Completion::Open(url) => Err(CommandError::rejected(format!(
+            "pull request {url} is not merged yet; merge it before completing the task"
+        ))),
+        Completion::Closed(url) => Err(CommandError::rejected(format!(
+            "pull request {url} was closed without merging; reopen it or cancel the task"
+        ))),
+    }
+}
+
+/// What completing an `in_review` task found about its pull request.
+enum Completion {
+    /// The pull request was merged and the task is now `done`.
+    Completed(Box<model::Task>),
+    /// The pull request at this URL is still open; the task stays `in_review`.
+    Open(String),
+    /// The pull request at this URL was closed without merging; the task stays
+    /// `in_review`.
+    Closed(String),
+}
+
+/// Completes an `in_review` task if its pull request was merged.
+fn complete_if_merged(
+    storage: &StorageState,
+    github: &GitHub,
+    herdr: &Herdr,
+    id: model::TaskId,
+) -> CommandResult<Completion> {
     let (task, location, base) = {
         let storage = lock(storage);
         let task = storage
@@ -228,16 +269,8 @@ fn complete(
     check_base(&pull_request, &base)?;
     match pull_request.state {
         PullRequestState::Merged => {}
-        PullRequestState::Open => {
-            return Err(CommandError::rejected(format!(
-                "pull request {pull_request_url} is not merged yet; merge it before completing the task"
-            )));
-        }
-        PullRequestState::Closed => {
-            return Err(CommandError::rejected(format!(
-                "pull request {pull_request_url} was closed without merging; reopen it or cancel the task"
-            )));
-        }
+        PullRequestState::Open => return Ok(Completion::Open(pull_request_url)),
+        PullRequestState::Closed => return Ok(Completion::Closed(pull_request_url)),
     }
     // A workspace herdr no longer has was already closed, e.g. by the user.
     if let Some(workspace_id) = &task.herdr_workspace_id {
@@ -247,7 +280,89 @@ fn complete(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(lock(storage).complete_task(id, pull_request.merged_at)?)
+    Ok(Completion::Completed(Box::new(
+        lock(storage).complete_task(id, pull_request.merged_at)?,
+    )))
+}
+
+/// How often the pull requests of `in_review` tasks are checked for a merge.
+const MERGE_CHECK_PERIOD: Duration = Duration::from_secs(60);
+
+/// Starts the background thread that completes `in_review` tasks whose pull request was
+/// merged.
+pub fn spawn(app: AppHandle) -> io::Result<()> {
+    thread::Builder::new()
+        .name("pull-request-merges".to_owned())
+        .spawn(move || {
+            let mut failures = HashMap::new();
+            loop {
+                complete_merged(
+                    &app.state::<StorageState>(),
+                    &app.state::<GitHubState>(),
+                    &app.state::<HerdrState>(),
+                    &app,
+                    &mut failures,
+                );
+                thread::sleep(MERGE_CHECK_PERIOD);
+            }
+        })?;
+    Ok(())
+}
+
+/// Completes every `in_review` task whose pull request was merged and announces each.
+/// `failures` holds the last failure of each task, so a failure that repeats on every
+/// check (e.g. `gh` is not signed in) is logged once.
+fn complete_merged(
+    storage: &StorageState,
+    github: &GitHub,
+    herdr: &Herdr,
+    notifier: &dyn Notifier,
+    failures: &mut HashMap<model::TaskId, String>,
+) {
+    let tasks = match in_review_tasks(&lock(storage)) {
+        Ok(tasks) => tasks,
+        Err(error) => {
+            eprintln!("toodo: failed to list tasks in review: {error}");
+            return;
+        }
+    };
+    failures.retain(|id, _| tasks.contains(id));
+    for id in tasks {
+        match complete_if_merged(storage, github, herdr, id) {
+            Ok(completion) => {
+                failures.remove(&id);
+                if let Completion::Completed(task) = completion {
+                    notifier.tasks_changed(task.workspace_id);
+                }
+            }
+            Err(error) => {
+                if failures.get(&id) != Some(&error.message) {
+                    eprintln!(
+                        "toodo: failed to complete task {id} with a merged pull request: {}",
+                        error.message
+                    );
+                    failures.insert(id, error.message);
+                }
+            }
+        }
+    }
+}
+
+/// IDs of the `in_review` tasks of all workspaces that have a pull request.
+fn in_review_tasks(storage: &Storage) -> Result<Vec<model::TaskId>, StorageError> {
+    let mut ids = Vec::new();
+    for workspace in storage.list_workspaces()? {
+        ids.extend(
+            storage
+                .list_tasks(workspace.id)?
+                .into_iter()
+                .filter(|task| {
+                    task.status == TaskStatus::InReview && task.pull_request_url.is_some()
+                })
+                .map(|task| task.id),
+        );
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -821,6 +936,79 @@ mod tests {
 
         assert_eq!(completed.status, TaskStatus::Done);
         assert_eq!(completed.herdr_workspace_id, None);
+    }
+
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<model::WorkspaceId>>);
+
+    impl Notifier for Recorder {
+        fn tasks_changed(&self, workspace: model::WorkspaceId) {
+            self.0.lock().unwrap().push(workspace);
+        }
+
+        fn agent_statuses_changed(&self, _: &[types::TaskAgentStatus]) {}
+    }
+
+    #[test]
+    fn a_merged_pull_request_completes_its_task_automatically() {
+        let fixture = in_review_fixture();
+        let gh_runner = runner(vec![viewed("OPEN", "main"), viewed("MERGED", "main")]);
+        let github = GitHub::new(Box::new(gh_runner.clone()));
+        let (herdr, herdr_runner) = closing_herdr();
+        let recorder = Recorder::default();
+        let mut failures = HashMap::new();
+
+        complete_merged(&fixture.storage, &github, &herdr, &recorder, &mut failures);
+        assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
+        assert!(recorder.0.lock().unwrap().is_empty());
+        assert!(invocations(&herdr_runner).is_empty());
+
+        complete_merged(&fixture.storage, &github, &herdr, &recorder, &mut failures);
+        let done = stored(&fixture, &fixture.task);
+        assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.pull_request_merged_at, Some(MERGED_AT.1));
+        assert_eq!(
+            stored(&fixture, &fixture.dependent).status,
+            TaskStatus::Ready
+        );
+        assert_eq!(*recorder.0.lock().unwrap(), [done.workspace_id]);
+        assert_eq!(invocations(&herdr_runner).len(), 1);
+        assert!(failures.is_empty());
+
+        // A done task is no longer checked.
+        complete_merged(&fixture.storage, &github, &herdr, &recorder, &mut failures);
+        assert_eq!(invocations(&gh_runner).len(), 2);
+    }
+
+    #[test]
+    fn a_failed_check_keeps_the_task_in_review_and_remembers_the_failure() {
+        let fixture = in_review_fixture();
+        let github = GitHub::new(Box::new(runner(vec![
+            Err(failed()),
+            viewed("OPEN", "main"),
+        ])));
+        let recorder = Recorder::default();
+        let mut failures = HashMap::new();
+
+        complete_merged(
+            &fixture.storage,
+            &github,
+            &no_herdr(),
+            &recorder,
+            &mut failures,
+        );
+        assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
+        assert_eq!(failures.keys().collect::<Vec<_>>(), [&fixture.task.id]);
+
+        complete_merged(
+            &fixture.storage,
+            &github,
+            &no_herdr(),
+            &recorder,
+            &mut failures,
+        );
+        assert!(failures.is_empty());
+        assert!(recorder.0.lock().unwrap().is_empty());
     }
 
     #[test]

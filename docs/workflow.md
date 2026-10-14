@@ -149,6 +149,13 @@ failure keeps the task `in_review`, and completing it again is safe. An open pul
 merged; a pull request closed without merging is rejected too, so the user reopens it or
 cancels the task.
 
+The user rarely needs to complete a task by hand: while the app runs, Toodo checks the
+pull request of every `in_review` task once a minute and completes each task whose pull
+request was merged, in the same way and with the same checks. Open and closed pull
+requests are left alone. A failed check (e.g. `gh` is not signed in, or a herdr failure)
+keeps the task `in_review` and is logged once until it changes; the next check tries
+again. The task list refreshes when a task is completed this way.
+
 The worktree stays until the task is deleted (step 8).
 
 ### 8. Delete the task and its worktree

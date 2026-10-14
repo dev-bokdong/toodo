@@ -100,6 +100,7 @@ pub fn run() {
             app.manage::<commands::events::AgentStatusState>(Mutex::default());
             commands::events::spawn(app.handle().clone())?;
             commands::backup::spawn(app.handle().clone())?;
+            commands::completion::spawn(app.handle().clone())?;
             Ok(())
         })
         .run(tauri::generate_context!())
