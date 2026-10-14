@@ -22,12 +22,12 @@ import {
   dependencyEdges,
   dependencyEditableStatuses,
   layoutTimeline,
+  timelineAxis,
   timelineScales,
   timelineYears,
   yearPeriod,
   type TimelineBar,
   type TimelineLayout,
-  type TimelineTick,
   type TimelinePhase,
   type TimelineScale,
 } from "@/lib/task-graph";
@@ -309,14 +309,13 @@ function useVisibleRange(): { from: number; to: number } {
 function TimelineGrid({ layout }: { layout: TimelineLayout }) {
   const { x } = useViewport();
   const { from, to } = useVisibleRange();
+  const { ticks } = timelineAxis(layout, from, to);
   return (
     <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden" style={{ zIndex: 0 }}>
       <div className="absolute inset-y-0 left-0" style={{ transform: `translateX(${x}px)` }}>
-        {layout.ticks
-          .filter((tick) => tick.x >= from && tick.x <= to)
-          .map((tick) => (
-            <div key={tick.at} className="absolute inset-y-0 border-l border-border/60" style={{ left: tick.x }} />
-          ))}
+        {ticks.map((tick) => (
+          <div key={tick.at} className="absolute inset-y-0 border-l border-border/60" style={{ left: tick.x }} />
+        ))}
         {layout.nowX !== null && (
           <div className="absolute inset-y-0 border-l-2 border-red-500" style={{ left: layout.nowX }} />
         )}
@@ -332,11 +331,7 @@ function TimelineGrid({ layout }: { layout: TimelineLayout }) {
 function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestamp }) {
   const { x } = useViewport();
   const { from, to } = useVisibleRange();
-  const visible = (left: number, right: number) => right >= from && left <= to;
-  const majors = layout.majorTicks.map((tick, index): TimelineTick & { right: number } => ({
-    ...tick,
-    right: layout.majorTicks[index + 1]?.x ?? layout.width,
-  }));
+  const { ticks, majorTicks } = timelineAxis(layout, from, to);
   const date = new Date(now * 1000);
   return (
     <div
@@ -345,34 +340,30 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
       style={{ height: axisHeight, zIndex: 5 }}
     >
       <div className="absolute left-0 top-0 h-full" style={{ transform: `translateX(${x}px)` }}>
-        {majors
-          .filter((tick) => visible(tick.x, tick.right))
-          .map((tick) => (
-            <div
-              key={tick.at}
-              className="absolute top-0 border-l border-border font-medium text-foreground"
-              style={{ left: tick.x, width: tick.right - tick.x, height: axisRowHeight }}
-            >
-              {/* Keep the label of a period that starts off screen at the left edge, while it fits. */}
-              <span
-                className="block whitespace-nowrap pl-1"
-                style={{ marginLeft: Math.max(0, Math.min(-x - tick.x, tick.right - tick.x - 80)) }}
-              >
-                {tick.label}
-              </span>
-            </div>
-          ))}
-        {layout.ticks
-          .filter((tick) => visible(tick.x, tick.x))
-          .map((tick) => (
-            <div
-              key={tick.at}
-              className="absolute whitespace-nowrap border-l border-border pl-1"
-              style={{ left: tick.x, top: axisRowHeight, height: axisRowHeight }}
+        {majorTicks.map((tick) => (
+          <div
+            key={tick.at}
+            className="absolute top-0 border-l border-border font-medium text-foreground"
+            style={{ left: tick.x, width: tick.right - tick.x, height: axisRowHeight }}
+          >
+            {/* Keep the label of a period that starts off screen at the left edge, while it fits. */}
+            <span
+              className="block whitespace-nowrap pl-1"
+              style={{ marginLeft: Math.max(0, Math.min(-x - tick.x, tick.right - tick.x - 80)) }}
             >
               {tick.label}
-            </div>
-          ))}
+            </span>
+          </div>
+        ))}
+        {ticks.map((tick) => (
+          <div
+            key={tick.at}
+            className="absolute whitespace-nowrap border-l border-border pl-1"
+            style={{ left: tick.x, top: axisRowHeight, height: axisRowHeight }}
+          >
+            {tick.label}
+          </div>
+        ))}
         {layout.nowX !== null && (
           <div
             className="absolute top-0 h-full whitespace-nowrap border-l-2 border-red-500 bg-background pl-1 font-medium text-red-500"

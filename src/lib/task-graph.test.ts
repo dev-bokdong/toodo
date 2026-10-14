@@ -4,6 +4,7 @@ import {
   canAddDependency,
   dependencyEdges,
   layoutTimeline,
+  timelineAxis,
   timelineYears,
   yearPeriod,
 } from "@/lib/task-graph";
@@ -106,11 +107,12 @@ describe("layoutTimeline", () => {
       },
     ]);
     expect(layout.nowX).toBe(10 * 48);
-    expect(layout.ticks.slice(0, 2)).toEqual([
+    const axis = timelineAxis(layout, 0, layout.width);
+    expect(axis.ticks.slice(0, 2)).toEqual([
       { at: jan(1), x: 0, label: "01-01" },
       { at: jan(2), x: 48, label: "01-02" },
     ]);
-    expect(layout.majorTicks).toEqual([{ at: jan(1), x: 0, label: "2026-01" }]);
+    expect(axis.majorTicks).toEqual([{ at: jan(1), x: 0, right: 31 * 48, label: "2026-01" }]);
   });
 
   it("ends a started task at now and puts a task not started at now", () => {
@@ -140,8 +142,22 @@ describe("layoutTimeline", () => {
     expect(before.bars[1].x).toBe(before.nowX);
     expect(after.bars[1].x).toBe(after.nowX);
     expect(after.bars[0]).toEqual(before.bars[0]);
-    expect(after.ticks.slice(0, 2).map((tick) => tick.label)).toEqual(["00:00", "01:00"]);
-    expect(after.majorTicks[0]).toEqual({ at: jan(1), x: 0, label: "2026-01-01" });
+    const axis = timelineAxis(after, 0, after.width);
+    expect(axis.ticks.slice(0, 2).map((tick) => tick.label)).toEqual(["00:00", "01:00"]);
+    expect(axis.majorTicks[0]).toEqual({ at: jan(1), x: 0, right: 960, label: "2026-01-01" });
+  });
+
+  it("draws ticks anywhere on an axis without a period", () => {
+    const layout = layoutTimeline([done], { now, scale: "day", period: null });
+    const dec = (day: number) => new Date(2025, 11, day).getTime() / 1000;
+
+    const before = timelineAxis(layout, -2 * 48, 0);
+    expect(before.ticks.map((tick) => tick.label)).toEqual(["12-30", "12-31"]);
+    expect(before.majorTicks).toEqual([{ at: dec(1), x: -31 * 48, right: 0, label: "2025-12" }]);
+
+    const after = timelineAxis(layout, 40 * 48, 41 * 48);
+    expect(after.ticks.map((tick) => tick.label)).toEqual(["02-10"]);
+    expect(after.majorTicks.map((tick) => tick.label)).toEqual(["2026-02"]);
   });
 
   it("draws the wait from the planned time through the ready time up to the bar", () => {
@@ -193,10 +209,11 @@ describe("layoutTimeline", () => {
     expect(layout.bars[0].x).toBe(3);
     expect(layout.bars[0].phases).toEqual([{ phase: "in_progress", x: 0, width: 27 }]);
     expect(layout.bars[0].lead).toEqual({ x: -3, planned: false, readyX: null });
-    expect(layout.ticks.map((tick) => tick.label)).toEqual(
+    const axis = timelineAxis(layout, -100, 2000);
+    expect(axis.ticks.map((tick) => tick.label)).toEqual(
       Array.from({ length: 12 }, (_, month) => `2026-${String(month + 1).padStart(2, "0")}`),
     );
-    expect(layout.majorTicks).toEqual([{ at: jan(1), x: 0, label: "2026" }]);
+    expect(axis.majorTicks).toEqual([{ at: jan(1), x: 0, right: 365 * 3, label: "2026" }]);
   });
 });
 

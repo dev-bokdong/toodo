@@ -83,6 +83,9 @@ export type TimelineLead = {
 
 export type TimelineTick = { at: Timestamp; x: number; label: string };
 
+/** A coarse tick and the right end of the unit it labels. */
+export type TimelineMajorTick = TimelineTick & { right: number };
+
 export type TimelineLayout = {
   bars: TimelineBar[];
   /** Tasks that started or closed without a known time, listed beside the timeline. */
@@ -91,10 +94,9 @@ export type TimelineLayout = {
   start: Timestamp;
   end: Timestamp;
   width: number;
-  /** Fine ticks of the axis header, also drawn as grid lines. */
-  ticks: TimelineTick[];
-  /** Coarse ticks of the axis header; the first one starts at the left edge of the axis. */
-  majorTicks: TimelineTick[];
+  scale: TimelineScale;
+  /** The period the axis is limited to; null when it runs without end in both directions. */
+  period: Period | null;
   /** Position of the current time, or null when it falls outside the range. */
   nowX: number | null;
 };
@@ -191,12 +193,6 @@ function dependencyOrder(placed: Placed[]): Placed[] {
   return ordered;
 }
 
-function startOfLocalDay(at: Timestamp): Date {
-  const date = new Date(at * 1000);
-  date.setHours(0, 0, 0, 0);
-  return date;
-}
-
 const pad = (value: number) => String(value).padStart(2, "0");
 
 type TickUnit = "hour" | "day" | "week" | "month" | "year";
@@ -221,18 +217,9 @@ const majorLabels: Record<TickUnit, (date: Date) => string> = {
   day: (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
 };
 
-/**
- * Tick marks at the local starts of `unit` (hours, midnights, Mondays, firsts of the month,
- * or New Year). With `clampFirst`, a unit that began before `start` gets a tick at `start`.
- */
-function timelineTicks(
-  start: Timestamp,
-  end: Timestamp,
-  unit: TickUnit,
-  label: (date: Date) => string,
-  clampFirst: boolean,
-): { at: Timestamp; label: string }[] {
-  const date = new Date(start * 1000);
+/** The local start of the `unit` containing `at`: its hour, midnight, Monday, first of the month, or New Year. */
+function startOfUnit(at: Timestamp, unit: TickUnit): Date {
+  const date = new Date(at * 1000);
   date.setMinutes(0, 0, 0);
   if (unit !== "hour") {
     date.setHours(0);
@@ -244,27 +231,70 @@ function timelineTicks(
   } else if (unit === "year") {
     date.setMonth(0, 1);
   }
-  const ticks: { at: Timestamp; label: string }[] = [];
-  for (; date.getTime() / 1000 < end; ) {
-    const at = date.getTime() / 1000;
-    if (at >= start) {
-      ticks.push({ at, label: label(date) });
-    } else if (clampFirst) {
-      ticks.push({ at: start, label: label(date) });
-    }
-    if (unit === "hour") {
-      date.setHours(date.getHours() + 1);
-    } else if (unit === "day") {
-      date.setDate(date.getDate() + 1);
-    } else if (unit === "week") {
-      date.setDate(date.getDate() + 7);
-    } else if (unit === "month") {
-      date.setMonth(date.getMonth() + 1);
-    } else {
-      date.setFullYear(date.getFullYear() + 1);
-    }
+  return date;
+}
+
+/** Moves `date` forward to the start of the next `unit`; `date` must be at the start of one. */
+function nextUnit(date: Date, unit: TickUnit): void {
+  if (unit === "hour") {
+    date.setHours(date.getHours() + 1);
+  } else if (unit === "day") {
+    date.setDate(date.getDate() + 1);
+  } else if (unit === "week") {
+    date.setDate(date.getDate() + 7);
+  } else if (unit === "month") {
+    date.setMonth(date.getMonth() + 1);
+  } else {
+    date.setFullYear(date.getFullYear() + 1);
   }
-  return ticks;
+}
+
+/**
+ * The local starts of every `unit` (hours, midnights, Mondays, firsts of the month, or New
+ * Year) that overlaps `[from, to)`, including the one already under way at `from`.
+ */
+function unitStarts(from: Timestamp, to: Timestamp, unit: TickUnit): Date[] {
+  const starts: Date[] = [];
+  for (const date = startOfUnit(from, unit); date.getTime() / 1000 < to; nextUnit(date, unit)) {
+    starts.push(new Date(date));
+  }
+  return starts;
+}
+
+/**
+ * Ticks of the axis header between the flow positions `from` and `to`, usually the part on
+ * screen. Without a period the axis has no ends, so any range gets ticks; with one, ticks
+ * stop at its edges and a coarse unit that crosses an edge is cut there.
+ */
+export function timelineAxis(
+  layout: TimelineLayout,
+  from: number,
+  to: number,
+): { ticks: TimelineTick[]; majorTicks: TimelineMajorTick[] } {
+  const perDay = pixelsPerDay[layout.scale];
+  const xAt = (at: Timestamp) => ((at - layout.start) / day) * perDay;
+  let fromAt = layout.start + (from / perDay) * day;
+  let toAt = layout.start + (to / perDay) * day;
+  if (layout.period !== null) {
+    fromAt = Math.max(fromAt, layout.period.start);
+    toAt = Math.min(toAt, layout.period.end);
+  }
+  const { minor, major } = tickUnits[layout.scale];
+  const ticks = unitStarts(fromAt, toAt, minor)
+    .filter((date) => date.getTime() / 1000 >= fromAt)
+    .map((date) => ({ at: date.getTime() / 1000, x: xAt(date.getTime() / 1000), label: minorLabels[minor](date) }));
+  const majorTicks = unitStarts(fromAt, toAt, major).map((date): TimelineMajorTick => {
+    const next = new Date(date);
+    nextUnit(next, major);
+    let at = date.getTime() / 1000;
+    let end = next.getTime() / 1000;
+    if (layout.period !== null) {
+      at = Math.max(at, layout.period.start);
+      end = Math.min(end, layout.period.end);
+    }
+    return { at, x: xAt(at), right: xAt(end), label: majorLabels[major](date) };
+  });
+  return { ticks, majorTicks };
 }
 
 /**
@@ -272,7 +302,8 @@ function timelineTicks(
  * A task that has not started waits at `now`, pushed right past the bars of its
  * prerequisites; a started task is fixed at `startedAt` and grows with `now`; a closed
  * task is fixed at both ends. With a `period`, only tasks overlapping it are drawn, clipped
- * to it; otherwise the axis runs from the first day with a bar to today.
+ * to it; otherwise the axis has no ends, and `start` and `end` only span the days with a
+ * bar. The scale sets the pixels per day and the tick units of `timelineAxis`.
  */
 export function layoutTimeline(
   tasks: Task[],
@@ -295,10 +326,10 @@ export function layoutTimeline(
     ({ start, end } = period);
   } else {
     const first = placed.map(({ task, interval }) => Math.min(interval.start, task.milestones.plannedAt ?? interval.start));
-    start = startOfLocalDay(Math.min(now, ...first)).getTime() / 1000;
+    start = startOfUnit(Math.min(now, ...first), "day").getTime() / 1000;
     const last = Math.max(now, ...placed.map(({ interval }) => interval.end));
-    const endDay = startOfLocalDay(last);
-    endDay.setDate(endDay.getDate() + 1);
+    const endDay = startOfUnit(last, "day");
+    nextUnit(endDay, "day");
     end = endDay.getTime() / 1000;
   }
   const scaleX = (at: Timestamp) => ((at - start) / day) * pixelsPerDay[scale];
@@ -330,8 +361,6 @@ export function layoutTimeline(
     return { task, row, x, width, pending, phases, lead: taskLead(task, x, start, scaleX) };
   });
 
-  const { minor, major } = tickUnits[scale];
-  const withX = (tick: { at: Timestamp; label: string }) => ({ ...tick, x: scaleX(tick.at) });
   return {
     bars,
     unplaced,
@@ -340,8 +369,8 @@ export function layoutTimeline(
     end,
     // Room for the label of a narrow bar, which spills past its right end.
     width: Math.max(scaleX(end), ...bars.map((bar) => bar.x + Math.max(bar.width, timelinePendingWidth))),
-    ticks: timelineTicks(start, end, minor, minorLabels[minor], false).map(withX),
-    majorTicks: timelineTicks(start, end, major, majorLabels[major], true).map(withX),
+    scale,
+    period,
     nowX: now >= start && now <= end ? scaleX(now) : null,
   };
 }
