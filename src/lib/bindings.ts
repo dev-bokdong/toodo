@@ -97,6 +97,21 @@ export const commands = {
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
+	getBackupSettings: () => __TAURI_INVOKE<BackupSettings>("get_backup_settings"),
+	/**
+	 *  Saves the automatic backup settings, then writes an automatic backup if one is now
+	 *  due.
+	 */
+	saveBackupSettings: (settings: BackupSettings) => typedError<BackupSettings, CommandError>(__TAURI_INVOKE("save_backup_settings", { settings })),
+	/**  Backups in Toodo's backup directory, newest first. */
+	listBackups: () => typedError<BackupEntry[], CommandError>(__TAURI_INVOKE("list_backups")),
+	/**  Writes a snapshot of the database to `path`, replacing any file there. */
+	exportDatabase: (path: string) => typedError<null, CommandError>(__TAURI_INVOKE("export_database", { path })),
+	/**
+	 *  Replaces all data with the backup at `path`. The current data is first saved as a
+	 *  pre-restore backup, which is returned.
+	 */
+	restoreDatabase: (path: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_database", { path })),
 };
 
 /** Events */
@@ -117,6 +132,23 @@ export type AgentStatusesChanged = {
 export type AppInfo = {
 	name: string,
 	version: string,
+};
+
+/**  A backup in Toodo's backup directory. */
+export type BackupEntry = {
+	path: string,
+	kind: BackupKind,
+	createdAt: Timestamp,
+	sizeBytes: number,
+};
+
+export type BackupKind = "automatic" | "preRestore";
+
+export type BackupSettings = {
+	enabled: boolean,
+	intervalHours: number,
+	/**  Number of automatic backups kept; older ones are deleted. */
+	keep: number,
 };
 
 export type CommandError = {

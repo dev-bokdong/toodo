@@ -45,6 +45,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::completion::open_pull_request,
             commands::completion::complete_task,
             commands::events::list_agent_statuses,
+            commands::backup::get_backup_settings,
+            commands::backup::save_backup_settings,
+            commands::backup::list_backups,
+            commands::backup::export_database,
+            commands::backup::restore_database,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
@@ -74,6 +79,7 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;
             app.manage::<commands::StorageState>(Mutex::new(storage));
+            app.manage(commands::backup::Backups::load(&data_dir));
             app.manage::<commands::GitState>(Arc::new(adapters::git::Git::new(Box::new(
                 adapters::git::ProcessRunner,
             ))));
@@ -89,6 +95,7 @@ pub fn run() {
             ))));
             app.manage::<commands::events::AgentStatusState>(Mutex::default());
             commands::events::spawn(app.handle().clone())?;
+            commands::backup::spawn(app.handle().clone())?;
             Ok(())
         })
         .run(tauri::generate_context!())

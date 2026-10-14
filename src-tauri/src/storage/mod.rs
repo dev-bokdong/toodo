@@ -7,6 +7,7 @@
 //! are checked with [`crate::domain::dag`], and `planned`/`ready` statuses are brought in
 //! line with the dependencies after every change.
 
+mod backup;
 mod commits;
 mod migrations;
 mod tasks;
@@ -25,6 +26,7 @@ use crate::domain::dag::DependencyError;
 use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::{TaskStatus, TransitionError};
 
+pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
 pub use tasks::NewTask;
 pub use workspaces::NewWorkspace;
 
@@ -73,7 +75,7 @@ impl Storage {
         self.clock = Box::new(clock);
     }
 
-    fn now(&self) -> i64 {
+    pub(crate) fn now(&self) -> i64 {
         (self.clock)()
     }
 }
@@ -101,6 +103,9 @@ pub enum StorageError {
     },
     /// A stored value cannot be converted back into the domain model.
     InvalidData(String),
+    /// A file to restore from is not a readable Toodo database.
+    InvalidBackup(String),
+    Io(std::io::Error),
 }
 
 impl fmt::Display for StorageError {
@@ -128,6 +133,8 @@ impl fmt::Display for StorageError {
                 "commit record of task {found} cannot be stored for task {expected}"
             ),
             Self::InvalidData(message) => write!(f, "stored data is invalid: {message}"),
+            Self::InvalidBackup(message) => write!(f, "invalid backup {message}"),
+            Self::Io(error) => write!(f, "file error: {error}"),
         }
     }
 }
@@ -138,6 +145,7 @@ impl std::error::Error for StorageError {
             Self::Sqlite(error) => Some(error),
             Self::Dependency(error) => Some(error),
             Self::Transition(error) => Some(error),
+            Self::Io(error) => Some(error),
             _ => None,
         }
     }
@@ -146,6 +154,12 @@ impl std::error::Error for StorageError {
 impl From<rusqlite::Error> for StorageError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+impl From<std::io::Error> for StorageError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
     }
 }
 

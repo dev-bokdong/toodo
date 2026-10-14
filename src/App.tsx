@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { TaskList } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -23,6 +24,9 @@ export default function App() {
       <aside className="flex w-64 shrink-0 flex-col gap-4 border-r bg-sidebar p-3 text-sidebar-foreground">
         <h1 className="px-1 text-lg font-semibold tracking-tight">Toodo</h1>
         <WorkspaceList selectedId={selected?.id ?? null} onSelect={setSelectedId} />
+        <div className="mt-auto">
+          <BackupPanel />
+        </div>
         <p className="px-1 text-xs text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </p>

@@ -1,6 +1,7 @@
 //! Tauri commands exposed to the frontend. Arguments and results use the serializable
 //! shapes in [`types`]; failures are reported as a [`CommandError`].
 
+pub mod backup;
 pub mod completion;
 pub mod events;
 pub mod herdr;
@@ -156,9 +157,10 @@ impl From<StorageError> for CommandError {
             StorageError::Dependency(_)
             | StorageError::Transition(_)
             | StorageError::DerivedStatus(_) => CommandErrorKind::Rejected,
-            StorageError::WorktreePathMismatch(_) | StorageError::CommitTaskMismatch { .. } => {
-                CommandErrorKind::InvalidInput
-            }
+            StorageError::WorktreePathMismatch(_)
+            | StorageError::CommitTaskMismatch { .. }
+            | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
+            StorageError::Io(_) => CommandErrorKind::External,
             StorageError::Sqlite(_)
             | StorageError::UnsupportedSchemaVersion { .. }
             | StorageError::InvalidData(_) => CommandErrorKind::Internal,
