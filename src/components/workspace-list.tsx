@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { Download, FolderOpen, Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
@@ -16,6 +17,10 @@ import { cn } from "@/lib/utils";
 
 export const inputClass =
   "h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+
+/** A small select for toolbars and inline pickers. */
+export const compactSelectClass =
+  "h-6 rounded-md border border-input bg-background px-1.5 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50";
 
 export function describeLocation(location: WorkspaceLocation): string {
   return location.kind === "local" ? location.path : `${location.machine}:${location.path}`;
@@ -76,6 +81,7 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
           Workspaces
         </h2>
         <Button variant="ghost" size="xs" onClick={() => setAddingMachine((open) => !open)}>
+          {!addingMachine && <Plus />}
           {addingMachine ? "Cancel" : "Add machine"}
         </Button>
       </div>
@@ -108,8 +114,13 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
             return (
               <section key={label} aria-label={`Machine ${label}`} className="flex flex-col gap-1">
                 <div className="flex items-center gap-1">
-                  <h3 className="min-w-0 flex-1 truncate px-1 text-xs font-semibold">
-                    {label}
+                  <h3 className="flex min-w-0 flex-1 items-center gap-1.5 px-1 text-xs font-semibold">
+                    {machine === null ? (
+                      <Laptop aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <Server aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="truncate">{label}</span>
                     {problem && <span className="ml-1.5 font-normal text-destructive">{problem}</span>}
                   </h3>
                   {(["clone", "open"] as const).map((mode) => (
@@ -119,8 +130,10 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
                       variant={active === mode ? "secondary" : "ghost"}
                       aria-label={`${mode === "clone" ? "Clone" : "Open"} on ${label}`}
                       aria-pressed={active === mode}
+                      title={mode === "clone" ? "Clone a repository" : "Open a cloned repository"}
                       onClick={() => setAdding(active === mode ? null : { machine, mode })}
                     >
+                      {mode === "clone" ? <Download /> : <FolderOpen />}
                       {mode === "clone" ? "Clone" : "Open"}
                     </Button>
                   ))}
@@ -186,17 +199,17 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
         </button>
         {!confirming && (
           <Button
-            size="xs"
+            size="icon-xs"
             variant="ghost"
             aria-label={`Remove ${workspace.name}`}
             title="Remove the workspace and its tasks from Toodo"
-            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
             onClick={() => {
               deleteWorkspace.reset();
               setConfirming(true);
             }}
           >
-            {"\u00d7"}
+            <X />
           </Button>
         )}
       </div>
