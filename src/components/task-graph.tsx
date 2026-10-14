@@ -17,9 +17,10 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { AgentBadge } from "@/components/agent-badge";
 import { Button } from "@/components/ui/button";
-import type { Task, TaskId, Timestamp } from "@/lib/bindings";
-import { useAddDependency, useRemoveDependency } from "@/lib/queries";
+import type { AgentStatus, Task, TaskId, Timestamp } from "@/lib/bindings";
+import { useAddDependency, useAgentStatuses, useRemoveDependency } from "@/lib/queries";
 import {
   canAddDependency,
   dependencyEdges,
@@ -41,7 +42,14 @@ import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
-  { bar: TimelineBar; statusLabel: string; statusStyle: string; workspace: string | null; dimmed: boolean },
+  {
+    bar: TimelineBar;
+    statusLabel: string;
+    statusStyle: string;
+    workspace: string | null;
+    dimmed: boolean;
+    agentStatus: AgentStatus | null;
+  },
   "bar"
 >;
 
@@ -108,6 +116,7 @@ export function TaskGraph({
 }) {
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
+  const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
   const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
   const [scale, setScale] = useState<TimelineScale>("week");
@@ -144,6 +153,7 @@ export function TaskGraph({
       statusStyle: statusStyle(bar.task),
       workspace: workspaceLabel(bar.task),
       dimmed: dimmed.has(bar.task.id) || !inChain(bar.task.id),
+      agentStatus: agentStatusOf(bar.task),
     },
     selected: bar.task.id === selectedTask?.id,
     deletable: false,
@@ -159,6 +169,13 @@ export function TaskGraph({
     markerEnd: { type: MarkerType.ArrowClosed },
     style: inChain(edge.source) && inChain(edge.target) ? undefined : { opacity: 0.2 },
   }));
+  function agentStatusOf(task: Task): AgentStatus | null {
+    if (task.status !== "in_progress" && task.status !== "in_review") {
+      return null;
+    }
+    return agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status ?? null;
+  }
+
   const selected = dependencies.filter((edge) => selectedEdgeIds.has(edge.id) && editable(edge.target));
 
   function showLatest(instance: ReactFlowInstance<BarNode>) {
@@ -455,7 +472,7 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
 }
 
 function TimelineBarView({
-  data: { bar, statusLabel, statusStyle, workspace, dimmed },
+  data: { bar, statusLabel, statusStyle, workspace, dimmed, agentStatus },
   selected,
 }: NodeProps<BarNode>) {
   const { task, phases, pending, lead } = bar;
@@ -515,6 +532,7 @@ function TimelineBarView({
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className="font-medium">{task.title}</span>
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
+        {agentStatus !== null && <AgentBadge taskId={task.id} status={agentStatus} className="px-1.5 py-0" />}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>

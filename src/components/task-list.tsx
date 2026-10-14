@@ -20,7 +20,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { TaskGraph } from "@/components/task-graph";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
-import type { AgentStatus, Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
+import { AgentBadge } from "@/components/agent-badge";
+import type { Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
   machineOf,
@@ -53,20 +54,6 @@ import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
-
-const agentLabels: Record<AgentStatus, string> = {
-  idle: "Agent idle",
-  working: "Agent working",
-  blocked: "Agent needs input",
-  done: "Agent done",
-};
-
-const agentStyles: Record<AgentStatus, string> = {
-  idle: "bg-muted text-muted-foreground",
-  working: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200",
-  blocked: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
-  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
-};
 
 const statusLabels: Record<TaskStatus, string> = {
   planned: "Planned",
@@ -370,21 +357,7 @@ function TaskRow({
                 Needs note
               </span>
             )}
-            {active && agentStatus && (
-              <span
-                aria-label={`Agent of #${task.id}`}
-                className={cn(
-                  "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-                  agentStyles[agentStatus],
-                )}
-              >
-                <span
-                  aria-hidden
-                  className={cn("size-1.5 rounded-full bg-current", agentStatus === "working" && "animate-pulse")}
-                />
-                {agentLabels[agentStatus]}
-              </span>
-            )}
+            {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
           {task.description && <p className="line-clamp-2 text-xs text-muted-foreground">{task.description}</p>}
         </div>

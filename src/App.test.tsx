@@ -435,6 +435,46 @@ describe("App", () => {
     expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument();
   });
 
+  it("shows the agent status of active tasks on the timeline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const day = 24 * 60 * 60;
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const milestones = { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + day };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { status: "in_progress", herdrWorkspaceId: "w27", milestones }),
+        task(2, 1, "Add UI", { status: "done", milestones: { ...milestones, completedAt: plannedAt + 2 * day } }),
+      ],
+    });
+    mocked.listAgentStatuses.mockResolvedValue([
+      { taskId: 1, status: "working" },
+      { taskId: 2, status: "idle" },
+    ]);
+    renderApp();
+
+    await screen.findByRole("list", { name: "Tasks" });
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    expect(await within(timeline).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
+    expect(within(timeline).getByText("Add UI")).toBeInTheDocument();
+    expect(within(timeline).queryByLabelText("Agent of #2")).not.toBeInTheDocument();
+
+    const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
+    act(() => {
+      onAgentStatuses({
+        event: "agent-statuses-changed",
+        id: 1,
+        payload: { statuses: [{ taskId: 1, status: "blocked" }] },
+      });
+    });
+    await waitFor(() =>
+      expect(within(timeline).getByLabelText("Agent of #1")).toHaveTextContent("Agent needs input"),
+    );
+  });
+
   it("shows command errors returned by the backend", async () => {
     mocked.listWorkspaces.mockResolvedValue({
       status: "error",
