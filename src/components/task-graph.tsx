@@ -163,7 +163,17 @@ export function TaskGraph({
   const editable = (target: number) =>
     dependencyEditableStatuses.includes(tasks.find((task) => task.id === target)?.status ?? "done");
   const height = rowsTop + layout.rows * rowHeight;
-  const panelHeight = Math.min(Math.max(height + 32, 160), 448);
+  // The panel fills the space the window leaves it, so its height is measured, not derived from the rows.
+  const [panelHeight, setPanelHeight] = useState(0);
+  useEffect(() => {
+    const element = container.current;
+    if (element === null) {
+      return;
+    }
+    const observer = new ResizeObserver(() => setPanelHeight(element.clientHeight));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   // Rows can be panned vertically only as far as they go; never into empty space.
   const translateExtent: [[number, number], [number, number]] = [
     [-Infinity, 0],
@@ -328,7 +338,7 @@ export function TaskGraph({
   }
 
   return (
-    <section aria-label="Task timeline" className="flex flex-col gap-2">
+    <section aria-label="Task timeline" className="flex flex-1 flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <div role="group" aria-label="Timeline scale" className="flex gap-1">
           {timelineScales.map((option) => (
@@ -407,7 +417,7 @@ export function TaskGraph({
         </p>
       )}
       <div
-        className="flex gap-2"
+        className="flex min-h-40 flex-1 gap-2"
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             setSelectedTaskId(null);
@@ -426,7 +436,6 @@ export function TaskGraph({
         <div
           ref={container}
           className="min-w-0 flex-1 rounded-lg border"
-          style={{ height: panelHeight }}
         >
           {layout.bars.length === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">

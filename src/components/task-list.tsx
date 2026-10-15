@@ -165,7 +165,7 @@ export function TaskList({
         );
 
   return (
-    <section aria-labelledby="tasks-heading" className="flex flex-col gap-4">
+    <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4">
       <header>
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
           {workspace?.name ?? "All workspaces"}
