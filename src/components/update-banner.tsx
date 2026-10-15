@@ -22,6 +22,9 @@ export function UpdateBanner() {
     queryKey: ["app-update"],
     queryFn: checkForUpdate,
     refetchInterval: CHECK_INTERVAL_MS,
+    // Closing the window hides the app to the tray, which can leave the document hidden
+    // for days; keep checking so the update is waiting when the window comes back.
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: false,
   });
   const [progress, setProgress] = useState<number | null>(null);
