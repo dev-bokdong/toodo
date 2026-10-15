@@ -1528,6 +1528,25 @@ describe("App", () => {
     });
   });
 
+  it("previews a Markdown description and shows its plain text in the list", async () => {
+    const original = task(1, 1, "Add login", { description: "## Steps\n\n- [x] **form**" });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
+    await renderWorkspace();
+
+    expect(await screen.findByText("Steps form")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit #1" }));
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    fireEvent.click(within(form).getByRole("button", { name: "Preview" }));
+
+    const preview = within(form).getByRole("region", { name: "Preview of Description of #1" });
+    expect(await within(preview).findByRole("heading", { name: "Steps" })).toBeInTheDocument();
+    expect(within(preview).getByRole("checkbox")).toBeChecked();
+    expect(within(form).queryByLabelText("Description of #1")).not.toBeInTheDocument();
+    fireEvent.click(within(form).getByRole("button", { name: "Write" }));
+    expect(within(form).getByLabelText("Description of #1")).toHaveValue("## Steps\n\n- [x] **form**");
+  });
+
   it("waits to resume a task in progress that got a prerequisite", async () => {
     const fix = task(1, 1, "Fix login");
     const started = task(2, 1, "Verify login", {

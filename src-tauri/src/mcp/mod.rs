@@ -62,7 +62,10 @@ app once its prerequisites are done. So create every task first, tell the user w
 you planned and why, and make that add_dependency call last, with all prerequisites \
 in one call. Use remove_dependency to drop an edge.
 4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
-rnd), write a short imperative title, and put details in description.
+rnd), write a short imperative title, and put details in description. Write the \
+description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
+issue body): short paragraphs, `-` lists, `- [ ]` task lists for acceptance criteria, \
+backticks for code, paths, and commands, fenced code blocks, and links; no raw HTML.
 5. A tool error says what was rejected; change the arguments instead of retrying them \
 unchanged.
 

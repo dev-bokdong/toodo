@@ -29,6 +29,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 tokio = { version = "1.53.3", features = ["net", "rt", "macros"] }
 getrandom = "0.3"
