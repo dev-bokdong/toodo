@@ -1,5 +1,6 @@
 import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 import { workSegments } from "@/lib/timeline";
+import { dueEnd, dueState, type DueState } from "@/lib/plan";
 
 /** A dependency drawn from the prerequisite (`source`) to the task that waits on it (`target`). */
 export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
@@ -178,6 +179,10 @@ export type TimelineBar = {
   phases: { phase: TimelinePhase; x: number; width: number }[];
   /** The wait before the bar, from `plannedAt` to `x`; null when there was none. */
   lead: TimelineLead | null;
+  /** The end of the due day relative to `x`; null without a due date or when it is off the axis. */
+  dueX: number | null;
+  /** How the task stands against its due date; null without one. */
+  dueState: DueState | null;
 };
 
 /** Positions relative to the bar's `x`, so all of them are negative. */
@@ -443,8 +448,9 @@ export function layoutTimeline(
     ({ start, end } = period);
   } else {
     const first = placed.map(({ task, interval }) => Math.min(interval.start, task.milestones.plannedAt ?? interval.start));
-    start = startOfUnit(Math.min(now, ...first), "day").getTime() / 1000;
-    const last = Math.max(now, ...placed.map(({ interval }) => interval.end));
+    const dueEnds = placed.flatMap(({ task }) => (task.dueDate === null ? [] : [dueEnd(task.dueDate)]));
+    start = startOfUnit(Math.min(now, ...first, ...dueEnds.map((at) => at - day)), "day").getTime() / 1000;
+    const last = Math.max(now, ...placed.map(({ interval }) => interval.end), ...dueEnds.map((at) => at - 1));
     const endDay = startOfUnit(last, "day");
     nextUnit(endDay, "day");
     end = endDay.getTime() / 1000;
@@ -475,7 +481,18 @@ export function layoutTimeline(
       }));
     }
     rightEdges.set(task.id, x + width);
-    return { task, row, x, width, pending, phases, lead: taskLead(task, readyAt(task, byId), x, start, scaleX) };
+    const due = task.dueDate === null ? null : dueEnd(task.dueDate);
+    return {
+      task,
+      row,
+      x,
+      width,
+      pending,
+      phases,
+      lead: taskLead(task, readyAt(task, byId), x, start, scaleX),
+      dueX: due !== null && due >= start && due <= end ? scaleX(due) - x : null,
+      dueState: dueState(task, now),
+    };
   });
 
   return {

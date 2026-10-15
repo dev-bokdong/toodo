@@ -284,6 +284,26 @@ export type CommitRecord = {
 	committedAt: number,
 };
 
+/**  The expected size of a task. */
+export type Estimate = {
+	unit: EstimateUnit,
+	/**
+	 *  Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN
+	 *  or infinite, which specta's default `number | null` allows for.
+	 */
+	amount: number,
+};
+
+/**  What an estimate counts. */
+export type EstimateUnit = 
+/**
+ *  Hours of active work, compared with the time the task spends in progress or in
+ *  review.
+ */
+"hours" | 
+/**  Story points: relative size. */
+"points";
+
 /**  A machine saved in herdr with `herdr machine add`. */
 export type HerdrMachine = {
 	/**  Opaque herdr profile ID. */
@@ -358,6 +378,9 @@ export type NewTask = {
 	taskType: TaskType,
 	title: string,
 	description: string,
+	estimate: Estimate | null,
+	/**  `YYYY-MM-DD`; blank or `null` for none. */
+	dueDate: string | null,
 };
 
 export type NewWorkspace = {
@@ -442,6 +465,10 @@ export type Task = {
 	pullRequestUrl: string | null,
 	/**  The GitHub issue this task works on; its pull request closes it on merge. */
 	issue: LinkedIssue | null,
+	/**  The expected size of the task, if estimated. */
+	estimate: Estimate | null,
+	/**  The day the task should be done by, as `YYYY-MM-DD` in local time. */
+	dueDate: string | null,
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
 	/**
@@ -482,6 +509,10 @@ export type TaskEdit = {
 	taskType: TaskType,
 	title: string,
 	description: string,
+	/**  `null` clears the estimate. */
+	estimate: Estimate | null,
+	/**  `YYYY-MM-DD`; blank or `null` clears the due date. */
+	dueDate: string | null,
 };
 
 export type TaskEvent = {

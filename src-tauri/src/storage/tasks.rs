@@ -12,6 +12,7 @@ use crate::domain::model::{
 };
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
+use crate::domain::plan::{DueDate, Estimate, EstimateUnit};
 use crate::domain::status::TaskStatus;
 use crate::domain::timeline::TaskEvent;
 
@@ -21,6 +22,8 @@ pub struct NewTask {
     pub task_type: TaskType,
     pub title: String,
     pub description: String,
+    pub estimate: Option<Estimate>,
+    pub due_date: Option<DueDate>,
 }
 
 /// The dependent task after [`Storage::add_dependencies`], and whether the new
@@ -70,6 +73,31 @@ fn parse_task_status(raw: &str) -> Result<TaskStatus> {
         .ok_or_else(|| StorageError::InvalidData(format!("unknown task status {raw:?}")))
 }
 
+fn parse_estimate(unit: Option<String>, amount: Option<f64>) -> Result<Option<Estimate>> {
+    let (unit, amount) = match (unit, amount) {
+        (None, None) => return Ok(None),
+        (Some(unit), Some(amount)) => (unit, amount),
+        _ => {
+            return Err(StorageError::InvalidData(
+                "estimate unit and amount must be set together".to_owned(),
+            ));
+        }
+    };
+    let unit = EstimateUnit::ALL
+        .into_iter()
+        .find(|known| known.as_str() == unit)
+        .ok_or_else(|| StorageError::InvalidData(format!("unknown estimate unit {unit:?}")))?;
+    Ok(Some(Estimate::new(unit, amount).map_err(invalid_data)?))
+}
+
+/// The estimate unit and amount columns of `estimate`.
+fn estimate_columns(estimate: Option<Estimate>) -> (Option<&'static str>, Option<f64>) {
+    (
+        estimate.map(|estimate| estimate.unit().as_str()),
+        estimate.map(Estimate::amount),
+    )
+}
+
 fn parse_note_kind(raw: &str) -> Result<NoteKind> {
     NoteKind::ALL
         .into_iter()
@@ -81,7 +109,8 @@ const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.descr
         t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url,
         t.pull_request_merged_at, w.kind, t.completion_note, s.number, s.title, s.additions,
         s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
-        s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url
+        s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url, t.estimate_unit,
+        t.estimate_amount, t.due_date
     FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
         LEFT JOIN pull_request_snapshots s ON s.task_id = t.id";
 
@@ -102,6 +131,9 @@ struct TaskRow {
     pull_request: Option<PullRequestSnapshot>,
     resolution: Option<String>,
     issue: Option<LinkedIssue>,
+    estimate_unit: Option<String>,
+    estimate_amount: Option<f64>,
+    due_date: Option<String>,
 }
 
 impl TaskRow {
@@ -142,6 +174,9 @@ impl TaskRow {
                     url: row.get(24)?,
                 }),
             },
+            estimate_unit: row.get(25)?,
+            estimate_amount: row.get(26)?,
+            due_date: row.get(27)?,
         })
     }
 
@@ -181,6 +216,13 @@ impl TaskRow {
             pull_request: self.pull_request,
             completion_note: self.completion_note,
             issue: self.issue,
+            estimate: parse_estimate(self.estimate_unit, self.estimate_amount)?,
+            due_date: self
+                .due_date
+                .as_deref()
+                .map(DueDate::parse)
+                .transpose()
+                .map_err(invalid_data)?,
             timeline,
             notes,
         })
@@ -324,15 +366,20 @@ impl Storage {
         let status = TaskStatus::Planned;
         let at = self.now();
         let tx = self.conn.transaction()?;
+        let (estimate_unit, estimate_amount) = estimate_columns(new.estimate);
         let inserted = tx.execute(
-            "INSERT INTO tasks (workspace_id, type, title, description, status)
-             SELECT id, ?2, ?3, ?4, ?5 FROM workspaces WHERE id = ?1",
+            "INSERT INTO tasks (workspace_id, type, title, description, status, estimate_unit,
+                 estimate_amount, due_date)
+             SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM workspaces WHERE id = ?1",
             params![
                 new.workspace_id.0,
                 new.task_type.as_str(),
                 new.title,
                 new.description,
-                status.as_str()
+                status.as_str(),
+                estimate_unit,
+                estimate_amount,
+                new.due_date.map(|due| due.to_string())
             ],
         )?;
         if inserted == 0 {
@@ -358,6 +405,8 @@ impl Storage {
             resolution: None,
             completion_note: None,
             issue: None,
+            estimate: new.estimate,
+            due_date: new.due_date,
             timeline: vec![TaskEvent { status, at }],
             notes: Vec::new(),
         })
@@ -377,8 +426,8 @@ impl Storage {
         all_tasks(&self.conn)
     }
 
-    /// Saves the editable fields of `task`: type, title, description, branch, worktree
-    /// path, herdr workspace, and pull request URL. Status, dependencies, and workspace
+    /// Saves the editable fields of `task`: type, title, description, estimate, due date,
+    /// branch, worktree path, herdr workspace, and pull request URL. Status, dependencies, and workspace
     /// are changed through their own methods and are ignored here.
     pub fn update_task(&mut self, task: &Task) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -393,10 +442,12 @@ impl Storage {
             .ok_or(StorageError::TaskNotFound(task.id))?;
         let worktree_path =
             stored_worktree_path(task.id, &workspace_kind, task.worktree_path.as_ref())?;
+        let (estimate_unit, estimate_amount) = estimate_columns(task.estimate);
         tx.execute(
             "UPDATE tasks
              SET type = ?2, title = ?3, description = ?4, branch = ?5, worktree_path = ?6,
-                 herdr_workspace_id = ?7, pull_request_url = ?8
+                 herdr_workspace_id = ?7, pull_request_url = ?8, estimate_unit = ?9,
+                 estimate_amount = ?10, due_date = ?11
              WHERE id = ?1",
             params![
                 task.id.0,
@@ -406,7 +457,10 @@ impl Storage {
                 task.branch,
                 worktree_path,
                 task.herdr_workspace_id,
-                task.pull_request_url
+                task.pull_request_url,
+                estimate_unit,
+                estimate_amount,
+                task.due_date.map(|due| due.to_string())
             ],
         )?;
         tx.commit()?;

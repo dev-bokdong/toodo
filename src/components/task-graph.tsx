@@ -46,6 +46,7 @@ import {
 import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
 import { activeSeconds, formatDate, reachedMilestones } from "@/lib/timeline";
+import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
@@ -106,6 +107,9 @@ const doneBarStyle = "border-emerald-500 bg-emerald-100 dark:bg-emerald-950";
 
 /** A task not started yet whose prerequisites are all done is drawn solid; one still blocked, dashed. */
 const readyBarStyle = "border-amber-500 shadow-none";
+
+/** A task done after its due date, or still open after it, gets a red outline over its other styles. */
+const behindDueBarStyle = "border-2 border-rose-500 dark:border-rose-400";
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
@@ -416,6 +420,14 @@ export function TaskGraph({
             <span className={cn("h-2 w-3 rounded-sm border", doneBarStyle)} />
             Done
           </li>
+          <li className="flex items-center gap-1">
+            <span className="h-3 border-l-2 border-muted-foreground" />
+            Due date
+          </li>
+          <li className="flex items-center gap-1">
+            <span className={cn("h-2 w-3 rounded-sm", behindDueBarStyle)} />
+            Past due
+          </li>
         </ul>
       </div>
       <div className="flex min-h-7 flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -673,6 +685,7 @@ function TimelineTooltip({
 }) {
   const milestones = reachedMilestones(task.milestones);
   const active = activeSeconds(task.timeline, now);
+  const dueState = dueStateOf(task, now);
   // A bar may start far off screen; the card starts where the visible part of the bar does.
   const left = Math.max(
     Math.min(Math.max(anchor.left, bounds.left), window.innerWidth - tooltipWidth - 8),
@@ -714,6 +727,29 @@ function TimelineTooltip({
           )}
         </dl>
       )}
+      {(task.estimate !== null || task.dueDate !== null) && (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+          {task.estimate !== null && (
+            <>
+              <dt className="text-muted-foreground">Estimate</dt>
+              <dd className="tabular-nums">{formatEstimate(task.estimate)}</dd>
+            </>
+          )}
+          {task.dueDate !== null && (
+            <>
+              <dt className="text-muted-foreground">{dueState === null ? "Due" : dueStateLabels[dueState]}</dt>
+              <dd
+                className={cn(
+                  "tabular-nums",
+                  (dueState === "late" || dueState === "overdue") && "text-rose-700 dark:text-rose-300",
+                )}
+              >
+                {task.dueDate}
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
       <p className="text-muted-foreground">Click for details</p>
     </div>
   );
@@ -735,11 +771,16 @@ function TimelineBarView({
   data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, agentStatus },
   selected,
 }: NodeProps<BarNode>) {
-  const { task, phases, pending, lead } = bar;
+  const { task, phases, pending, lead, dueX, dueState } = bar;
   // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
   const faded = isPaused(task) && !ready;
+  const behindDue = dueState === "late" || dueState === "overdue";
   return (
-    <div data-dimmed={dimmed || undefined} className={cn("relative h-full w-full", dimmed && "opacity-40")}>
+    <div
+      data-dimmed={dimmed || undefined}
+      data-due-state={dueState ?? undefined}
+      className={cn("relative h-full w-full", dimmed && "opacity-40")}
+    >
       <Handle type="target" position={Position.Left} />
       {lead !== null && (
         // The wait before the bar: from the planned time, through the time it became ready.
@@ -763,6 +804,7 @@ function TimelineBarView({
           selected && "ring-2 ring-primary",
           ready ? readyBarStyle : pending && "border-dashed border-muted-foreground/60 shadow-none",
           task.status === "done" && doneBarStyle,
+          behindDue && behindDueBarStyle,
           faded && "opacity-60",
         )}
       >
@@ -776,6 +818,18 @@ function TimelineBarView({
           ))}
         </div>
       </div>
+      {dueX !== null && (
+        // The end of the due day, across the bar and past its edges, under the label.
+        <span
+          aria-label={`Due date of #${task.id}`}
+          title={`Due ${task.dueDate}`}
+          className={cn(
+            "pointer-events-none absolute -inset-y-1 border-l-2",
+            behindDue ? "border-rose-500 dark:border-rose-400" : "border-muted-foreground",
+          )}
+          style={{ left: dueX - 1 }}
+        />
+      )}
       {/* A bar narrower than its label lets the label run past its right end. */}
       <div
         className={cn(

@@ -27,6 +27,8 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     herdrWorkspaceId: null,
     pullRequestUrl: null,
     issue: null,
+    estimate: null,
+    dueDate: null,
     pullRequestMergedAt: null,
     pullRequest: null,
     resolution: null,
@@ -164,6 +166,8 @@ describe("layoutTimeline", () => {
           { phase: "in_review", x: 2 * 48, width: 48 },
         ],
         lead: { x: -2 * 48, planned: true, readyX: null },
+        dueX: null,
+        dueState: null,
       },
     ]);
     expect(layout.nowX).toBe(10 * 48);
@@ -190,6 +194,23 @@ describe("layoutTimeline", () => {
     expect(bars.get(3)).toMatchObject({ x: layout.nowX, width: 120, pending: true, phases: [] });
     expect(layout.rows).toBe(3);
     expect(layout.unplaced).toEqual([unknown]);
+  });
+
+  it("marks the end of the due day on a bar, widening the axis to reach it, and flags missed ones", () => {
+    const late = { ...done, dueDate: "2026-01-04" };
+    const overdue = { ...open, dueDate: "2026-01-09" };
+    const ahead = { ...waiting, dueDate: "2026-01-20" };
+
+    const layout = layoutTimeline([late, overdue, ahead], { now, scale: "day", period: null });
+
+    const bars = new Map(layout.bars.map((bar) => [bar.task.id, bar]));
+    expect(bars.get(1)).toMatchObject({ x: 2 * 48, dueX: 2 * 48, dueState: "late" });
+    expect(bars.get(2)).toMatchObject({ x: 3 * 48, dueX: 6 * 48, dueState: "overdue" });
+    expect(bars.get(3)).toMatchObject({ dueX: 20 * 48 - layout.nowX!, dueState: "upcoming" });
+    expect(layout.end).toBe(jan(21));
+
+    const clipped = layoutTimeline([ahead], { now, scale: "day", period: { start: jan(1), end: jan(15) } });
+    expect(clipped.bars[0].dueX).toBeNull();
   });
 
   it("fixes a paused task from its start to its pause", () => {

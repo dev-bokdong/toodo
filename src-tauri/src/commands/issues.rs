@@ -174,6 +174,8 @@ mod tests {
                 task_type: TaskType::Fix,
                 title: "Fix login".to_owned(),
                 description: "Login fails".to_owned(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap();
         (Mutex::new(storage), task)

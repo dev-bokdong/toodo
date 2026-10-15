@@ -414,6 +414,8 @@ mod tests {
                     task_type: model::TaskType::Feat,
                     title: "Login".to_owned(),
                     description: String::new(),
+                    estimate: None,
+                    due_date: None,
                 })
                 .unwrap();
             storage
