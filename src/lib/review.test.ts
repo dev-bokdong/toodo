@@ -14,6 +14,7 @@ import {
   startOfWeek,
   summarize,
   weekStarting,
+  yearInReview,
 } from "@/lib/review";
 
 afterEach(() => {
@@ -405,6 +406,89 @@ describe("reviewMarkdown", () => {
   it("says so when the period has no recorded activity", () => {
     expect(reviewMarkdown(periodContaining("year", "2026-01-01"), [], [toodo])).toBe(
       "# Year review: 2026\n\nNo recorded activity.\n",
+    );
+  });
+});
+
+describe("yearInReview", () => {
+  const at = local(2026, 6, 1);
+  const sized = (number: number, additions: number, reviewCount: number) => ({
+    ...snapshot(number),
+    additions,
+    deletions: 10,
+    changedFiles: 2,
+    reviewCount,
+  });
+
+  it("sums pull request snapshots and ranks the largest of completed tasks only", () => {
+    const entries = [
+      completed(1, at, {}, { pullRequest: sized(11, 50, 2) }),
+      completed(2, at, {}, { pullRequest: sized(12, 500, 0) }),
+      completed(3, at, {}, { pullRequest: sized(13, 90, 1) }),
+      completed(4, at, {}, { pullRequest: sized(14, 5, 3) }),
+      entry(5, "opened_for_review", { pullRequest: sized(15, 9000, 9) }),
+    ];
+
+    const year = yearInReview(entries);
+
+    expect(year?.pullRequests).toEqual({
+      pullRequests: 4,
+      additions: 645,
+      deletions: 40,
+      changedFiles: 8,
+      reviews: 6,
+      reviewed: 3,
+    });
+    expect(year?.largest.map(({ pullRequest }) => pullRequest.number)).toEqual([12, 13, 11]);
+    expect(year?.research).toEqual([]);
+  });
+
+  it("lists completed research tasks, oldest first, with whether they were adopted", () => {
+    const entries = [
+      completed(1, local(2026, 9, 1), {}, { taskType: "rnd", resolution: "not_adopted", completionNote: "Too slow" }),
+      completed(2, local(2026, 3, 1), {}, { taskType: "rnd", resolution: "merged" }),
+      completed(3, at, {}, { resolution: "not_adopted" }),
+      entry(4, "started", { taskType: "rnd" }),
+    ];
+
+    const year = yearInReview(entries);
+
+    expect(year?.pullRequests).toBeNull();
+    expect(year?.research.map(({ task, adopted }) => [task.id, adopted])).toEqual([
+      [2, true],
+      [1, false],
+    ]);
+    expect(yearInReview([entry(1, "started"), completed(2, at, {})])).toBeNull();
+  });
+
+  it("adds a Year in review section to the Markdown of a year only", () => {
+    const entries = [
+      completed(1, at, {}, { pullRequest: sized(11, 50, 2), title: "Add login" }),
+      completed(2, at, {}, {
+        taskType: "rnd",
+        resolution: "not_adopted",
+        title: "Try a cache",
+        completionNote: "Twice as slow\nas before",
+      }),
+    ];
+
+    const markdown = reviewMarkdown(periodContaining("year", "2026-06-01"), entries, [toodo]);
+
+    expect(markdown).toContain(
+      [
+        "## Year in review",
+        "",
+        "- Merged pull requests: +50/-10 in 2 files (1 pull request)",
+        "- Reviews: 2 reviews on 1 of 1 pull request",
+        "- Largest pull requests:",
+        "  - [feat] Add login (#11, +50/-10 in 2 files, 2 reviews)",
+        "- Research conclusions:",
+        "  - Try a cache (not adopted): Twice as slow as before",
+        "",
+      ].join("\n"),
+    );
+    expect(reviewMarkdown(periodContaining("quarter", "2026-06-01"), entries, [toodo])).not.toContain(
+      "Year in review",
     );
   });
 });

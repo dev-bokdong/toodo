@@ -1257,6 +1257,56 @@ describe("App", () => {
     );
   });
 
+  it("shows pull request snapshots and research conclusions in the year in review", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 14, 10));
+    const at = new Date(2026, 5, 1, 15).getTime() / 1000;
+    const pullRequest = (number: number, additions: number, reviewCount: number) => ({
+      number,
+      title: `Pull request ${number}`,
+      additions,
+      deletions: 10,
+      changedFiles: 3,
+      mergeCommitSha: null,
+      reviewCount,
+      reviewerCount: reviewCount,
+      firstReviewedAt: null,
+    });
+    const done = (id: number, title: string, overrides: Partial<Task>) =>
+      task(id, 1, title, { status: "done", resolution: "merged", ...overrides });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.reviewPeriod.mockResolvedValue({
+      status: "ok",
+      data: [
+        done(1, "Add login", { pullRequest: pullRequest(11, 40, 2) }),
+        done(2, "Rewrite storage", { pullRequest: pullRequest(12, 400, 0) }),
+        done(3, "Try a cache", { taskType: "rnd", resolution: "not_adopted", completionNote: "Twice as slow" }),
+      ].map((task) => ({ task, outcome: "completed" as const, at, commits: [] })),
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+    await screen.findByRole("region", { name: "Summary" });
+    expect(screen.queryByText("Year in review")).not.toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Review period" })).getByRole("button", { name: "Year" }));
+
+    const year = (await screen.findByText("Year in review")).closest("section")!;
+    expect(year).toHaveAccessibleName("Year in review");
+    expect(within(year).getByText("Merged pull requests").nextSibling).toHaveTextContent("2");
+    expect(within(year).getByText("Lines changed").nextSibling).toHaveTextContent("+440 / -20");
+    expect(within(year).getByText("Reviews").nextSibling).toHaveTextContent("2on 1 of 2");
+    const largest = within(within(year).getByRole("list", { name: "Largest pull requests" })).getAllByRole("listitem");
+    expect(largest.map((item) => item.textContent)).toEqual([
+      "featRewrite storage#12, +400/-10 in 3 files, 0 reviews",
+      "featAdd login#11, +40/-10 in 3 files, 2 reviews",
+    ]);
+    const research = within(year).getByRole("list", { name: "Research conclusions" });
+    expect(within(research).getByText("Not adopted")).toBeInTheDocument();
+    expect(within(research).getByLabelText("Research conclusion of #3")).toHaveTextContent("Twice as slow");
+  });
+
   it("concludes research without merging and keeps its dependents blocked", async () => {
     const research = task(1, 1, "Try a new cache", {
       taskType: "rnd",

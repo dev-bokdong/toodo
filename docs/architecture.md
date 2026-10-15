@@ -251,6 +251,11 @@ generated or guessed by an agent.
   says how many completed tasks have no completion note yet, and how many completed
   tasks were concluded without merging (not adopted); the Markdown report marks those
   tasks "not adopted" and lists their conclusion.
+- A year review adds a "Year in review" section, also in its Markdown report, from the
+  tasks completed in the year: their merged pull request snapshots summed (pull
+  requests, lines added and deleted, changed files, and reviews with how many pull
+  requests got one), the three largest pull requests by changed lines, and every
+  completed `rnd` task with whether it was adopted and its conclusion.
 - The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
   task with its milestones as local times, its resolution (`Merged` or `Not adopted`), its
   active hours so far, the size and review count of its pull request, and its completion
