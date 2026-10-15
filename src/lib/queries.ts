@@ -382,6 +382,13 @@ export function useOpenTaskInHerdr() {
   });
 }
 
+/** Focuses the pane of the agent working on a task, or its herdr workspace when no agent is recognized. */
+export function useFocusAgentPane() {
+  return useMutation({
+    mutationFn: (id: TaskId) => unwrap(commands.focusAgentPane(id)),
+  });
+}
+
 export function useCommitRecords(taskId: TaskId, enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.commitRecords(taskId),
