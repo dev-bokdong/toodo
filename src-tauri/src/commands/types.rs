@@ -7,7 +7,7 @@ use specta::Type;
 use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
-use crate::adapters::{git, herdr, ssh};
+use crate::adapters::{git, github, herdr, ssh};
 use crate::domain::{backup, model, path, review, ssh_config, status, timeline};
 use crate::storage;
 
@@ -737,6 +737,65 @@ impl AgentStatus {
 pub struct TaskAgentStatus {
     pub task_id: TaskId,
     pub status: AgentStatus,
+}
+
+/// Combined result of the CI checks of a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ChecksStatus {
+    Passing,
+    Failing,
+    Pending,
+}
+
+impl From<github::ChecksState> for ChecksStatus {
+    fn from(state: github::ChecksState) -> Self {
+        match state {
+            github::ChecksState::Passing => Self::Passing,
+            github::ChecksState::Failing => Self::Failing,
+            github::ChecksState::Pending => Self::Pending,
+        }
+    }
+}
+
+/// Where the reviews of a pull request stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Approved,
+    ChangesRequested,
+    Pending,
+}
+
+impl From<github::ReviewState> for ReviewStatus {
+    fn from(state: github::ReviewState) -> Self {
+        match state {
+            github::ReviewState::Approved => Self::Approved,
+            github::ReviewState::ChangesRequested => Self::ChangesRequested,
+            github::ReviewState::Pending => Self::Pending,
+        }
+    }
+}
+
+/// CI and review state of the open pull request of an `in_review` task, as of the last
+/// background check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPullRequestStatus {
+    pub task_id: TaskId,
+    /// `null` when the pull request has no checks.
+    pub checks: Option<ChecksStatus>,
+    pub review: ReviewStatus,
+}
+
+impl TaskPullRequestStatus {
+    pub fn new(task: model::TaskId, status: github::PullRequestStatus) -> Self {
+        Self {
+            task_id: task.into(),
+            checks: status.checks.map(Into::into),
+            review: status.review.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -51,6 +51,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::completion::open_pull_request,
             commands::completion::complete_task,
             commands::completion::conclude_task,
+            commands::completion::list_pull_request_statuses,
             commands::issues::link_issue,
             commands::issues::create_issue,
             commands::events::list_agent_statuses,
@@ -67,6 +68,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         .events(collect_events![
             commands::events::TasksChanged,
             commands::events::AgentStatusesChanged,
+            commands::events::PullRequestStatusesChanged,
         ])
 }
 
@@ -162,6 +164,7 @@ pub fn run() {
                 adapters::git::ProcessRunner,
             ))));
             app.manage::<commands::events::AgentStatusState>(Mutex::default());
+            app.manage::<commands::completion::PullRequestStatusState>(Mutex::default());
             commands::events::spawn(app.handle().clone())?;
             commands::backup::spawn(app.handle().clone())?;
             commands::completion::spawn(app.handle().clone())?;
