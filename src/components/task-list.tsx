@@ -24,9 +24,10 @@ import { TaskGraph } from "@/components/task-graph";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
+import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
-import type { Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
+import type { NoteKind, Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
   IssueLinkFailure,
@@ -34,6 +35,8 @@ import {
   useAddDependency,
   useAgentStatuses,
   useCloseTaskWorkspace,
+  useBranchFreshness,
+  usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
   useConcludeTask,
@@ -417,6 +420,7 @@ function TaskRow({
 }) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
+  const pullRequestStatuses = usePullRequestStatuses();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
   const refreshCommits = useRefreshCommitRecords();
@@ -441,6 +445,9 @@ function TaskRow({
   const active = task.status === "in_progress" || inReview;
   const hasWorktree = active && task.worktreePath !== null;
   const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
+  const pullRequestStatus = inReview
+    ? pullRequestStatuses.data?.find((entry) => entry.taskId === task.id)
+    : undefined;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
   const paused = isPaused(task);
@@ -506,6 +513,7 @@ function TaskRow({
                 {task.title}
               </span>
             )}
+            {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
           {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}
@@ -635,6 +643,7 @@ function TaskRow({
           onKeep={() => setKeepingWorkspace(true)}
         />
       )}
+      {hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       <TaskTimeline task={task} detailed={detailed} />
       {detailed && task.branch && (
         <DetailField label="Branch">
@@ -684,6 +693,7 @@ function TaskRow({
         <TaskIssue task={task} detailed={detailed} linking={linkingIssue} onDone={() => setLinkingIssue(false)} />
       )}
       <CommitList task={task} detailed={detailed} />
+      <TaskNotes task={task} detailed={detailed} />
       {final && !editing && <CompletionNote task={task} />}
       {actionError && (
         <p role="alert" className="text-xs text-destructive">
@@ -877,6 +887,52 @@ function TaskRow({
 }
 
 /** The status of `task` as a pill with a colored dot. */
+/** Warns when a started task's branch is behind its base, e.g. after a prerequisite was merged. */
+function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
+  const freshness = useBranchFreshness(taskId, true);
+  const label = `Base freshness of #${taskId}`;
+  if (freshness.error) {
+    return (
+      <p role="note" aria-label={label} className="text-xs text-muted-foreground" title={freshness.error.message}>
+        Could not check whether the branch is behind its base
+      </p>
+    );
+  }
+  const data = freshness.data;
+  const conflicting = data?.mergeable === "conflicting";
+  if (!data || (data.behind === 0 && !conflicting)) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (data.behind > 0) {
+    parts.push(`${data.behind} ${data.behind === 1 ? "commit" : "commits"} behind ${data.base}`);
+  }
+  if (conflicting) {
+    parts.push("pull request has merge conflicts");
+  } else if (data.mergeable === "mergeable") {
+    parts.push("no merge conflicts");
+  }
+  return (
+    <p
+      role="note"
+      aria-label={label}
+      data-conflicting={conflicting || undefined}
+      className={cn(
+        "text-xs",
+        conflicting ? "text-rose-700 dark:text-rose-300" : "text-amber-700 dark:text-amber-300",
+      )}
+      title={
+        [data.fetchError && `Fetching origin failed: ${data.fetchError}`, data.mergeableError]
+          .filter(Boolean)
+          .join("\n") || undefined
+      }
+    >
+      {parts.join("; ")}
+      {data.fetchError && " (not up to date: fetching origin failed)"}
+    </p>
+  );
+}
+
 function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
   return (
     <span
@@ -1276,6 +1332,70 @@ function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
     </ul>
   );
   return detailed ? <DetailField label={`Commits (${commits.data.length})`}>{list}</DetailField> : list;
+}
+
+const noteKindLabels: Record<NoteKind, string> = { progress: "Progress", blocker: "Blocker" };
+
+function NoteKindBadge({ kind }: { kind: NoteKind }) {
+  return (
+    <span
+      data-note-kind={kind}
+      className={cn(
+        "shrink-0 rounded-md px-1.5 font-medium",
+        kind === "blocker"
+          ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {noteKindLabels[kind]}
+    </span>
+  );
+}
+
+/**
+ * Notes agents left on the task through the MCP server: all of them in the details sheet,
+ * the latest one in a list row.
+ */
+function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
+  const notes = task.notes;
+  if (notes.length === 0) {
+    return null;
+  }
+  if (!detailed) {
+    const latest = notes[notes.length - 1];
+    return (
+      <p
+        aria-label={`Latest note of #${task.id}`}
+        className="flex min-w-0 items-center gap-1.5 text-xs"
+        title={new Date(latest.at * 1000).toLocaleString()}
+      >
+        <NoteKindBadge kind={latest.kind} />
+        <span className="min-w-0 truncate text-muted-foreground">{markdownPreview(latest.body)}</span>
+        {notes.length > 1 && (
+          <span className="shrink-0 text-muted-foreground">{`+${notes.length - 1} more`}</span>
+        )}
+      </p>
+    );
+  }
+  return (
+    <DetailField label={`Notes (${notes.length})`}>
+      <ol aria-label={`Notes of #${task.id}`} className="flex flex-col gap-2">
+        {notes.map((note, index) => (
+          <li key={index} className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <NoteKindBadge kind={note.kind} />
+              <time className="text-muted-foreground" dateTime={new Date(note.at * 1000).toISOString()}>
+                {new Date(note.at * 1000).toLocaleString()}
+              </time>
+            </div>
+            <Suspense fallback={<p className="whitespace-pre-line break-words">{note.body}</p>}>
+              <Markdown source={note.body} />
+            </Suspense>
+          </li>
+        ))}
+      </ol>
+    </DetailField>
+  );
 }
 
 /** A dashed placeholder for a list with nothing in it yet. */

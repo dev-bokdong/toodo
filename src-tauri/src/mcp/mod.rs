@@ -3,8 +3,8 @@
 //!
 //! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
 //! in the app data directory. Agents can read workspaces and tasks, create and edit
-//! tasks, and connect dependencies; starting, completing, and deleting tasks stay in the
-//! app. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
+//! tasks, connect dependencies, and leave progress and blocker notes in a task's history;
+//! starting, completing, and deleting tasks stay in the app. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
 
 mod tools;
 pub mod tunnels;
@@ -66,7 +66,14 @@ rnd), write a short imperative title, and put details in description. Write the 
 description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
 issue body): short paragraphs, `-` lists, `- [ ]` task lists for acceptance criteria, \
 backticks for code, paths, and commands, fenced code blocks, and links; no raw HTML.
-5. A tool error says what was rejected; change the arguments instead of retrying them \
+5. Leave a record of your work on your task as you go; it feeds the user's reviews of \
+their work. Call add_progress_note when you take a decision worth remembering (the choice \
+and why, e.g. a library or approach over its alternatives) or finish a meaningful step, \
+and report_blocker when something stops you that needs the user or someone else (missing \
+access, an unclear requirement, a failing dependency), saying what you need. Write one \
+or two Markdown sentences per note; skip routine steps such as running tests or small \
+edits. Neither tool changes the task's status.
+6. A tool error says what was rejected; change the arguments instead of retrying them \
 unchanged.
 
 Starting, completing, and deleting tasks happen in the Toodo app, not through these \
@@ -282,6 +289,26 @@ impl ToodoMcp {
         self.change(|storage| tools::add_dependencies(storage, request))
     }
 
+    #[tool(
+        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Returns the task with its notes."
+    )]
+    fn add_progress_note(
+        &self,
+        Parameters(request): Parameters<tools::AddNote>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::add_note(storage, model::NoteKind::Progress, request))
+    }
+
+    #[tool(
+        description = "Record on a task's history what blocks the work on it and what is needed to continue. Does not change the task's status. Returns the task with its notes."
+    )]
+    fn report_blocker(
+        &self,
+        Parameters(request): Parameters<tools::AddNote>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::add_note(storage, model::NoteKind::Blocker, request))
+    }
+
     #[tool(description = "Remove the dependency of task_id on depends_on.")]
     fn remove_dependency(
         &self,
@@ -337,6 +364,11 @@ mod tests {
     impl Notifier for TestBackend {
         fn tasks_changed(&self, _: model::WorkspaceId) {}
         fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
+        fn pull_request_statuses_changed(
+            &self,
+            _: &[crate::commands::types::TaskPullRequestStatus],
+        ) {
+        }
     }
 
     impl Backend for TestBackend {

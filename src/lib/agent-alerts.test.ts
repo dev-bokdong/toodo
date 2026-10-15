@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { agentAlerts, pausedAlerts } from "@/lib/agent-alerts";
-import type { Task } from "@/lib/bindings";
+import { agentAlerts, pausedAlerts, pullRequestAlerts } from "@/lib/agent-alerts";
+import type { Task, TaskPullRequestStatus } from "@/lib/bindings";
 
 const tasks = [{ id: 1, title: "Add login" }, { id: 2, title: "Add logout" }] as Task[];
 
@@ -77,5 +77,41 @@ describe("pausedAlerts", () => {
     expect(pausedAlerts([fix, started], [{ ...fix, status: "done" }, paused])).toEqual([]);
     expect(pausedAlerts([fix, started], [fix, { ...started, status: "planned" }])).toEqual([]);
     expect(pausedAlerts([fix, paused], [fix, paused])).toEqual([]);
+  });
+});
+
+describe("pullRequestAlerts", () => {
+  const status = (
+    taskId: number,
+    checks: TaskPullRequestStatus["checks"],
+    review: TaskPullRequestStatus["review"],
+  ): TaskPullRequestStatus => ({ taskId, checks, review });
+
+  it("alerts when CI starts failing or a reviewer requests changes", () => {
+    expect(
+      pullRequestAlerts(
+        [status(1, "pending", "pending"), status(2, null, "approved")],
+        [status(1, "failing", "changes_requested"), status(2, null, "changes_requested")],
+        tasks,
+      ),
+    ).toEqual([
+      { title: "CI failed", body: "#1 Add login" },
+      { title: "Changes requested", body: "#1 Add login" },
+      { title: "Changes requested", body: "#2 Add logout" },
+    ]);
+  });
+
+  it("stays quiet for unchanged, recovering, or newly seen pull requests", () => {
+    expect(
+      pullRequestAlerts(
+        [status(1, "failing", "changes_requested"), status(2, "failing", "pending")],
+        [
+          status(1, "failing", "changes_requested"),
+          status(2, "passing", "approved"),
+          status(3, "failing", "changes_requested"),
+        ],
+        tasks,
+      ),
+    ).toEqual([]);
   });
 });

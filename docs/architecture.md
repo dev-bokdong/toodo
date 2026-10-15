@@ -375,10 +375,14 @@ Toodo owns planning, task state, commit records, and pull requests.
     contains a given directory), `create_task` (with optional `depends_on`; unknown
     prerequisites create nothing), `update_task`, `add_dependency` (several
     prerequisites in one call; it pauses an `in_progress` task they block but leaves its
-    herdr workspace open, and the app asks the user whether to close it), and
-    `remove_dependency`. They reuse the storage
-    rules, so cycles are rejected. The server instructions tell agents that work their
-    task needs before it can finish is a prerequisite of their task, added last. Tool
+    herdr workspace open, and the app asks the user whether to close it),
+    `remove_dependency`, and `add_progress_note` / `report_blocker`, which append a
+    timestamped Markdown note (`progress` or `blocker`, table `task_notes`) to a task
+    without changing its status. They reuse the storage rules, so cycles are rejected. The
+    server instructions tell agents that work their task needs before it can finish is a
+    prerequisite of their task, added last, and to note decisions and blockers as they
+    work; Toodo never prompts agents itself. Notes show in the task list (latest) and the
+    task details (all), and period reviews list the notes left during the period. Tool
     failures come back as tool errors whose text the agent sees.
   - Starting, completing, concluding, and deleting tasks are not exposed; they touch
     worktrees, herdr, and pull requests and stay in the app.

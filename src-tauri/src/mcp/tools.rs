@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::commands::tasks::edit_task;
 use crate::commands::types::{self, Task, TaskEdit, TaskId, TaskType, Workspace, WorkspaceId};
 use crate::commands::{CommandError, CommandResult};
+use crate::domain::model::NoteKind;
 use crate::storage::{self, Storage, StorageError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -66,6 +67,15 @@ pub struct Dependency {
     pub task_id: TaskId,
     /// The prerequisite task, which must be done before `task_id` is ready.
     pub depends_on: TaskId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AddNote {
+    /// The task the note is about, usually your current task.
+    pub task_id: TaskId,
+    /// What happened, in GitHub-flavored Markdown.
+    pub note: String,
 }
 
 pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
@@ -185,6 +195,16 @@ pub fn add_dependencies(storage: &mut Storage, request: AddDependencies) -> Comm
 pub fn remove_dependency(storage: &mut Storage, request: Dependency) -> CommandResult<Task> {
     storage.remove_dependency(request.task_id.into(), request.depends_on.into())?;
     get_task(storage, request.task_id)
+}
+
+/// Appends a note of `kind` to the task's history and returns the task with its notes.
+pub fn add_note(storage: &mut Storage, kind: NoteKind, request: AddNote) -> CommandResult<Task> {
+    let note = request.note.trim();
+    if note.is_empty() {
+        return Err(CommandError::invalid_input("note must not be empty"));
+    }
+    let task = storage.add_task_note(request.task_id.into(), kind, note)?;
+    Ok((&task).into())
 }
 
 fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
@@ -361,6 +381,42 @@ mod tests {
         assert_eq!(updated.title, "Schema");
         assert_eq!(updated.task_type, TaskType::Feat);
         assert_eq!(updated.description, "Add tables");
+    }
+
+    #[test]
+    fn notes_are_trimmed_and_a_blank_note_or_unknown_task_adds_none() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        let note = |task_id: TaskId, note: &str| AddNote {
+            task_id,
+            note: note.to_owned(),
+        };
+
+        let noted = add_note(
+            &mut storage,
+            NoteKind::Progress,
+            note(task.id, "  Chose SQLite \n"),
+        )
+        .unwrap();
+        let noted = add_note(&mut storage, NoteKind::Blocker, note(noted.id, "No access")).unwrap();
+        let notes: Vec<_> = noted
+            .notes
+            .iter()
+            .map(|note| (note.kind, note.body.as_str()))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                (types::NoteKind::Progress, "Chose SQLite"),
+                (types::NoteKind::Blocker, "No access"),
+            ]
+        );
+
+        let error = add_note(&mut storage, NoteKind::Blocker, note(task.id, " \n")).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let error = add_note(&mut storage, NoteKind::Progress, note(TaskId(99), "x")).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+        assert_eq!(get_task(&storage, task.id).unwrap().notes.len(), 2);
     }
 
     #[test]

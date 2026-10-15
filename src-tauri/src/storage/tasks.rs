@@ -7,8 +7,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, LinkedIssue, PullRequestSnapshot, Task, TaskId, TaskResolution,
-    TaskType, WorkspaceId,
+    CommitRecord, HostPath, LinkedIssue, NoteKind, PullRequestSnapshot, Task, TaskId, TaskNote,
+    TaskResolution, TaskType, WorkspaceId,
 };
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
@@ -68,6 +68,13 @@ fn parse_task_status(raw: &str) -> Result<TaskStatus> {
         .into_iter()
         .find(|status| status.as_str() == raw)
         .ok_or_else(|| StorageError::InvalidData(format!("unknown task status {raw:?}")))
+}
+
+fn parse_note_kind(raw: &str) -> Result<NoteKind> {
+    NoteKind::ALL
+        .into_iter()
+        .find(|kind| kind.as_str() == raw)
+        .ok_or_else(|| StorageError::InvalidData(format!("unknown note kind {raw:?}")))
 }
 
 const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status,
@@ -138,7 +145,12 @@ impl TaskRow {
         })
     }
 
-    fn into_task(self, depends_on: BTreeSet<TaskId>, timeline: Vec<TaskEvent>) -> Result<Task> {
+    fn into_task(
+        self,
+        depends_on: BTreeSet<TaskId>,
+        timeline: Vec<TaskEvent>,
+        notes: Vec<TaskNote>,
+    ) -> Result<Task> {
         let worktree_path = match (self.worktree_path, self.workspace_kind.as_str()) {
             (None, _) => None,
             (Some(raw), "local") => Some(HostPath::Windows(
@@ -170,6 +182,7 @@ impl TaskRow {
             completion_note: self.completion_note,
             issue: self.issue,
             timeline,
+            notes,
         })
     }
 }
@@ -216,11 +229,34 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
         });
     }
 
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT n.task_id, n.kind, n.body, n.at
+         FROM task_notes n JOIN tasks t ON t.id = n.task_id
+         WHERE {filter} ORDER BY n.id"
+    ))?;
+    let mut notes: HashMap<i64, Vec<TaskNote>> = HashMap::new();
+    for note in statement.query_map([parameter], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })? {
+        let (task, kind, body, at) = note?;
+        notes.entry(task).or_default().push(TaskNote {
+            kind: parse_note_kind(&kind)?,
+            body,
+            at,
+        });
+    }
+
     rows.into_iter()
         .map(|row| {
             let dependencies = depends_on.remove(&row.id).unwrap_or_default();
             let timeline = timelines.remove(&row.id).unwrap_or_default();
-            row.into_task(dependencies, timeline)
+            let task_notes = notes.remove(&row.id).unwrap_or_default();
+            row.into_task(dependencies, timeline, task_notes)
         })
         .collect()
 }
@@ -323,6 +359,7 @@ impl Storage {
             completion_note: None,
             issue: None,
             timeline: vec![TaskEvent { status, at }],
+            notes: Vec::new(),
         })
     }
 
@@ -521,6 +558,24 @@ impl Storage {
             params![id.0, note],
         )?;
         if updated == 0 {
+            return Err(StorageError::TaskNotFound(id));
+        }
+        let noted = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(noted)
+    }
+
+    /// Appends a note of `kind` to a task, timestamped now. `body` must not be empty;
+    /// trimming it is up to the caller.
+    pub fn add_task_note(&mut self, id: TaskId, kind: NoteKind, body: &str) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO task_notes (task_id, kind, body, at)
+             SELECT id, ?2, ?3, ?4 FROM tasks WHERE id = ?1",
+            params![id.0, kind.as_str(), body, at],
+        )?;
+        if inserted == 0 {
             return Err(StorageError::TaskNotFound(id));
         }
         let noted = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;

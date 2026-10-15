@@ -133,6 +133,14 @@ export const commands = {
 	 */
 	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("conclude_task", { id, note })),
 	/**
+	 *  Counts the commits of the base branch (fetched from `origin` first) that the task's
+	 *  branch lacks, and asks GitHub whether its pull request, if any, merges without
+	 *  conflicts. A failing fetch or pull request lookup is reported in the result rather
+	 *  than failing the whole check.
+	 */
+	branchFreshness: (id: TaskId) => typedError<BranchFreshness, CommandError>(__TAURI_INVOKE("branch_freshness", { id })),
+	listPullRequestStatuses: () => __TAURI_INVOKE<TaskPullRequestStatus[]>("list_pull_request_statuses"),
+	/**
 	 *  Links issue `number` of the workspace repository to a task that is not done, after
 	 *  checking that the issue exists; `null` unlinks the current issue. An open pull
 	 *  request of the task gets a closing reference to the issue.
@@ -178,6 +186,7 @@ export const commands = {
 /** Events */
 export const events = {
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
+	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 };
 
@@ -212,6 +221,26 @@ export type BackupSettings = {
 	keep: number,
 };
 
+/**
+ *  How far an `in_progress` or `in_review` task's branch has fallen behind its base
+ *  branch, e.g. after a prerequisite was merged into the base.
+ */
+export type BranchFreshness = {
+	/**  The revision counted against: `origin/<base>` when it exists, else `<base>`. */
+	base: string,
+	/**  Commits on the base that the branch does not contain. */
+	behind: number,
+	/**  Why fetching `origin` failed; `behind` is then against the last fetched base. */
+	fetchError: string | null,
+	/**
+	 *  Whether the task's pull request merges without conflicts; `None` without a pull
+	 *  request or when it could not be read.
+	 */
+	mergeable: MergeState | null,
+	/**  Why the pull request could not be read. */
+	mergeableError: string | null,
+};
+
 /**  Branches of a workspace repository a base branch can be picked from. */
 export type BranchList = {
 	/**  Local and `origin` branch names, sorted, without `origin/` prefixes. */
@@ -219,6 +248,9 @@ export type BranchList = {
 	/**  Why fetching `origin` failed; the names are then the ones known locally. */
 	fetchError: string | null,
 };
+
+/**  Combined result of the CI checks of a pull request. */
+export type ChecksStatus = "passing" | "failing" | "pending";
 
 export type CommandError = {
 	kind: CommandErrorKind,
@@ -306,6 +338,12 @@ export type McpTunnel = {
 
 export type McpTunnelState = "connecting" | "open" | "retrying";
 
+/**
+ *  Whether GitHub can merge a pull request into its base without conflicts; `unknown`
+ *  until GitHub has computed it, and for a pull request that is no longer open.
+ */
+export type MergeState = "mergeable" | "conflicting" | "unknown";
+
 /**  A remote machine to append to the user's SSH config. */
 export type NewSshHost = {
 	/**  Name used by `ssh <alias>` and shown as the machine label. */
@@ -330,6 +368,13 @@ export type NewWorkspace = {
 	defaultBaseBranch: string | null,
 };
 
+/**  What a note left on a task records. */
+export type NoteKind = 
+/**  Progress made or a decision taken. */
+"progress" | 
+/**  Something that stops the work until someone acts on it. */
+"blocker";
+
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
 	number: number,
@@ -344,6 +389,14 @@ export type PullRequestSnapshot = {
 	/**  Distinct reviewers other than the author of the pull request. */
 	reviewerCount: number,
 	firstReviewedAt: Timestamp | null,
+};
+
+/**
+ *  The CI or review state of the pull request of an `in_review` task changed; carries
+ *  all of them.
+ */
+export type PullRequestStatusesChanged = {
+	statuses: TaskPullRequestStatus[],
 };
 
 /**  Subdirectories of a directory on a remote machine, for the folder browser. */
@@ -368,6 +421,9 @@ export type ReviewEntry = {
  *  reached in the period, or `worked_on` when it only got commits.
  */
 export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
+
+/**  Where the reviews of a pull request stand. */
+export type ReviewStatus = "approved" | "changes_requested" | "pending";
 
 export type Task = {
 	id: TaskId,
@@ -404,6 +460,8 @@ export type Task = {
 	 */
 	timeline: TaskEvent[],
 	milestones: TaskMilestones,
+	/**  Notes agents left on the task through the MCP server, oldest first. */
+	notes: TaskNote[],
 };
 
 /**
@@ -444,6 +502,25 @@ export type TaskMilestones = {
 	completedAt: Timestamp | null,
 	/**  The latest pause, unless the task was started again after it. */
 	pausedAt: Timestamp | null,
+};
+
+/**  A note an agent left on a task while working on it. */
+export type TaskNote = {
+	kind: NoteKind,
+	/**  Markdown. */
+	body: string,
+	at: Timestamp,
+};
+
+/**
+ *  CI and review state of the open pull request of an `in_review` task, as of the last
+ *  background check.
+ */
+export type TaskPullRequestStatus = {
+	taskId: TaskId,
+	/**  `null` when the pull request has no checks. */
+	checks: ChecksStatus | null,
+	review: ReviewStatus,
 };
 
 /**  How a `done` task ended. */

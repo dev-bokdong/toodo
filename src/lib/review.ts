@@ -475,6 +475,7 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
     for (const { month, count } of summary.completedPerMonth) lines.push(`| ${month} | ${count} |`);
     lines.push("");
   }
+  const { start, end } = periodBounds(period);
   for (const group of groups) {
     lines.push(`## ${outcomeLabels[group.outcome]} (${group.entries.length})`, "");
     for (const { task, at, commits } of group.entries) {
@@ -487,6 +488,11 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
       lines.push(`- [${task.taskType}] ${task.title} (${details.join(", ")})`);
       if (task.completionNote) {
         lines.push(`  - ${notAdopted ? "Conclusion" : "Note"}: ${oneLine(task.completionNote)}`);
+      }
+      for (const note of task.notes) {
+        if (note.at >= start && note.at < end) {
+          lines.push(`  - ${note.kind === "blocker" ? "Blocker" : "Progress"}: ${oneLine(note.body)}`);
+        }
       }
       for (const commit of commits) {
         lines.push(`  - \`${commit.sha.slice(0, 7)}\` ${commitSubject(commit.message)}`);
