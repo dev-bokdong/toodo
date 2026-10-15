@@ -124,15 +124,18 @@ pub fn delete_task(
 }
 
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
-/// self and cyclic edges.
-#[tauri::command]
+/// self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
+/// paused and its herdr workspace closed.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn add_dependency(
     storage: State<'_, StorageState>,
+    herdr: State<'_, HerdrState>,
     task_id: TaskId,
     depends_on: TaskId,
 ) -> CommandResult<()> {
-    Ok(lock(&storage).add_dependency(task_id.into(), depends_on.into())?)
+    super::herdr::add_dependencies(&storage, &herdr, task_id.into(), &[depends_on.into()])?;
+    Ok(())
 }
 
 #[tauri::command]

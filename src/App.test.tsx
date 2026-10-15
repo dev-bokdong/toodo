@@ -1510,6 +1510,70 @@ describe("App", () => {
     });
   });
 
+  it("waits to resume a task in progress that got a prerequisite", async () => {
+    const fix = task(1, 1, "Fix login");
+    const started = task(2, 1, "Verify login", {
+      status: "in_progress",
+      branch: "test/verify-login-2",
+      worktreePath: "D:\\wt\\toodo\\test-verify-login-2",
+      herdrWorkspaceId: "w27",
+      milestones: { ...task(2, 1, "").milestones, plannedAt: 1760000000, startedAt: 1760100000 },
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, started] });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
+    await renderWorkspace();
+
+    const add = await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [fix, { ...started, status: "planned", herdrWorkspaceId: null, dependsOn: [1] }],
+    });
+    fireEvent.change(add, { target: { value: "1" } });
+
+    expect(await screen.findByRole("note", { name: "Waiting prerequisites of #2" })).toHaveTextContent(
+      "Waiting on #1",
+    );
+    expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
+    expect(screen.getByRole("button", { name: "Resume #2" })).toBeDisabled();
+  });
+
+  it("asks before a prerequisite stops the running agent of a task", async () => {
+    const fix = task(1, 1, "Fix login");
+    const started = task(2, 1, "Verify login", {
+      status: "in_progress",
+      branch: "test/verify-login-2",
+      worktreePath: "D:\\wt\\toodo\\test-verify-login-2",
+      herdrWorkspaceId: "w27",
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, started] });
+    mocked.listAgentStatuses.mockResolvedValue([{ taskId: 2, status: "working" }]);
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
+    await renderWorkspace();
+    await screen.findByLabelText("Agent of #2");
+    const add = screen.getByRole("combobox", { name: "Add dependency to #2" });
+
+    fireEvent.change(add, { target: { value: "1" } });
+    const confirmation = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
+    expect(confirmation).toHaveTextContent("Adding #1 as a prerequisite pauses #2");
+    expect(mocked.addDependency).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Back" }));
+    expect(screen.queryByRole("group", { name: "Confirm prerequisite of #2" })).not.toBeInTheDocument();
+    expect(mocked.addDependency).not.toHaveBeenCalled();
+
+    fireEvent.change(add, { target: { value: "1" } });
+    fireEvent.click(
+      within(await screen.findByRole("group", { name: "Confirm prerequisite of #2" })).getByRole("button", {
+        name: "Pause and add",
+      }),
+    );
+    await waitFor(() => expect(mocked.addDependency).toHaveBeenCalledWith(2, 1));
+    await waitFor(() =>
+      expect(screen.queryByRole("group", { name: "Confirm prerequisite of #2" })).not.toBeInTheDocument(),
+    );
+  });
+
   it("pauses a started task, then resumes or deletes it", async () => {
     const started = task(1, 1, "Add login", {
       status: "in_progress",

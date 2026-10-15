@@ -445,6 +445,79 @@ fn a_paused_task_keeps_its_work_and_starts_again_once_its_dependencies_are_done(
 }
 
 #[test]
+fn a_prerequisite_that_is_not_done_pauses_a_task_in_progress() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    let docs = add_task(&mut storage, &workspace, "Docs");
+    set_now(&now, 200);
+    storage.set_task_status(a.id, InProgress).unwrap();
+    let mut started = storage.get_task(a.id).unwrap().unwrap();
+    started.branch = Some("feat/a-1".to_owned());
+    started.herdr_workspace_id = Some("w1".to_owned());
+    storage.update_task(&started).unwrap();
+
+    set_now(&now, 300);
+    let added = storage.add_dependencies(a.id, &[fix.id, docs.id]).unwrap();
+
+    assert!(added.paused);
+    assert_eq!(added.task.status, Planned);
+    assert_eq!(added.task.depends_on, [fix.id, docs.id].into());
+    assert_eq!(added.task.branch.as_deref(), Some("feat/a-1"));
+    assert_eq!(added.task.herdr_workspace_id.as_deref(), Some("w1"));
+    assert_eq!(
+        timeline(&storage, &a),
+        [(Planned, 100), (InProgress, 200), (Planned, 300)]
+    );
+    let cleared = storage.clear_task_herdr_workspace(a.id).unwrap();
+    assert_eq!(cleared.herdr_workspace_id, None);
+    assert_eq!(cleared.branch.as_deref(), Some("feat/a-1"));
+}
+
+#[test]
+fn a_done_prerequisite_or_a_task_in_review_is_not_paused() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let base = add_task(&mut storage, &workspace, "Base");
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    for task in [&base, &a, &b] {
+        storage.set_task_status(task.id, InProgress).unwrap();
+    }
+    storage.set_task_status(base.id, InReview).unwrap();
+    storage.set_task_status(base.id, Done).unwrap();
+    storage.set_task_status(b.id, InReview).unwrap();
+
+    let added = storage.add_dependencies(a.id, &[base.id]).unwrap();
+    assert!(!added.paused);
+    assert_eq!(added.task.status, InProgress);
+    let added = storage.add_dependencies(b.id, &[fix.id]).unwrap();
+    assert!(!added.paused);
+    assert_eq!(added.task.status, InReview);
+}
+
+#[test]
+fn one_rejected_prerequisite_adds_none_and_keeps_the_task_in_progress() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    let follow_up = add_task(&mut storage, &workspace, "Follow-up");
+    storage.add_dependency(follow_up.id, a.id).unwrap();
+    storage.set_task_status(a.id, InProgress).unwrap();
+
+    assert!(matches!(
+        storage.add_dependencies(a.id, &[fix.id, follow_up.id]),
+        Err(StorageError::Dependency(dag::DependencyError::Cycle(_)))
+    ));
+    let a = storage.get_task(a.id).unwrap().unwrap();
+    assert_eq!(a.status, InProgress);
+    assert!(a.depends_on.is_empty());
+}
+
+#[test]
 fn deleting_a_task_releases_its_dependents() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));

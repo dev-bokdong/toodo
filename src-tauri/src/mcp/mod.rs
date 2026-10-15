@@ -27,9 +27,10 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::adapters::herdr::Herdr;
 use crate::commands::events::Notifier;
 use crate::commands::types::Task;
-use crate::commands::{CommandResult, StorageState, lock};
+use crate::commands::{CommandResult, HerdrState, StorageState, lock};
 use crate::domain::model;
 
 pub const PORT: u16 = 47615;
@@ -41,13 +42,24 @@ a task becomes ready only when all tasks it depends on are done.
 
 How to use these tools:
 1. Call current_task with your absolute working directory first. Use its workspace_id \
-for new tasks in the same repository, and its id as a prerequisite of tasks that build \
-on your work. If it finds no task, use list_workspaces to pick the workspace.
+for new tasks in the same repository. If it finds no task, use list_workspaces to pick \
+the workspace.
 2. Before create_task, call list_tasks for that workspace and reuse a matching task \
 instead of creating a duplicate.
-3. Connect prerequisites in one step with create_task's depends_on; use add_dependency \
-and remove_dependency for existing tasks. task_id is the dependent task and depends_on \
-its prerequisite; self and cyclic dependencies are rejected.
+3. A dependency points from a task to the tasks that must be done before it: task_id is \
+the dependent task and depends_on its prerequisites; self and cyclic dependencies are \
+rejected. Decide the direction by what has to finish first:
+   - Work that builds on your task once it is done (a follow-up feature, the next \
+step): create_task with depends_on set to your task's id.
+   - Work your task needs before it can be finished (e.g. fixes found while verifying \
+it): create those tasks without depending on your task, then call add_dependency with \
+task_id = your task and depends_on = all of the new task ids. Never make them depend on \
+your task: your task could then never finish.
+   Adding a prerequisite that is not done to an in_progress task pauses it and closes \
+its herdr workspace, which ends your session; the user resumes the task in the Toodo \
+app once its prerequisites are done. So create every task first, tell the user what \
+you planned and why, and make that add_dependency call last, with all prerequisites \
+in one call. Use remove_dependency to drop an edge.
 4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
 rnd), write a short imperative title, and put details in description.
 5. A tool error says what was rejected; change the arguments instead of retrying them \
@@ -59,11 +71,17 @@ tools.";
 /// What the app needs to serve the tools: the database and a way to announce changes.
 pub trait Backend: Notifier + Send + Sync + 'static {
     fn storage(&self) -> &StorageState;
+    /// For closing the herdr workspace of a task that a new prerequisite pauses.
+    fn herdr(&self) -> &Herdr;
 }
 
 impl Backend for AppHandle {
     fn storage(&self) -> &StorageState {
         self.state::<StorageState>().inner()
+    }
+
+    fn herdr(&self) -> &Herdr {
+        self.state::<HerdrState>().inner()
     }
 }
 
@@ -204,6 +222,10 @@ impl ToodoMcp {
         apply: impl FnOnce(&mut crate::storage::Storage) -> CommandResult<Task>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = apply(&mut lock(self.backend.storage()));
+        self.announce(result)
+    }
+
+    fn announce(&self, result: CommandResult<Task>) -> Result<CallToolResult, ErrorData> {
         if let Ok(task) = &result {
             self.backend
                 .tasks_changed(model::WorkspaceId(task.workspace_id.0));
@@ -253,13 +275,18 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Make task_id depend on depends_on. Rejects self and cyclic dependencies."
+        description = "Make task_id depend on every task in depends_on. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused and its herdr workspace closed."
     )]
     fn add_dependency(
         &self,
-        Parameters(request): Parameters<tools::Dependency>,
+        Parameters(request): Parameters<tools::AddDependencies>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::add_dependency(storage, request))
+        // A paused task's herdr workspace is closed, so the lock is taken inside.
+        self.announce(tools::add_dependencies(
+            self.backend.storage(),
+            self.backend.herdr(),
+            request,
+        ))
     }
 
     #[tool(description = "Remove the dependency of task_id on depends_on.")]
@@ -312,7 +339,7 @@ mod tests {
         assert_eq!(load_token(&path).unwrap(), token);
     }
 
-    struct TestBackend(StorageState);
+    struct TestBackend(StorageState, Herdr);
 
     impl Notifier for TestBackend {
         fn tasks_changed(&self, _: model::WorkspaceId) {}
@@ -322,6 +349,10 @@ mod tests {
     impl Backend for TestBackend {
         fn storage(&self) -> &StorageState {
             &self.0
+        }
+
+        fn herdr(&self) -> &Herdr {
+            &self.1
         }
     }
 
@@ -347,7 +378,10 @@ mod tests {
         let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
         let storage = crate::storage::Storage::open_in_memory().unwrap();
-        let backend = Arc::new(TestBackend(std::sync::Mutex::new(storage)));
+        let herdr = Herdr::new(Box::new(Arc::new(
+            crate::adapters::git::fake::FakeRunner::new([]),
+        )));
+        let backend = Arc::new(TestBackend(std::sync::Mutex::new(storage), herdr));
         tauri::async_runtime::spawn(serve(listener, router(backend, "secret".to_owned())));
 
         assert!(post_initialize(address, "").starts_with("HTTP/1.1 401"));

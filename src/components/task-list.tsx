@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TaskGraph } from "@/components/task-graph";
+import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
@@ -57,7 +58,14 @@ import {
   useWorkspaces,
 } from "@/lib/queries";
 import { pullRequestStats } from "@/lib/review";
-import { dependenciesDone, isNotAdopted, isPaused, type TimelineScale } from "@/lib/task-graph";
+import {
+  dependenciesDone,
+  dependencyEditableStatuses,
+  isNotAdopted,
+  isPaused,
+  stopsRunningAgent,
+  type TimelineScale,
+} from "@/lib/task-graph";
 import {
   emptyTaskFilter,
   isFilterActive,
@@ -407,6 +415,8 @@ function TaskRow({
   const [concluding, setConcluding] = useState(false);
   const [linkingIssue, setLinkingIssue] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
+  // A prerequisite that would stop the running agent, waiting for confirmation.
+  const [confirmingPrerequisite, setConfirmingPrerequisite] = useState<TaskId | null>(null);
   const herdrRunning = herdr.data?.running === true;
   const inReview = task.status === "in_review";
   const active = task.status === "in_progress" || inReview;
@@ -423,7 +433,12 @@ function TaskRow({
   // A rejected delete means the worktree has local changes; offer to discard them.
   const dirtyWorktree =
     removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
-  const dependenciesEditable = task.status === "planned";
+  const dependenciesEditable = dependencyEditableStatuses.includes(task.status);
+  // A paused task resumes once these prerequisites are done.
+  const waitingOn =
+    paused && notAdopted.length === 0
+      ? task.dependsOn.filter((id) => context.byId.get(id)?.status !== "done")
+      : [];
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const actionError =
     startTask.error ??
@@ -533,12 +548,22 @@ function TaskRow({
           {dependenciesEditable && candidates.length > 0 && (
             <select
               aria-label={`Add dependency to #${task.id}`}
+              title={
+                task.status === "in_progress"
+                  ? "A prerequisite that is not done pauses this task and closes its herdr workspace; the worktree is kept"
+                  : undefined
+              }
               className={cn(compactSelectClass, "max-w-48")}
               value=""
               disabled={changingDependencies}
               onChange={(e) => {
                 if (e.target.value) {
-                  addDependency.mutate({ id: task.id, dependsOn: Number(e.target.value) });
+                  const prerequisite = Number(e.target.value);
+                  if (stopsRunningAgent(task, context.byId.get(prerequisite), agentStatus)) {
+                    setConfirmingPrerequisite(prerequisite);
+                  } else {
+                    addDependency.mutate({ id: task.id, dependsOn: prerequisite });
+                  }
                 }
               }}
             >
@@ -556,6 +581,20 @@ function TaskRow({
           )}
         </div>
       )}
+      {confirmingPrerequisite !== null && (
+        <PrerequisiteConfirmation
+          taskId={task.id}
+          prerequisite={taskRef(confirmingPrerequisite, task.workspaceId, context)}
+          pending={addDependency.isPending}
+          onConfirm={() =>
+            addDependency.mutate(
+              { id: task.id, dependsOn: confirmingPrerequisite },
+              { onSettled: () => setConfirmingPrerequisite(null) },
+            )
+          }
+          onCancel={() => setConfirmingPrerequisite(null)}
+        />
+      )}
       {notAdopted.length > 0 && (
         <p
           role="note"
@@ -565,6 +604,15 @@ function TaskRow({
           {notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}{" "}
           {notAdopted.length === 1 ? "was" : "were"} not adopted. Remove the dependency or change the plan to
           start this task.
+        </p>
+      )}
+      {waitingOn.length > 0 && (
+        <p
+          role="note"
+          aria-label={`Waiting prerequisites of #${task.id}`}
+          className="text-xs text-amber-700 dark:text-amber-300"
+        >
+          Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
       )}
       <TaskTimeline task={task} detailed={detailed} />
