@@ -3,8 +3,8 @@
 //!
 //! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
 //! in the app data directory. Agents can read workspaces and tasks, create and edit
-//! tasks, and connect dependencies; starting, completing, and deleting tasks stay in the
-//! app. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
+//! tasks, connect dependencies, and leave progress and blocker notes in a task's history;
+//! starting, completing, and deleting tasks stay in the app. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
 
 mod tools;
 pub mod tunnels;
@@ -28,10 +28,9 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::adapters::herdr::Herdr;
 use crate::commands::events::Notifier;
 use crate::commands::types::Task;
-use crate::commands::{CommandResult, HerdrState, StorageState, lock};
+use crate::commands::{CommandResult, StorageState, lock};
 use crate::domain::model;
 
 pub const PORT: u16 = 47615;
@@ -56,17 +55,25 @@ step): create_task with depends_on set to your task's id.
 it): create those tasks without depending on your task, then call add_dependency with \
 task_id = your task and depends_on = all of the new task ids. Never make them depend on \
 your task: your task could then never finish.
-   Adding a prerequisite that is not done to an in_progress task pauses it and closes \
-its herdr workspace, which ends your session; the user resumes the task in the Toodo \
-app once its prerequisites are done. So create every task first, tell the user what \
-you planned and why, and make that add_dependency call last, with all prerequisites \
-in one call. Use remove_dependency to drop an edge.
+   Adding a prerequisite that is not done to an in_progress task pauses it. Its herdr \
+workspace stays open, and the Toodo app asks the user whether to close it, which ends \
+your session; the user resumes the task in the app once its prerequisites are done. So \
+create every task first, tell the user what you planned and why, make that \
+add_dependency call last, with all prerequisites in one call, and stop working on the \
+task after it. Use remove_dependency to drop an edge.
 4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
 rnd), write a short imperative title, and put details in description. Write the \
 description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
 issue body): short paragraphs, `-` lists, `- [ ]` task lists for acceptance criteria, \
 backticks for code, paths, and commands, fenced code blocks, and links; no raw HTML.
-5. A tool error says what was rejected; change the arguments instead of retrying them \
+5. Leave a record of your work on your task as you go; it feeds the user's reviews of \
+their work. Call add_progress_note when you take a decision worth remembering (the choice \
+and why, e.g. a library or approach over its alternatives) or finish a meaningful step, \
+and report_blocker when something stops you that needs the user or someone else (missing \
+access, an unclear requirement, a failing dependency), saying what you need. Write one \
+or two Markdown sentences per note; skip routine steps such as running tests or small \
+edits. Neither tool changes the task's status.
+6. A tool error says what was rejected; change the arguments instead of retrying them \
 unchanged.
 
 Starting, completing, and deleting tasks happen in the Toodo app, not through these \
@@ -75,17 +82,11 @@ tools.";
 /// What the app needs to serve the tools: the database and a way to announce changes.
 pub trait Backend: Notifier + Send + Sync + 'static {
     fn storage(&self) -> &StorageState;
-    /// For closing the herdr workspace of a task that a new prerequisite pauses.
-    fn herdr(&self) -> &Herdr;
 }
 
 impl Backend for AppHandle {
     fn storage(&self) -> &StorageState {
         self.state::<StorageState>().inner()
-    }
-
-    fn herdr(&self) -> &Herdr {
-        self.state::<HerdrState>().inner()
     }
 }
 
@@ -279,18 +280,33 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Make task_id depend on every task in depends_on. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused and its herdr workspace closed."
+        description = "Make task_id depend on every task in depends_on. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session."
     )]
     fn add_dependency(
         &self,
         Parameters(request): Parameters<tools::AddDependencies>,
     ) -> Result<CallToolResult, ErrorData> {
-        // A paused task's herdr workspace is closed, so the lock is taken inside.
-        self.announce(tools::add_dependencies(
-            self.backend.storage(),
-            self.backend.herdr(),
-            request,
-        ))
+        self.change(|storage| tools::add_dependencies(storage, request))
+    }
+
+    #[tool(
+        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Returns the task with its notes."
+    )]
+    fn add_progress_note(
+        &self,
+        Parameters(request): Parameters<tools::AddNote>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::add_note(storage, model::NoteKind::Progress, request))
+    }
+
+    #[tool(
+        description = "Record on a task's history what blocks the work on it and what is needed to continue. Does not change the task's status. Returns the task with its notes."
+    )]
+    fn report_blocker(
+        &self,
+        Parameters(request): Parameters<tools::AddNote>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::add_note(storage, model::NoteKind::Blocker, request))
     }
 
     #[tool(description = "Remove the dependency of task_id on depends_on.")]
@@ -343,20 +359,21 @@ mod tests {
         assert_eq!(load_token(&path).unwrap(), token);
     }
 
-    struct TestBackend(StorageState, Herdr);
+    struct TestBackend(StorageState);
 
     impl Notifier for TestBackend {
         fn tasks_changed(&self, _: model::WorkspaceId) {}
         fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
+        fn pull_request_statuses_changed(
+            &self,
+            _: &[crate::commands::types::TaskPullRequestStatus],
+        ) {
+        }
     }
 
     impl Backend for TestBackend {
         fn storage(&self) -> &StorageState {
             &self.0
-        }
-
-        fn herdr(&self) -> &Herdr {
-            &self.1
         }
     }
 
@@ -382,10 +399,7 @@ mod tests {
         let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
         let storage = crate::storage::Storage::open_in_memory().unwrap();
-        let herdr = Herdr::new(Box::new(Arc::new(
-            crate::adapters::git::fake::FakeRunner::new([]),
-        )));
-        let backend = Arc::new(TestBackend(std::sync::Mutex::new(storage), herdr));
+        let backend = Arc::new(TestBackend(std::sync::Mutex::new(storage)));
         tauri::async_runtime::spawn(serve(listener, router(backend, "secret".to_owned())));
 
         assert!(post_initialize(address, "").starts_with("HTTP/1.1 401"));

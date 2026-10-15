@@ -1,5 +1,5 @@
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import type { AgentStatus, Task, TaskAgentStatus } from "@/lib/bindings";
+import type { AgentStatus, Task, TaskAgentStatus, TaskPullRequestStatus } from "@/lib/bindings";
 
 export type AgentAlert = { title: string; body: string };
 
@@ -32,6 +32,53 @@ export function agentAlerts(
     const task = tasks.find((candidate) => candidate.id === taskId);
     const title = alertTitles[status] ?? "Agent status changed";
     return [{ title, body: task ? `#${taskId} ${task.title}` : `#${taskId}` }];
+  });
+}
+
+/**
+ * Alerts for tasks that were in progress and are now paused on a prerequisite that is not
+ * done, with their herdr workspace still open: an agent added the prerequisite through MCP,
+ * and the user decides in the app whether to close the workspace.
+ */
+export function pausedAlerts(previous: readonly Task[], next: readonly Task[]): AgentAlert[] {
+  const before = new Map(previous.map((task) => [task.id, task.status]));
+  const byId = new Map(next.map((task) => [task.id, task]));
+  return next.flatMap((task) => {
+    const blocked = task.dependsOn.some((id) => byId.get(id)?.status !== "done");
+    const pausedNow = before.get(task.id) === "in_progress" && task.status === "planned";
+    if (!pausedNow || task.herdrWorkspaceId === null || !blocked) {
+      return [];
+    }
+    return [{ title: "Task paused by a new prerequisite", body: `#${task.id} ${task.title}: close its herdr workspace?` }];
+  });
+}
+
+/**
+ * Alerts for the pull requests that started needing the user: CI that started failing,
+ * or a reviewer who requested changes. A pull request seen for the first time raises no
+ * alert, as with agents, so nothing fires for every failing pull request at startup.
+ */
+export function pullRequestAlerts(
+  previous: readonly TaskPullRequestStatus[],
+  next: readonly TaskPullRequestStatus[],
+  tasks: readonly Task[],
+): AgentAlert[] {
+  const before = new Map(previous.map((entry) => [entry.taskId, entry]));
+  return next.flatMap(({ taskId, checks, review }) => {
+    const was = before.get(taskId);
+    if (was === undefined) {
+      return [];
+    }
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    const body = task ? `#${taskId} ${task.title}` : `#${taskId}`;
+    const alerts: AgentAlert[] = [];
+    if (checks === "failing" && was.checks !== "failing") {
+      alerts.push({ title: "CI failed", body });
+    }
+    if (review === "changes_requested" && was.review !== "changes_requested") {
+      alerts.push({ title: "Changes requested", body });
+    }
+    return alerts;
   });
 }
 

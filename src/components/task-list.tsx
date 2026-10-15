@@ -24,15 +24,19 @@ import { TaskGraph } from "@/components/task-graph";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
+import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
-import type { Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
+import type { NoteKind, Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
   IssueLinkFailure,
   machineOf,
   useAddDependency,
   useAgentStatuses,
+  useCloseTaskWorkspace,
+  useBranchFreshness,
+  usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
   useConcludeTask,
@@ -104,14 +108,14 @@ function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
 
 const statusStyles: Record<TaskStatus, string> = {
   planned: "bg-muted text-muted-foreground",
-  in_progress: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
+  in_progress: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
   in_review: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
 };
 
 const notAdoptedStyle = "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200";
 
-const readyStyle = "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
+const readyStyle = "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200";
 
 function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   switch (shownStatus(task, byId)) {
@@ -416,6 +420,7 @@ function TaskRow({
 }) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
+  const pullRequestStatuses = usePullRequestStatuses();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
   const refreshCommits = useRefreshCommitRecords();
@@ -426,7 +431,10 @@ function TaskRow({
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const restoreWorktree = useRestoreTaskWorktree();
+  const closeWorkspace = useCloseTaskWorkspace();
   const [editing, setEditing] = useState(false);
+  // The user chose to keep the herdr workspace of this paused task open for now.
+  const [keepingWorkspace, setKeepingWorkspace] = useState(false);
   const [concluding, setConcluding] = useState(false);
   const [linkingIssue, setLinkingIssue] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
@@ -437,6 +445,9 @@ function TaskRow({
   const active = task.status === "in_progress" || inReview;
   const hasWorktree = active && task.worktreePath !== null;
   const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
+  const pullRequestStatus = inReview
+    ? pullRequestStatuses.data?.find((entry) => entry.taskId === task.id)
+    : undefined;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
   const paused = isPaused(task);
@@ -464,6 +475,7 @@ function TaskRow({
     pauseTask.error ??
     deleteTask.error ??
     restoreWorktree.error ??
+    closeWorkspace.error ??
     addDependency.error ??
     removeDependency.error;
   const candidates = tasks.filter(
@@ -501,15 +513,7 @@ function TaskRow({
                 {task.title}
               </span>
             )}
-            {final && task.completionNote === null && (
-              <span
-                aria-label={`#${task.id} needs a completion note`}
-                title="Write what this task achieved; reviews include the note"
-                className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200"
-              >
-                Needs note
-              </span>
-            )}
+            {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
           {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}
@@ -630,6 +634,16 @@ function TaskRow({
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
       )}
+      {paused && waitingOn.length > 0 && task.herdrWorkspaceId !== null && (
+        <OpenWorkspaceNote
+          taskId={task.id}
+          collapsed={keepingWorkspace}
+          disabled={!herdrRunning || closeWorkspace.isPending}
+          onClose={() => closeWorkspace.mutate(task.id)}
+          onKeep={() => setKeepingWorkspace(true)}
+        />
+      )}
+      {hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       <TaskTimeline task={task} detailed={detailed} />
       {detailed && task.branch && (
         <DetailField label="Branch">
@@ -679,6 +693,7 @@ function TaskRow({
         <TaskIssue task={task} detailed={detailed} linking={linkingIssue} onDone={() => setLinkingIssue(false)} />
       )}
       <CommitList task={task} detailed={detailed} />
+      <TaskNotes task={task} detailed={detailed} />
       {final && !editing && <CompletionNote task={task} />}
       {actionError && (
         <p role="alert" className="text-xs text-destructive">
@@ -872,6 +887,52 @@ function TaskRow({
 }
 
 /** The status of `task` as a pill with a colored dot. */
+/** Warns when a started task's branch is behind its base, e.g. after a prerequisite was merged. */
+function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
+  const freshness = useBranchFreshness(taskId, true);
+  const label = `Base freshness of #${taskId}`;
+  if (freshness.error) {
+    return (
+      <p role="note" aria-label={label} className="text-xs text-muted-foreground" title={freshness.error.message}>
+        Could not check whether the branch is behind its base
+      </p>
+    );
+  }
+  const data = freshness.data;
+  const conflicting = data?.mergeable === "conflicting";
+  if (!data || (data.behind === 0 && !conflicting)) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (data.behind > 0) {
+    parts.push(`${data.behind} ${data.behind === 1 ? "commit" : "commits"} behind ${data.base}`);
+  }
+  if (conflicting) {
+    parts.push("pull request has merge conflicts");
+  } else if (data.mergeable === "mergeable") {
+    parts.push("no merge conflicts");
+  }
+  return (
+    <p
+      role="note"
+      aria-label={label}
+      data-conflicting={conflicting || undefined}
+      className={cn(
+        "text-xs",
+        conflicting ? "text-rose-700 dark:text-rose-300" : "text-amber-700 dark:text-amber-300",
+      )}
+      title={
+        [data.fetchError && `Fetching origin failed: ${data.fetchError}`, data.mergeableError]
+          .filter(Boolean)
+          .join("\n") || undefined
+      }
+    >
+      {parts.join("; ")}
+      {data.fetchError && " (not up to date: fetching origin failed)"}
+    </p>
+  );
+}
+
 function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
   return (
     <span
@@ -993,7 +1054,7 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
 }
 
 /** The completion note of a done task, which reviews include, or a button to write one. */
-export function CompletionNote({ task }: { task: Task }) {
+function CompletionNote({ task }: { task: Task }) {
   const setNote = useSetCompletionNote();
   const [editing, setEditing] = useState(false);
   const [note, setNoteText] = useState("");
@@ -1177,6 +1238,65 @@ function TaskIssue({
   );
 }
 
+/**
+ * Asks whether to close the herdr workspace that a task paused on a new prerequisite still
+ * has, e.g. because an agent added the prerequisite through MCP. Collapsed after "Keep
+ * open", it still offers to close it.
+ */
+function OpenWorkspaceNote({
+  taskId,
+  collapsed,
+  disabled,
+  onClose,
+  onKeep,
+}: {
+  taskId: TaskId;
+  collapsed: boolean;
+  disabled: boolean;
+  onClose: () => void;
+  onKeep: () => void;
+}) {
+  const close = (
+    <Button
+      size="xs"
+      variant="outline"
+      aria-label={`Close herdr workspace of #${taskId}`}
+      title="Close the herdr workspace, which ends its agent session; the worktree is kept"
+      disabled={disabled}
+      onClick={onClose}
+    >
+      <X />
+      Close workspace
+    </Button>
+  );
+  if (collapsed) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>herdr workspace still open</span>
+        {close}
+      </div>
+    );
+  }
+  return (
+    <div
+      role="group"
+      aria-label={`Herdr workspace of paused #${taskId}`}
+      className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
+    >
+      <p>
+        Paused for a new prerequisite, but its herdr workspace is still open. Close it? This ends its agent
+        session; the worktree is kept for resuming.
+      </p>
+      <div className="flex gap-2">
+        {close}
+        <Button size="xs" variant="ghost" aria-label={`Keep herdr workspace of #${taskId} open`} onClick={onKeep}>
+          Keep open
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** A labeled block of the task details sheet. */
 function DetailField({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -1212,6 +1332,70 @@ function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
     </ul>
   );
   return detailed ? <DetailField label={`Commits (${commits.data.length})`}>{list}</DetailField> : list;
+}
+
+const noteKindLabels: Record<NoteKind, string> = { progress: "Progress", blocker: "Blocker" };
+
+function NoteKindBadge({ kind }: { kind: NoteKind }) {
+  return (
+    <span
+      data-note-kind={kind}
+      className={cn(
+        "shrink-0 rounded-md px-1.5 font-medium",
+        kind === "blocker"
+          ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {noteKindLabels[kind]}
+    </span>
+  );
+}
+
+/**
+ * Notes agents left on the task through the MCP server: all of them in the details sheet,
+ * the latest one in a list row.
+ */
+function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
+  const notes = task.notes;
+  if (notes.length === 0) {
+    return null;
+  }
+  if (!detailed) {
+    const latest = notes[notes.length - 1];
+    return (
+      <p
+        aria-label={`Latest note of #${task.id}`}
+        className="flex min-w-0 items-center gap-1.5 text-xs"
+        title={new Date(latest.at * 1000).toLocaleString()}
+      >
+        <NoteKindBadge kind={latest.kind} />
+        <span className="min-w-0 truncate text-muted-foreground">{markdownPreview(latest.body)}</span>
+        {notes.length > 1 && (
+          <span className="shrink-0 text-muted-foreground">{`+${notes.length - 1} more`}</span>
+        )}
+      </p>
+    );
+  }
+  return (
+    <DetailField label={`Notes (${notes.length})`}>
+      <ol aria-label={`Notes of #${task.id}`} className="flex flex-col gap-2">
+        {notes.map((note, index) => (
+          <li key={index} className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <NoteKindBadge kind={note.kind} />
+              <time className="text-muted-foreground" dateTime={new Date(note.at * 1000).toISOString()}>
+                {new Date(note.at * 1000).toLocaleString()}
+              </time>
+            </div>
+            <Suspense fallback={<p className="whitespace-pre-line break-words">{note.body}</p>}>
+              <Markdown source={note.body} />
+            </Suspense>
+          </li>
+        ))}
+      </ol>
+    </DetailField>
+  );
 }
 
 /** A dashed placeholder for a list with nothing in it yet. */

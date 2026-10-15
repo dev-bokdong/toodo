@@ -29,9 +29,13 @@ Work found while a task is in progress that the task needs before it can finish,
 fixes found while verifying it, becomes a **prerequisite** of that task, never a
 dependent: the task cannot finish before the fixes, so the fixes must not wait for it.
 Adding a prerequisite that is not done to an `in_progress` task, in the app or by an agent
-through MCP, pauses the task in the same step and closes its herdr workspace; the worktree
-and branch stay. The app always asks for confirmation first ("Pause and add"), whatever the
-state of the task's agent, since closing the workspace stops it. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
+through MCP, pauses the task in the same step; the worktree and branch stay. In the app,
+Toodo asks for confirmation first ("Pause and add"), whatever the state of the task's
+agent, and then closes its herdr workspace, since that stops the agent. An agent's
+`add_dependency` cannot wait for that answer, so it leaves the workspace open: the paused
+task then asks whether to close it ("Close workspace" or "Keep open", after which a small
+"Close workspace" button stays), and a desktop notification tells the user when the app
+is in the background. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
 until those prerequisites are done; resuming opens the kept worktree in herdr again. If
 herdr fails to close the workspace, the task stays paused and the error says so.
 
@@ -136,6 +140,17 @@ origin/<branch>` recreates it from `origin`; if neither exists, the restore is
 rejected. The directory follows the current task title, and the status, commit
 records, and pull request stay as they were.
 
+While a task is `in_progress` or `in_review` and has a worktree, Toodo warns when its
+branch has fallen behind the base branch, which the DAG makes common: a prerequisite
+is merged into the base while its dependent still builds on the older base. In the
+worktree it fetches `origin <baseBranch>` and counts `git rev-list --count
+<taskBranch>..origin/<baseBranch>` (`<baseBranch>` without an `origin`); a failed fetch
+counts against the last fetched base and says so. A task with a pull request also
+shows whether GitHub can merge it without conflicts (`gh pr view <url> --json
+mergeable`). The check reruns every five minutes and whenever tasks change in the
+background, e.g. when a prerequisite's pull request is merged. Toodo only warns; it
+never rebases or merges the branch.
+
 ### 5. Record commits
 
 Toodo reads the commits on the task branch that are not on the base branch
@@ -220,11 +235,11 @@ check. A branch without a pull request, or with a closed one only, leaves the ta
 until it changes.
 
 Completion never waits for the user: dependents start as soon as the work is on the base
-branch, and `completedAt` stays the time of the merge check. Instead, a `done` task
-without a completion note is marked "Needs note" in the task list, where the user writes
-what the work achieved (the `set_completion_note` command; only `done` tasks have one,
-and an empty note clears it). The review counts completed tasks without a note so they
-can be filled in before a report is written.
+branch, and `completedAt` stays the time of the merge check. A completion note is
+optional, since the task description already says what the work is: the user may add one
+to a `done` task in the task list to record what the work achieved (the
+`set_completion_note` command; only `done` tasks have one, and an empty note clears it),
+and reports include it.
 
 The worktree stays until the task is deleted (step 8).
 

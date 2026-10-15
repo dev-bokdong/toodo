@@ -50,12 +50,19 @@ Installed copies update themselves: on startup (and every six hours) Toodo check
 
 To publish a release:
 
-1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and
-   `package.json` to the same value, e.g. `0.2.0`, and commit.
-2. Push a matching tag: `git tag v0.2.0 && git push origin v0.2.0`.
-3. The `Release` workflow (`.github/workflows/release.yml`) builds the MSI and NSIS
-   installers on Windows, signs the updater artifacts, and publishes a GitHub release with
-   `latest.json` (pointing at the NSIS installer).
+1. On `dev`, run `npm run bump <major|minor|patch|X.Y.Z>`. It sets the same version in
+   `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`,
+   `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`. Commit it as `Release X.Y.Z`.
+2. Open a pull request from `dev` to `main` and merge it.
+3. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
+   releases the version in `src-tauri/tauri.conf.json` unless it is already published:
+   it builds the MSI and NSIS installers on Windows, signs the updater artifacts, tags the
+   `main` commit `vX.Y.Z`, and publishes a GitHub release with `latest.json` (pointing at
+   the NSIS installer). A push to `main` without a version bump does nothing.
+
+Releases run from `main` rather than from tags so the Rust build cache of one release is
+reused by the next. If a release fails, run the `Release` workflow by hand on `main`; it
+completes a release whose `latest.json` was not uploaded yet.
 
 Updater artifacts are signed with a minisign key; the public key is in
 `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). The workflow reads the private key

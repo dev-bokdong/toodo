@@ -14,12 +14,13 @@ import {
   type TaskAgentStatus,
   type TaskEdit,
   type TaskId,
+  type TaskPullRequestStatus,
   type Timestamp,
   type Workspace,
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
-import { agentAlerts, notify } from "@/lib/agent-alerts";
+import { agentAlerts, notify, pausedAlerts, pullRequestAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
 
@@ -47,9 +48,11 @@ export const queryKeys = {
   tasks: ["task-list"] as const,
   herdrStatus: ["herdr-status"] as const,
   agentStatuses: ["agent-statuses"] as const,
+  pullRequestStatuses: ["pull-request-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
   branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
+  branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
   herdrMachines: ["herdr-machines"] as const,
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
@@ -204,6 +207,21 @@ export function useWorkspaceBranches(workspace: WorkspaceId, enabled: boolean) {
   });
 }
 
+/**
+ * How far a started task's branch is behind its base and whether its pull request conflicts.
+ * Each check fetches the base from origin, so it runs every few minutes rather than on every render.
+ */
+export function useBranchFreshness(taskId: TaskId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.branchFreshness(taskId),
+    queryFn: () => unwrap(commands.branchFreshness(taskId)),
+    enabled,
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    retry: false,
+  });
+}
+
 /** Creates a branch from an existing one, pushes it, and makes it the workspace base. */
 export function useCreateBaseBranch() {
   const queryClient = useQueryClient();
@@ -270,31 +288,61 @@ export function useAgentStatuses() {
   });
 }
 
-/** Applies the changes the backend reports from herdr events while the app is mounted. */
+/** CI and review state of the pull request of each `in_review` task; kept current by `useHerdrEvents`. */
+export function usePullRequestStatuses() {
+  return useQuery({
+    queryKey: queryKeys.pullRequestStatuses,
+    queryFn: () => commands.listPullRequestStatuses(),
+  });
+}
+
+/** Applies the changes the backend reports from herdr events and pull request checks while the app is mounted. */
 export function useHerdrEvents() {
   const queryClient = useQueryClient();
   useEffect(() => {
+    /**
+     * Stores `next` under `key` and notifies the alerts `alerts` finds against the previous
+     * snapshot. Without a previous snapshot nothing is known to have changed. The app being
+     * in focus means the user already sees the change on the task.
+     */
+    function update<T>(
+      key: readonly string[],
+      next: T[],
+      alerts: (previous: T[], next: T[], tasks: Task[]) => AgentAlert[],
+    ) {
+      const previous = queryClient.getQueryData<T[]>(key);
+      queryClient.setQueryData(key, next);
+      if (previous === undefined || document.hasFocus()) {
+        return;
+      }
+      const tasks = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+      notify(alerts(previous, next, tasks)).catch((error: unknown) =>
+        console.error("toodo: failed to show notifications", error),
+      );
+    }
+
     const subscriptions = [
-      events.tasksChanged.listen(() =>
-        Promise.all([
+      events.tasksChanged.listen(async () => {
+        const previous = queryClient.getQueryData<Task[]>(queryKeys.tasks);
+        await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
           // A task completed in the background got the commits of its pull request.
           queryClient.invalidateQueries({ queryKey: ["tasks"] }),
-        ]),
-      ),
-      events.agentStatusesChanged.listen(({ payload }) => {
-        const previous = queryClient.getQueryData<TaskAgentStatus[]>(queryKeys.agentStatuses);
-        queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses);
-        // Without a previous snapshot nothing is known to have changed. The app being
-        // in focus means the user already sees the new status on the task.
+        ]);
         if (previous === undefined || document.hasFocus()) {
           return;
         }
-        const tasks = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
-        notify(agentAlerts(previous, payload.statuses, tasks)).catch((error: unknown) =>
-          console.error("toodo: failed to show agent notifications", error),
+        const next = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+        notify(pausedAlerts(previous, next)).catch((error: unknown) =>
+          console.error("toodo: failed to show pause notifications", error),
         );
       }),
+      events.agentStatusesChanged.listen(({ payload }) =>
+        update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
+      ),
+      events.pullRequestStatusesChanged.listen(({ payload }) =>
+        update<TaskPullRequestStatus>(queryKeys.pullRequestStatuses, payload.statuses, pullRequestAlerts),
+      ),
     ];
     return () => {
       for (const subscription of subscriptions) {
@@ -437,6 +485,11 @@ function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
 /** Pauses a started task: it becomes planned again and keeps its branch and worktree. */
 export function usePauseTask() {
   return useTasksMutation((id: TaskId) => unwrap(commands.pauseTask(id)));
+}
+
+/** Closes the herdr workspace of a paused task; its worktree is kept for resuming. */
+export function useCloseTaskWorkspace() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.closeTaskWorkspace(id)));
 }
 
 /** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */

@@ -92,7 +92,7 @@ const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", w
 const phaseStyles: Record<TimelinePhase, string> = {
   in_progress: "bg-blue-500",
   in_review: "bg-violet-500",
-  paused: "bg-muted-foreground/30",
+  paused: "bg-neutral-400",
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
@@ -105,7 +105,7 @@ const phaseLabels: Record<TimelinePhase, string> = {
 const doneBarStyle = "border-emerald-500 bg-emerald-100 dark:bg-emerald-950";
 
 /** A task not started yet whose prerequisites are all done is drawn solid; one still blocked, dashed. */
-const readyBarStyle = "border-sky-500 shadow-none";
+const readyBarStyle = "border-amber-500 shadow-none";
 
 const pad = (value: number) => String(value).padStart(2, "0");
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { agentAlerts } from "@/lib/agent-alerts";
-import type { Task } from "@/lib/bindings";
+import { agentAlerts, pausedAlerts, pullRequestAlerts } from "@/lib/agent-alerts";
+import type { Task, TaskPullRequestStatus } from "@/lib/bindings";
 
 const tasks = [{ id: 1, title: "Add login" }, { id: 2, title: "Add logout" }] as Task[];
 
@@ -52,5 +52,66 @@ describe("agentAlerts", () => {
     expect(agentAlerts([{ taskId: 9, status: "working" }], [{ taskId: 9, status: "blocked" }], tasks)).toEqual([
       { title: "Agent needs input", body: "#9" },
     ]);
+  });
+});
+
+describe("pausedAlerts", () => {
+  const fix = { id: 1, title: "Fix login", status: "planned", dependsOn: [], herdrWorkspaceId: null } as unknown as Task;
+  const started = {
+    id: 2,
+    title: "Verify login",
+    status: "in_progress",
+    dependsOn: [],
+    herdrWorkspaceId: "w27",
+  } as unknown as Task;
+  const paused = { ...started, status: "planned", dependsOn: [1] } as Task;
+
+  it("alerts when a started task is paused on a prerequisite with its workspace open", () => {
+    expect(pausedAlerts([fix, started], [fix, paused])).toEqual([
+      { title: "Task paused by a new prerequisite", body: "#2 Verify login: close its herdr workspace?" },
+    ]);
+  });
+
+  it("stays quiet for closed workspaces, done prerequisites, hand pauses, and unchanged tasks", () => {
+    expect(pausedAlerts([fix, started], [fix, { ...paused, herdrWorkspaceId: null }])).toEqual([]);
+    expect(pausedAlerts([fix, started], [{ ...fix, status: "done" }, paused])).toEqual([]);
+    expect(pausedAlerts([fix, started], [fix, { ...started, status: "planned" }])).toEqual([]);
+    expect(pausedAlerts([fix, paused], [fix, paused])).toEqual([]);
+  });
+});
+
+describe("pullRequestAlerts", () => {
+  const status = (
+    taskId: number,
+    checks: TaskPullRequestStatus["checks"],
+    review: TaskPullRequestStatus["review"],
+  ): TaskPullRequestStatus => ({ taskId, checks, review });
+
+  it("alerts when CI starts failing or a reviewer requests changes", () => {
+    expect(
+      pullRequestAlerts(
+        [status(1, "pending", "pending"), status(2, null, "approved")],
+        [status(1, "failing", "changes_requested"), status(2, null, "changes_requested")],
+        tasks,
+      ),
+    ).toEqual([
+      { title: "CI failed", body: "#1 Add login" },
+      { title: "Changes requested", body: "#1 Add login" },
+      { title: "Changes requested", body: "#2 Add logout" },
+    ]);
+  });
+
+  it("stays quiet for unchanged, recovering, or newly seen pull requests", () => {
+    expect(
+      pullRequestAlerts(
+        [status(1, "failing", "changes_requested"), status(2, "failing", "pending")],
+        [
+          status(1, "failing", "changes_requested"),
+          status(2, "passing", "approved"),
+          status(3, "failing", "changes_requested"),
+        ],
+        tasks,
+      ),
+    ).toEqual([]);
   });
 });

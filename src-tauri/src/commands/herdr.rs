@@ -47,6 +47,19 @@ pub fn open_task_in_herdr(
     open(&storage, &herdr, id.into())
 }
 
+/// Closes the herdr workspace of a paused task, e.g. one that an agent paused through
+/// MCP by adding a prerequisite, which leaves the workspace open for the user to decide.
+/// The worktree is kept. Tasks that are worked on are rejected.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn close_task_workspace(
+    storage: State<'_, StorageState>,
+    herdr: State<'_, HerdrState>,
+    id: TaskId,
+) -> CommandResult<Task> {
+    Ok((&close_workspace(&storage, &herdr, id.into())?).into())
+}
+
 /// Checks out the branch of an `in_progress` or `in_review` task that lost its worktree,
 /// e.g. because it was removed in herdr, into a new worktree opened in herdr. The branch
 /// is taken from `origin` when the repository no longer has it.
@@ -313,41 +326,61 @@ fn remove_worktree(
     Ok(lock(storage).clear_task_worktree(id)?)
 }
 
-/// Makes `id` depend on every task of `depends_on`, for the app and for agents through
-/// MCP. An `in_progress` task that a new prerequisite blocks is paused and its herdr
-/// workspace closed, keeping the worktree, so resuming it opens the worktree again once
-/// the prerequisites are done. If closing fails, the task stays paused and the error
-/// says so.
-pub(crate) fn add_dependencies(
+/// Makes `id` depend on every task of `depends_on` for the app, where the user already
+/// confirmed the pause. An `in_progress` task that a new prerequisite blocks is paused and
+/// its herdr workspace closed like [`close_workspace`], keeping the worktree, so resuming
+/// it opens the worktree again once the prerequisites are done. If closing fails, the
+/// task stays paused and the error says so.
+pub(super) fn add_dependencies(
     storage: &StorageState,
     herdr: &Herdr,
     id: model::TaskId,
     depends_on: &[model::TaskId],
 ) -> CommandResult<model::Task> {
-    let (added, location) = {
-        let mut storage = lock(storage);
-        let added = storage.add_dependencies(id, depends_on)?;
+    let added = lock(storage).add_dependencies(id, depends_on)?;
+    if !added.paused || added.task.herdr_workspace_id.is_none() {
+        return Ok(added.task);
+    }
+    close_workspace(storage, herdr, id).map_err(|mut error| {
+        error.message = format!(
+            "task {id} was paused, but its herdr workspace was not closed: {}",
+            error.message
+        );
+        error
+    })
+}
+
+/// Closes the herdr workspace of a `planned` (paused) task and forgets it; the worktree
+/// is kept, so resuming the task opens it again. A task without a workspace is returned
+/// as is.
+fn close_workspace(
+    storage: &StorageState,
+    herdr: &Herdr,
+    id: model::TaskId,
+) -> CommandResult<model::Task> {
+    let (location, workspace_id) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        if task.status != TaskStatus::Planned {
+            return Err(CommandError::rejected(format!(
+                "task {id} is being worked on; pause it before closing its herdr workspace"
+            )));
+        }
+        let Some(workspace_id) = task.herdr_workspace_id else {
+            return Ok(task);
+        };
         let workspace = storage
-            .get_workspace(added.task.workspace_id)?
-            .ok_or(StorageError::WorkspaceNotFound(added.task.workspace_id))?;
-        (added, workspace.location)
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        (workspace.location, workspace_id)
     };
-    let workspace_id = match (&added.task.herdr_workspace_id, added.paused) {
-        (Some(workspace_id), true) => workspace_id,
-        _ => return Ok(added.task),
-    };
-    match herdr.close_workspace(&location.machine(), workspace_id) {
+    match herdr.close_workspace(&location.machine(), &workspace_id) {
         Ok(()) => {}
         // Already closed, e.g. by the user.
         Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
-        Err(error) => {
-            let mut error = CommandError::from(error);
-            error.message = format!(
-                "task {id} was paused, but its herdr workspace was not closed: {}",
-                error.message
-            );
-            return Err(error);
-        }
+        Err(error) => return Err(error.into()),
     }
     Ok(lock(storage).clear_task_herdr_workspace(id)?)
 }
@@ -1133,5 +1166,58 @@ mod tests {
 
         assert_eq!(stored(&fixture).status, TaskStatus::InProgress);
         assert_eq!(invocations(&runner).len(), 1);
+    }
+
+    /// A started task paused without closing its herdr workspace w27, as MCP leaves it.
+    fn paused_with_workspace(
+        results: Vec<Result<String, GitError>>,
+    ) -> (Fixture, Herdr, Arc<FakeRunner>) {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr([vec![Ok(CREATED.to_owned())], results].concat());
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+        lock(&fixture.storage)
+            .set_task_status(fixture.task.id, TaskStatus::Planned)
+            .unwrap();
+        (fixture, herdr, runner)
+    }
+
+    #[test]
+    fn closing_the_workspace_of_a_paused_task_keeps_its_worktree() {
+        let (fixture, herdr, runner) = paused_with_workspace(vec![Ok(
+            r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#.to_owned(),
+        )]);
+
+        let closed = close_workspace(&fixture.storage, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(
+            invocations(&runner)[1].args,
+            ["workspace", "close", "w27"].map(str::to_owned)
+        );
+        assert_eq!(closed.status, TaskStatus::Planned);
+        assert_eq!(closed.herdr_workspace_id, None);
+        assert!(closed.worktree_path.is_some());
+        assert_eq!(stored(&fixture), closed);
+    }
+
+    #[test]
+    fn a_workspace_already_closed_in_herdr_is_forgotten() {
+        let (fixture, herdr, _) = paused_with_workspace(vec![herdr_failed("workspace_not_found")]);
+
+        let closed = close_workspace(&fixture.storage, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(closed.herdr_workspace_id, None);
+    }
+
+    #[test]
+    fn the_workspace_of_a_task_being_worked_on_is_not_closed() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        let error = close_workspace(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert_eq!(invocations(&runner).len(), 1);
+        assert_eq!(stored(&fixture).herdr_workspace_id.as_deref(), Some("w27"));
     }
 }

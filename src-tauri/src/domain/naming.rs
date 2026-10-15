@@ -113,6 +113,7 @@ mod tests {
             completion_note: None,
             issue: None,
             timeline: Vec::new(),
+            notes: Vec::new(),
         }
     }
 

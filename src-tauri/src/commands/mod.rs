@@ -4,6 +4,7 @@
 pub mod backup;
 pub mod completion;
 pub mod events;
+pub mod freshness;
 pub mod herdr;
 pub mod issues;
 pub mod machines;
