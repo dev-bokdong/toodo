@@ -134,7 +134,7 @@ fn link_and_reference(
 ) -> CommandResult<model::Task> {
     let linked = lock(storage).set_task_issue(task.id, Some(issue))?;
     if let Some(url) = &linked.pull_request_url
-        && github.pull_request(url)?.state == PullRequestState::Open
+        && github.pull_request(url)?.pull_request.state == PullRequestState::Open
     {
         ensure_closing_reference(github, url, issue)?;
     }
@@ -328,7 +328,7 @@ mod tests {
             vec![
                 viewed_issue(),
                 Ok(format!(
-                    r#"{{"baseRefName":"main","mergedAt":null,"state":"OPEN","url":"{PR}"}}"#
+                    r#"{{"baseRefName":"main","latestReviews":[],"mergedAt":null,"reviewDecision":"","state":"OPEN","statusCheckRollup":[],"url":"{PR}"}}"#
                 )),
                 Ok(r#"{"body":""}"#.to_owned()),
                 Ok(String::new()),

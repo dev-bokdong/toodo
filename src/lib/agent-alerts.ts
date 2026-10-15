@@ -1,5 +1,5 @@
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import type { AgentStatus, Task, TaskAgentStatus } from "@/lib/bindings";
+import type { AgentStatus, Task, TaskAgentStatus, TaskPullRequestStatus } from "@/lib/bindings";
 
 export type AgentAlert = { title: string; body: string };
 
@@ -32,6 +32,35 @@ export function agentAlerts(
     const task = tasks.find((candidate) => candidate.id === taskId);
     const title = alertTitles[status] ?? "Agent status changed";
     return [{ title, body: task ? `#${taskId} ${task.title}` : `#${taskId}` }];
+  });
+}
+
+/**
+ * Alerts for the pull requests that started needing the user: CI that started failing,
+ * or a reviewer who requested changes. A pull request seen for the first time raises no
+ * alert, as with agents, so nothing fires for every failing pull request at startup.
+ */
+export function pullRequestAlerts(
+  previous: readonly TaskPullRequestStatus[],
+  next: readonly TaskPullRequestStatus[],
+  tasks: readonly Task[],
+): AgentAlert[] {
+  const before = new Map(previous.map((entry) => [entry.taskId, entry]));
+  return next.flatMap(({ taskId, checks, review }) => {
+    const was = before.get(taskId);
+    if (was === undefined) {
+      return [];
+    }
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    const body = task ? `#${taskId} ${task.title}` : `#${taskId}`;
+    const alerts: AgentAlert[] = [];
+    if (checks === "failing" && was.checks !== "failing") {
+      alerts.push({ title: "CI failed", body });
+    }
+    if (review === "changes_requested" && was.review !== "changes_requested") {
+      alerts.push({ title: "Changes requested", body });
+    }
+    return alerts;
   });
 }
 

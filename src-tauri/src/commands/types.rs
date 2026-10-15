@@ -7,7 +7,7 @@ use specta::Type;
 use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
-use crate::adapters::{git, herdr, ssh};
+use crate::adapters::{git, github, herdr, ssh};
 use crate::domain::{backup, model, path, review, ssh_config, status, timeline};
 use crate::storage;
 
@@ -326,6 +326,44 @@ impl From<git::BranchList> for BranchList {
         Self {
             names: list.names,
             fetch_error: list.fetch_error,
+        }
+    }
+}
+
+/// How far an `in_progress` or `in_review` task's branch has fallen behind its base
+/// branch, e.g. after a prerequisite was merged into the base.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchFreshness {
+    /// The revision counted against: `origin/<base>` when it exists, else `<base>`.
+    pub base: String,
+    /// Commits on the base that the branch does not contain.
+    pub behind: u32,
+    /// Why fetching `origin` failed; `behind` is then against the last fetched base.
+    pub fetch_error: Option<String>,
+    /// Whether the task's pull request merges without conflicts; `None` without a pull
+    /// request or when it could not be read.
+    pub mergeable: Option<MergeState>,
+    /// Why the pull request could not be read.
+    pub mergeable_error: Option<String>,
+}
+
+/// Whether GitHub can merge a pull request into its base without conflicts; `unknown`
+/// until GitHub has computed it, and for a pull request that is no longer open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeState {
+    Mergeable,
+    Conflicting,
+    Unknown,
+}
+
+impl From<github::MergeState> for MergeState {
+    fn from(mergeable: github::MergeState) -> Self {
+        match mergeable {
+            github::MergeState::Mergeable => Self::Mergeable,
+            github::MergeState::Conflicting => Self::Conflicting,
+            github::MergeState::Unknown => Self::Unknown,
         }
     }
 }
@@ -779,6 +817,65 @@ impl AgentStatus {
 pub struct TaskAgentStatus {
     pub task_id: TaskId,
     pub status: AgentStatus,
+}
+
+/// Combined result of the CI checks of a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ChecksStatus {
+    Passing,
+    Failing,
+    Pending,
+}
+
+impl From<github::ChecksState> for ChecksStatus {
+    fn from(state: github::ChecksState) -> Self {
+        match state {
+            github::ChecksState::Passing => Self::Passing,
+            github::ChecksState::Failing => Self::Failing,
+            github::ChecksState::Pending => Self::Pending,
+        }
+    }
+}
+
+/// Where the reviews of a pull request stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Approved,
+    ChangesRequested,
+    Pending,
+}
+
+impl From<github::ReviewState> for ReviewStatus {
+    fn from(state: github::ReviewState) -> Self {
+        match state {
+            github::ReviewState::Approved => Self::Approved,
+            github::ReviewState::ChangesRequested => Self::ChangesRequested,
+            github::ReviewState::Pending => Self::Pending,
+        }
+    }
+}
+
+/// CI and review state of the open pull request of an `in_review` task, as of the last
+/// background check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPullRequestStatus {
+    pub task_id: TaskId,
+    /// `null` when the pull request has no checks.
+    pub checks: Option<ChecksStatus>,
+    pub review: ReviewStatus,
+}
+
+impl TaskPullRequestStatus {
+    pub fn new(task: model::TaskId, status: github::PullRequestStatus) -> Self {
+        Self {
+            task_id: task.into(),
+            checks: status.checks.map(Into::into),
+            review: status.review.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

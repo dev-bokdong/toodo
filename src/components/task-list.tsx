@@ -24,6 +24,7 @@ import { TaskGraph } from "@/components/task-graph";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
+import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type { NoteKind, Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
@@ -33,6 +34,8 @@ import {
   machineOf,
   useAddDependency,
   useAgentStatuses,
+  useBranchFreshness,
+  usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
   useConcludeTask,
@@ -416,6 +419,7 @@ function TaskRow({
 }) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
+  const pullRequestStatuses = usePullRequestStatuses();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
   const refreshCommits = useRefreshCommitRecords();
@@ -437,6 +441,9 @@ function TaskRow({
   const active = task.status === "in_progress" || inReview;
   const hasWorktree = active && task.worktreePath !== null;
   const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
+  const pullRequestStatus = inReview
+    ? pullRequestStatuses.data?.find((entry) => entry.taskId === task.id)
+    : undefined;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
   const paused = isPaused(task);
@@ -501,6 +508,7 @@ function TaskRow({
                 {task.title}
               </span>
             )}
+            {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
           {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}
@@ -621,6 +629,7 @@ function TaskRow({
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
       )}
+      {hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       <TaskTimeline task={task} detailed={detailed} />
       {detailed && task.branch && (
         <DetailField label="Branch">
@@ -864,6 +873,52 @@ function TaskRow({
 }
 
 /** The status of `task` as a pill with a colored dot. */
+/** Warns when a started task's branch is behind its base, e.g. after a prerequisite was merged. */
+function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
+  const freshness = useBranchFreshness(taskId, true);
+  const label = `Base freshness of #${taskId}`;
+  if (freshness.error) {
+    return (
+      <p role="note" aria-label={label} className="text-xs text-muted-foreground" title={freshness.error.message}>
+        Could not check whether the branch is behind its base
+      </p>
+    );
+  }
+  const data = freshness.data;
+  const conflicting = data?.mergeable === "conflicting";
+  if (!data || (data.behind === 0 && !conflicting)) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (data.behind > 0) {
+    parts.push(`${data.behind} ${data.behind === 1 ? "commit" : "commits"} behind ${data.base}`);
+  }
+  if (conflicting) {
+    parts.push("pull request has merge conflicts");
+  } else if (data.mergeable === "mergeable") {
+    parts.push("no merge conflicts");
+  }
+  return (
+    <p
+      role="note"
+      aria-label={label}
+      data-conflicting={conflicting || undefined}
+      className={cn(
+        "text-xs",
+        conflicting ? "text-rose-700 dark:text-rose-300" : "text-amber-700 dark:text-amber-300",
+      )}
+      title={
+        [data.fetchError && `Fetching origin failed: ${data.fetchError}`, data.mergeableError]
+          .filter(Boolean)
+          .join("\n") || undefined
+      }
+    >
+      {parts.join("; ")}
+      {data.fetchError && " (not up to date: fetching origin failed)"}
+    </p>
+  );
+}
+
 function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
   return (
     <span

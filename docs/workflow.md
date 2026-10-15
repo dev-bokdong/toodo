@@ -136,6 +136,17 @@ origin/<branch>` recreates it from `origin`; if neither exists, the restore is
 rejected. The directory follows the current task title, and the status, commit
 records, and pull request stay as they were.
 
+While a task is `in_progress` or `in_review` and has a worktree, Toodo warns when its
+branch has fallen behind the base branch, which the DAG makes common: a prerequisite
+is merged into the base while its dependent still builds on the older base. In the
+worktree it fetches `origin <baseBranch>` and counts `git rev-list --count
+<taskBranch>..origin/<baseBranch>` (`<baseBranch>` without an `origin`); a failed fetch
+counts against the last fetched base and says so. A task with a pull request also
+shows whether GitHub can merge it without conflicts (`gh pr view <url> --json
+mergeable`). The check reruns every five minutes and whenever tasks change in the
+background, e.g. when a prerequisite's pull request is merged. Toodo only warns; it
+never rebases or merges the branch.
+
 ### 5. Record commits
 
 Toodo reads the commits on the task branch that are not on the base branch
