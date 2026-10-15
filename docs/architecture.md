@@ -252,8 +252,7 @@ generated or guessed by an agent.
   how long a task took and how long it was worked on. A task without one of the
   milestones (or without status history, for active time) is left out of that median. A period over several
   calendar months also counts the tasks completed in each month. The review screen also
-  says how many completed tasks have no completion note yet, and how many completed
-  tasks were concluded without merging (not adopted); the Markdown report marks those
+  says how many completed tasks were concluded without merging (not adopted); the Markdown report marks those
   tasks "not adopted" and lists their conclusion.
 - A year review adds a "Year in review" section, also in its Markdown report, from the
   tasks completed in the year: their merged pull request snapshots summed (pull

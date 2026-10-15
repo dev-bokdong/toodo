@@ -1335,8 +1335,7 @@ describe("App", () => {
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
     await renderWorkspace();
 
-    expect(await screen.findByLabelText("#1 needs a completion note")).toHaveTextContent("Needs note");
-    expect(screen.getByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
+    expect(await screen.findByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
     fireEvent.click(screen.getByRole("button", { name: "Add completion note to #1" }));
     const save = screen.getByRole("button", { name: "Save note" });
     expect(save).toBeDisabled();
@@ -1350,52 +1349,8 @@ describe("App", () => {
     fireEvent.click(save);
 
     expect(await screen.findByLabelText("Completion note of #1")).toHaveTextContent("Cut sign-in time in half");
-    expect(screen.queryByLabelText("#1 needs a completion note")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Completion note for #1" })).not.toBeInTheDocument();
     expect(mocked.setCompletionNote).toHaveBeenCalledWith(1, "Cut sign-in time in half");
-  });
-
-  it("lists completed tasks without a note on the review page and saves a note there", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date(2026, 9, 14, 10));
-    const at = new Date(2026, 9, 13, 15).getTime() / 1000;
-    const login = task(1, 1, "Add login", { status: "done" });
-    const ssh = task(2, 2, "Fix ssh", { status: "done" });
-    const noted = task(3, 1, "Add storage", { status: "done", completionNote: "Saved a day per release" });
-    const entries = (tasks: Task[]) => tasks.map((task) => ({ task, outcome: "completed" as const, at, commits: [] }));
-    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
-    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
-    mocked.reviewPeriod.mockResolvedValue({ status: "ok", data: entries([login, ssh, noted]) });
-    renderApp();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
-
-    const summary = await screen.findByRole("region", { name: "Summary" });
-    expect(within(summary).getByRole("status")).toHaveTextContent("2 completed tasks have no completion note.");
-    const missing = within(summary).getByRole("list", { name: "Completed tasks without a note" });
-    const items = within(missing).getAllByRole("listitem");
-    expect(items).toHaveLength(2);
-    expect(items[0]).toHaveTextContent("#1Add logintoodo");
-    expect(items[1]).toHaveTextContent("#2Fix sshherdr");
-
-    mocked.setCompletionNote.mockResolvedValue({ status: "ok", data: { ...login, completionNote: "Cut sign-in time" } });
-    mocked.reviewPeriod.mockResolvedValue({
-      status: "ok",
-      data: entries([{ ...login, completionNote: "Cut sign-in time" }, ssh, noted]),
-    });
-    fireEvent.click(within(missing).getByRole("button", { name: "Add completion note to #1" }));
-    fireEvent.change(within(missing).getByRole("textbox", { name: "Completion note for #1" }), {
-      target: { value: "Cut sign-in time" },
-    });
-    fireEvent.click(within(missing).getByRole("button", { name: "Save note" }));
-
-    expect(await within(summary).findByText("1 completed task has no completion note.", { exact: false })).toBeInTheDocument();
-    expect(mocked.setCompletionNote).toHaveBeenCalledWith(1, "Cut sign-in time");
-    expect(within(missing).getAllByRole("listitem")).toHaveLength(1);
-    expect(within(missing).queryByText("Add login")).not.toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Completed" })).getByLabelText("Completion note of #1")).toHaveTextContent(
-      "Cut sign-in time",
-    );
   });
 
   it("shows pull request snapshots and research conclusions in the year in review", async () => {
@@ -1486,7 +1441,6 @@ describe("App", () => {
     expect(mocked.concludeTask).toHaveBeenCalledWith(1, "Twice as slow as the current cache");
     const tasks = screen.getByRole("list", { name: "Tasks" });
     expect(within(tasks).getByText("Not adopted")).toBeInTheDocument();
-    expect(screen.queryByLabelText("#1 needs a completion note")).not.toBeInTheDocument();
     expect(screen.getByRole("note", { name: "Blocked prerequisites of #2" })).toHaveTextContent(
       "#1 was not adopted",
     );

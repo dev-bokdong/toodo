@@ -368,8 +368,6 @@ describe("reviewMarkdown", () => {
     ];
     const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo]);
 
-    expect(summarize(weekStarting("2026-10-12"), entries, [toodo]).withoutNote).toBe(1);
-
     expect(markdown).toContain("- Changes in completed pull requests: +240/-60 in 5 files (2 pull requests)\n");
     expect(markdown).toContain(
       "- [feat] Task 1 (toodo, 2026-10-13, #12, +120/-30 in 4 files, 2 reviews)\n  - Note: Sign-in is twice as fast for everyone\n",
@@ -392,7 +390,6 @@ describe("reviewMarkdown", () => {
     const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo]);
 
     expect(summary.notAdopted).toBe(1);
-    expect(summary.withoutNote).toBe(0);
     expect(markdown).toContain("- Concluded without merging (not adopted): 1\n");
     expect(markdown).toContain("- [feat] Task 1 (toodo, 2026-10-13)\n  - Note: Shipped\n");
     expect(markdown).toContain(

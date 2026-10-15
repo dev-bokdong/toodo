@@ -220,11 +220,11 @@ check. A branch without a pull request, or with a closed one only, leaves the ta
 until it changes.
 
 Completion never waits for the user: dependents start as soon as the work is on the base
-branch, and `completedAt` stays the time of the merge check. Instead, a `done` task
-without a completion note is marked "Needs note" in the task list, where the user writes
-what the work achieved (the `set_completion_note` command; only `done` tasks have one,
-and an empty note clears it). The review counts completed tasks without a note so they
-can be filled in before a report is written.
+branch, and `completedAt` stays the time of the merge check. A completion note is
+optional, since the task description already says what the work is: the user may add one
+to a `done` task in the task list to record what the work achieved (the
+`set_completion_note` command; only `done` tasks have one, and an empty note clears it),
+and reports include it.
 
 The worktree stays until the task is deleted (step 8).
 

@@ -501,15 +501,6 @@ function TaskRow({
                 {task.title}
               </span>
             )}
-            {final && task.completionNote === null && (
-              <span
-                aria-label={`#${task.id} needs a completion note`}
-                title="Write what this task achieved; reviews include the note"
-                className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200"
-              >
-                Needs note
-              </span>
-            )}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
           {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}
@@ -993,7 +984,7 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
 }
 
 /** The completion note of a done task, which reviews include, or a button to write one. */
-export function CompletionNote({ task }: { task: Task }) {
+function CompletionNote({ task }: { task: Task }) {
   const setNote = useSetCompletionNote();
   const [editing, setEditing] = useState(false);
   const [note, setNoteText] = useState("");
