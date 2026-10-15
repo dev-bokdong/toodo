@@ -1091,3 +1091,51 @@ fn a_linked_issue_is_stored_with_the_task_until_it_is_unlinked() {
         Err(StorageError::TaskNotFound(TaskId(999)))
     ));
 }
+
+#[test]
+fn notes_are_kept_in_order_with_their_time_and_deleted_with_their_task() {
+    use crate::domain::model::{NoteKind, TaskNote};
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Login");
+    let other = add_task(&mut storage, &workspace, "Logout");
+
+    set_now(&now, 200);
+    storage
+        .add_task_note(task.id, NoteKind::Progress, "Chose PKCE")
+        .unwrap();
+    set_now(&now, 300);
+    let noted = storage
+        .add_task_note(task.id, NoteKind::Blocker, "No test account")
+        .unwrap();
+
+    let expected = vec![
+        TaskNote {
+            kind: NoteKind::Progress,
+            body: "Chose PKCE".to_owned(),
+            at: 200,
+        },
+        TaskNote {
+            kind: NoteKind::Blocker,
+            body: "No test account".to_owned(),
+            at: 300,
+        },
+    ];
+    assert_eq!(noted.notes, expected);
+    assert_eq!(storage.list_all_tasks().unwrap()[0].notes, expected);
+    assert!(
+        storage
+            .get_task(other.id)
+            .unwrap()
+            .unwrap()
+            .notes
+            .is_empty()
+    );
+    assert!(matches!(
+        storage.add_task_note(TaskId(99), NoteKind::Progress, "x"),
+        Err(StorageError::TaskNotFound(TaskId(99)))
+    ));
+
+    storage.delete_task(task.id).unwrap();
+    assert_eq!(row_count(&storage, "task_notes"), 0);
+}

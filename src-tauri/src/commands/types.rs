@@ -473,6 +473,47 @@ pub struct Task {
     /// recorded it.
     pub timeline: Vec<TaskEvent>,
     pub milestones: TaskMilestones,
+    /// Notes agents left on the task through the MCP server, oldest first.
+    pub notes: Vec<TaskNote>,
+}
+
+/// What a note left on a task records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteKind {
+    /// Progress made or a decision taken.
+    Progress,
+    /// Something that stops the work until someone acts on it.
+    Blocker,
+}
+
+impl From<model::NoteKind> for NoteKind {
+    fn from(kind: model::NoteKind) -> Self {
+        match kind {
+            model::NoteKind::Progress => Self::Progress,
+            model::NoteKind::Blocker => Self::Blocker,
+        }
+    }
+}
+
+/// A note an agent left on a task while working on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskNote {
+    pub kind: NoteKind,
+    /// Markdown.
+    pub body: String,
+    pub at: Timestamp,
+}
+
+impl From<&model::TaskNote> for TaskNote {
+    fn from(note: &model::TaskNote) -> Self {
+        Self {
+            kind: note.kind.into(),
+            body: note.body.clone(),
+            at: Timestamp(note.at),
+        }
+    }
 }
 
 /// A GitHub issue of the workspace repository linked to a task.
@@ -593,6 +634,7 @@ impl From<&model::Task> for Task {
                 })
                 .collect(),
             milestones: timeline::milestones(&task.timeline).into(),
+            notes: map_all(&task.notes),
         }
     }
 }

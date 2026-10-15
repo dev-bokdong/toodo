@@ -324,6 +324,13 @@ export type NewWorkspace = {
 	defaultBaseBranch: string | null,
 };
 
+/**  What a note left on a task records. */
+export type NoteKind = 
+/**  Progress made or a decision taken. */
+"progress" | 
+/**  Something that stops the work until someone acts on it. */
+"blocker";
+
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
 	number: number,
@@ -398,6 +405,8 @@ export type Task = {
 	 */
 	timeline: TaskEvent[],
 	milestones: TaskMilestones,
+	/**  Notes agents left on the task through the MCP server, oldest first. */
+	notes: TaskNote[],
 };
 
 /**
@@ -438,6 +447,14 @@ export type TaskMilestones = {
 	completedAt: Timestamp | null,
 	/**  The latest pause, unless the task was started again after it. */
 	pausedAt: Timestamp | null,
+};
+
+/**  A note an agent left on a task while working on it. */
+export type TaskNote = {
+	kind: NoteKind,
+	/**  Markdown. */
+	body: string,
+	at: Timestamp,
 };
 
 /**  How a `done` task ended. */
