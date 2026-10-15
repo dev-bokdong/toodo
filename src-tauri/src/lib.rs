@@ -20,6 +20,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::workspaces::get_workspace,
             commands::workspaces::create_workspace,
             commands::workspaces::update_workspace,
+            commands::workspaces::list_workspace_branches,
+            commands::workspaces::create_workspace_base_branch,
             commands::workspaces::delete_workspace,
             commands::workspaces::get_machine_settings,
             commands::workspaces::save_machine_settings,

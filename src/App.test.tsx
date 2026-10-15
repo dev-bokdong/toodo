@@ -31,6 +31,8 @@ vi.mock("@/lib/bindings", () => ({
     listWorkspaces: vi.fn(),
     createWorkspace: vi.fn(),
     updateWorkspace: vi.fn(),
+    listWorkspaceBranches: vi.fn(),
+    createWorkspaceBaseBranch: vi.fn(),
     deleteWorkspace: vi.fn(),
     listTasks: vi.fn(),
     createTask: vi.fn(),
@@ -1036,26 +1038,30 @@ describe("App", () => {
     let saved = toodo;
     mocked.listWorkspaces.mockImplementation(async () => ({ status: "ok", data: [saved] }));
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listWorkspaceBranches.mockResolvedValue({
+      status: "ok",
+      data: { names: ["dev", "main", "release"], fetchError: null },
+    });
     mocked.updateWorkspace
-      .mockResolvedValueOnce({ status: "error", error: { kind: "invalidInput", message: "default base branch must not be empty" } })
+      .mockResolvedValueOnce({ status: "error", error: { kind: "rejected", message: "task 3 is in review" } })
       .mockImplementation(async (workspace) => {
-        saved = { ...workspace, defaultBaseBranch: workspace.defaultBaseBranch.trim() };
+        saved = workspace;
         return { status: "ok", data: saved };
       });
     await renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: "Change base branch" }));
-    const branch = screen.getByLabelText("Base branch", { selector: "input" });
+    const branch = screen.getByLabelText("Base branch", { selector: "select" });
     expect(branch).toHaveValue("main");
+    expect(await within(branch).findByRole("option", { name: "release" })).toBeInTheDocument();
+    expect(mocked.listWorkspaceBranches).toHaveBeenCalledWith(1);
     const form = screen.getByRole("form", { name: "Base branch" });
-    // Unchanged and blank drafts cannot be saved.
-    expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
-    fireEvent.change(branch, { target: { value: "  " } });
+    // The unchanged branch cannot be saved.
     expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
 
     fireEvent.change(branch, { target: { value: "dev" } });
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent("default base branch must not be empty");
+    expect(await within(form).findByRole("alert")).toHaveTextContent("task 3 is in review");
 
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.queryByRole("form", { name: "Base branch" })).not.toBeInTheDocument());
@@ -1064,10 +1070,48 @@ describe("App", () => {
 
     // Discarding keeps the saved branch.
     fireEvent.click(screen.getByRole("button", { name: "Change base branch" }));
-    fireEvent.change(screen.getByLabelText("Base branch", { selector: "input" }), { target: { value: "main" } });
+    fireEvent.change(screen.getByLabelText("Base branch", { selector: "select" }), { target: { value: "main" } });
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.getByText("dev")).toBeInTheDocument();
     expect(mocked.updateWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates a new base branch from an existing one", async () => {
+    let saved = toodo;
+    mocked.listWorkspaces.mockImplementation(async () => ({ status: "ok", data: [saved] }));
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listWorkspaceBranches.mockResolvedValue({
+      status: "ok",
+      data: { names: ["dev", "main"], fetchError: "git fetch failed: offline" },
+    });
+    mocked.createWorkspaceBaseBranch.mockImplementation(async (_id, name) => {
+      saved = { ...toodo, defaultBaseBranch: name };
+      return { status: "ok", data: saved };
+    });
+    await renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Change base branch" }));
+    const form = screen.getByRole("form", { name: "Base branch" });
+    expect(await within(form).findByText("Could not fetch origin; showing the branches known locally.")).toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText("Base branch", { selector: "select" }), {
+      target: { value: ":new" },
+    });
+    const save = within(form).getByRole("button", { name: "Create and save" });
+    const name = within(form).getByRole("textbox", { name: "New branch name" });
+    expect(save).toBeDisabled();
+    // An existing branch is picked from the list instead.
+    fireEvent.change(name, { target: { value: "dev" } });
+    expect(save).toBeDisabled();
+    fireEvent.change(name, { target: { value: " release " } });
+    fireEvent.change(within(form).getByRole("combobox", { name: "Start new branch from" }), {
+      target: { value: "dev" },
+    });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Base branch" })).not.toBeInTheDocument());
+    expect(mocked.createWorkspaceBaseBranch).toHaveBeenCalledWith(1, "release", "dev");
+    expect(await screen.findByText("release")).toBeInTheDocument();
+    expect(mocked.updateWorkspace).not.toHaveBeenCalled();
   });
 
   it("locks the base branch while a task of the workspace is in review", async () => {

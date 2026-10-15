@@ -1,6 +1,7 @@
 //! Runs git for a workspace: `git.exe` for local workspaces and `ssh.exe <machine> git ...`
 //! for workspaces on a saved herdr SSH machine.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::process::{Command, Stdio};
 
@@ -329,6 +330,95 @@ impl Git {
         Ok(url.to_owned())
     }
 
+    /// Branch names of the repository: its local branches and those of `origin`, sorted
+    /// and without duplicates, after fetching `origin` with pruning so the list matches the
+    /// remote. A failed fetch (e.g. offline) still lists the branches known locally and
+    /// reports the failure.
+    pub fn list_branches(&self, repo: &WorkspaceLocation) -> Result<BranchList, GitError> {
+        let path = Some(location_path(repo));
+        let fetch_error = if self.has_origin(repo)? {
+            match self.run(repo, path, &["fetch", "--prune", "--quiet", "origin"]) {
+                Ok(_) => None,
+                Err(error @ GitError::Failed { .. }) => Some(error.to_string()),
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        let output = self.run(
+            repo,
+            path,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads",
+                "refs/remotes/origin",
+            ],
+        )?;
+        let names: BTreeSet<String> = output
+            .lines()
+            .map(str::trim)
+            .filter_map(|reference| {
+                reference
+                    .strip_prefix("refs/heads/")
+                    .or_else(|| reference.strip_prefix("refs/remotes/origin/"))
+            })
+            .filter(|name| !name.is_empty() && *name != "HEAD")
+            .map(str::to_owned)
+            .collect();
+        Ok(BranchList {
+            names: names.into_iter().collect(),
+            fetch_error,
+        })
+    }
+
+    /// Whether git accepts `name` as a branch name (`git check-ref-format --branch`).
+    pub fn is_valid_branch_name(
+        &self,
+        repo: &WorkspaceLocation,
+        name: &str,
+    ) -> Result<bool, GitError> {
+        if name.is_empty() || name.starts_with('-') {
+            return Ok(false);
+        }
+        let path = Some(location_path(repo));
+        match self.run(repo, path, &["check-ref-format", "--branch", name]) {
+            Ok(_) => Ok(true),
+            Err(GitError::Failed { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Creates branch `name` at `start` (a branch or `origin/<branch>`) without tracking
+    /// it, and pushes it to `origin` when that remote exists so pull requests can target
+    /// it. When the push fails, the new local branch is deleted again so a retry starts
+    /// clean.
+    pub fn create_branch(
+        &self,
+        repo: &WorkspaceLocation,
+        name: &str,
+        start: &str,
+    ) -> Result<(), GitError> {
+        let path = location_path(repo);
+        self.run(repo, Some(path), &["branch", "--no-track", name, start])?;
+        if self.has_origin(repo)?
+            && let Err(error) = self.push_branch(repo, path, name)
+        {
+            // The push error is what the user needs; a failed cleanup leaves only a
+            // local branch behind, which the next attempt reports as existing.
+            let _ = self.run(repo, Some(path), &["branch", "-D", name]);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn has_origin(&self, repo: &WorkspaceLocation) -> Result<bool, GitError> {
+        Ok(self
+            .run(repo, Some(location_path(repo)), &["remote"])?
+            .lines()
+            .any(|remote| remote.trim() == "origin"))
+    }
+
     /// Runs `git [-C <dir>] <args>` on the machine that hosts `location`.
     fn run(
         &self,
@@ -356,6 +446,15 @@ impl Git {
         };
         self.runner.run(&invocation)
     }
+}
+
+/// Branches listed by [`Git::list_branches`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchList {
+    /// Local and `origin` branch names, sorted, without `origin/` prefixes.
+    pub names: Vec<String>,
+    /// Why fetching `origin` failed, when it did.
+    pub fetch_error: Option<String>,
 }
 
 /// A commit as printed by [`Git::commits_between`].
@@ -762,6 +861,135 @@ mod tests {
             invocations[1].args[4],
             "git '-C' '/wt/a/feat-x-1' 'remote' 'get-url' 'origin'"
         );
+    }
+
+    fn git_commands(runner: &FakeRunner) -> Vec<Vec<String>> {
+        runner
+            .invocations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|invocation| invocation.args[2..].to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn branches_are_fetched_and_merged_from_local_and_origin() {
+        let (git, runner) = git(vec![
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+            Ok(
+                "refs/heads/main\nrefs/heads/feat/x-1\nrefs/remotes/origin/HEAD\n\
+                refs/remotes/origin/main\nrefs/remotes/origin/release\n"
+                    .to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            git.list_branches(&local(r"C:\dev\a")).unwrap(),
+            BranchList {
+                names: vec!["feat/x-1".into(), "main".into(), "release".into()],
+                fetch_error: None,
+            }
+        );
+        assert_eq!(
+            git_commands(&runner),
+            [
+                args(&["remote"]),
+                args(&["fetch", "--prune", "--quiet", "origin"]),
+                args(&[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/heads",
+                    "refs/remotes/origin"
+                ]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_fetch_still_lists_known_branches() {
+        let (git, _) = git(vec![
+            Ok("origin\n".to_owned()),
+            Err(failed()),
+            Ok("refs/heads/main\n".to_owned()),
+        ]);
+        let branches = git.list_branches(&remote("/srv/a")).unwrap();
+        assert_eq!(branches.names, ["main"]);
+        assert_eq!(branches.fetch_error, Some(failed().to_string()));
+    }
+
+    #[test]
+    fn branches_without_origin_are_not_fetched() {
+        let (git, runner) = git(vec![Ok(String::new()), Ok("refs/heads/main\n".to_owned())]);
+        assert_eq!(
+            git.list_branches(&local(r"C:\dev\a")).unwrap().names,
+            ["main"]
+        );
+        assert_eq!(runner.invocations.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn branch_names_are_checked_by_git() {
+        let (git, runner) = git(vec![Ok("feat/x\n".to_owned()), Err(failed())]);
+        let repo = local(r"C:\dev\a");
+        assert!(git.is_valid_branch_name(&repo, "feat/x").unwrap());
+        assert!(!git.is_valid_branch_name(&repo, "bad..name").unwrap());
+        // Names git would read as options never reach it.
+        assert!(!git.is_valid_branch_name(&repo, "-x").unwrap());
+        assert!(!git.is_valid_branch_name(&repo, "").unwrap());
+        assert_eq!(
+            git_commands(&runner),
+            [
+                args(&["check-ref-format", "--branch", "feat/x"]),
+                args(&["check-ref-format", "--branch", "bad..name"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_new_branch_is_created_without_tracking_and_pushed() {
+        let (git, runner) = git(vec![
+            Ok(String::new()),
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+        ]);
+        git.create_branch(&local(r"C:\dev\a"), "release", "origin/main")
+            .unwrap();
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(
+            invocations[0].args[2..],
+            args(&["branch", "--no-track", "release", "origin/main"])
+        );
+        assert_eq!(
+            invocations[2].args[2..],
+            args(&["push", "--set-upstream", "origin", "release"])
+        );
+    }
+
+    #[test]
+    fn a_failed_push_deletes_the_new_branch() {
+        let (git, runner) = git(vec![
+            Ok(String::new()),
+            Ok("origin\n".to_owned()),
+            Err(failed()),
+            Ok(String::new()),
+        ]);
+        assert_eq!(
+            git.create_branch(&remote("/srv/a"), "release", "main"),
+            Err(failed())
+        );
+        assert_eq!(
+            runner.invocations.lock().unwrap()[3].args[4],
+            "git '-C' '/srv/a' 'branch' '-D' 'release'"
+        );
+    }
+
+    #[test]
+    fn a_new_branch_without_origin_is_only_created() {
+        let (git, runner) = git(vec![Ok(String::new()), Ok(String::new())]);
+        git.create_branch(&local(r"C:\dev\a"), "release", "main")
+            .unwrap();
+        assert_eq!(runner.invocations.lock().unwrap().len(), 2);
     }
 
     #[test]

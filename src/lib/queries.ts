@@ -48,6 +48,7 @@ export const queryKeys = {
   herdrStatus: ["herdr-status"] as const,
   agentStatuses: ["agent-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
+  branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   herdrMachines: ["herdr-machines"] as const,
   sshHosts: ["ssh-hosts"] as const,
@@ -167,6 +168,33 @@ export function useUpdateWorkspace() {
   return useMutation({
     mutationFn: (workspace: Workspace) => unwrap(commands.updateWorkspace(workspace)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+  });
+}
+
+/**
+ * Branches of the workspace repository, fetched from `origin` each time the base branch
+ * picker opens so the list matches the remote.
+ */
+export function useWorkspaceBranches(workspace: WorkspaceId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.branches(workspace),
+    queryFn: () => unwrap(commands.listWorkspaceBranches(workspace)),
+    enabled,
+    staleTime: 0,
+  });
+}
+
+/** Creates a branch from an existing one, pushes it, and makes it the workspace base. */
+export function useCreateBaseBranch() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, name, from }: { workspace: WorkspaceId; name: string; from: string }) =>
+      unwrap(commands.createWorkspaceBaseBranch(workspace, name, from)),
+    onSuccess: (workspace) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.branches(workspace.id) }),
+      ]),
   });
 }
 

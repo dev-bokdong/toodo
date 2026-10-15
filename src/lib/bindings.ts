@@ -16,6 +16,17 @@ export const commands = {
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("create_workspace", { workspace })),
 	/**  Saves the name, location, and default base branch of an existing workspace. */
 	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("update_workspace", { workspace })),
+	/**
+	 *  Branches of the workspace repository to pick a base branch from: local and `origin`
+	 *  branches after fetching `origin`. Git may run over `ssh`, so this runs off the main
+	 *  thread.
+	 */
+	listWorkspaceBranches: (id: WorkspaceId) => typedError<BranchList, CommandError>(__TAURI_INVOKE("list_workspace_branches", { id })),
+	/**
+	 *  Creates branch `name` from the existing branch `from` in the workspace repository,
+	 *  pushes it to `origin`, and makes it the default base branch of the workspace.
+	 */
+	createWorkspaceBaseBranch: (id: WorkspaceId, name: string, from: string) => typedError<Workspace, CommandError>(__TAURI_INVOKE("create_workspace_base_branch", { id, name, from })),
 	/**  Deletes a workspace together with its tasks, dependencies, and commit records. */
 	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(__TAURI_INVOKE("delete_workspace", { id })),
 	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("get_machine_settings", { machine })),
@@ -190,6 +201,14 @@ export type BackupSettings = {
 	intervalHours: number,
 	/**  Number of automatic backups kept; older ones are deleted. */
 	keep: number,
+};
+
+/**  Branches of a workspace repository a base branch can be picked from. */
+export type BranchList = {
+	/**  Local and `origin` branch names, sorted, without `origin/` prefixes. */
+	names: string[],
+	/**  Why fetching `origin` failed; the names are then the ones known locally. */
+	fetchError: string | null,
 };
 
 export type CommandError = {

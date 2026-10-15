@@ -34,6 +34,7 @@ import {
   useCommitRecords,
   useCompleteTask,
   useConcludeTask,
+  useCreateBaseBranch,
   useCreateIssue,
   useCreateTask,
   useDeleteTask,
@@ -52,6 +53,7 @@ import {
   useTasks,
   useUpdateTask,
   useUpdateWorkspace,
+  useWorkspaceBranches,
   useWorkspaces,
 } from "@/lib/queries";
 import { pullRequestStats } from "@/lib/review";
@@ -1163,23 +1165,51 @@ export function EmptyState({ title, hint, icon }: { title: string; hint?: string
   );
 }
 
+/** Picker value of the "New branch..." option; `:` cannot appear in a branch name. */
+const NEW_BRANCH = ":new";
+
 /**
  * The location and default base branch of the workspace; the branch that new task branches
- * start from and pull requests target can be changed in place.
+ * start from and pull requests target can be changed in place, either to a branch of the
+ * repository or to a new branch created from one.
  */
 function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
+  const createBaseBranch = useCreateBaseBranch();
   const tasks = useTasks();
   // An open pull request targets the current branch, so it stays while a task is in review.
   const inReview = tasks.data?.filter((task) => task.workspaceId === workspace.id && task.status === "in_review");
   const locked = inReview === undefined || inReview.length > 0;
   const [draft, setDraft] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newFrom, setNewFrom] = useState(workspace.defaultBaseBranch);
+  const branches = useWorkspaceBranches(workspace.id, draft !== null);
   const location = describeLocation(workspace.location);
+  const current = workspace.defaultBaseBranch;
+  const names = [...new Set([...(branches.data?.names ?? []), current])].sort();
+  const name = newName.trim();
+  const pending = updateWorkspace.isPending || createBaseBranch.isPending;
+  const canSave =
+    !pending && (draft === NEW_BRANCH ? name !== "" && !names.includes(name) && newFrom !== "" : draft !== current);
+  const error = updateWorkspace.error ?? createBaseBranch.error;
+
+  function open() {
+    updateWorkspace.reset();
+    createBaseBranch.reset();
+    setNewName("");
+    setNewFrom(current);
+    setDraft(current);
+  }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (draft === null) return;
-    updateWorkspace.mutate({ ...workspace, defaultBaseBranch: draft.trim() }, { onSuccess: () => setDraft(null) });
+    if (draft === null || !canSave) return;
+    const close = { onSuccess: () => setDraft(null) };
+    if (draft === NEW_BRANCH) {
+      createBaseBranch.mutate({ workspace: workspace.id, name, from: newFrom }, close);
+    } else {
+      updateWorkspace.mutate({ ...workspace, defaultBaseBranch: draft }, close);
+    }
   }
 
   if (draft === null) {
@@ -1192,10 +1222,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
           variant="ghost"
           aria-label="Change base branch"
           disabled={locked}
-          onClick={() => {
-            updateWorkspace.reset();
-            setDraft(workspace.defaultBaseBranch);
-          }}
+          onClick={open}
         >
           Change
         </Button>
@@ -1216,20 +1243,58 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
         <label htmlFor="base-branch" className="shrink-0">
           Base branch
         </label>
-        <input
+        <select
           id="base-branch"
-          className={cn(inputClass, "max-w-56 font-mono")}
+          className={cn(compactSelectClass, "max-w-56 font-mono")}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           autoFocus
-        />
-        <Button
-          type="submit"
-          size="sm"
-          variant="outline"
-          disabled={!draft.trim() || draft.trim() === workspace.defaultBaseBranch || updateWorkspace.isPending}
         >
-          Save
+          {names.map((branch) => (
+            <option key={branch} value={branch}>
+              {branch}
+            </option>
+          ))}
+          <option value={NEW_BRANCH}>New branch...</option>
+        </select>
+        {branches.isFetching && <span className="text-xs">Loading branches...</span>}
+      </div>
+      {draft === NEW_BRANCH && (
+        <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <label htmlFor="new-base-branch" className="shrink-0">
+            Name
+          </label>
+          <input
+            id="new-base-branch"
+            aria-label="New branch name"
+            className={cn(inputClass, "max-w-56 font-mono")}
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="release/2026"
+            autoFocus
+          />
+          <label htmlFor="new-base-branch-from" className="shrink-0">
+            from
+          </label>
+          <select
+            id="new-base-branch-from"
+            aria-label="Start new branch from"
+            className={cn(compactSelectClass, "max-w-56 font-mono")}
+            value={newFrom}
+            onChange={(e) => setNewFrom(e.target.value)}
+          >
+            {names.map((branch) => (
+              <option key={branch} value={branch}>
+                {branch}
+              </option>
+            ))}
+          </select>
+          {names.includes(name) && <span className="text-xs">Branch {name} already exists; pick it above.</span>}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <Button type="submit" size="sm" variant="outline" disabled={!canSave}>
+          {draft === NEW_BRANCH ? "Create and save" : "Save"}
         </Button>
         <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
           Discard
@@ -1237,10 +1302,21 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
       </div>
       <p className="text-xs text-muted-foreground">
         New task branches start from this branch and pull requests target it.
+        {draft === NEW_BRANCH && " The new branch is pushed to origin."}
       </p>
-      {updateWorkspace.error && (
+      {branches.error && (
         <p role="alert" className="text-xs text-destructive">
-          {updateWorkspace.error.message}
+          Failed to load branches: {branches.error.message}
+        </p>
+      )}
+      {branches.data?.fetchError && (
+        <p className="text-xs text-muted-foreground" title={branches.data.fetchError}>
+          Could not fetch origin; showing the branches known locally.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error.message}
         </p>
       )}
     </form>

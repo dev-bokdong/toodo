@@ -3,12 +3,14 @@
 use tauri::State;
 
 use super::types::{
-    self, MachineSettings, NewWorkspace, Workspace, WorkspaceId, WorkspaceSetup, WorkspaceSource,
+    self, BranchList, MachineSettings, NewWorkspace, Workspace, WorkspaceId, WorkspaceSetup,
+    WorkspaceSource,
 };
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::adapters::herdr::Herdr;
 use crate::domain::model;
+use crate::domain::status::TaskStatus;
 use crate::storage::{self, StorageError};
 
 #[tauri::command]
@@ -93,6 +95,89 @@ pub fn update_workspace(
     let workspace: model::Workspace = workspace.try_into()?;
     lock(&storage).update_workspace(&workspace)?;
     Ok((&workspace).into())
+}
+
+/// Branches of the workspace repository to pick a base branch from: local and `origin`
+/// branches after fetching `origin`. Git may run over `ssh`, so this runs off the main
+/// thread.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn list_workspace_branches(
+    storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
+    id: WorkspaceId,
+) -> CommandResult<BranchList> {
+    let id = id.into();
+    let location = lock(&storage)
+        .get_workspace(id)?
+        .ok_or(StorageError::WorkspaceNotFound(id))?
+        .location;
+    Ok(git.list_branches(&location)?.into())
+}
+
+/// Creates branch `name` from the existing branch `from` in the workspace repository,
+/// pushes it to `origin`, and makes it the default base branch of the workspace.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn create_workspace_base_branch(
+    storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
+    id: WorkspaceId,
+    name: String,
+    from: String,
+) -> CommandResult<Workspace> {
+    let workspace = create_base_branch(&storage, &git, id.into(), name.trim(), from.trim())?;
+    Ok((&workspace).into())
+}
+
+fn create_base_branch(
+    storage: &StorageState,
+    git: &Git,
+    id: model::WorkspaceId,
+    name: &str,
+    from: &str,
+) -> CommandResult<model::Workspace> {
+    let workspace = {
+        let storage = lock(storage);
+        let workspace = storage
+            .get_workspace(id)?
+            .ok_or(StorageError::WorkspaceNotFound(id))?;
+        // Checked before git runs so a locked workspace gets no stray branch.
+        if let Some(task) = storage
+            .list_tasks(id)?
+            .into_iter()
+            .filter(|task| task.status == TaskStatus::InReview)
+            .min_by_key(|task| task.id.0)
+        {
+            return Err(StorageError::BaseBranchInReview {
+                workspace: id,
+                task: task.id,
+            }
+            .into());
+        }
+        workspace
+    };
+    let repo = &workspace.location;
+    if !git.is_valid_branch_name(repo, name)? {
+        return Err(CommandError::invalid_input(format!(
+            "{name:?} is not a valid branch name"
+        )));
+    }
+    if git.branch_source(repo, name)?.is_some() {
+        return Err(CommandError::rejected(format!(
+            "branch {name} already exists; pick it from the list"
+        )));
+    }
+    let start = git
+        .branch_source(repo, from)?
+        .ok_or_else(|| CommandError::rejected(format!("branch {from} does not exist")))?;
+    git.create_branch(repo, name, &start)?;
+    let workspace = model::Workspace {
+        default_base_branch: name.to_owned(),
+        ..workspace
+    };
+    lock(storage).update_workspace(&workspace)?;
+    Ok(workspace)
 }
 
 /// Deletes a workspace together with its tasks, dependencies, and commit records.
@@ -211,6 +296,136 @@ mod tests {
             ]
             .map(str::to_owned)
         );
+    }
+
+    fn storage_with_workspace() -> (StorageState, model::WorkspaceId) {
+        let mut storage = crate::storage::Storage::open_in_memory().unwrap();
+        let workspace = storage
+            .create_workspace(&storage::NewWorkspace {
+                name: "toodo".to_owned(),
+                location: local(r"C:\dev\toodo"),
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        (std::sync::Mutex::new(storage), workspace.id)
+    }
+
+    fn create(
+        storage: &StorageState,
+        id: model::WorkspaceId,
+        name: &str,
+        results: Vec<Result<String, GitError>>,
+    ) -> (CommandResult<model::Workspace>, Vec<Invocation>) {
+        let runner = Arc::new(FakeRunner::new(results));
+        let result = create_base_branch(
+            storage,
+            &Git::new(Box::new(runner.clone())),
+            id,
+            name,
+            "main",
+        );
+        let invocations = runner.invocations.lock().unwrap().clone();
+        (result, invocations)
+    }
+
+    fn base_branch(storage: &StorageState, id: model::WorkspaceId) -> String {
+        lock(storage)
+            .get_workspace(id)
+            .unwrap()
+            .unwrap()
+            .default_base_branch
+    }
+
+    #[test]
+    fn a_new_base_branch_starts_from_the_given_branch_and_becomes_the_base() {
+        let (storage, id) = storage_with_workspace();
+        let (result, invocations) = create(
+            &storage,
+            id,
+            "release",
+            vec![
+                Ok("release\n".to_owned()),
+                Err(failed()),
+                Err(failed()),
+                Err(failed()),
+                Ok("abc\n".to_owned()),
+                Ok(String::new()),
+                Ok("origin\n".to_owned()),
+                Ok(String::new()),
+            ],
+        );
+        assert_eq!(result.unwrap().default_base_branch, "release");
+        assert_eq!(base_branch(&storage, id), "release");
+        assert_eq!(
+            invocations[5].args[2..],
+            ["branch", "--no-track", "release", "origin/main"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn an_invalid_or_existing_branch_name_creates_nothing() {
+        let (storage, id) = storage_with_workspace();
+        let (result, invocations) = create(&storage, id, "bad..name", vec![Err(failed())]);
+        assert_eq!(result.unwrap_err().kind, CommandErrorKind::InvalidInput);
+        assert_eq!(invocations.len(), 1);
+
+        let (result, invocations) = create(
+            &storage,
+            id,
+            "dev",
+            vec![
+                Ok("dev\n".to_owned()),
+                Err(failed()),
+                Ok("abc\n".to_owned()),
+            ],
+        );
+        assert_eq!(result.unwrap_err().kind, CommandErrorKind::Rejected);
+        assert_eq!(invocations.len(), 3);
+        assert_eq!(base_branch(&storage, id), "main");
+    }
+
+    #[test]
+    fn a_missing_start_branch_is_rejected() {
+        let (storage, id) = storage_with_workspace();
+        let (result, invocations) = create(
+            &storage,
+            id,
+            "release",
+            vec![
+                Ok("release\n".to_owned()),
+                Err(failed()),
+                Err(failed()),
+                Err(failed()),
+                Err(failed()),
+            ],
+        );
+        assert_eq!(result.unwrap_err().kind, CommandErrorKind::Rejected);
+        assert_eq!(invocations.len(), 5);
+    }
+
+    #[test]
+    fn a_task_in_review_locks_the_base_branch_before_git_runs() {
+        let (storage, id) = storage_with_workspace();
+        {
+            let mut storage = lock(&storage);
+            let task = storage
+                .create_task(&storage::NewTask {
+                    workspace_id: id,
+                    task_type: model::TaskType::Feat,
+                    title: "Login".to_owned(),
+                    description: String::new(),
+                })
+                .unwrap();
+            storage
+                .set_task_status(task.id, TaskStatus::InProgress)
+                .unwrap();
+            storage
+                .open_pull_request(task.id, &[], "https://github.com/a/b/pull/1", None)
+                .unwrap();
+        }
+        let (result, invocations) = create(&storage, id, "release", Vec::new());
+        assert_eq!(result.unwrap_err().kind, CommandErrorKind::Rejected);
+        assert!(invocations.is_empty());
     }
 
     #[test]
