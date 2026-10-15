@@ -1,10 +1,11 @@
 import type { Task, TaskId, TaskType } from "@/lib/bindings";
-import { dependenciesDone, isNotAdopted, isPaused } from "@/lib/task-graph";
+import { dependenciesDone, isNotAdopted, isPaused, prerequisitesResolved } from "@/lib/task-graph";
 
 /**
  * The status a task is shown with: its stored status, with paused and not adopted tasks told
  * apart, and a planned task that can be started now (every prerequisite done and adopted, or
- * none) shown as ready. A planned task still waiting on a prerequisite stays planned.
+ * none) shown as ready. A planned task still waiting on a prerequisite stays planned. A task
+ * paused by a new prerequisite is shown as ready again once that prerequisite is done.
  */
 export type ShownStatus = "planned" | "ready" | "paused" | "in_progress" | "in_review" | "done" | "not_adopted";
 
@@ -24,7 +25,7 @@ export function shownStatus(task: Task, byId: ReadonlyMap<TaskId, Task>): ShownS
     return "not_adopted";
   }
   if (isPaused(task)) {
-    return "paused";
+    return prerequisitesResolved(task, byId) ? "ready" : "paused";
   }
   return task.status === "planned" && dependenciesDone(task, byId) ? "ready" : task.status;
 }

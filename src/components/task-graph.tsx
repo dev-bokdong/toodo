@@ -736,6 +736,8 @@ function TimelineBarView({
   selected,
 }: NodeProps<BarNode>) {
   const { task, phases, pending, lead } = bar;
+  // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
+  const faded = isPaused(task) && !ready;
   return (
     <div data-dimmed={dimmed || undefined} className={cn("relative h-full w-full", dimmed && "opacity-40")}>
       <Handle type="target" position={Position.Left} />
@@ -759,9 +761,9 @@ function TimelineBarView({
         className={cn(
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
           selected && "ring-2 ring-primary",
-          pending && (ready ? readyBarStyle : "border-dashed border-muted-foreground/60 shadow-none"),
+          ready ? readyBarStyle : pending && "border-dashed border-muted-foreground/60 shadow-none",
           task.status === "done" && doneBarStyle,
-          isPaused(task) && "opacity-60",
+          faded && "opacity-60",
         )}
       >
         <div className="absolute inset-x-0 bottom-0 h-1.5">
@@ -778,7 +780,7 @@ function TimelineBarView({
       <div
         className={cn(
           "relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground",
-          isPaused(task) && "opacity-60",
+          faded && "opacity-60",
         )}
         style={{ width: "max-content", minWidth: "100%" }}
       >

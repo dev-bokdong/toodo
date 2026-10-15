@@ -39,6 +39,21 @@ export function isPaused(task: Task): boolean {
   return task.status === "planned" && (task.milestones.startedAt !== null || task.branch !== null);
 }
 
+/**
+ * Whether paused `task` waited on a prerequisite that has been completed since its pause, and
+ * every prerequisite is now done and adopted: the pause came from a new prerequisite, which
+ * no longer blocks it. A task paused by hand had its prerequisites done before it started.
+ */
+export function prerequisitesResolved(task: Task, byId: ReadonlyMap<TaskId, Task>): boolean {
+  const pausedAt = task.milestones.pausedAt;
+  return (
+    isPaused(task) &&
+    pausedAt !== null &&
+    dependenciesDone(task, byId) &&
+    task.dependsOn.some((id) => (byId.get(id)?.milestones.completedAt ?? -Infinity) >= pausedAt)
+  );
+}
+
 /** A planned task that has never been worked on. */
 function isPending(task: Task): boolean {
   return task.status === "planned" && !isPaused(task);
