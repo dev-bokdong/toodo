@@ -108,14 +108,14 @@ function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
 
 const statusStyles: Record<TaskStatus, string> = {
   planned: "bg-muted text-muted-foreground",
-  in_progress: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
+  in_progress: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
   in_review: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
 };
 
 const notAdoptedStyle = "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200";
 
-const readyStyle = "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
+const readyStyle = "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200";
 
 function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   switch (shownStatus(task, byId)) {
