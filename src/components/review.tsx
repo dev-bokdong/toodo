@@ -12,6 +12,7 @@ import {
   durationLabels,
   formatChanges,
   formatDuration,
+  formatReviews,
   groupByOutcome,
   outcomeLabels,
   periodBounds,
@@ -26,6 +27,7 @@ import {
   shiftPeriod,
   summarize,
   weekStarting,
+  yearInReview,
   type PeriodKind,
   type ReviewPeriod,
 } from "@/lib/review";
@@ -226,6 +228,7 @@ export function Review() {
       {review.data && review.data.length > 0 && (
         <ReviewSummaryPanel period={period} entries={review.data} workspaces={workspaces.data ?? []} />
       )}
+      {period.kind === "year" && review.data && <YearInReviewPanel entries={review.data} />}
       {review.data &&
         groupByOutcome(review.data).map((group) => (
           <section key={group.outcome} aria-label={outcomeLabels[group.outcome]} className="flex flex-col gap-2">
@@ -277,6 +280,89 @@ export function Review() {
             </ul>
           </section>
         ))}
+    </section>
+  );
+}
+
+function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
+  const year = yearInReview(entries);
+  if (year === null) return null;
+  return (
+    <section aria-labelledby="year-in-review-heading" className="flex flex-col gap-3 rounded-lg border p-3">
+      <h3 id="year-in-review-heading" className="text-sm font-semibold">
+        Year in review
+      </h3>
+      {year.pullRequests && (
+        <dl className="flex flex-wrap gap-x-6 gap-y-2">
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Merged pull requests</dt>
+            <dd className="text-lg font-semibold">{year.pullRequests.pullRequests}</dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Lines changed</dt>
+            <dd className="text-lg font-semibold">
+              <span className="text-emerald-700 dark:text-emerald-300">+{year.pullRequests.additions}</span>
+              <span className="text-muted-foreground"> / </span>
+              <span className="text-rose-700 dark:text-rose-300">-{year.pullRequests.deletions}</span>
+            </dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Files changed</dt>
+            <dd className="text-lg font-semibold">{year.pullRequests.changedFiles}</dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Reviews</dt>
+            <dd className="text-lg font-semibold" title={formatReviews(year.pullRequests)}>
+              {year.pullRequests.reviews}
+              <span className="ml-1 text-xs font-normal text-muted-foreground">
+                on {year.pullRequests.reviewed} of {year.pullRequests.pullRequests}
+              </span>
+            </dd>
+          </div>
+        </dl>
+      )}
+      {year.largest.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">Largest pull requests</h4>
+          <ol aria-label="Largest pull requests" className="flex flex-col gap-1">
+            {year.largest.map(({ task, pullRequest }) => (
+              <li key={task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                <TaskTypeBadge type={task.taskType} />
+                <span className="truncate font-medium">{task.title}</span>
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">{pullRequestStats(pullRequest)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {year.research.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">Research conclusions</h4>
+          <ul aria-label="Research conclusions" className="flex flex-col divide-y rounded-md border">
+            {year.research.map(({ task, at, adopted }) => (
+              <li key={task.id} className="flex flex-col gap-1 px-2 py-1.5">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                  <span className="truncate font-medium">{task.title}</span>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
+                      adopted
+                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                        : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200",
+                    )}
+                  >
+                    {adopted ? "Adopted" : "Not adopted"}
+                  </span>
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{formatDate(at)}</span>
+                </div>
+                <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line text-xs">
+                  {task.completionNote ?? <span className="text-muted-foreground">No conclusion written.</span>}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   );
 }
