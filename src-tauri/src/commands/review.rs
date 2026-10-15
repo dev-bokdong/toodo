@@ -114,6 +114,8 @@ mod tests {
                     task_type: TaskType::Feat,
                     title: format!("Work on {name}"),
                     description: String::new(),
+                    estimate: None,
+                    due_date: None,
                 })
                 .unwrap()
         };

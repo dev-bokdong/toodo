@@ -9,6 +9,14 @@ import type {
   Workspace,
 } from "@/lib/bindings";
 import { activeSeconds, formatDate } from "@/lib/timeline";
+import {
+  dueEnd,
+  dueState,
+  dueStateLabels,
+  estimatedSeconds,
+  formatEstimate,
+  secondsPastDue,
+} from "@/lib/plan";
 
 export const outcomeLabels: Record<ReviewOutcome, string> = {
   completed: "Completed",
@@ -301,6 +309,102 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
   };
 }
 
+/** A task that was done after its due date, or was still open after it. */
+export interface LateTask {
+  task: Task;
+  dueDate: string;
+  done: boolean;
+  /** Seconds from the end of the due day to completion, or to the end of the period for an open task. */
+  secondsLate: number;
+}
+
+/** How the work of a period went against its plan: estimates and due dates. */
+export interface PlanVsActual {
+  /** Completed tasks estimated in hours with a recorded active time; durations in seconds. */
+  hours: { tasks: number; estimated: number; actual: number } | null;
+  /** Completed tasks estimated in points. */
+  points: { tasks: number; points: number } | null;
+  /** Completed tasks with a due date, and how many of them were done by it. */
+  dueDates: { tasks: number; onTime: number } | null;
+  /** Completed tasks done late and open tasks past their due date, the latest first. */
+  late: LateTask[];
+}
+
+/**
+ * Estimates and due dates of the reviewed tasks against what happened. An open task counts
+ * as late when its due date passed before the end of the period, or before `now` while the
+ * period is still under way. Null when no reviewed task has an estimate or a due date.
+ */
+export function planVsActual(period: ReviewPeriod, entries: ReviewEntry[], now: Timestamp): PlanVsActual | null {
+  const cutoff = Math.min(now, periodBounds(period).end);
+  const completed = entries.filter((entry) => entry.outcome === "completed");
+  const timed = completed.flatMap(({ task, at }) => {
+    const estimated = estimatedSeconds(task.estimate);
+    const actual = activeSeconds(task.timeline, at);
+    return estimated === null || actual === null ? [] : [{ estimated, actual }];
+  });
+  const pointed = completed.flatMap(({ task }) => (task.estimate?.unit === "points" ? [task.estimate.amount] : []));
+  const due = completed.flatMap(({ task }) => {
+    const state = dueState(task, now);
+    return state === "on_time" || state === "late" ? [state] : [];
+  });
+  const late = entries
+    .flatMap(({ task, outcome }): LateTask[] => {
+      if (task.dueDate === null) return [];
+      if (task.status === "done") {
+        return outcome === "completed" && dueState(task, now) === "late"
+          ? [{ task, dueDate: task.dueDate, done: true, secondsLate: secondsPastDue(task, now) }]
+          : [];
+      }
+      const end = dueEnd(task.dueDate);
+      return cutoff >= end ? [{ task, dueDate: task.dueDate, done: false, secondsLate: cutoff - end }] : [];
+    })
+    .sort((a, b) => b.secondsLate - a.secondsLate || a.task.id - b.task.id);
+  const planned = entries.some(({ task }) => task.estimate !== null || task.dueDate !== null);
+  if (!planned) return null;
+  return {
+    hours:
+      timed.length === 0
+        ? null
+        : {
+            tasks: timed.length,
+            estimated: timed.reduce((total, { estimated }) => total + estimated, 0),
+            actual: timed.reduce((total, { actual }) => total + actual, 0),
+          },
+    points:
+      pointed.length === 0
+        ? null
+        : { tasks: pointed.length, points: pointed.reduce((total, points) => total + points, 0) },
+    dueDates:
+      due.length === 0 ? null : { tasks: due.length, onTime: due.filter((state) => state === "on_time").length },
+    late,
+  };
+}
+
+/** Estimated against active hours, e.g. `12h estimated, 15h active (4 tasks, 1.25x)`. */
+export function formatEstimateAccuracy(hours: NonNullable<PlanVsActual["hours"]>): string {
+  return `${formatDuration(hours.estimated)} estimated, ${formatDuration(hours.actual)} active (${plural(
+    hours.tasks,
+    "task",
+  )}, ${(hours.actual / hours.estimated).toFixed(2)}x)`;
+}
+
+/** Share of due dates met, e.g. `3 of 4 (75%)`. */
+export function formatDueRate(dueDates: NonNullable<PlanVsActual["dueDates"]>): string {
+  return `${dueDates.onTime} of ${dueDates.tasks} (${Math.round((dueDates.onTime / dueDates.tasks) * 100)}%)`;
+}
+
+export function formatPoints(points: NonNullable<PlanVsActual["points"]>): string {
+  return `${Math.round(points.points * 100) / 100} (${plural(points.tasks, "task")})`;
+}
+
+/** Why a late task is late, e.g. `due 2026-10-10, done 2026-10-12, 1.5d late`. */
+export function lateDetails({ task, dueDate, done, secondsLate }: LateTask): string {
+  const completedAt = task.milestones.completedAt;
+  const finish = done && completedAt !== null ? `done ${formatDate(completedAt)}` : "still open";
+  return `due ${dueDate}, ${finish}, ${formatDuration(secondsLate)} ${done ? "late" : "overdue"}`;
+}
+
 /** Merged pull requests of completed tasks with their size and reviews, summed. */
 export interface PullRequestTotals extends ChangeStat {
   /** Submitted reviews by anyone but the author, over all pull requests. */
@@ -316,7 +420,14 @@ export interface ResearchConclusion {
   adopted: boolean;
 }
 
-/** The highlights of a year: merged pull request snapshots and research conclusions. */
+/** A completed task that took more active time than its estimate in hours; durations in seconds. */
+export interface Overrun {
+  task: Task;
+  estimated: number;
+  actual: number;
+}
+
+/** The highlights of a year: merged pull request snapshots, research conclusions, and estimate overruns. */
 export interface YearInReview {
   /** `null` when no completed task recorded a pull request snapshot. */
   pullRequests: PullRequestTotals | null;
@@ -324,13 +435,16 @@ export interface YearInReview {
   largest: { task: Task; pullRequest: PullRequestSnapshot }[];
   /** Completed research tasks, oldest first. */
   research: ResearchConclusion[];
+  /** The tasks that overran their estimate the most, largest first, at most three. */
+  overruns: Overrun[];
 }
 
 const largestPullRequests = 3;
+const largestOverruns = 3;
 
 /**
- * Pull request snapshots and research conclusions of the tasks completed in `entries`;
- * `null` when there is neither.
+ * Pull request snapshots, research conclusions, and estimate overruns of the tasks
+ * completed in `entries`; `null` when there are none.
  */
 export function yearInReview(entries: ReviewEntry[]): YearInReview | null {
   const completed = entries.filter((entry) => entry.outcome === "completed");
@@ -339,7 +453,15 @@ export function yearInReview(entries: ReviewEntry[]): YearInReview | null {
     .filter(({ task }) => task.taskType === "rnd")
     .map(({ task, at }) => ({ task, at, adopted: task.resolution !== "not_adopted" }))
     .sort((a, b) => a.at - b.at || a.task.id - b.task.id);
-  if (merged.length === 0 && research.length === 0) return null;
+  const overruns = completed
+    .flatMap(({ task, at }) => {
+      const estimated = estimatedSeconds(task.estimate);
+      const actual = activeSeconds(task.timeline, at);
+      return estimated === null || actual === null || actual <= estimated ? [] : [{ task, estimated, actual }];
+    })
+    .sort((a, b) => b.actual - b.estimated - (a.actual - a.estimated) || a.task.id - b.task.id)
+    .slice(0, largestOverruns);
+  if (merged.length === 0 && research.length === 0 && overruns.length === 0) return null;
   const size = ({ pullRequest }: (typeof merged)[number]) => pullRequest.additions + pullRequest.deletions;
   return {
     pullRequests:
@@ -360,6 +482,7 @@ export function yearInReview(entries: ReviewEntry[]): YearInReview | null {
       .sort((a, b) => size(b) - size(a) || a.task.id - b.task.id)
       .slice(0, largestPullRequests),
     research,
+    overruns,
   };
 }
 
@@ -387,6 +510,14 @@ function yearInReviewMarkdown(year: YearInReview): string[] {
     for (const { task, adopted } of year.research) {
       const conclusion = task.completionNote ? `: ${oneLine(task.completionNote)}` : "";
       lines.push(`  - ${task.title} (${adopted ? "adopted" : "not adopted"})${conclusion}`);
+    }
+  }
+  if (year.overruns.length > 0) {
+    lines.push("- Largest estimate overruns:");
+    for (const { task, estimated, actual } of year.overruns) {
+      lines.push(
+        `  - [${task.taskType}] ${task.title} (estimated ${formatDuration(estimated)}, ${formatDuration(actual)} active)`,
+      );
     }
   }
   lines.push("");
@@ -434,8 +565,13 @@ export const durationLabels = {
   reviewTime: "Median review time (in review to merged)",
 } as const;
 
-/** The review of `period` as Markdown, for pasting into a report. */
-export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], workspaces: Workspace[]): string {
+/** The review of `period` as Markdown, for pasting into a report; due dates are judged at `now`. */
+export function reviewMarkdown(
+  period: ReviewPeriod,
+  entries: ReviewEntry[],
+  workspaces: Workspace[],
+  now: Timestamp,
+): string {
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const lines = [`# ${periodTitles[period.kind]}: ${periodLabel(period)}`, ""];
   const groups = groupByOutcome(entries);
@@ -467,7 +603,18 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
   for (const key of durationKeys) {
     lines.push(`- ${durationLabels[key]}: ${formatStat(summary[key])}`);
   }
+  const plan = planVsActual(period, entries, now);
+  if (plan?.hours) lines.push(`- Estimate vs active time: ${formatEstimateAccuracy(plan.hours)}`);
+  if (plan?.points) lines.push(`- Points completed: ${formatPoints(plan.points)}`);
+  if (plan?.dueDates) lines.push(`- Due dates met: ${formatDueRate(plan.dueDates)}`);
   lines.push("");
+  if (plan && plan.late.length > 0) {
+    lines.push(`## Late (${plan.late.length})`, "");
+    for (const late of plan.late) {
+      lines.push(`- [${late.task.taskType}] ${late.task.title} (${lateDetails(late)})`);
+    }
+    lines.push("");
+  }
   const year = period.kind === "year" ? yearInReview(entries) : null;
   if (year) lines.push(...yearInReviewMarkdown(year));
   if (summary.completedPerMonth) {
@@ -482,6 +629,8 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
       const notAdopted = task.resolution === "not_adopted";
       const details = [names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`, formatDate(at)];
       if (notAdopted) details.push("not adopted");
+      if (task.estimate) details.push(`estimate ${formatEstimate(task.estimate)}`);
+      if (task.dueDate) details.push(`due ${task.dueDate}`);
       if (task.issue) details.push(task.issue.url);
       if (task.pullRequestUrl) details.push(task.pullRequestUrl);
       if (task.pullRequest) details.push(pullRequestStats(task.pullRequest));
@@ -532,6 +681,10 @@ const csvColumns = [
   "Issue",
   "Commits in period",
   "Active hours",
+  "Estimate",
+  "Estimate unit",
+  "Due date",
+  "Due status",
   "Additions",
   "Deletions",
   "Changed files",
@@ -564,6 +717,10 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: 
     task.issue?.url ?? null,
     commits.length,
     activeHours(activeSeconds(task.timeline, now)),
+    task.estimate?.amount ?? null,
+    task.estimate?.unit ?? null,
+    task.dueDate,
+    dueStateCsv(task, now),
     task.pullRequest?.additions ?? null,
     task.pullRequest?.deletions ?? null,
     task.pullRequest?.changedFiles ?? null,
@@ -571,6 +728,11 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: 
     task.completionNote && oneLine(task.completionNote),
   ]);
   return `\uFEFF${[csvColumns, ...rows].map((row) => row.map(csvField).join(",")).join("\r\n")}\r\n`;
+}
+
+function dueStateCsv(task: Task, now: Timestamp): string | null {
+  const state = dueState(task, now);
+  return state === null ? null : state === "upcoming" ? "Not due yet" : dueStateLabels[state];
 }
 
 function activeHours(seconds: number | null): number | null {

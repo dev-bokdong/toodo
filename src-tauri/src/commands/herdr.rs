@@ -476,6 +476,8 @@ mod tests {
                 task_type: TaskType::Feat,
                 title: "Add login".to_owned(),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap();
         if let Some(settings) = settings {
@@ -712,6 +714,8 @@ mod tests {
                     task_type: TaskType::Feat,
                     title: "Add accounts".to_owned(),
                     description: String::new(),
+                    estimate: None,
+                    due_date: None,
                 })
                 .unwrap();
             storage
@@ -1194,6 +1198,8 @@ mod tests {
                 task_type: TaskType::Fix,
                 title: title.to_owned(),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap()
     }

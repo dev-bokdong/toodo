@@ -2,10 +2,12 @@
 //! the rules the UI follows: the dependency DAG stays acyclic and readiness stays in sync.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::commands::tasks::edit_task;
-use crate::commands::types::{self, Task, TaskEdit, TaskId, TaskType, Workspace, WorkspaceId};
+use crate::commands::types::{
+    self, Estimate, Task, TaskEdit, TaskId, TaskType, Workspace, WorkspaceId,
+};
 use crate::commands::{CommandError, CommandResult};
 use crate::domain::model::NoteKind;
 use crate::storage::{self, Storage, StorageError};
@@ -36,6 +38,12 @@ pub struct CreateTask {
     /// Tasks the new task depends on, from any workspace.
     #[serde(default)]
     pub depends_on: Vec<TaskId>,
+    /// Your estimate of the work, in hours of active work or story points.
+    #[serde(default)]
+    pub estimate: Option<Estimate>,
+    /// The day the task should be done by, as YYYY-MM-DD, if the user gave one.
+    #[serde(default)]
+    pub due_date: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -48,6 +56,21 @@ pub struct UpdateTask {
     pub title: Option<String>,
     /// Details in GitHub-flavored Markdown; unchanged when omitted.
     pub description: Option<String>,
+    /// Unchanged when omitted; null clears it.
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "Option<Estimate>")]
+    pub estimate: Option<Option<Estimate>>,
+    /// YYYY-MM-DD; unchanged when omitted, null clears it.
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "Option<String>")]
+    pub due_date: Option<Option<String>>,
+}
+
+/// Tells a field given as `null` (`Some(None)`) from an omitted one (`None`, the default).
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -147,6 +170,8 @@ pub fn create_task(storage: &mut Storage, request: CreateTask) -> CommandResult<
         task_type: request.task_type,
         title: request.title,
         description: request.description,
+        estimate: request.estimate,
+        due_date: request.due_date,
     }
     .try_into()?;
     let task = storage.create_task(&new)?;
@@ -173,6 +198,8 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
             task_type: request.task_type.unwrap_or(current.task_type),
             title: request.title.unwrap_or(current.title),
             description: request.description.unwrap_or(current.description),
+            estimate: request.estimate.unwrap_or(current.estimate),
+            due_date: request.due_date.unwrap_or(current.due_date),
         },
     )
 }
@@ -250,6 +277,8 @@ mod tests {
                 title: title.to_owned(),
                 description: String::new(),
                 depends_on,
+                estimate: None,
+                due_date: None,
             },
         )
     }
@@ -375,12 +404,81 @@ mod tests {
                 task_type: None,
                 title: None,
                 description: Some("Add tables".to_owned()),
+                estimate: None,
+                due_date: None,
             },
         )
         .unwrap();
         assert_eq!(updated.title, "Schema");
         assert_eq!(updated.task_type, TaskType::Feat);
         assert_eq!(updated.description, "Add tables");
+    }
+
+    #[test]
+    fn estimates_and_due_dates_are_set_kept_when_omitted_and_cleared_by_null() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let request: CreateTask = serde_json::from_value(serde_json::json!({
+            "workspace_id": workspace,
+            "task_type": "feat",
+            "title": "Schema",
+            "estimate": { "unit": "hours", "amount": 2.5 },
+            "due_date": "2026-10-20",
+        }))
+        .unwrap();
+        let task = create_task(&mut storage, request).unwrap();
+        let planned = Some(Estimate {
+            unit: types::EstimateUnit::Hours,
+            amount: 2.5,
+        });
+        assert_eq!(task.estimate, planned);
+        assert_eq!(task.due_date.as_deref(), Some("2026-10-20"));
+
+        let update = |storage: &mut Storage, fields: serde_json::Value| {
+            let mut request = serde_json::json!({ "id": task.id });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            update_task(storage, serde_json::from_value(request).unwrap())
+        };
+        let kept = update(&mut storage, serde_json::json!({ "title": "Tables" })).unwrap();
+        assert_eq!(
+            (kept.estimate, kept.due_date.as_deref()),
+            (planned, Some("2026-10-20"))
+        );
+        let points = update(
+            &mut storage,
+            serde_json::json!({ "estimate": { "unit": "points", "amount": 3 }, "due_date": null }),
+        )
+        .unwrap();
+        assert_eq!(
+            (points.estimate, points.due_date),
+            (
+                Some(Estimate {
+                    unit: types::EstimateUnit::Points,
+                    amount: 3.0
+                }),
+                None
+            )
+        );
+        let cleared = update(&mut storage, serde_json::json!({ "estimate": null })).unwrap();
+        assert_eq!(cleared.estimate, None);
+        assert_eq!(
+            Task::from(&storage.get_task(task.id.into()).unwrap().unwrap()),
+            cleared
+        );
+
+        for invalid in [
+            serde_json::json!({ "due_date": "2026-02-30" }),
+            serde_json::json!({ "estimate": { "unit": "hours", "amount": 0 } }),
+        ] {
+            let error = update(&mut storage, invalid.clone()).unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::InvalidInput, "{invalid}");
+        }
+        assert_eq!(
+            Task::from(&storage.get_task(task.id.into()).unwrap().unwrap()),
+            cleared
+        );
     }
 
     #[test]

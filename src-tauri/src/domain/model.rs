@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use super::path::{PosixPath, WindowsPath};
+use super::plan::{DueDate, Estimate};
 use super::status::TaskStatus;
 use super::timeline::TaskEvent;
 
@@ -239,6 +240,10 @@ pub struct Task {
     /// The GitHub issue of the workspace repository this task works on; its pull request
     /// closes it on merge.
     pub issue: Option<LinkedIssue>,
+    /// The expected size of the task, if the user or an agent estimated it.
+    pub estimate: Option<Estimate>,
+    /// The day the task should be done by, if it has one.
+    pub due_date: Option<DueDate>,
     /// Merge time of the pull request reported by GitHub, in seconds since the Unix
     /// epoch.
     pub pull_request_merged_at: Option<i64>,

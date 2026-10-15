@@ -88,6 +88,8 @@ mod tests {
                 task_type: TaskType::Feat,
                 title: "Use login".to_owned(),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap();
         let checkout = TaskCheckout {

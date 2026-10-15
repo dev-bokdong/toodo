@@ -116,6 +116,8 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     herdrWorkspaceId: null,
     pullRequestUrl: null,
     issue: null,
+    estimate: null,
+    dueDate: null,
     pullRequestMergedAt: null,
     pullRequest: null,
     resolution: null,
@@ -864,6 +866,11 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Write docs")] });
     fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "docs" } });
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Write docs" } });
+    fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
+    expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "2.5" } });
+    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "points" } });
+    fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-11-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
     expect(await screen.findByText("Write docs")).toBeInTheDocument();
@@ -872,7 +879,10 @@ describe("App", () => {
       taskType: "docs",
       title: "Write docs",
       description: "",
+      estimate: { unit: "points", amount: 2.5 },
+      dueDate: "2026-11-01",
     });
+    expect(screen.getByLabelText("Estimate")).toHaveValue("");
   });
 
   it("links the issue number given with a new task", async () => {
@@ -1597,7 +1607,11 @@ describe("App", () => {
   });
 
   it("edits the type, title, and description of a task", async () => {
-    const original = task(1, 1, "Add login", { description: "old" });
+    const original = task(1, 1, "Add login", {
+      description: "old",
+      estimate: { unit: "hours", amount: 3 },
+      dueDate: "2026-11-01",
+    });
     const edited = { ...original, taskType: "fix" as const, title: "Add sign-in", description: "new" };
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
@@ -1609,6 +1623,9 @@ describe("App", () => {
     fireEvent.change(within(form).getByLabelText("Type of #1"), { target: { value: "fix" } });
     fireEvent.change(within(form).getByLabelText("Title of #1"), { target: { value: "  Add sign-in " } });
     fireEvent.change(within(form).getByLabelText("Description of #1"), { target: { value: " new " } });
+    expect(within(form).getByLabelText("Estimate of #1")).toHaveValue("3");
+    fireEvent.change(within(form).getByLabelText("Estimate of #1"), { target: { value: "" } });
+    fireEvent.change(within(form).getByLabelText("Due date of #1"), { target: { value: "2026-12-01" } });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [edited] });
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
 
@@ -1619,6 +1636,8 @@ describe("App", () => {
       taskType: "fix",
       title: "Add sign-in",
       description: "new",
+      estimate: null,
+      dueDate: "2026-12-01",
     });
   });
 

@@ -7,6 +7,7 @@ import {
   periodBounds,
   periodContaining,
   periodLabel,
+  planVsActual,
   reviewCsv,
   reviewFileName,
   reviewMarkdown,
@@ -22,6 +23,7 @@ afterEach(() => {
 });
 
 const hour = 3600;
+const reviewNow = new Date(2026, 11, 31).getTime() / 1000;
 const day = 24 * hour;
 const local = (year: number, month: number, date: number, hours = 0) =>
   new Date(year, month - 1, date, hours).getTime() / 1000;
@@ -41,6 +43,8 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       herdrWorkspaceId: null,
       pullRequestUrl: null,
       issue: null,
+      estimate: null,
+      dueDate: null,
       pullRequestMergedAt: null,
       pullRequest: null,
       resolution: null,
@@ -321,7 +325,7 @@ describe("reviewMarkdown", () => {
       },
     ];
 
-    expect(reviewMarkdown(weekStarting("2026-10-12"), [entry(2, "worked_on", { taskType: "fix" }), done], [toodo])).toBe(
+    expect(reviewMarkdown(weekStarting("2026-10-12"), [entry(2, "worked_on", { taskType: "fix" }), done], [toodo], reviewNow)).toBe(
       [
         "# Week review: 2026-10-12 to 2026-10-18",
         "",
@@ -354,6 +358,7 @@ describe("reviewMarkdown", () => {
       periodContaining("quarter", "2026-10-01"),
       [completed(1, local(2026, 11, 3), {})],
       [toodo],
+      reviewNow,
     );
 
     expect(markdown.startsWith("# Quarter review: 2026 Q4\n")).toBe(true);
@@ -367,7 +372,7 @@ describe("reviewMarkdown", () => {
       completed(2, at, {}, { pullRequest: { ...snapshot(13), changedFiles: 1, reviewCount: 1 } }),
       entry(3, "started"),
     ];
-    const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo]);
+    const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo], reviewNow);
 
     expect(markdown).toContain("- Changes in completed pull requests: +240/-60 in 5 files (2 pull requests)\n");
     expect(markdown).toContain(
@@ -388,7 +393,7 @@ describe("reviewMarkdown", () => {
       }),
     ];
     const summary = summarize(weekStarting("2026-10-12"), entries, [toodo]);
-    const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo]);
+    const markdown = reviewMarkdown(weekStarting("2026-10-12"), entries, [toodo], reviewNow);
 
     expect(summary.notAdopted).toBe(1);
     expect(markdown).toContain("- Concluded without merging (not adopted): 1\n");
@@ -396,7 +401,7 @@ describe("reviewMarkdown", () => {
     expect(markdown).toContain(
       "- [rnd] Task 2 (toodo, 2026-10-13, not adopted, https://github.com/acme/toodo/pull/5)\n  - Conclusion: Twice as slow as the current cache\n",
     );
-    expect(reviewMarkdown(weekStarting("2026-10-12"), entries.slice(0, 1), [toodo])).not.toContain(
+    expect(reviewMarkdown(weekStarting("2026-10-12"), entries.slice(0, 1), [toodo], reviewNow)).not.toContain(
       "not adopted",
     );
   });
@@ -412,7 +417,7 @@ describe("reviewMarkdown", () => {
       ],
     });
 
-    const markdown = reviewMarkdown(week, [working], [toodo]);
+    const markdown = reviewMarkdown(week, [working], [toodo], reviewNow);
 
     expect(markdown).toContain(
       "- [feat] Task 1 (toodo, 2026-10-13)\n  - Progress: Chose PKCE over implicit flow\n  - Blocker: No test account\n",
@@ -422,8 +427,108 @@ describe("reviewMarkdown", () => {
   });
 
   it("says so when the period has no recorded activity", () => {
-    expect(reviewMarkdown(periodContaining("year", "2026-01-01"), [], [toodo])).toBe(
+    expect(reviewMarkdown(periodContaining("year", "2026-01-01"), [], [toodo], reviewNow)).toBe(
       "# Year review: 2026\n\nNo recorded activity.\n",
+    );
+  });
+});
+
+describe("planVsActual", () => {
+  const week = weekStarting("2026-10-12");
+  const worked = (start: number, end: number): Task["timeline"] => [
+    { status: "in_progress", at: start },
+    { status: "done", at: end },
+  ];
+
+  it("compares hour estimates with active time, sums points, and rates due dates of completed tasks", () => {
+    const entries = [
+      completed(1, local(2026, 10, 13, 12), {}, {
+        estimate: { unit: "hours", amount: 2 },
+        dueDate: "2026-10-13",
+        timeline: worked(local(2026, 10, 13, 9), local(2026, 10, 13, 12)),
+      }),
+      completed(2, local(2026, 10, 15, 10), {}, {
+        estimate: { unit: "hours", amount: 4 },
+        dueDate: "2026-10-14",
+        timeline: worked(local(2026, 10, 15, 9), local(2026, 10, 15, 10)),
+      }),
+      completed(3, local(2026, 10, 16), {}, { estimate: { unit: "points", amount: 5 } }),
+      completed(4, local(2026, 10, 16), {}, { estimate: { unit: "hours", amount: 1 } }),
+    ];
+
+    const plan = planVsActual(week, entries, reviewNow);
+
+    expect(plan?.hours).toEqual({ tasks: 2, estimated: 6 * hour, actual: 4 * hour });
+    expect(plan?.points).toEqual({ tasks: 1, points: 5 });
+    expect(plan?.dueDates).toEqual({ tasks: 2, onTime: 1 });
+    expect(plan?.late.map(({ task, done, secondsLate }) => [task.id, done, secondsLate])).toEqual([
+      [2, true, 10 * hour],
+    ]);
+  });
+
+  it("counts open tasks late once their due date passed before the end of the period or now", () => {
+    const entries = [
+      entry(1, "started", { dueDate: "2026-10-14" }),
+      entry(2, "started", { dueDate: "2026-10-20" }),
+      entry(3, "planned", { dueDate: "2026-10-12", status: "planned" }),
+      // Done late, but completed outside this period.
+      entry(4, "worked_on", {
+        status: "done",
+        dueDate: "2026-10-12",
+        milestones: { ...entry(4, "worked_on").task.milestones, completedAt: local(2026, 10, 25) },
+      }),
+    ];
+
+    const late = planVsActual(week, entries, local(2026, 10, 16, 6))?.late;
+
+    expect(late?.map(({ task, done, secondsLate }) => [task.id, done, secondsLate])).toEqual([
+      [3, false, 3 * day + 6 * hour],
+      [1, false, day + 6 * hour],
+    ]);
+    expect(planVsActual(week, entries, reviewNow)?.late.map(({ task }) => task.id)).toEqual([3, 1]);
+    expect(planVsActual(week, [entry(5, "started")], reviewNow)).toBeNull();
+  });
+
+  it("adds the plan to the summary and a Late section to the Markdown", () => {
+    const entries = [
+      completed(1, local(2026, 10, 15, 10), {}, {
+        title: "Ship",
+        estimate: { unit: "hours", amount: 4 },
+        dueDate: "2026-10-14",
+        timeline: worked(local(2026, 10, 15, 4), local(2026, 10, 15, 10)),
+      }),
+    ];
+
+    const markdown = reviewMarkdown(week, entries, [toodo], reviewNow);
+
+    expect(markdown).toContain("- Estimate vs active time: 4h estimated, 6h active (1 task, 1.50x)\n");
+    expect(markdown).toContain("- Due dates met: 0 of 1 (0%)\n");
+    expect(markdown).toContain("## Late (1)\n\n- [feat] Ship (due 2026-10-14, done 2026-10-15, 10h late)\n");
+    expect(markdown).toContain("- [feat] Ship (toodo, 2026-10-15, estimate 4h, due 2026-10-14)");
+  });
+});
+
+describe("yearInReview overruns", () => {
+  it("ranks completed tasks by how far their active time overran an hour estimate", () => {
+    const overran = (id: number, estimate: number, activeHours: number) =>
+      completed(id, local(2026, 5, 1, 12), {}, {
+        estimate: { unit: "hours", amount: estimate },
+        timeline: [
+          { status: "in_progress", at: local(2026, 5, 1, 12) - activeHours * hour },
+          { status: "done", at: local(2026, 5, 1, 12) },
+        ],
+      });
+    const entries = [overran(1, 2, 3), overran(2, 1, 6), overran(3, 4, 2), overran(4, 1, 3), overran(5, 2, 4)];
+
+    const year = yearInReview(entries);
+
+    expect(year?.overruns.map(({ task, estimated, actual }) => [task.id, estimated, actual])).toEqual([
+      [2, hour, 6 * hour],
+      [4, hour, 3 * hour],
+      [5, 2 * hour, 4 * hour],
+    ]);
+    expect(reviewMarkdown(periodContaining("year", "2026-06-01"), entries, [toodo], reviewNow)).toContain(
+      "- Largest estimate overruns:\n  - [feat] Task 2 (estimated 1h, 6h active)\n",
     );
   });
 });
@@ -490,7 +595,7 @@ describe("yearInReview", () => {
       }),
     ];
 
-    const markdown = reviewMarkdown(periodContaining("year", "2026-06-01"), entries, [toodo]);
+    const markdown = reviewMarkdown(periodContaining("year", "2026-06-01"), entries, [toodo], reviewNow);
 
     expect(markdown).toContain(
       [
@@ -505,7 +610,7 @@ describe("yearInReview", () => {
         "",
       ].join("\n"),
     );
-    expect(reviewMarkdown(periodContaining("quarter", "2026-06-01"), entries, [toodo])).not.toContain(
+    expect(reviewMarkdown(periodContaining("quarter", "2026-06-01"), entries, [toodo], reviewNow)).not.toContain(
       "Year in review",
     );
   });
@@ -522,6 +627,8 @@ describe("reviewCsv", () => {
       pullRequest: snapshot(3),
       completionNote: "Cut login time\n  in half, finally",
       resolution: "not_adopted",
+      estimate: { unit: "hours", amount: 2 },
+      dueDate: "2026-10-12",
     });
 
     done.task.timeline = [
@@ -538,9 +645,9 @@ describe("reviewCsv", () => {
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
-          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,120,30,4,2,"Cut login time in half, finally"',
-          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,,0,0.5,,,,,",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Estimate,Estimate unit,Due date,Due status,Additions,Deletions,Changed files,Reviews,Completion note",
+          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,2,hours,2026-10-12,Late,120,30,4,2,"Cut login time in half, finally"',
+          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,,0,0.5,,,,,,,,,",
         ].join("\r\n") +
         "\r\n",
     );

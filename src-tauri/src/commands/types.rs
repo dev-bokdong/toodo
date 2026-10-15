@@ -8,7 +8,7 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{git, github, herdr, ssh};
-use crate::domain::{backup, model, path, review, ssh_config, status, timeline};
+use crate::domain::{backup, model, path, plan, review, ssh_config, status, timeline};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -59,6 +59,70 @@ fn required(field: &str, value: String) -> CommandResult<String> {
         )));
     }
     Ok(trimmed.to_owned())
+}
+
+/// What an estimate counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateUnit {
+    /// Hours of active work, compared with the time the task spends in progress or in
+    /// review.
+    Hours,
+    /// Story points: relative size.
+    Points,
+}
+
+/// The expected size of a task.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Estimate {
+    pub unit: EstimateUnit,
+    /// Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN
+    /// or infinite, which specta's default `number | null` allows for.
+    #[specta(type = Number)]
+    pub amount: f64,
+}
+
+// JSON cannot carry NaN, and outgoing amounts come from validated domain estimates.
+impl Eq for Estimate {}
+
+impl From<plan::Estimate> for Estimate {
+    fn from(estimate: plan::Estimate) -> Self {
+        Self {
+            unit: match estimate.unit() {
+                plan::EstimateUnit::Hours => EstimateUnit::Hours,
+                plan::EstimateUnit::Points => EstimateUnit::Points,
+            },
+            amount: estimate.amount(),
+        }
+    }
+}
+
+impl TryFrom<Estimate> for plan::Estimate {
+    type Error = CommandError;
+
+    fn try_from(estimate: Estimate) -> CommandResult<Self> {
+        let unit = match estimate.unit {
+            EstimateUnit::Hours => plan::EstimateUnit::Hours,
+            EstimateUnit::Points => plan::EstimateUnit::Points,
+        };
+        plan::Estimate::new(unit, estimate.amount)
+            .map_err(|error| CommandError::invalid_input(error.to_string()))
+    }
+}
+
+pub(crate) fn estimate(estimate: Option<Estimate>) -> CommandResult<Option<plan::Estimate>> {
+    estimate.map(plan::Estimate::try_from).transpose()
+}
+
+/// A due date as `YYYY-MM-DD`; blank means none.
+pub(crate) fn due_date(raw: Option<&str>) -> CommandResult<Option<plan::DueDate>> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(raw) => plan::DueDate::parse(raw)
+            .map(Some)
+            .map_err(|error| CommandError::invalid_input(error.to_string())),
+    }
 }
 
 fn machine_label(raw: &str) -> CommandResult<model::MachineLabel> {
@@ -499,6 +563,10 @@ pub struct Task {
     pub pull_request_url: Option<String>,
     /// The GitHub issue this task works on; its pull request closes it on merge.
     pub issue: Option<LinkedIssue>,
+    /// The expected size of the task, if estimated.
+    pub estimate: Option<Estimate>,
+    /// The day the task should be done by, as `YYYY-MM-DD` in local time.
+    pub due_date: Option<String>,
     /// Merge time of the pull request reported by GitHub.
     pub pull_request_merged_at: Option<Timestamp>,
     /// The pull request as GitHub reported it when its merge completed the task; `null`
@@ -660,6 +728,8 @@ impl From<&model::Task> for Task {
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
             issue: task.issue.as_ref().map(LinkedIssue::from),
+            estimate: task.estimate.map(Estimate::from),
+            due_date: task.due_date.map(|due| due.to_string()),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
             pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
             completion_note: task.completion_note.clone(),
@@ -720,6 +790,9 @@ pub struct NewTask {
     pub task_type: TaskType,
     pub title: String,
     pub description: String,
+    pub estimate: Option<Estimate>,
+    /// `YYYY-MM-DD`; blank or `null` for none.
+    pub due_date: Option<String>,
 }
 
 impl TryFrom<NewTask> for storage::NewTask {
@@ -731,6 +804,8 @@ impl TryFrom<NewTask> for storage::NewTask {
             task_type: new.task_type.into(),
             title: required("task title", new.title)?,
             description: new.description,
+            estimate: estimate(new.estimate)?,
+            due_date: due_date(new.due_date.as_deref())?,
         })
     }
 }
@@ -744,6 +819,10 @@ pub struct TaskEdit {
     pub task_type: TaskType,
     pub title: String,
     pub description: String,
+    /// `null` clears the estimate.
+    pub estimate: Option<Estimate>,
+    /// `YYYY-MM-DD`; blank or `null` clears the due date.
+    pub due_date: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]

@@ -50,6 +50,8 @@ pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<
     task.task_type = edit.task_type.into();
     task.title = title.to_owned();
     task.description = edit.description;
+    task.estimate = types::estimate(edit.estimate)?;
+    task.due_date = types::due_date(edit.due_date.as_deref())?;
     storage.update_task(&task)?;
     Ok((&task).into())
 }
@@ -184,6 +186,8 @@ mod tests {
                 task_type: model::TaskType::Feat,
                 title: "Add commands".to_owned(),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap();
         task.branch = Some("feat/add-commands-1".to_owned());
@@ -201,10 +205,17 @@ mod tests {
                 task_type: types::TaskType::Fix,
                 title: "  Fix commands ".to_owned(),
                 description: "details".to_owned(),
+                estimate: Some(types::Estimate {
+                    unit: types::EstimateUnit::Points,
+                    amount: 3.0,
+                }),
+                due_date: Some(" 2026-10-31 ".to_owned()),
             },
         )
         .unwrap();
         assert_eq!(edited.title, "Fix commands");
+        assert_eq!(edited.due_date.as_deref(), Some("2026-10-31"));
+        assert_eq!(edited.estimate.map(|estimate| estimate.amount), Some(3.0));
         assert_eq!(edited.task_type, types::TaskType::Fix);
         assert_eq!(edited.branch.as_deref(), Some("feat/add-commands-1"));
         let stored = storage.get_task(task.id).unwrap().unwrap();
@@ -285,6 +296,8 @@ mod tests {
             task_type: types::TaskType::Feat,
             title: title.to_owned(),
             description: String::new(),
+            estimate: None,
+            due_date: None,
         };
         let error = edit_task(&mut storage, edit(task.id.into(), " ")).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);

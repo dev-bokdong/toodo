@@ -38,6 +38,8 @@ fn add_task(storage: &mut Storage, workspace: &Workspace, title: &str) -> Task {
             task_type: TaskType::Feat,
             title: title.to_owned(),
             description: format!("Implement {title}"),
+            estimate: None,
+            due_date: None,
         })
         .unwrap()
 }
@@ -233,6 +235,8 @@ fn workspace_updates_and_cascading_deletes() {
             task_type: TaskType::Docs,
             title: "Orphan".to_owned(),
             description: String::new(),
+            estimate: None,
+            due_date: None,
         }),
         Err(StorageError::WorkspaceNotFound(_))
     ));

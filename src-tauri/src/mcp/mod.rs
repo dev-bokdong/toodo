@@ -65,7 +65,11 @@ task after it. Use remove_dependency to drop an edge.
 rnd), write a short imperative title, and put details in description. Write the \
 description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
 issue body): short paragraphs, `-` lists, `- [ ]` task lists for acceptance criteria, \
-backticks for code, paths, and commands, fenced code blocks, and links; no raw HTML.
+backticks for code, paths, and commands, fenced code blocks, and links; no raw HTML. \
+When you split work into tasks, set estimate to your expected size of each (hours of \
+active work, or points if the workspace's tasks use points); the user's reviews compare it \
+with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
+a deadline.
 5. Leave a record of your work on your task as you go; it feeds the user's reviews of \
 their work. Call add_progress_note when you take a decision worth remembering (the choice \
 and why, e.g. a library or approach over its alternatives) or finish a meaningful step, \
@@ -271,7 +275,9 @@ impl ToodoMcp {
         self.change(|storage| tools::create_task(storage, request))
     }
 
-    #[tool(description = "Change the type, title, or description of a task.")]
+    #[tool(
+        description = "Change the type, title, description, estimate, or due date of a task; omitted fields stay unchanged."
+    )]
     fn update_task(
         &self,
         Parameters(request): Parameters<tools::UpdateTask>,
