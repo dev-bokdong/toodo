@@ -445,6 +445,58 @@ describe("App", () => {
     expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument();
   });
 
+  it("summarizes a hovered timeline bar and moves between rows with the arrow keys", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const planned = { ...task(0, 1, "").milestones, plannedAt };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { status: "done", milestones: { ...planned, completedAt: plannedAt + 3600 } }),
+        task(2, 1, "Add UI", { dependsOn: [1], milestones: planned }),
+        task(3, 1, "Write docs", { dependsOn: [2], milestones: planned }),
+      ],
+    });
+    await renderWorkspace();
+
+    await screen.findByRole("list", { name: "Tasks" });
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bar = (title: string) =>
+      within(timeline.querySelector(".react-flow__nodes") as HTMLElement)
+        .getByText(title)
+        .closest(".react-flow__node") as HTMLElement;
+    await within(timeline).findByText("Write docs");
+
+    fireEvent.mouseEnter(bar("Add storage"));
+    const summary = await screen.findByRole("tooltip", { name: "Summary of #1" });
+    expect(summary).toHaveTextContent("Add storage");
+    expect(summary).toHaveTextContent(`Completed${formatDate(plannedAt + 3600)}`);
+    fireEvent.mouseLeave(bar("Add storage"));
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    // Rows follow the dependency chain: storage, then UI, then docs.
+    const heading = async (title: string) =>
+      within(await within(timeline).findByRole("complementary", { name: "Task details" })).findByRole("heading", {
+        name: title,
+      });
+    bar("Add storage").focus();
+    fireEvent.keyDown(bar("Add storage"), { key: "ArrowDown" });
+    expect(await heading("Add UI")).toBeInTheDocument();
+    expect(bar("Add UI")).toHaveFocus();
+    fireEvent.keyDown(bar("Add UI"), { key: "ArrowDown" });
+    expect(await heading("Write docs")).toBeInTheDocument();
+    fireEvent.keyDown(bar("Write docs"), { key: "ArrowUp" });
+    expect(await heading("Add UI")).toBeInTheDocument();
+    fireEvent.keyDown(bar("Add UI"), { key: "Home" });
+    expect(await heading("Add storage")).toBeInTheDocument();
+    fireEvent.keyDown(bar("Add storage"), { key: "End" });
+    expect(await heading("Write docs")).toBeInTheDocument();
+    expect(bar("Write docs")).toHaveFocus();
+  });
+
   it("shows the agent status of active tasks on the timeline", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
