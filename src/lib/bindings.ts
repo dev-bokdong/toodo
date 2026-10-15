@@ -100,6 +100,12 @@ export const commands = {
 	 */
 	restoreTaskWorktree: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("restore_task_worktree", { id })),
 	/**
+	 *  Closes the herdr workspace of a paused task, e.g. one that an agent paused through
+	 *  MCP by adding a prerequisite, which leaves the workspace open for the user to decide.
+	 *  The worktree is kept. Tasks that are worked on are rejected.
+	 */
+	closeTaskWorkspace: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("close_task_workspace", { id })),
+	/**
 	 *  Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 	 *  the base branch and stores them as its commit records.
 	 */

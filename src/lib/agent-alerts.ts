@@ -35,6 +35,24 @@ export function agentAlerts(
   });
 }
 
+/**
+ * Alerts for tasks that were in progress and are now paused on a prerequisite that is not
+ * done, with their herdr workspace still open: an agent added the prerequisite through MCP,
+ * and the user decides in the app whether to close the workspace.
+ */
+export function pausedAlerts(previous: readonly Task[], next: readonly Task[]): AgentAlert[] {
+  const before = new Map(previous.map((task) => [task.id, task.status]));
+  const byId = new Map(next.map((task) => [task.id, task]));
+  return next.flatMap((task) => {
+    const blocked = task.dependsOn.some((id) => byId.get(id)?.status !== "done");
+    const pausedNow = before.get(task.id) === "in_progress" && task.status === "planned";
+    if (!pausedNow || task.herdrWorkspaceId === null || !blocked) {
+      return [];
+    }
+    return [{ title: "Task paused by a new prerequisite", body: `#${task.id} ${task.title}: close its herdr workspace?` }];
+  });
+}
+
 /** Shows the alerts as desktop notifications, asking for permission if needed. */
 export async function notify(alerts: readonly AgentAlert[]): Promise<void> {
   if (alerts.length === 0) {

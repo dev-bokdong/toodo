@@ -48,6 +48,7 @@ vi.mock("@/lib/bindings", () => ({
     startTask: vi.fn(),
     openTaskInHerdr: vi.fn(),
     restoreTaskWorktree: vi.fn(),
+    closeTaskWorkspace: vi.fn(),
     listCommitRecords: vi.fn(),
     refreshCommitRecords: vi.fn(),
     openPullRequest: vi.fn(),
@@ -1574,6 +1575,53 @@ describe("App", () => {
     );
     expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
     expect(screen.getByRole("button", { name: "Resume #2" })).toBeDisabled();
+  });
+
+  it("asks whether to close the herdr workspace of a task an agent paused", async () => {
+    const fix = task(1, 1, "Fix login");
+    const started = task(2, 1, "Verify login", {
+      status: "in_progress",
+      branch: "test/verify-login-2",
+      worktreePath: "D:\\wt\\toodo\\test-verify-login-2",
+      herdrWorkspaceId: "w27",
+      milestones: { ...task(2, 1, "").milestones, plannedAt: 1760000000, startedAt: 1760100000 },
+    });
+    const paused = { ...started, status: "planned" as const, dependsOn: [1] };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, started] });
+    mocked.closeTaskWorkspace.mockImplementation(async () => {
+      mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, { ...paused, herdrWorkspaceId: null }] });
+      return { status: "ok", data: { ...paused, herdrWorkspaceId: null } };
+    });
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await renderWorkspace();
+    await screen.findByRole("combobox", { name: "Add dependency to #2" });
+
+    // An agent adds the prerequisite through MCP, which leaves the workspace open.
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, paused] });
+    const [[onTasksChanged]] = mockedEvents.tasksChanged.listen.mock.calls;
+    act(() => {
+      onTasksChanged({ event: "tasks-changed", id: 1, payload: { workspaceId: 1 } });
+    });
+
+    const note = await screen.findByRole("group", { name: "Herdr workspace of paused #2" });
+    await waitFor(() =>
+      expect(sendNotification).toHaveBeenCalledWith({
+        title: "Task paused by a new prerequisite",
+        body: "#2 Verify login: close its herdr workspace?",
+      }),
+    );
+    fireEvent.click(within(note).getByRole("button", { name: "Keep herdr workspace of #2 open" }));
+    expect(screen.queryByRole("group", { name: "Herdr workspace of paused #2" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close herdr workspace of #2" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Close herdr workspace of #2" })).not.toBeInTheDocument(),
+    );
+    expect(mocked.closeTaskWorkspace).toHaveBeenCalledWith(2);
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    focus.mockRestore();
   });
 
   it("shows which prerequisites a planned task waits on", async () => {
