@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useState, type FormEvent, type ReactNode } from "react";
 import {
   Check,
   CircleDot,
@@ -25,6 +25,7 @@ import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
+import { MarkdownEditor } from "@/components/markdown-editor";
 import type { Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
@@ -76,7 +77,10 @@ import {
   type TaskFilter,
 } from "@/lib/task-filter";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
+import { markdownPreview } from "@/lib/markdown";
 import { cn } from "@/lib/utils";
+
+const Markdown = lazy(() => import("@/components/markdown"));
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
@@ -498,15 +502,15 @@ function TaskRow({
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
           {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}
-          {task.description && (
-            <p
-              className={cn(
-                "text-muted-foreground",
-                detailed ? "whitespace-pre-line break-words text-sm" : "line-clamp-2 text-xs",
-              )}
+          {detailed && task.description.trim() && (
+            <Suspense
+              fallback={<p className="whitespace-pre-line break-words text-sm text-muted-foreground">{task.description}</p>}
             >
-              {task.description}
-            </p>
+              <Markdown source={task.description} />
+            </Suspense>
+          )}
+          {!detailed && markdownPreview(task.description) && (
+            <p className="line-clamp-2 text-xs text-muted-foreground">{markdownPreview(task.description)}</p>
           )}
         </div>
       )}
@@ -908,12 +912,11 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
           required
         />
       </div>
-      <input
-        className={inputClass}
-        placeholder="Description (optional)"
-        aria-label={`Description of #${task.id}`}
+      <MarkdownEditor
+        label={`Description of #${task.id}`}
+        placeholder="Description (optional, Markdown)"
         value={description}
-        onChange={(e) => setDescription(e.target.value)}
+        onChange={setDescription}
       />
       <div className="flex gap-1">
         <Button type="submit" size="xs" disabled={updateTask.isPending}>
@@ -1530,16 +1533,16 @@ function NewTaskForm({
           Add task
         </Button>
       </div>
-      <div className="flex gap-2">
-        <input
-          className={inputClass}
-          placeholder="Description (optional)"
-          aria-label="Description"
+      <div className="flex items-start gap-2">
+        <MarkdownEditor
+          label="Description"
+          placeholder="Description (optional, Markdown)"
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={setDescription}
+          className="flex-1"
         />
         <input
-          className={cn(inputClass, "w-36 shrink-0")}
+          className={cn(inputClass, "mt-7 w-36 shrink-0")}
           inputMode="numeric"
           placeholder="Issue # (optional)"
           aria-label="Issue number"

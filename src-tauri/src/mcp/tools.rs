@@ -30,6 +30,7 @@ pub struct CreateTask {
     pub workspace_id: WorkspaceId,
     pub task_type: TaskType,
     pub title: String,
+    /// Details in GitHub-flavored Markdown.
     #[serde(default)]
     pub description: String,
     /// Tasks the new task depends on, from any workspace.
@@ -45,7 +46,7 @@ pub struct UpdateTask {
     pub task_type: Option<TaskType>,
     /// Unchanged when omitted.
     pub title: Option<String>,
-    /// Unchanged when omitted.
+    /// Details in GitHub-flavored Markdown; unchanged when omitted.
     pub description: Option<String>,
 }
 
