@@ -11,14 +11,19 @@ import {
   durationLabels,
   formatChanges,
   formatDuration,
+  formatDueRate,
+  formatEstimateAccuracy,
+  formatPoints,
   formatReviews,
   groupByOutcome,
+  lateDetails,
   outcomeLabels,
   periodBounds,
   periodContaining,
   periodLabel,
   periodNouns,
   periodTitles,
+  planVsActual,
   pullRequestStats,
   reviewCsv,
   reviewFileName,
@@ -71,7 +76,7 @@ export function Review() {
 
   async function copyMarkdown(entries: ReviewEntry[]) {
     try {
-      await navigator.clipboard.writeText(reviewMarkdown(period, entries, workspaces.data ?? []));
+      await navigator.clipboard.writeText(reviewMarkdown(period, entries, workspaces.data ?? [], Date.now() / 1000));
       setNotice("Copied as Markdown.");
     } catch (error) {
       setNotice(`Could not copy: ${String(error)}`);
@@ -84,7 +89,7 @@ export function Review() {
     const contents =
       extension === "csv"
         ? reviewCsv(entries, workspaceList, Date.now() / 1000)
-        : reviewMarkdown(period, entries, workspaceList);
+        : reviewMarkdown(period, entries, workspaceList, Date.now() / 1000);
     try {
       const path = await saveDialog({
         title: extension === "csv" ? "Save review as CSV" : "Save review as Markdown",
@@ -227,6 +232,7 @@ export function Review() {
       {review.data && review.data.length > 0 && (
         <ReviewSummaryPanel period={period} entries={review.data} workspaces={workspaces.data ?? []} />
       )}
+      {review.data && <PlanPanel period={period} entries={review.data} />}
       {period.kind === "year" && review.data && <YearInReviewPanel entries={review.data} />}
       {review.data &&
         groupByOutcome(review.data).map((group) => (
@@ -357,6 +363,65 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
                 <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line text-xs">
                   {task.completionNote ?? <span className="text-muted-foreground">No conclusion written.</span>}
                 </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {year.overruns.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">Largest estimate overruns</h4>
+          <ol aria-label="Largest estimate overruns" className="flex flex-col gap-1">
+            {year.overruns.map(({ task, estimated, actual }) => (
+              <li key={task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                <TaskTypeBadge type={task.taskType} />
+                <span className="truncate font-medium">{task.title}</span>
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                  estimated {formatDuration(estimated)}, {formatDuration(actual)} active
+                </span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Estimates and due dates of the reviewed tasks against what happened. */
+function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewEntry[] }) {
+  const plan = planVsActual(period, entries, Date.now() / 1000);
+  if (plan === null) return null;
+  return (
+    <section aria-labelledby="plan-heading" className="flex flex-col gap-3 rounded-lg border p-3">
+      <h3 id="plan-heading" className="text-sm font-semibold">
+        Plan vs actual
+      </h3>
+      <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
+        <div className="contents">
+          <dt className="text-muted-foreground">Estimate vs active time</dt>
+          <dd>{plan.hours ? formatEstimateAccuracy(plan.hours) : "No completed task estimated in hours"}</dd>
+        </div>
+        {plan.points && (
+          <div className="contents">
+            <dt className="text-muted-foreground">Points completed</dt>
+            <dd>{formatPoints(plan.points)}</dd>
+          </div>
+        )}
+        <div className="contents">
+          <dt className="text-muted-foreground">Due dates met</dt>
+          <dd>{plan.dueDates ? formatDueRate(plan.dueDates) : "No completed task had a due date"}</dd>
+        </div>
+      </dl>
+      {plan.late.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">Late tasks</h4>
+          <ul aria-label="Late tasks" className="flex flex-col gap-1">
+            {plan.late.map((late) => (
+              <li key={late.task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                <TaskTypeBadge type={late.task.taskType} />
+                <span className="truncate font-medium">{late.task.title}</span>
+                <span className="ml-auto shrink-0 text-xs text-rose-700 dark:text-rose-300">{lateDetails(late)}</span>
               </li>
             ))}
           </ul>

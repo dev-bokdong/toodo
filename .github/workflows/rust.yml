@@ -51,8 +51,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # Every test lives in the library, so build only its test binary: this skips linking
+      # the app binary, its empty test binary, and the staticlib/cdylib, plus the doc-test pass.
       - name: Test
-        run: cargo test
+        run: cargo test --lib
 
       - name: Check that the TypeScript bindings are up to date
         run: git diff --exit-code -- ../src/lib/bindings.ts

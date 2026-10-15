@@ -176,6 +176,8 @@ mod tests {
                 task_type: TaskType::Feat,
                 title: format!("{name} first"),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap();
         let second = storage
@@ -184,6 +186,8 @@ mod tests {
                 task_type: TaskType::Fix,
                 title: format!("{name} second"),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap();
         storage.add_dependency(second.id, first.id).unwrap();

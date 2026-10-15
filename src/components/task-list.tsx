@@ -1,8 +1,9 @@
-import { lazy, Suspense, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   Check,
   CircleDot,
   CircleSlash,
+  Crosshair,
   FolderGit2,
   GitBranch,
   GitPullRequest,
@@ -20,14 +21,23 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { TaskGraph } from "@/components/task-graph";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
 import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
-import type { NoteKind, Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
+import type {
+  Estimate,
+  EstimateUnit,
+  NoteKind,
+  Task,
+  TaskId,
+  TaskStatus,
+  TaskType,
+  Workspace,
+  WorkspaceId,
+} from "@/lib/bindings";
 import {
   CommandFailure,
   IssueLinkFailure,
@@ -44,6 +54,7 @@ import {
   useCreateIssue,
   useCreateTask,
   useDeleteTask,
+  useFocusAgentPane,
   useHerdrStatus,
   useLinkIssue,
   useMachineSettings,
@@ -82,9 +93,12 @@ import {
 } from "@/lib/task-filter";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { markdownPreview } from "@/lib/markdown";
+import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
+// The timeline pulls in React Flow, so it loads only when it is first shown.
+const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
@@ -146,12 +160,17 @@ function taskRef(id: TaskId, of: WorkspaceId, { byId, workspaceName }: TaskConte
  * workspaces, so a task may wait on a task of another workspace. The timeline is only
  * offered for every workspace, where it is the default view.
  */
+/** A request to select a task on the timeline; each request is a new object. */
+export type ShownTask = { id: TaskId };
+
 export function TaskList({
   workspace,
   timelineScale,
   onTimelineScaleChange,
   draft = emptyDraft,
   onDraftChange,
+  shownTask = null,
+  onTaskShown,
 }: {
   workspace: Workspace | null;
   /** Timeline scale, owned by the caller so it survives switching workspaces and views. */
@@ -160,6 +179,10 @@ export function TaskList({
   /** The new task being written in this workspace, owned by the caller so it survives switching away. */
   draft?: TaskDraft;
   onDraftChange?: (draft: TaskDraft) => void;
+  /** A task to select on the timeline, which switches to it and clears filters hiding the task. */
+  shownTask?: ShownTask | null;
+  /** Called once the timeline selected `shownTask`. */
+  onTaskShown?: () => void;
 }) {
   const allTasks = useTasks();
   const workspaces = useWorkspaces();
@@ -182,6 +205,18 @@ export function TaskList({
   const filtered = tasks?.filter(
     (task) => (!showTimeline || filter === null || task.workspaceId === filter) && matchesFilter(task, taskFilter, context.byId),
   );
+  const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
+  useEffect(() => {
+    if (shownTaskData === undefined) {
+      return;
+    }
+    setView("timeline");
+    setTimelineWorkspace((current) => (current === shownTaskData.workspaceId ? current : null));
+    setTaskFilter((current) =>
+      matchesFilter(shownTaskData, current, context.byId) ? current : emptyTaskFilter,
+    );
+    // Only a new request moves the view; later changes to the task do not.
+  }, [shownTask, shownTaskData === undefined]);
   // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
   const prerequisites =
     filter === null
@@ -279,29 +314,33 @@ export function TaskList({
               ))}
             </ul>
           ) : (
-            <TaskGraph
-              tasks={[...filtered, ...prerequisites]}
-              allTasks={allTasks.data}
-              dimmed={new Set(prerequisites.map((task) => task.id))}
-              workspaceLabel={(task) =>
-                filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
-              }
-              statusLabel={(task) => statusLabel(task, context.byId)}
-              statusStyle={(task) => statusStyle(task, context.byId)}
-              ready={(task) => shownStatus(task, context.byId) === "ready"}
-              scale={timelineScale}
-              onScaleChange={onTimelineScaleChange}
-              renderDetail={(selected) => (
-                <TaskRow
-                  key={selected.id}
-                  task={selected}
-                  tasks={allTasks.data ?? []}
-                  context={context}
-                  showWorkspace
-                  detailed
-                />
-              )}
-            />
+            <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
+              <TaskGraph
+                tasks={[...filtered, ...prerequisites]}
+                allTasks={allTasks.data}
+                dimmed={new Set(prerequisites.map((task) => task.id))}
+                workspaceLabel={(task) =>
+                  filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
+                }
+                statusLabel={(task) => statusLabel(task, context.byId)}
+                statusStyle={(task) => statusStyle(task, context.byId)}
+                ready={(task) => shownStatus(task, context.byId) === "ready"}
+                scale={timelineScale}
+                onScaleChange={onTimelineScaleChange}
+                shownTaskId={shownTask?.id ?? null}
+                onTaskShown={() => onTaskShown?.()}
+                renderDetail={(selected) => (
+                  <TaskRow
+                    key={selected.id}
+                    task={selected}
+                    tasks={allTasks.data ?? []}
+                    context={context}
+                    showWorkspace
+                    detailed
+                  />
+                )}
+              />
+            </Suspense>
           )}
         </>
       )}
@@ -423,6 +462,7 @@ function TaskRow({
   const pullRequestStatuses = usePullRequestStatuses();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
+  const focusAgent = useFocusAgentPane();
   const refreshCommits = useRefreshCommitRecords();
   const openPullRequest = useOpenPullRequest();
   const completeTask = useCompleteTask();
@@ -469,6 +509,7 @@ function TaskRow({
   const actionError =
     startTask.error ??
     openTask.error ??
+    focusAgent.error ??
     refreshCommits.error ??
     openPullRequest.error ??
     completeTask.error ??
@@ -644,6 +685,7 @@ function TaskRow({
         />
       )}
       {hasWorktree && <BranchFreshnessNote taskId={task.id} />}
+      <TaskPlan task={task} />
       <TaskTimeline task={task} detailed={detailed} />
       {detailed && task.branch && (
         <DetailField label="Branch">
@@ -744,6 +786,19 @@ function TaskRow({
             >
               <SquareTerminal />
               Open in herdr
+            </Button>
+          )}
+          {detailed && active && task.herdrWorkspaceId && agentStatus && (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={`Focus agent pane of #${task.id}`}
+              title="Focus the herdr pane of the agent working on this task"
+              disabled={!herdrRunning || focusAgent.isPending}
+              onClick={() => focusAgent.mutate(task.id)}
+            >
+              <Crosshair />
+              Focus agent pane
             </Button>
           )}
           {hasWorktree && (
@@ -952,11 +1007,25 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const [taskType, setTaskType] = useState<TaskType>(task.taskType);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
+  const [plan, setPlan] = useState<PlanDraft>({
+    estimate: task.estimate === null ? "" : String(task.estimate.amount),
+    estimateUnit: task.estimate?.unit ?? "hours",
+    dueDate: task.dueDate ?? "",
+  });
+  const estimate = planEstimate(plan);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (estimate === undefined) return;
     updateTask.mutate(
-      { id: task.id, taskType, title: title.trim(), description: description.trim() },
+      {
+        id: task.id,
+        taskType,
+        title: title.trim(),
+        description: description.trim(),
+        estimate,
+        dueDate: plan.dueDate || null,
+      },
       { onSuccess: onDone },
     );
   }
@@ -990,8 +1059,9 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         value={description}
         onChange={setDescription}
       />
+      <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} />
       <div className="flex gap-1">
-        <Button type="submit" size="xs" disabled={updateTask.isPending}>
+        <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined}>
           {updateTask.isPending ? "Saving..." : "Save"}
         </Button>
         <Button type="button" size="xs" variant="ghost" onClick={onDone}>
@@ -1661,9 +1731,98 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   );
 }
 
-export type TaskDraft = { taskType: TaskType; title: string; description: string; issue: string };
+/** What the user typed for a task's estimate and due date (`YYYY-MM-DD`, blank for none). */
+type PlanDraft = { estimate: string; estimateUnit: EstimateUnit; dueDate: string };
 
-const emptyDraft: TaskDraft = { taskType: "feat", title: "", description: "", issue: "" };
+/** The estimate typed in `plan`: null when blank, undefined when it is not a valid amount. */
+function planEstimate(plan: PlanDraft): Estimate | null | undefined {
+  const amount = parseEstimateAmount(plan.estimate);
+  if (amount === null) return null;
+  return Number.isNaN(amount) ? undefined : { unit: plan.estimateUnit, amount };
+}
+
+function PlanFields({
+  suffix,
+  plan,
+  onChange,
+}: {
+  /** Appended to the field labels, e.g. ` of #3` in the edit form of task 3. */
+  suffix: string;
+  plan: PlanDraft;
+  onChange: (plan: PlanDraft) => void;
+}) {
+  const invalid = planEstimate(plan) === undefined;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <input
+        className={cn(inputClass, "w-24")}
+        inputMode="decimal"
+        placeholder="Estimate"
+        aria-label={`Estimate${suffix}`}
+        aria-invalid={invalid}
+        title="Optional: expected size, a number greater than 0"
+        value={plan.estimate}
+        onChange={(e) => onChange({ ...plan, estimate: e.target.value })}
+      />
+      <select
+        aria-label={`Estimate unit${suffix}`}
+        className={cn(compactSelectClass, "w-24")}
+        value={plan.estimateUnit}
+        onChange={(e) => onChange({ ...plan, estimateUnit: e.target.value as EstimateUnit })}
+      >
+        <option value="hours">hours</option>
+        <option value="points">points</option>
+      </select>
+      <label className="flex items-center gap-1">
+        Due
+        <input
+          type="date"
+          className={cn(inputClass, "w-40")}
+          aria-label={`Due date${suffix}`}
+          value={plan.dueDate}
+          onChange={(e) => onChange({ ...plan, dueDate: e.target.value })}
+        />
+      </label>
+    </div>
+  );
+}
+
+/** A task's estimate and due date, the due date in red once it is missed. */
+function TaskPlan({ task }: { task: Task }) {
+  if (task.estimate === null && task.dueDate === null) return null;
+  const state = dueState(task, Date.now() / 1000);
+  const behind = state === "late" || state === "overdue";
+  return (
+    <p aria-label={`Plan of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+      {task.estimate !== null && <span>Estimate {formatEstimate(task.estimate)}</span>}
+      {task.dueDate !== null && (
+        <span
+          data-due-state={state ?? undefined}
+          className={cn(behind && "font-medium text-rose-700 dark:text-rose-300")}
+        >
+          {state === null || state === "upcoming" ? "Due" : dueStateLabels[state]} {task.dueDate}
+        </span>
+      )}
+    </p>
+  );
+}
+
+export type TaskDraft = {
+  taskType: TaskType;
+  title: string;
+  description: string;
+  issue: string;
+} & PlanDraft;
+
+const emptyDraft: TaskDraft = {
+  taskType: "feat",
+  title: "",
+  description: "",
+  issue: "",
+  estimate: "",
+  estimateUnit: "hours",
+  dueDate: "",
+};
 
 function NewTaskForm({
   workspace,
@@ -1678,6 +1837,7 @@ function NewTaskForm({
   const { taskType, title, description, issue } = draft;
   const issueNumber = parseIssueNumber(issue);
   const invalidIssue = issue.trim() !== "" && issueNumber === null;
+  const estimate = planEstimate(draft);
   const setTaskType = (value: TaskType) => onChange({ ...draft, taskType: value });
   const setTitle = (value: string) => onChange({ ...draft, title: value });
   const setDescription = (value: string) => onChange({ ...draft, description: value });
@@ -1685,9 +1845,18 @@ function NewTaskForm({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const added = () => onChange({ ...draft, title: "", description: "", issue: "" });
+    if (estimate === undefined) return;
+    const added = () => onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "" });
     createTask.mutate(
-      { workspaceId: workspace.id, taskType, title, description, issue: issueNumber },
+      {
+        workspaceId: workspace.id,
+        taskType,
+        title,
+        description,
+        estimate,
+        dueDate: draft.dueDate || null,
+        issue: issueNumber,
+      },
       {
         onSuccess: added,
         // The task exists even though its issue was not linked; adding it again would duplicate it.
@@ -1723,7 +1892,7 @@ function NewTaskForm({
           onChange={(e) => setTitle(e.target.value)}
           required
         />
-        <Button type="submit" disabled={createTask.isPending || invalidIssue}>
+        <Button type="submit" disabled={createTask.isPending || invalidIssue || estimate === undefined}>
           <Plus />
           Add task
         </Button>
@@ -1747,6 +1916,11 @@ function NewTaskForm({
           onChange={(e) => setIssue(e.target.value)}
         />
       </div>
+      <PlanFields
+        suffix=""
+        plan={draft}
+        onChange={(plan) => onChange({ ...draft, ...plan })}
+      />
       {createTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {createTask.error.message}

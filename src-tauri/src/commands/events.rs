@@ -507,6 +507,8 @@ mod tests {
                     task_type: TaskType::Feat,
                     title: "Add login".to_owned(),
                     description: String::new(),
+                    estimate: None,
+                    due_date: None,
                 })
                 .unwrap();
             let checkout = TaskCheckout {

@@ -701,6 +701,8 @@ mod tests {
             task_type: TaskType::Feat,
             title: title.to_owned(),
             description: format!("Implement {title}"),
+            estimate: None,
+            due_date: None,
         };
         let task = storage.create_task(&new_task("Add login")).unwrap();
         let dependent = storage.create_task(&new_task("Use login")).unwrap();

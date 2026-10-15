@@ -203,6 +203,17 @@ pub(super) const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX task_notes_task_id ON task_notes (task_id);
     ",
+    // Version 9: what a task was planned to take, to compare with what it took: an
+    // estimate in hours or points and a due day (`YYYY-MM-DD`; `date()` normalizes days a
+    // month does not have and returns NULL for other text, so both fail the `IS` check).
+    // Existing tasks have neither.
+    r"
+    ALTER TABLE tasks ADD COLUMN estimate_unit TEXT CHECK (estimate_unit IN ('hours', 'points'));
+    ALTER TABLE tasks ADD COLUMN estimate_amount REAL
+        CHECK ((estimate_amount IS NULL) = (estimate_unit IS NULL))
+        CHECK (estimate_amount > 0);
+    ALTER TABLE tasks ADD COLUMN due_date TEXT CHECK (date(due_date) IS due_date);
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -543,6 +554,52 @@ mod tests {
         .unwrap();
         conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
         assert_eq!(notes(&conn), 0);
+    }
+
+    #[test]
+    fn version_9_plans_nothing_for_existing_tasks_and_checks_new_plans() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..8] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'fix', 'A', 'planned');
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let plan: (Option<String>, Option<f64>, Option<String>) = conn
+            .query_row(
+                "SELECT estimate_unit, estimate_amount, due_date FROM tasks WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(plan, (None, None, None));
+        conn.execute(
+            "UPDATE tasks SET estimate_unit = 'hours', estimate_amount = 1.5,
+                 due_date = '2024-02-29' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        for invalid in [
+            "UPDATE tasks SET estimate_unit = 'days' WHERE id = 1",
+            "UPDATE tasks SET estimate_unit = NULL WHERE id = 1",
+            "UPDATE tasks SET estimate_amount = NULL WHERE id = 1",
+            "UPDATE tasks SET estimate_amount = 0 WHERE id = 1",
+            "UPDATE tasks SET due_date = '2026-02-29' WHERE id = 1",
+            "UPDATE tasks SET due_date = '2026-10-15 12:00' WHERE id = 1",
+            "UPDATE tasks SET due_date = 'tomorrow' WHERE id = 1",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
     }
 
     #[test]

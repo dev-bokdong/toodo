@@ -139,6 +139,8 @@ mod tests {
             pull_request: None,
             resolution: None,
             completion_note: None,
+            estimate: None,
+            due_date: None,
             issue: None,
             timeline: history
                 .iter()

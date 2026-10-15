@@ -1,5 +1,5 @@
 //! Commands that drive herdr: the server health check, starting a task in a new
-//! worktree, focusing the herdr workspace of a started task, restoring the worktree of an
+//! worktree, focusing the herdr workspace or agent pane of a started task, restoring the worktree of an
 //! active task that lost it, and deleting a task together with its worktree.
 //!
 //! They run on the async runtime instead of the main thread because herdr calls can take
@@ -10,7 +10,7 @@ use tauri::State;
 use super::types::{HerdrStatus, Task, TaskId};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::adapters::herdr::{Herdr, HerdrError, NewWorktree};
+use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree};
 use crate::domain::model::{self, Machine, WorkspaceLocation};
 use crate::domain::naming;
 use crate::domain::status::TaskStatus;
@@ -45,6 +45,19 @@ pub fn open_task_in_herdr(
     id: TaskId,
 ) -> CommandResult<()> {
     open(&storage, &herdr, id.into())
+}
+
+/// Focuses the pane of the agent working on a started task, the one that needs the user
+/// most when its herdr workspace has several. Without a recognized agent it focuses the
+/// workspace like [`open_task_in_herdr`].
+#[tauri::command(async)]
+#[specta::specta]
+pub fn focus_agent_pane(
+    storage: State<'_, StorageState>,
+    herdr: State<'_, HerdrState>,
+    id: TaskId,
+) -> CommandResult<()> {
+    focus_agent(&storage, &herdr, id.into())
 }
 
 /// Closes the herdr workspace of a paused task, e.g. one that an agent paused through
@@ -238,6 +251,39 @@ fn open(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResu
     }
 }
 
+fn focus_agent(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<()> {
+    let (machine, herdr_workspace_id) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        let herdr_workspace_id = task.herdr_workspace_id.ok_or_else(|| {
+            CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
+        })?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        (workspace.location.machine(), herdr_workspace_id)
+    };
+    let pane = herdr
+        .list_panes(&machine)?
+        .into_iter()
+        .filter(|pane| {
+            pane.workspace_id == herdr_workspace_id && pane.status != AgentStatus::Unknown
+        })
+        // The first of the panes whose agent needs the user most.
+        .rev()
+        .max_by_key(|pane| pane.status);
+    let Some(pane) = pane else {
+        return open(storage, herdr, id);
+    };
+    match herdr.focus_agent(&machine, &pane.pane_id) {
+        // The agent left the pane since it was listed.
+        Err(error) if has_code(&error, AGENT_NOT_FOUND) => open(storage, herdr, id),
+        result => Ok(result?),
+    }
+}
+
 /// Deletes a task; a task that still has a worktree first removes it like
 /// [`remove_worktree`], so a dirty worktree keeps the task unless `force` is set.
 pub(super) fn delete(
@@ -389,6 +435,7 @@ fn close_workspace(
 const DIRTY_WORKTREE: &str = "dirty_worktree_requires_force";
 pub(super) const WORKSPACE_NOT_FOUND: &str = "workspace_not_found";
 const WORKTREE_NOT_FOUND: &str = "worktree_not_found";
+const AGENT_NOT_FOUND: &str = "agent_not_found";
 
 pub(super) fn has_code(error: &HerdrError, expected: &str) -> bool {
     matches!(error, HerdrError::Failed { code: Some(code), .. } if code == expected)
@@ -429,6 +476,8 @@ mod tests {
                 task_type: TaskType::Feat,
                 title: "Add login".to_owned(),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap();
         if let Some(settings) = settings {
@@ -665,6 +714,8 @@ mod tests {
                     task_type: TaskType::Feat,
                     title: "Add accounts".to_owned(),
                     description: String::new(),
+                    estimate: None,
+                    due_date: None,
                 })
                 .unwrap();
             storage
@@ -1061,6 +1112,84 @@ mod tests {
         assert_eq!(stored(&fixture).herdr_workspace_id.as_deref(), Some("w40"));
     }
 
+    fn pane_list(panes: &[(&str, &str, &str)]) -> Result<String, GitError> {
+        let rows: Vec<String> = panes
+            .iter()
+            .map(|(pane_id, workspace_id, status)| {
+                format!(
+                    r#"{{"agent_status":"{status}","pane_id":"{pane_id}","workspace_id":"{workspace_id}"}}"#
+                )
+            })
+            .collect();
+        Ok(format!(
+            r#"{{"id":"cli:pane:list","result":{{"panes":[{}]}}}}"#,
+            rows.join(",")
+        ))
+    }
+
+    #[test]
+    fn focus_agent_focuses_the_pane_whose_agent_needs_the_user_most() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(vec![
+            Ok(CREATED.to_owned()),
+            pane_list(&[
+                ("w9:p1", "w9", "blocked"),
+                ("w27:p1", "w27", "working"),
+                ("w27:p2", "w27", "blocked"),
+                ("w27:p3", "w27", "blocked"),
+                ("w27:p4", "w27", "unknown"),
+            ]),
+            Ok(String::new()),
+        ]);
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        focus_agent(&fixture.storage, &herdr, fixture.task.id).unwrap();
+
+        let invocations = invocations(&runner);
+        assert_eq!(invocations[1].args, ["pane", "list"].map(str::to_owned));
+        assert_eq!(
+            invocations[2].args,
+            ["agent", "focus", "w27:p2"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn focus_agent_focuses_the_workspace_without_an_agent_pane() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(vec![
+            Ok(CREATED.to_owned()),
+            pane_list(&[("w27:p1", "w27", "unknown")]),
+            Ok(String::new()),
+            pane_list(&[("w27:p1", "w27", "idle")]),
+            herdr_failed("agent_not_found"),
+            Ok(String::new()),
+        ]);
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        focus_agent(&fixture.storage, &herdr, fixture.task.id).unwrap();
+        focus_agent(&fixture.storage, &herdr, fixture.task.id).unwrap();
+
+        let invocations = invocations(&runner);
+        let focus_workspace = ["workspace", "focus", "w27"].map(str::to_owned);
+        assert_eq!(invocations[2].args, focus_workspace);
+        assert_eq!(
+            invocations[4].args,
+            ["agent", "focus", "w27:p1"].map(str::to_owned)
+        );
+        assert_eq!(invocations[5].args, focus_workspace);
+    }
+
+    #[test]
+    fn focus_agent_rejects_a_task_without_a_herdr_workspace() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(Vec::new());
+
+        let error = focus_agent(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(invocations(&runner).is_empty());
+    }
+
     /// A task of the fixture's workspace that has not started.
     fn other_task(fixture: &Fixture, title: &str) -> model::Task {
         lock(&fixture.storage)
@@ -1069,6 +1198,8 @@ mod tests {
                 task_type: TaskType::Fix,
                 title: title.to_owned(),
                 description: String::new(),
+                estimate: None,
+                due_date: None,
             })
             .unwrap()
     }

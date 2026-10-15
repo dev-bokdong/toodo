@@ -4,8 +4,9 @@ import { ChartColumn, FolderPlus, Layers, ListTodo } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
+import { NeedsAttention } from "@/components/needs-attention";
 import { Review } from "@/components/review";
-import { EmptyState, TaskList, type TaskDraft } from "@/components/task-list";
+import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
@@ -27,6 +28,8 @@ export default function App() {
   const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
   const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
   const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
+  // A task to select on the All workspaces timeline, until the timeline shows it.
+  const [shownTask, setShownTask] = useState<ShownTask | null>(null);
   const showingAll = selectedId === "all" && !reviewing;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
@@ -43,6 +46,13 @@ export default function App() {
           </span>
           Toodo
         </h1>
+        <NeedsAttention
+          onShow={(id) => {
+            setSelectedId("all");
+            setReviewing(false);
+            setShownTask({ id });
+          }}
+        />
         <nav className="flex flex-col gap-0.5">
           <Button
             variant={reviewing ? "secondary" : "ghost"}
@@ -92,7 +102,14 @@ export default function App() {
           {reviewing ? (
             <Review />
           ) : showingAll && workspaces.data?.length ? (
-            <TaskList key="all" workspace={null} timelineScale={timelineScale} onTimelineScaleChange={setTimelineScale} />
+            <TaskList
+              key="all"
+              workspace={null}
+              timelineScale={timelineScale}
+              onTimelineScaleChange={setTimelineScale}
+              shownTask={shownTask}
+              onTaskShown={() => setShownTask(null)}
+            />
           ) : selected ? (
             <TaskList
               key={selected.id}
