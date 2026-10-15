@@ -1,4 +1,4 @@
-import type { Estimate, Task, Timestamp } from "@/lib/bindings";
+import type { Estimate, EstimateUnit, Task, Timestamp } from "@/lib/bindings";
 
 /** Where a task with a due date stands against it. */
 export type DueState = "on_time" | "late" | "overdue" | "upcoming";
@@ -48,14 +48,23 @@ function formatAmount(amount: number): string {
   return String(Math.round(amount * 100) / 100);
 }
 
+const unitSuffixes: Record<EstimateUnit, string> = { hours: "h", days: "d", weeks: "w", months: "mo" };
+
+/** Seconds in one estimate unit: a day is 24 hours, a week 7 days, a month 30 days. */
+const unitSeconds: Record<EstimateUnit, number> = {
+  hours: 3600,
+  days: 24 * 3600,
+  weeks: 7 * 24 * 3600,
+  months: 30 * 24 * 3600,
+};
+
 export function formatEstimate(estimate: Estimate): string {
-  const amount = formatAmount(estimate.amount);
-  return estimate.unit === "hours" ? `${amount}h` : `${amount} ${estimate.amount === 1 ? "pt" : "pts"}`;
+  return `${formatAmount(estimate.amount)}${unitSuffixes[estimate.unit]}`;
 }
 
-/** The estimate in seconds of active work; null for an estimate in points. */
+/** The estimate in seconds of active work; null without an estimate. */
 export function estimatedSeconds(estimate: Estimate | null): number | null {
-  return estimate?.unit === "hours" ? estimate.amount * 3600 : null;
+  return estimate ? estimate.amount * unitSeconds[estimate.unit] : null;
 }
 
 /** Text typed into an estimate field as an amount; null when blank, NaN when it is not a valid one. */

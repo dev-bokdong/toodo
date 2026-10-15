@@ -79,6 +79,7 @@ vi.mock("@/lib/bindings", () => ({
     tasksChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
+    updateCheckRequested: { listen: vi.fn() },
   },
 }));
 
@@ -190,6 +191,7 @@ describe("App", () => {
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -869,7 +871,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
     expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "2.5" } });
-    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "points" } });
+    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "weeks" } });
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-11-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
@@ -879,7 +881,7 @@ describe("App", () => {
       taskType: "docs",
       title: "Write docs",
       description: "",
-      estimate: { unit: "points", amount: 2.5 },
+      estimate: { unit: "weeks", amount: 2.5 },
       dueDate: "2026-11-01",
     });
     expect(screen.getByLabelText("Estimate")).toHaveValue("");
@@ -1331,6 +1333,61 @@ describe("App", () => {
     expect(mocked.branchFreshness).toHaveBeenCalledWith(3);
   });
 
+  it("rechecks base freshness and marks warned tasks on the timeline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const started = { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + 3600 };
+    const worktree = { branch: "feat/x", worktreePath: "D:\\wt\\toodo\\x", herdrWorkspaceId: "w1", milestones: started };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Behind", { status: "in_progress", ...worktree }),
+        task(2, 1, "Conflicting", { status: "in_progress", ...worktree }),
+        task(3, 1, "Waiting", { dependsOn: [1], milestones: { ...started, startedAt: null } }),
+      ],
+    });
+    let synced = false;
+    mocked.branchFreshness.mockImplementation((id) =>
+      Promise.resolve({
+        status: "ok",
+        data: {
+          base: "origin/main",
+          behind: id === 1 && synced ? 0 : 3,
+          fetchError: null,
+          mergeable: id === 2 ? "conflicting" : null,
+          mergeableError: null,
+        },
+      }),
+    );
+    await renderWorkspace();
+
+    expect(await screen.findByRole("note", { name: "Base freshness of #1" })).toHaveTextContent(
+      "3 commits behind origin/main",
+    );
+    // The branch was synced outside Toodo; rechecking clears the warning without waiting.
+    synced = true;
+    fireEvent.click(screen.getByRole("button", { name: "Recheck base freshness of #1" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("note", { name: "Base freshness of #1" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("note", { name: "Base freshness of #2" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bars = timeline.querySelector(".react-flow__nodes") as HTMLElement;
+    expect(
+      await within(bars).findByRole("img", {
+        name: "Warnings of #2: 3 commits behind origin/main; pull request has merge conflicts",
+      }),
+    ).toHaveAttribute("data-severe", "true");
+    expect(within(bars).getByRole("img", { name: "Warnings of #3: Waiting on #1" })).not.toHaveAttribute(
+      "data-severe",
+    );
+    expect(within(bars).queryByRole("img", { name: /^Warnings of #1/ })).not.toBeInTheDocument();
+  });
+
   it("records commits, opens a pull request, and completes the task once it is merged", async () => {
     const started = task(1, 1, "Add login", {
       status: "in_progress",
@@ -1639,6 +1696,81 @@ describe("App", () => {
       estimate: null,
       dueDate: "2026-12-01",
     });
+  });
+
+  it("asks before discarding unsaved edits of a task", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
+    await renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    const title = within(form).getByLabelText("Title of #1");
+    expect(title).toHaveFocus();
+    fireEvent.click(within(form).getByRole("button", { name: "Discard" }));
+    expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit #1" }));
+    const changed = screen.getByRole("form", { name: "Edit task #1" });
+    fireEvent.change(within(changed).getByLabelText("Title of #1"), { target: { value: "Add sign-in" } });
+    fireEvent.keyDown(within(changed).getByLabelText("Title of #1"), { key: "Escape" });
+    const confirm = within(changed).getByRole("group", { name: "Discard changes to #1" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Keep editing" }));
+    expect(within(changed).getByLabelText("Title of #1")).toHaveValue("Add sign-in");
+
+    fireEvent.click(within(changed).getByRole("button", { name: "Discard" }));
+    fireEvent.click(within(changed).getByRole("button", { name: "Discard changes" }));
+    expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
+    expect(mocked.updateTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps the timeline details open while its edit form has unsaved changes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const planned = { ...task(0, 1, "").milestones, plannedAt: new Date(2026, 5, 1).getTime() / 1000 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add UI", { milestones: planned }), task(2, 1, "Write docs", { milestones: planned })],
+    });
+    await renderWorkspace();
+    await screen.findByRole("list", { name: "Tasks" });
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bar = (title: string) =>
+      within(timeline.querySelector(".react-flow__nodes") as HTMLElement)
+        .getByText(title)
+        .closest(".react-flow__node") as HTMLElement;
+    await within(timeline).findByText("Add UI");
+
+    fireEvent.click(bar("Add UI"));
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    fireEvent.click(within(details).getByRole("button", { name: "Edit #1" }));
+    const field = within(details).getByLabelText("Title of #1");
+    fireEvent.change(field, { target: { value: "Add the UI" } });
+
+    // Escape in a field belongs to the form, which asks about its changes; the sheet stays.
+    fireEvent.keyDown(field, { key: "Escape" });
+    const formConfirm = within(details).getByRole("group", { name: "Discard changes to #1" });
+    expect(within(timeline).getByRole("complementary", { name: "Task details" })).toBeInTheDocument();
+    fireEvent.click(within(formConfirm).getByRole("button", { name: "Keep editing" }));
+
+    fireEvent.click(within(details).getByRole("button", { name: "Close details" }));
+    const unsaved = within(details).getByRole("group", { name: "Unsaved changes" });
+    fireEvent.click(bar("Write docs"));
+    expect(within(details).getByLabelText("Title of #1")).toHaveValue("Add the UI");
+    fireEvent.click(within(unsaved).getByRole("button", { name: "Keep editing" }));
+    expect(within(details).queryByRole("group", { name: "Unsaved changes" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.click(
+      within(within(details).getByRole("group", { name: "Unsaved changes" })).getByRole("button", {
+        name: "Discard changes",
+      }),
+    );
+    await waitFor(() =>
+      expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument(),
+    );
   });
 
   it("previews a Markdown description and shows its plain text in the list", async () => {

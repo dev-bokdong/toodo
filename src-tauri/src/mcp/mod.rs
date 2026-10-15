@@ -66,8 +66,8 @@ rnd), write a short imperative title, and put details in description. Write the 
 description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
 issue body): short paragraphs, `-` lists, `- [ ]` task lists for acceptance criteria, \
 backticks for code, paths, and commands, fenced code blocks, and links; no raw HTML. \
-When you split work into tasks, set estimate to your expected size of each (hours of \
-active work, or points if the workspace's tasks use points); the user's reviews compare it \
+When you split work into tasks, set estimate to your expected size of each (hours, \
+days, weeks, or months of active work); the user's reviews compare it \
 with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
 a deadline.
 5. Leave a record of your work on your task as you go; it feeds the user's reviews of \

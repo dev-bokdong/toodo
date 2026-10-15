@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
-import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
+import { compactSelectClass, inputClass, describeLocation, escapeCloses } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
 import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
@@ -77,9 +77,11 @@ import { pullRequestStats } from "@/lib/review";
 import {
   dependenciesDone,
   dependencyEditableStatuses,
+  freshnessWarning,
   isNotAdopted,
   isPaused,
   pausesStartedTask,
+  waitingPrerequisites,
   type TimelineScale,
 } from "@/lib/task-graph";
 import {
@@ -94,6 +96,7 @@ import {
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
+import { toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
@@ -121,15 +124,16 @@ function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
 }
 
 const statusStyles: Record<TaskStatus, string> = {
-  planned: "bg-muted text-muted-foreground",
-  in_progress: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
-  in_review: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
-  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
+  planned: toneChip.neutral,
+  in_progress: toneChip.progress,
+  in_review: toneChip.review,
+  done: toneChip.success,
 };
 
-const notAdoptedStyle = "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200";
+/** Not adopted is a valid end of research, not a failure: neutral, outlined to tell it from planned. */
+const notAdoptedStyle = cn(toneChip.neutral, "ring-1 ring-inset ring-muted-foreground/40");
 
-const readyStyle = "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200";
+const readyStyle = toneChip.attention;
 
 function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   switch (shownStatus(task, byId)) {
@@ -267,7 +271,7 @@ export function TaskList({
                   <Button
                     key={option}
                     size="xs"
-                    variant={view === option ? "secondary" : "ghost"}
+                    variant={view === option ? "default" : "ghost"}
                     aria-pressed={view === option}
                     onClick={() => setView(option)}
                   >
@@ -501,10 +505,7 @@ function TaskRow({
     removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
   const dependenciesEditable = dependencyEditableStatuses.includes(task.status);
   // A planned task can start (or a paused one resume) once these prerequisites are done.
-  const waitingOn =
-    task.status === "planned" && notAdopted.length === 0
-      ? task.dependsOn.filter((id) => context.byId.get(id)?.status !== "done")
-      : [];
+  const waitingOn = waitingPrerequisites(task, context.byId);
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const actionError =
     startTask.error ??
@@ -537,7 +538,14 @@ function TaskRow({
   return (
     <li className={cn("flex flex-col", detailed ? "gap-3 p-4" : "gap-1.5 px-4 py-3")}>
       {editing ? (
-        <TaskEditForm task={task} onDone={() => setEditing(false)} />
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <StatusBadge task={task} byId={context.byId} />
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
+            <span className="text-xs text-muted-foreground">Editing</span>
+          </div>
+          <TaskEditForm task={task} onDone={() => setEditing(false)} />
+        </div>
       ) : (
         <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
           <div className={cn("flex min-w-0 items-center gap-2", detailed && "flex-wrap")}>
@@ -550,14 +558,14 @@ function TaskRow({
             )}
             <TaskTypeBadge type={task.taskType} />
             {!detailed && (
-              <span className="min-w-0 flex-1 truncate text-sm font-medium" title={task.title}>
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold" title={task.title}>
                 {task.title}
               </span>
             )}
             {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
-          {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}
+          {detailed && <h3 className="break-words-keep text-base font-semibold leading-snug">{task.title}</h3>}
           {detailed && task.description.trim() && (
             <Suspense
               fallback={<p className="whitespace-pre-line break-words text-sm text-muted-foreground">{task.description}</p>}
@@ -583,7 +591,7 @@ function TaskRow({
               className={cn(
                 "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 tabular-nums",
                 context.byId.get(id)?.status === "done" && "line-through decoration-muted-foreground/60",
-                notAdopted.includes(id) && "border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300",
+                notAdopted.includes(id) && toneOutline.attention,
               )}
               title={
                 notAdopted.includes(id)
@@ -596,6 +604,7 @@ function TaskRow({
                 <button
                   type="button"
                   aria-label={`Remove dependency #${id} from #${task.id}`}
+                  title="Remove dependency"
                   className="rounded-sm p-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50"
                   disabled={changingDependencies}
                   onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
@@ -659,7 +668,7 @@ function TaskRow({
         <p
           role="note"
           aria-label={`Blocked prerequisites of #${task.id}`}
-          className="text-xs text-rose-700 dark:text-rose-300"
+          className={cn("text-xs", toneText.attention)}
         >
           {notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}{" "}
           {notAdopted.length === 1 ? "was" : "were"} not adopted. Remove the dependency or change the plan to
@@ -670,7 +679,7 @@ function TaskRow({
         <p
           role="note"
           aria-label={`Waiting prerequisites of #${task.id}`}
-          className={cn("text-xs", paused ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}
+          className={cn("text-xs", paused ? toneText.attention : toneText.neutral)}
         >
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
@@ -850,7 +859,10 @@ function TaskRow({
               Conclude
             </Button>
           )}
-          <div className="ml-auto flex items-center gap-0.5">
+          <div
+            className="ml-auto flex items-center gap-0.5"
+            onKeyDown={confirming ? escapeCloses(() => setConfirming(null), deleteTask.isPending) : undefined}
+          >
             {confirming ? (
               <>
                 <Button
@@ -863,7 +875,8 @@ function TaskRow({
                   <Trash2 />
                   {deleteTask.isPending ? "Deleting..." : confirmLabels[confirming]}
                 </Button>
-                <Button size="xs" variant="ghost" onClick={() => setConfirming(null)}>
+                {/* Focus lands on Back, under the pointer, so a double click cannot delete. */}
+                <Button key="back" size="xs" variant="ghost" autoFocus onClick={() => setConfirming(null)}>
                   Back
                 </Button>
               </>
@@ -946,27 +959,36 @@ function TaskRow({
 function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
   const freshness = useBranchFreshness(taskId, true);
   const label = `Base freshness of #${taskId}`;
+  // After syncing the branch outside Toodo, the warning is checked again right away.
+  const recheck = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      className="ml-1.5 h-5 px-1.5 align-middle"
+      aria-label={`Recheck base freshness of #${taskId}`}
+      title="Check again whether the branch is behind its base"
+      disabled={freshness.isFetching}
+      onClick={() => void freshness.refetch()}
+    >
+      <RefreshCw className={cn("size-3", freshness.isFetching && "animate-spin")} />
+      Recheck
+    </Button>
+  );
   if (freshness.error) {
     return (
       <p role="note" aria-label={label} className="text-xs text-muted-foreground" title={freshness.error.message}>
         Could not check whether the branch is behind its base
+        {recheck}
       </p>
     );
   }
   const data = freshness.data;
-  const conflicting = data?.mergeable === "conflicting";
-  if (!data || (data.behind === 0 && !conflicting)) {
+  const warning = data ? freshnessWarning(data) : null;
+  if (!data || warning === null) {
     return null;
   }
-  const parts: string[] = [];
-  if (data.behind > 0) {
-    parts.push(`${data.behind} ${data.behind === 1 ? "commit" : "commits"} behind ${data.base}`);
-  }
-  if (conflicting) {
-    parts.push("pull request has merge conflicts");
-  } else if (data.mergeable === "mergeable") {
-    parts.push("no merge conflicts");
-  }
+  const conflicting = data.mergeable === "conflicting";
   return (
     <p
       role="note"
@@ -974,7 +996,7 @@ function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
       data-conflicting={conflicting || undefined}
       className={cn(
         "text-xs",
-        conflicting ? "text-rose-700 dark:text-rose-300" : "text-amber-700 dark:text-amber-300",
+        conflicting ? toneText.danger : toneText.attention,
       )}
       title={
         [data.fetchError && `Fetching origin failed: ${data.fetchError}`, data.mergeableError]
@@ -982,8 +1004,9 @@ function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
           .join("\n") || undefined
       }
     >
-      {parts.join("; ")}
+      {warning}
       {data.fetchError && " (not up to date: fetching origin failed)"}
+      {recheck}
     </p>
   );
 }
@@ -1007,12 +1030,30 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const [taskType, setTaskType] = useState<TaskType>(task.taskType);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
-  const [plan, setPlan] = useState<PlanDraft>({
+  const [initialPlan] = useState<PlanDraft>(() => ({
     estimate: task.estimate === null ? "" : String(task.estimate.amount),
     estimateUnit: task.estimate?.unit ?? "hours",
     dueDate: task.dueDate ?? "",
-  });
+  }));
+  const [plan, setPlan] = useState<PlanDraft>(initialPlan);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const estimate = planEstimate(plan);
+  // The timeline asks before closing a details sheet whose edit form is marked dirty.
+  const dirty =
+    taskType !== task.taskType ||
+    title !== task.title ||
+    description !== task.description ||
+    plan.estimate !== initialPlan.estimate ||
+    plan.estimateUnit !== initialPlan.estimateUnit ||
+    plan.dueDate !== initialPlan.dueDate;
+
+  function discard() {
+    if (dirty) {
+      setConfirmingDiscard(true);
+    } else {
+      onDone();
+    }
+  }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1031,7 +1072,16 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label={`Edit task #${task.id}`} className="flex flex-col gap-1">
+    <form
+      onSubmit={submit}
+      aria-label={`Edit task #${task.id}`}
+      data-dirty={dirty || undefined}
+      className="flex flex-col gap-1"
+      onKeyDown={escapeCloses(
+        () => (confirmingDiscard ? setConfirmingDiscard(false) : discard()),
+        updateTask.isPending,
+      )}
+    >
       <div className="flex gap-2">
         <select
           aria-label={`Type of #${task.id}`}
@@ -1051,6 +1101,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           required
+          autoFocus
         />
       </div>
       <MarkdownEditor
@@ -1060,14 +1111,30 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         onChange={setDescription}
       />
       <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} />
-      <div className="flex gap-1">
-        <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined}>
-          {updateTask.isPending ? "Saving..." : "Save"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
-          Discard
-        </Button>
-      </div>
+      {confirmingDiscard ? (
+        <div
+          role="group"
+          aria-label={`Discard changes to #${task.id}`}
+          className="flex flex-wrap items-center gap-1 text-xs"
+        >
+          <span className="mr-1">Discard your changes to #{task.id}?</span>
+          <Button type="button" size="xs" variant="outline" autoFocus onClick={() => setConfirmingDiscard(false)}>
+            Keep editing
+          </Button>
+          <Button type="button" size="xs" variant="destructive" onClick={onDone}>
+            Discard changes
+          </Button>
+        </div>
+      ) : (
+        <div className="flex gap-1">
+          <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined}>
+            {updateTask.isPending ? "Saving..." : "Save"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={discard}>
+            Discard
+          </Button>
+        </div>
+      )}
       {updateTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {updateTask.error.message}
@@ -1091,7 +1158,12 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label={`Conclude #${task.id}`} className="flex flex-col gap-1">
+    <form
+      onSubmit={submit}
+      aria-label={`Conclude #${task.id}`}
+      className="flex flex-col gap-1"
+      onKeyDown={escapeCloses(onDone, concludeTask.isPending)}
+    >
       <p className="text-xs text-muted-foreground">
         Finish #{task.id} without merging. It is marked not adopted, its pull request is closed with the
         conclusion as a comment, and the branch is kept. Tasks that depend on it stay blocked.
@@ -1329,7 +1401,7 @@ function OpenWorkspaceNote({
   const close = (
     <Button
       size="xs"
-      variant="outline"
+      variant="destructive"
       aria-label={`Close herdr workspace of #${taskId}`}
       title="Close the herdr workspace, which ends its agent session; the worktree is kept"
       disabled={disabled}
@@ -1351,7 +1423,7 @@ function OpenWorkspaceNote({
     <div
       role="group"
       aria-label={`Herdr workspace of paused #${taskId}`}
-      className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
+      className={cn("flex flex-col gap-2 rounded-md p-2 text-xs", tonePanel.attention)}
     >
       <p>
         Paused for a new prerequisite, but its herdr workspace is still open. Close it? This ends its agent
@@ -1412,9 +1484,7 @@ function NoteKindBadge({ kind }: { kind: NoteKind }) {
       data-note-kind={kind}
       className={cn(
         "shrink-0 rounded-md px-1.5 font-medium",
-        kind === "blocker"
-          ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-          : "bg-muted text-muted-foreground",
+        kind === "blocker" ? toneChip.attention : toneChip.neutral,
       )}
     >
       {noteKindLabels[kind]}
@@ -1754,16 +1824,19 @@ function PlanFields({
   const invalid = planEstimate(plan) === undefined;
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      <input
-        className={cn(inputClass, "w-24")}
-        inputMode="decimal"
-        placeholder="Estimate"
-        aria-label={`Estimate${suffix}`}
-        aria-invalid={invalid}
-        title="Optional: expected size, a number greater than 0"
-        value={plan.estimate}
-        onChange={(e) => onChange({ ...plan, estimate: e.target.value })}
-      />
+      <label className="flex items-center gap-1">
+        Estimate
+        <input
+          className={cn(inputClass, "w-20")}
+          inputMode="decimal"
+          placeholder="Optional"
+          aria-label={`Estimate${suffix}`}
+          aria-invalid={invalid}
+          title="Optional: expected size, a number greater than 0"
+          value={plan.estimate}
+          onChange={(e) => onChange({ ...plan, estimate: e.target.value })}
+        />
+      </label>
       <select
         aria-label={`Estimate unit${suffix}`}
         className={cn(compactSelectClass, "w-24")}
@@ -1771,7 +1844,9 @@ function PlanFields({
         onChange={(e) => onChange({ ...plan, estimateUnit: e.target.value as EstimateUnit })}
       >
         <option value="hours">hours</option>
-        <option value="points">points</option>
+        <option value="days">days</option>
+        <option value="weeks">weeks</option>
+        <option value="months">months</option>
       </select>
       <label className="flex items-center gap-1">
         Due
@@ -1798,7 +1873,7 @@ function TaskPlan({ task }: { task: Task }) {
       {task.dueDate !== null && (
         <span
           data-due-state={state ?? undefined}
-          className={cn(behind && "font-medium text-rose-700 dark:text-rose-300")}
+          className={cn(behind && cn("font-medium", toneText.danger))}
         >
           {state === null || state === "upcoming" ? "Due" : dueStateLabels[state]} {task.dueDate}
         </span>

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Download, FolderOpen, Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 
 export const inputClass =
-  "h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+  "h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
 /** A small select for toolbars and inline pickers. */
 export const compactSelectClass =
@@ -75,7 +75,7 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   const machines: MachineKey[] = [null, ...remotes];
 
   return (
-    <section aria-labelledby="workspaces-heading" className="flex min-h-0 flex-1 flex-col gap-2">
+    <section aria-labelledby="workspaces-heading" className="flex shrink-0 flex-col gap-2">
       <div className="flex items-center justify-between">
         <h2 id="workspaces-heading" className="text-xs font-medium uppercase text-muted-foreground">
           Workspaces
@@ -87,7 +87,11 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
       </div>
 
       {addingMachine && (
-        <AddMachineForm saved={saved.map((machine) => machine.target)} onAdded={() => setAddingMachine(false)} />
+        <AddMachineForm
+          saved={saved.map((machine) => machine.target)}
+          onAdded={() => setAddingMachine(false)}
+          onCancel={() => setAddingMachine(false)}
+        />
       )}
       {herdrMachines.isError && (
         <p role="alert" className="text-xs text-destructive">
@@ -104,7 +108,7 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         <p className="text-sm text-muted-foreground">No workspaces yet.</p>
       )}
 
-      <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+      <div className="flex flex-col gap-3">
         {workspaces.data &&
           machines.map((machine) => {
             const label = machine ?? "Local";
@@ -147,6 +151,7 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
                       setAdding(null);
                       onSelect(workspace.id);
                     }}
+                    onCancel={() => setAdding(null)}
                   />
                 )}
                 {items.length > 0 && (
@@ -218,6 +223,12 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           role="group"
           aria-label={`Remove ${workspace.name}`}
           className="flex flex-col gap-1.5 rounded-lg border p-2"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !deleteWorkspace.isPending) {
+              event.preventDefault();
+              setConfirming(false);
+            }
+          }}
         >
           <p className="text-xs text-muted-foreground">
             Remove {workspace.name} and its tasks from Toodo? The repository, worktrees, and herdr workspaces are
@@ -238,7 +249,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
             >
               {deleteWorkspace.isPending ? "Removing..." : "Remove"}
             </Button>
-            <Button size="xs" variant="ghost" onClick={() => setConfirming(false)}>
+            <Button size="xs" variant="ghost" autoFocus onClick={() => setConfirming(false)}>
               Back
             </Button>
           </div>
@@ -248,7 +259,17 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
   );
 }
 
-function AddMachineForm({ saved, onAdded }: { saved: string[]; onAdded: () => void }) {
+/** Calls `close` when Escape is pressed inside an inline form, unless it is busy. */
+export function escapeCloses(close: () => void, busy = false) {
+  return (event: KeyboardEvent) => {
+    if (event.key === "Escape" && !busy && !event.defaultPrevented) {
+      event.preventDefault();
+      close();
+    }
+  };
+}
+
+function AddMachineForm({ saved, onAdded, onCancel }: { saved: string[]; onAdded: () => void; onCancel: () => void }) {
   const sshHosts = useSshHosts();
   const addMachine = useAddHerdrMachine();
   const [host, setHost] = useState("");
@@ -264,7 +285,7 @@ function AddMachineForm({ saved, onAdded }: { saved: string[]; onAdded: () => vo
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" onKeyDown={escapeCloses(onCancel, addMachine.isPending)}>
       <form onSubmit={submit} aria-label="Add machine" className="flex flex-col gap-2 rounded-lg border p-2">
         <p className="text-xs text-muted-foreground">
           Runs herdr machine add in a terminal window. Answer its prompts there; herdr offers to install itself on
@@ -274,11 +295,12 @@ function AddMachineForm({ saved, onAdded }: { saved: string[]; onAdded: () => vo
           <select
             className={inputClass}
             aria-label="SSH host"
+            autoFocus
             value={host}
             onChange={(e) => setHost(e.target.value)}
             required
           >
-            <option value="">Choose an SSH host</option>
+            <option value="">SSH host...</option>
             {candidates.map((alias) => (
               <option key={alias} value={alias}>
                 {alias}
@@ -315,13 +337,14 @@ function AddMachineForm({ saved, onAdded }: { saved: string[]; onAdded: () => vo
             setHost(alias);
             setAddingHost(false);
           }}
+          onCancel={() => setAddingHost(false)}
         />
       )}
     </div>
   );
 }
 
-function NewSshHostForm({ onAdded }: { onAdded: (alias: string) => void }) {
+function NewSshHostForm({ onAdded, onCancel }: { onAdded: (alias: string) => void; onCancel: () => void }) {
   const addHost = useAddSshHost();
   const [alias, setAlias] = useState("");
   const [hostName, setHostName] = useState("");
@@ -337,7 +360,12 @@ function NewSshHostForm({ onAdded }: { onAdded: (alias: string) => void }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label="New SSH host" className="flex flex-col gap-2 rounded-lg border p-2">
+    <form
+      onSubmit={submit}
+      aria-label="New SSH host"
+      className="flex flex-col gap-2 rounded-lg border p-2"
+      onKeyDown={escapeCloses(onCancel, addHost.isPending)}
+    >
       <p className="text-xs text-muted-foreground">Saved as a Host entry in ~/.ssh/config.</p>
       <input className={inputClass} placeholder="Alias, e.g. devbox" aria-label="Host alias" value={alias} onChange={(e) => setAlias(e.target.value)} required />
       <input className={inputClass} placeholder="Host name or IP" aria-label="Host name" value={hostName} onChange={(e) => setHostName(e.target.value)} required />
@@ -361,9 +389,10 @@ type NewWorkspaceFormProps = {
   machine: MachineKey;
   mode: Mode;
   onCreated: (workspace: Workspace) => void;
+  onCancel: () => void;
 };
 
-function NewWorkspaceForm({ machine, mode, onCreated }: NewWorkspaceFormProps) {
+function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFormProps) {
   const createWorkspace = useCreateWorkspace();
   const [url, setUrl] = useState("");
   const [folder, setFolder] = useState("");
@@ -412,6 +441,7 @@ function NewWorkspaceForm({ machine, mode, onCreated }: NewWorkspaceFormProps) {
       onSubmit={submit}
       aria-label={`${cloning ? "Clone" : "Open"} workspace on ${machine ?? "Local"}`}
       className="flex flex-col gap-2 rounded-lg border p-2"
+      onKeyDown={escapeCloses(onCancel, createWorkspace.isPending)}
     >
       {cloning && (
         <input

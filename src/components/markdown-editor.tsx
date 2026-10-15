@@ -25,10 +25,10 @@ export function MarkdownEditor({
   return (
     <div className={cn("flex min-w-0 flex-col gap-1", className)}>
       <div role="group" aria-label={`Mode of ${label}`} className="flex gap-0.5">
-        <Button type="button" size="xs" variant={previewing ? "ghost" : "secondary"} aria-pressed={!previewing} onClick={() => setPreviewing(false)}>
+        <Button type="button" size="xs" variant={previewing ? "ghost" : "default"} aria-pressed={!previewing} onClick={() => setPreviewing(false)}>
           Write
         </Button>
-        <Button type="button" size="xs" variant={previewing ? "secondary" : "ghost"} aria-pressed={previewing} onClick={() => setPreviewing(true)}>
+        <Button type="button" size="xs" variant={previewing ? "default" : "ghost"} aria-pressed={previewing} onClick={() => setPreviewing(true)}>
           Preview
         </Button>
         <span className="ml-auto self-center text-xs text-muted-foreground">Markdown</span>
