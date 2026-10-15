@@ -1609,6 +1609,11 @@ describe("App", () => {
       data: [fix, { ...started, status: "planned", herdrWorkspaceId: null, dependsOn: [1] }],
     });
     fireEvent.change(add, { target: { value: "1" } });
+    fireEvent.click(
+      within(await screen.findByRole("group", { name: "Confirm prerequisite of #2" })).getByRole("button", {
+        name: "Pause and add",
+      }),
+    );
 
     expect(await screen.findByRole("note", { name: "Waiting prerequisites of #2" })).toHaveTextContent(
       "Waiting on #1",
@@ -1633,7 +1638,7 @@ describe("App", () => {
     expect(screen.queryByRole("note", { name: "Waiting prerequisites of #4" })).not.toBeInTheDocument();
   });
 
-  it("asks before a prerequisite stops the running agent of a task", async () => {
+  it("asks before a prerequisite pauses a started task, whatever its agent does", async () => {
     const fix = task(1, 1, "Fix login");
     const started = task(2, 1, "Verify login", {
       status: "in_progress",
@@ -1643,7 +1648,7 @@ describe("App", () => {
     });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, started] });
-    mocked.listAgentStatuses.mockResolvedValue([{ taskId: 2, status: "working" }]);
+    mocked.listAgentStatuses.mockResolvedValue([{ taskId: 2, status: "idle" }]);
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
     await screen.findByLabelText("Agent of #2");

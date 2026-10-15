@@ -30,8 +30,8 @@ fixes found while verifying it, becomes a **prerequisite** of that task, never a
 dependent: the task cannot finish before the fixes, so the fixes must not wait for it.
 Adding a prerequisite that is not done to an `in_progress` task, in the app or by an agent
 through MCP, pauses the task in the same step and closes its herdr workspace; the worktree
-and branch stay. When the task's agent is working or waiting for input, the app asks for
-confirmation first ("Pause and add"), since closing the workspace stops the agent. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
+and branch stay. The app always asks for confirmation first ("Pause and add"), whatever the
+state of the task's agent, since closing the workspace stops it. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
 until those prerequisites are done; resuming opens the kept worktree in herdr again. If
 herdr fails to close the workspace, the task stays paused and the error says so.
 

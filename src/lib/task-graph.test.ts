@@ -6,7 +6,7 @@ import {
   dependencyEdges,
   layoutTimeline,
   relatedTasks,
-  stopsRunningAgent,
+  pausesStartedTask,
   timelineAxis,
   timelineEdgePath,
   timelineYears,
@@ -100,17 +100,14 @@ describe("dependenciesDone", () => {
   });
 });
 
-describe("stopsRunningAgent", () => {
+describe("pausesStartedTask", () => {
   const started = task(2, { status: "in_progress" });
 
-  it("is true only for a task in progress whose agent works or waits and a prerequisite not done", () => {
-    expect(stopsRunningAgent(started, task(1), "working")).toBe(true);
-    expect(stopsRunningAgent(started, task(1), "blocked")).toBe(true);
-    expect(stopsRunningAgent(started, task(1, { status: "done", resolution: "not_adopted" }), "working")).toBe(true);
-    expect(stopsRunningAgent(started, task(1, { status: "done", resolution: "merged" }), "working")).toBe(false);
-    expect(stopsRunningAgent(started, task(1), "idle")).toBe(false);
-    expect(stopsRunningAgent(started, task(1), null)).toBe(false);
-    expect(stopsRunningAgent(task(3), task(1), "working")).toBe(false);
+  it("is true only for a task in progress and a prerequisite not done", () => {
+    expect(pausesStartedTask(started, task(1))).toBe(true);
+    expect(pausesStartedTask(started, task(1, { status: "done", resolution: "not_adopted" }))).toBe(true);
+    expect(pausesStartedTask(started, task(1, { status: "done", resolution: "merged" }))).toBe(false);
+    expect(pausesStartedTask(task(3), task(1))).toBe(false);
   });
 });
 

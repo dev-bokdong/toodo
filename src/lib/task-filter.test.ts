@@ -63,6 +63,26 @@ describe("matchesFilter", () => {
     expect(matchesFilter(working, ready, byId)).toBe(false);
   });
 
+  it("shows a task paused by a new prerequisite as ready once that prerequisite is done", () => {
+    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, pausedAt: 30 };
+    const pausedTask = (dependsOn: number[]) =>
+      task({ id: 9, branch: "feat/add-storage-9", dependsOn, milestones });
+    const doneAt = (id: number, at: number) =>
+      task({ id, status: "done", resolution: "merged", milestones: { ...milestones, completedAt: at, pausedAt: null } });
+    const byId = new Map([doneAt(1, 5), doneAt(2, 40), task({ id: 3, status: "in_progress" })].map((each) => [each.id, each]));
+    const ready = { ...emptyTaskFilter, status: "ready" as const };
+    const paused = { ...emptyTaskFilter, status: "paused" as const };
+
+    // Prerequisite #2 was added while the task ran and completed after the pause.
+    expect(matchesFilter(pausedTask([1, 2]), ready, byId)).toBe(true);
+    expect(matchesFilter(pausedTask([1, 2]), paused, byId)).toBe(false);
+    // Still waiting on #3.
+    expect(matchesFilter(pausedTask([2, 3]), paused, byId)).toBe(true);
+    // Paused by hand: its prerequisites were done before it started.
+    expect(matchesFilter(pausedTask([1]), paused, byId)).toBe(true);
+    expect(matchesFilter(pausedTask([]), paused, byId)).toBe(true);
+  });
+
   it("narrows to one task type", () => {
     expect(matchesFilter(task({ taskType: "fix" }), { ...emptyTaskFilter, type: "fix" }, noTasks)).toBe(true);
     expect(matchesFilter(task(), { ...emptyTaskFilter, type: "fix" }, noTasks)).toBe(false);
