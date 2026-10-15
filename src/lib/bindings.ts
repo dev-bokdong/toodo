@@ -300,15 +300,11 @@ export type Estimate = {
 	amount: number,
 };
 
-/**  What an estimate counts. */
-export type EstimateUnit = 
 /**
- *  Hours of active work, compared with the time the task spends in progress or in
- *  review.
+ *  The unit of time an estimate counts, compared with the time the task spends in
+ *  progress or in review. A day is 24 hours, a week 7 days, and a month 30 days.
  */
-"hours" | 
-/**  Story points: relative size. */
-"points";
+export type EstimateUnit = "hours" | "days" | "weeks" | "months";
 
 /**  A machine saved in herdr with `herdr machine add`. */
 export type HerdrMachine = {

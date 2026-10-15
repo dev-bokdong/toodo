@@ -1771,7 +1771,9 @@ function PlanFields({
         onChange={(e) => onChange({ ...plan, estimateUnit: e.target.value as EstimateUnit })}
       >
         <option value="hours">hours</option>
-        <option value="points">points</option>
+        <option value="days">days</option>
+        <option value="weeks">weeks</option>
+        <option value="months">months</option>
       </select>
       <label className="flex items-center gap-1">
         Due

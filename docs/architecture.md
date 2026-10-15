@@ -92,7 +92,7 @@ A unit of work inside a workspace.
 | `workspaceId` | Owning workspace. |
 | `type` | Kind of change, one of the [task types](#task-types). Used in the worktree path and branch name. |
 | `title`, `description` | What should be implemented (English). |
-| `estimate` | Optional expected size: an amount greater than 0 in `hours` (of active work) or `points`. Reviews compare an estimate in hours with the task's active time. |
+| `estimate` | Optional expected size: an amount greater than 0 in `hours`, `days` (24 hours), `weeks` (7 days), or `months` (30 days) of active work. Reviews compare it with the task's active time. |
 | `dueDate` | Optional calendar day (`YYYY-MM-DD`) the task should be done by. It is met when the task is completed before the end of that day in local time. |
 | `status` | See [workflow.md](workflow.md#task-states). |
 | `resolution` | How a `done` task ended: `merged` (completed by its merged pull request) or `not_adopted` (concluded without merging); `null` for every other status. Tasks done before Toodo recorded it are `merged`. |
@@ -261,8 +261,8 @@ generated or guessed by an agent.
   says how many completed tasks were concluded without merging (not adopted); the Markdown report marks those
   tasks "not adopted" and lists their conclusion.
 - When reviewed tasks have estimates or due dates, a "Plan vs actual" section compares the
-  plan with what happened: the summed hour estimates of the completed tasks against their
-  summed active time, the points completed, how many completed tasks met their due date,
+  plan with what happened: the summed estimates of the completed tasks against their
+  summed active time, how many completed tasks met their due date,
   and the late tasks: those completed after their due date, and open tasks whose due date
   passed before the end of the period (or before now, while the period is under way).
   The Markdown report adds these lines to its summary and a "Late" section.
@@ -271,7 +271,7 @@ generated or guessed by an agent.
   requests, lines added and deleted, changed files, and reviews with how many pull
   requests got one), the three largest pull requests by changed lines, every
   completed `rnd` task with whether it was adopted and its conclusion, and the three
-  tasks whose active time overran their hour estimate the most.
+  tasks whose active time overran their estimate the most.
 - The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
   task with its milestones as local times, its resolution (`Merged` or `Not adopted`), its
   active hours so far, its estimate and unit, its due date and whether it was met (`On

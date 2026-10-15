@@ -61,15 +61,15 @@ fn required(field: &str, value: String) -> CommandResult<String> {
     Ok(trimmed.to_owned())
 }
 
-/// What an estimate counts.
+/// The unit of time an estimate counts, compared with the time the task spends in
+/// progress or in review. A day is 24 hours, a week 7 days, and a month 30 days.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EstimateUnit {
-    /// Hours of active work, compared with the time the task spends in progress or in
-    /// review.
     Hours,
-    /// Story points: relative size.
-    Points,
+    Days,
+    Weeks,
+    Months,
 }
 
 /// The expected size of a task.
@@ -91,7 +91,9 @@ impl From<plan::Estimate> for Estimate {
         Self {
             unit: match estimate.unit() {
                 plan::EstimateUnit::Hours => EstimateUnit::Hours,
-                plan::EstimateUnit::Points => EstimateUnit::Points,
+                plan::EstimateUnit::Days => EstimateUnit::Days,
+                plan::EstimateUnit::Weeks => EstimateUnit::Weeks,
+                plan::EstimateUnit::Months => EstimateUnit::Months,
             },
             amount: estimate.amount(),
         }
@@ -104,7 +106,9 @@ impl TryFrom<Estimate> for plan::Estimate {
     fn try_from(estimate: Estimate) -> CommandResult<Self> {
         let unit = match estimate.unit {
             EstimateUnit::Hours => plan::EstimateUnit::Hours,
-            EstimateUnit::Points => plan::EstimateUnit::Points,
+            EstimateUnit::Days => plan::EstimateUnit::Days,
+            EstimateUnit::Weeks => plan::EstimateUnit::Weeks,
+            EstimateUnit::Months => plan::EstimateUnit::Months,
         };
         plan::Estimate::new(unit, estimate.amount)
             .map_err(|error| CommandError::invalid_input(error.to_string()))
