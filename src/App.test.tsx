@@ -869,7 +869,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
     expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "2.5" } });
-    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "points" } });
+    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "weeks" } });
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-11-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
@@ -879,7 +879,7 @@ describe("App", () => {
       taskType: "docs",
       title: "Write docs",
       description: "",
-      estimate: { unit: "points", amount: 2.5 },
+      estimate: { unit: "weeks", amount: 2.5 },
       dueDate: "2026-11-01",
     });
     expect(screen.getByLabelText("Estimate")).toHaveValue("");

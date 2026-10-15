@@ -440,7 +440,7 @@ describe("planVsActual", () => {
     { status: "done", at: end },
   ];
 
-  it("compares hour estimates with active time, sums points, and rates due dates of completed tasks", () => {
+  it("compares estimates in any unit with active time and rates due dates of completed tasks", () => {
     const entries = [
       completed(1, local(2026, 10, 13, 12), {}, {
         estimate: { unit: "hours", amount: 2 },
@@ -452,14 +452,16 @@ describe("planVsActual", () => {
         dueDate: "2026-10-14",
         timeline: worked(local(2026, 10, 15, 9), local(2026, 10, 15, 10)),
       }),
-      completed(3, local(2026, 10, 16), {}, { estimate: { unit: "points", amount: 5 } }),
+      completed(3, local(2026, 10, 16), {}, {
+        estimate: { unit: "days", amount: 0.5 },
+        timeline: worked(local(2026, 10, 14, 9), local(2026, 10, 14, 21)),
+      }),
       completed(4, local(2026, 10, 16), {}, { estimate: { unit: "hours", amount: 1 } }),
     ];
 
     const plan = planVsActual(week, entries, reviewNow);
 
-    expect(plan?.hours).toEqual({ tasks: 2, estimated: 6 * hour, actual: 4 * hour });
-    expect(plan?.points).toEqual({ tasks: 1, points: 5 });
+    expect(plan?.time).toEqual({ tasks: 3, estimated: 18 * hour, actual: 16 * hour });
     expect(plan?.dueDates).toEqual({ tasks: 2, onTime: 1 });
     expect(plan?.late.map(({ task, done, secondsLate }) => [task.id, done, secondsLate])).toEqual([
       [2, true, 10 * hour],
