@@ -1,8 +1,9 @@
-import { lazy, Suspense, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   Check,
   CircleDot,
   CircleSlash,
+  Crosshair,
   FolderGit2,
   GitBranch,
   GitPullRequest,
@@ -20,7 +21,6 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { TaskGraph } from "@/components/task-graph";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
@@ -54,6 +54,7 @@ import {
   useCreateIssue,
   useCreateTask,
   useDeleteTask,
+  useFocusAgentPane,
   useHerdrStatus,
   useLinkIssue,
   useMachineSettings,
@@ -96,6 +97,8 @@ import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
+// The timeline pulls in React Flow, so it loads only when it is first shown.
+const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
@@ -157,12 +160,17 @@ function taskRef(id: TaskId, of: WorkspaceId, { byId, workspaceName }: TaskConte
  * workspaces, so a task may wait on a task of another workspace. The timeline is only
  * offered for every workspace, where it is the default view.
  */
+/** A request to select a task on the timeline; each request is a new object. */
+export type ShownTask = { id: TaskId };
+
 export function TaskList({
   workspace,
   timelineScale,
   onTimelineScaleChange,
   draft = emptyDraft,
   onDraftChange,
+  shownTask = null,
+  onTaskShown,
 }: {
   workspace: Workspace | null;
   /** Timeline scale, owned by the caller so it survives switching workspaces and views. */
@@ -171,6 +179,10 @@ export function TaskList({
   /** The new task being written in this workspace, owned by the caller so it survives switching away. */
   draft?: TaskDraft;
   onDraftChange?: (draft: TaskDraft) => void;
+  /** A task to select on the timeline, which switches to it and clears filters hiding the task. */
+  shownTask?: ShownTask | null;
+  /** Called once the timeline selected `shownTask`. */
+  onTaskShown?: () => void;
 }) {
   const allTasks = useTasks();
   const workspaces = useWorkspaces();
@@ -193,6 +205,18 @@ export function TaskList({
   const filtered = tasks?.filter(
     (task) => (!showTimeline || filter === null || task.workspaceId === filter) && matchesFilter(task, taskFilter, context.byId),
   );
+  const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
+  useEffect(() => {
+    if (shownTaskData === undefined) {
+      return;
+    }
+    setView("timeline");
+    setTimelineWorkspace((current) => (current === shownTaskData.workspaceId ? current : null));
+    setTaskFilter((current) =>
+      matchesFilter(shownTaskData, current, context.byId) ? current : emptyTaskFilter,
+    );
+    // Only a new request moves the view; later changes to the task do not.
+  }, [shownTask, shownTaskData === undefined]);
   // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
   const prerequisites =
     filter === null
@@ -290,29 +314,33 @@ export function TaskList({
               ))}
             </ul>
           ) : (
-            <TaskGraph
-              tasks={[...filtered, ...prerequisites]}
-              allTasks={allTasks.data}
-              dimmed={new Set(prerequisites.map((task) => task.id))}
-              workspaceLabel={(task) =>
-                filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
-              }
-              statusLabel={(task) => statusLabel(task, context.byId)}
-              statusStyle={(task) => statusStyle(task, context.byId)}
-              ready={(task) => shownStatus(task, context.byId) === "ready"}
-              scale={timelineScale}
-              onScaleChange={onTimelineScaleChange}
-              renderDetail={(selected) => (
-                <TaskRow
-                  key={selected.id}
-                  task={selected}
-                  tasks={allTasks.data ?? []}
-                  context={context}
-                  showWorkspace
-                  detailed
-                />
-              )}
-            />
+            <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
+              <TaskGraph
+                tasks={[...filtered, ...prerequisites]}
+                allTasks={allTasks.data}
+                dimmed={new Set(prerequisites.map((task) => task.id))}
+                workspaceLabel={(task) =>
+                  filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
+                }
+                statusLabel={(task) => statusLabel(task, context.byId)}
+                statusStyle={(task) => statusStyle(task, context.byId)}
+                ready={(task) => shownStatus(task, context.byId) === "ready"}
+                scale={timelineScale}
+                onScaleChange={onTimelineScaleChange}
+                shownTaskId={shownTask?.id ?? null}
+                onTaskShown={() => onTaskShown?.()}
+                renderDetail={(selected) => (
+                  <TaskRow
+                    key={selected.id}
+                    task={selected}
+                    tasks={allTasks.data ?? []}
+                    context={context}
+                    showWorkspace
+                    detailed
+                  />
+                )}
+              />
+            </Suspense>
           )}
         </>
       )}
@@ -434,6 +462,7 @@ function TaskRow({
   const pullRequestStatuses = usePullRequestStatuses();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
+  const focusAgent = useFocusAgentPane();
   const refreshCommits = useRefreshCommitRecords();
   const openPullRequest = useOpenPullRequest();
   const completeTask = useCompleteTask();
@@ -480,6 +509,7 @@ function TaskRow({
   const actionError =
     startTask.error ??
     openTask.error ??
+    focusAgent.error ??
     refreshCommits.error ??
     openPullRequest.error ??
     completeTask.error ??
@@ -756,6 +786,19 @@ function TaskRow({
             >
               <SquareTerminal />
               Open in herdr
+            </Button>
+          )}
+          {detailed && active && task.herdrWorkspaceId && agentStatus && (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={`Focus agent pane of #${task.id}`}
+              title="Focus the herdr pane of the agent working on this task"
+              disabled={!herdrRunning || focusAgent.isPending}
+              onClick={() => focusAgent.mutate(task.id)}
+            >
+              <Crosshair />
+              Focus agent pane
             </Button>
           )}
           {hasWorktree && (

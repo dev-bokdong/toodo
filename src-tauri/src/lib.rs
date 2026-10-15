@@ -46,6 +46,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::herdr::herdr_status,
             commands::herdr::start_task,
             commands::herdr::open_task_in_herdr,
+            commands::herdr::focus_agent_pane,
             commands::herdr::restore_task_worktree,
             commands::herdr::close_task_workspace,
             commands::completion::refresh_commit_records,
