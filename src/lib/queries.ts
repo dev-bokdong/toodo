@@ -55,6 +55,7 @@ export const queryKeys = {
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
   mcpServerInfo: ["mcp-server-info"] as const,
+  mcpTunnels: ["mcp-tunnels"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
@@ -66,6 +67,15 @@ export function useMcpServerInfo() {
     queryKey: queryKeys.mcpServerInfo,
     queryFn: () => commands.mcpServerInfo(),
     staleTime: Infinity,
+  });
+}
+
+/** Reverse tunnels that let agents on SSH machines reach the MCP server. */
+export function useMcpTunnels() {
+  return useQuery({
+    queryKey: queryKeys.mcpTunnels,
+    queryFn: () => commands.listMcpTunnels(),
+    refetchInterval: 3000,
   });
 }
 

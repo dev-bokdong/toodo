@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { McpServerInfo } from "@/lib/bindings";
-import { useMcpServerInfo } from "@/lib/queries";
+import type { McpServerInfo, McpTunnel, McpTunnelState } from "@/lib/bindings";
+import { useMcpServerInfo, useMcpTunnels } from "@/lib/queries";
+import { cn } from "@/lib/utils";
 
 export function mcpConfig(info: McpServerInfo): string {
   const server = {
@@ -12,8 +13,36 @@ export function mcpConfig(info: McpServerInfo): string {
   return JSON.stringify({ mcpServers: { toodo: server } }, null, 2);
 }
 
+const tunnelStates: Record<McpTunnelState, { label: string; className: string }> = {
+  open: { label: "Connected", className: "bg-emerald-500" },
+  connecting: { label: "Connecting", className: "bg-amber-500" },
+  retrying: { label: "Retrying", className: "bg-destructive" },
+};
+
+function TunnelList({ tunnels }: { tunnels: McpTunnel[] }) {
+  if (tunnels.length === 0) return null;
+  return (
+    <ul aria-label="Remote machines" className="flex flex-col gap-1">
+      {tunnels.map((tunnel) => {
+        const state = tunnelStates[tunnel.state];
+        return (
+          <li key={tunnel.machine} aria-label={`Tunnel to ${tunnel.machine}`} className="flex flex-col gap-0.5">
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", state.className)} />
+              <span className="truncate font-medium">{tunnel.machine}</span>
+              <span className="text-muted-foreground">{state.label}</span>
+            </span>
+            {tunnel.error && <span className="break-words text-destructive">{tunnel.error}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function AgentAccessPanel() {
   const info = useMcpServerInfo();
+  const tunnels = useMcpTunnels();
   const [notice, setNotice] = useState<string | null>(null);
 
   async function copy(text: string, what: string) {
@@ -54,6 +83,14 @@ export function AgentAccessPanel() {
                   </Button>
                 </div>
               )
+            )}
+            {!data.error && (
+              <>
+                <p className="text-muted-foreground">
+                  Agents on SSH machines use the same config: Toodo forwards the port to each machine with a workspace.
+                </p>
+                <TunnelList tunnels={tunnels.data ?? []} />
+              </>
             )}
           </>
         )}

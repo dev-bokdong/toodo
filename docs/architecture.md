@@ -377,8 +377,20 @@ Toodo owns planning, task state, commit records, and pull requests.
   - If the port is taken, the app runs without the server and the sidebar's Agent
     access panel shows why. That panel copies an MCP client config with the URL and
     token (`mcp_server_info`).
-  - Agents on SSH machines cannot reach the loopback port unless the user forwards it,
-    e.g. `ssh -R 47615:127.0.0.1:47615 <host>`.
+  - Agents on SSH machines reach the server through reverse tunnels
+    (`src-tauri/src/mcp/tunnels.rs`): while the server runs, Toodo keeps one
+    `ssh -v -N -R 127.0.0.1:47615:127.0.0.1:47615 -- <host>` per machine with an SSH
+    workspace (`BatchMode`, `ExitOnForwardFailure`, `ServerAliveInterval=15`,
+    `ControlPath=none` so the forward never outlives the process in a shared master
+    connection). Agents there use the same URL and token as local ones.
+  - A tunnel counts as open once ssh logs `remote forward success`. One that ends,
+    e.g. because the remote port is taken by another Toodo, is opened again after
+    1 s, doubling up to 60 s; the delay resets once a tunnel opens. Tunnels of
+    machines without workspaces are stopped, and all of them when the app exits. The
+    Agent access panel lists each machine's tunnel state and last error
+    (`list_mcp_tunnels`).
+  - The forwarded port listens on the remote loopback only, so other users of that
+    machine can reach it; the bearer token keeps them out.
 - **Storage**: SQLite database `toodo.sqlite3` in the app data directory (`%APPDATA%`)
   for workspaces, machine settings, tasks, dependencies, and commit records
   (`src-tauri/src/storage/`).
@@ -432,7 +444,6 @@ Out of the first scope; revisit when needed.
 - A herdr plugin for in-herdr actions such as "complete task"; herdr plugins are in
   preview on Windows.
 - Native WSL repository support.
-- Reaching the MCP server from agents on SSH machines without a manual port forward,
-  and rotating the MCP access token from the UI.
+- Rotating the MCP access token from the UI.
 - Correcting timeline timestamps by hand, for example to enter work done before the task
   was created in Toodo.

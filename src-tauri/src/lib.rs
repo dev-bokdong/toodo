@@ -53,6 +53,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::issues::create_issue,
             commands::events::list_agent_statuses,
             commands::mcp::mcp_server_info,
+            commands::mcp::list_mcp_tunnels,
             commands::review::review_period,
             commands::review::save_report,
             commands::backup::get_backup_settings,
@@ -111,14 +112,29 @@ pub fn run() {
             commands::backup::spawn(app.handle().clone())?;
             commands::completion::spawn(app.handle().clone())?;
             let mcp = mcp::start(Arc::new(app.handle().clone()), &data_dir);
-            if let Some(error) = &mcp.error {
-                eprintln!("toodo: MCP server not started: {error}");
+            let tunnels: mcp::tunnels::TunnelsState = Arc::new(Mutex::new(
+                mcp::tunnels::Tunnels::new(Box::new(adapters::ssh_tunnel::SshForwarder), mcp::PORT),
+            ));
+            match &mcp.error {
+                Some(error) => eprintln!("toodo: MCP server not started: {error}"),
+                None => mcp::tunnels::spawn(app.handle().clone(), tunnels.clone())?,
             }
             app.manage(mcp);
+            app.manage(tunnels);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event
+                && let Some(tunnels) = app.try_state::<mcp::tunnels::TunnelsState>()
+            {
+                tunnels
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .shut_down();
+            }
+        });
 }
 
 #[cfg(test)]
