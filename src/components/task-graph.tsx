@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Crosshair, TriangleAlert, XIcon } from "lucide-react";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
@@ -57,6 +57,7 @@ import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
 import { activeSeconds, formatDate, reachedMilestones } from "@/lib/timeline";
 import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
+import { barStyles, nowLabel, nowLine, toneFill, toneMark, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
@@ -90,9 +91,31 @@ const barHeight = 30;
 const nowRefreshMs = 30_000;
 /** Ticks this far outside the visible area are still drawn, so labels never pop in at the edge. */
 const tickOverscan = 200;
-/** Width of the floating task details sheet, and its distance from the window edges. */
+/**
+ * Width of the floating task details sheet, and its distance from the window edges. In a narrow
+ * window the sheet takes at most `sheetShare` of it, but never less than `sheetMinWidth`.
+ */
 const sheetWidth = 480;
+const sheetMinWidth = 360;
+const sheetShare = 0.4;
 const sheetMargin = 16;
+/** Gap between a bar and a label drawn after it, because the label does not fit inside. */
+const labelGap = 8;
+/** Height of the label row at the top of a bar; due-date ticks leave it clear. */
+const labelRowHeight = 21;
+
+function sheetWidthIn(windowWidth: number): number {
+  return Math.min(sheetWidth, Math.max(sheetMinWidth, windowWidth * sheetShare), windowWidth - 2 * sheetMargin);
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+}
+
+/** Whether Escape pressed on `target` belongs to a form field rather than to the timeline. */
+function isField(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']") !== null;
+}
 /** Width of the hover card of a bar. */
 const tooltipWidth = 288;
 /** How long the hover card stays after the pointer leaves its bar, so the pointer can reach the card. */
@@ -108,9 +131,9 @@ const rowKeys: Record<string, "previous" | "next" | "first" | "last"> = {
 const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", week: "Week", month: "Month" };
 
 const phaseStyles: Record<TimelinePhase, string> = {
-  in_progress: "bg-blue-500",
-  in_review: "bg-violet-500",
-  paused: "bg-neutral-400",
+  in_progress: toneFill.progress,
+  in_review: toneFill.review,
+  paused: toneFill.neutral,
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
@@ -119,14 +142,6 @@ const phaseLabels: Record<TimelinePhase, string> = {
   paused: "Paused",
 };
 
-/** The bar of a finished task is tinted green; its phase strip still shows how the work went. */
-const doneBarStyle = "border-emerald-500 bg-emerald-100 dark:bg-emerald-950";
-
-/** A task not started yet whose prerequisites are all done is drawn solid; one still blocked, dashed. */
-const readyBarStyle = "border-amber-500 shadow-none";
-
-/** A task done after its due date, or still open after it, gets a red outline over its other styles. */
-const behindDueBarStyle = "border-2 border-rose-500 dark:border-rose-400";
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
@@ -186,6 +201,10 @@ export function TaskGraph({
   const [year, setYear] = useState<number | null>(null);
   // The bar under the pointer, with its place on screen for the hover card.
   const [hovered, setHovered] = useState<{ id: TaskId; rect: DOMRect } | null>(null);
+  // A selection change held back because the details sheet has unsaved edits: the task to
+  // select next, or `null` to close the sheet.
+  const [discarding, setDiscarding] = useState<{ next: TaskId | null } | null>(null);
+  const sheet = useRef<HTMLElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A shown task selected before the timeline was ready, revealed once it is.
   const pendingReveal = useRef<TaskId | null>(null);
@@ -276,12 +295,63 @@ export function TaskGraph({
     if (flow.current === null) {
       pendingReveal.current = shownTaskId;
     }
-    select(shownTaskId);
+    changeSelection(shownTaskId);
     onTaskShown?.();
     // Runs for a new request, or once the requested task reaches the timeline.
   }, [shownTaskId, shownPlaced]);
 
   useEffect(() => () => clearTimeout(hideTimer.current), []);
+
+  // Escape closes the hover card, then the details sheet, wherever the focus is, except in a
+  // form field or a form that handled it already, such as an edit form discarding its changes.
+  useEffect(() => {
+    if (hovered === null && selectedTask === undefined) {
+      return;
+    }
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      if (hovered !== null) {
+        setHovered(null);
+      } else if (discarding !== null) {
+        setDiscarding(null);
+      } else if (!isField(event.target)) {
+        changeSelection(null);
+      }
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  });
+
+  /**
+   * Selects task `next`, or closes the details sheet when it is `null`, after asking first when
+   * the sheet has an edit form with unsaved changes.
+   */
+  function changeSelection(next: TaskId | null) {
+    if (next === (selectedTask?.id ?? null)) {
+      // Clicking the selected bar again still brings it out from under the sheet.
+      if (next !== null) {
+        reveal(next, true);
+      }
+      return;
+    }
+    if (sheet.current?.querySelector("form[data-dirty]")) {
+      setDiscarding({ next });
+      setHovered(null);
+      return;
+    }
+    applySelection(next);
+  }
+
+  function applySelection(next: TaskId | null) {
+    setDiscarding(null);
+    if (next === null) {
+      setSelectedTaskId(null);
+    } else {
+      select(next);
+    }
+  }
 
   function keepTooltip() {
     clearTimeout(hideTimer.current);
@@ -335,7 +405,7 @@ export function TaskGraph({
     if (instance === null || box === undefined || bar === undefined) {
       return;
     }
-    const sheetLeft = window.innerWidth - sheetMargin - Math.min(sheetWidth, window.innerWidth - 2 * sheetMargin);
+    const sheetLeft = window.innerWidth - sheetMargin - sheetWidthIn(window.innerWidth);
     const visibleRight = (behindSheet ? Math.min(box.right, sheetLeft) : box.right) - 16;
     const { x, y, zoom } = instance.getViewport();
     const left = box.left + x + bar.x;
@@ -358,7 +428,7 @@ export function TaskGraph({
       nextY = box.height - top - rowHeight;
     }
     if (shift !== 0 || nextY !== y) {
-      void instance.setViewport({ x: x - shift, y: nextY, zoom }, { duration: 200 });
+      void instance.setViewport({ x: x - shift, y: nextY, zoom }, { duration: prefersReducedMotion() ? 0 : 200 });
     }
   }
 
@@ -394,23 +464,23 @@ export function TaskGraph({
     container.current
       .querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
       ?.focus({ preventScroll: true });
-    select(id);
+    changeSelection(id);
   }
 
   function changeNodes(changes: NodeChange<BarNode>[]) {
     const picked = changes.filter((change) => change.type === "select" && change.selected).pop();
     if (picked !== undefined && picked.type === "select") {
-      select(Number(picked.id));
+      changeSelection(Number(picked.id));
     } else if (
       changes.some((change) => change.type === "select" && !change.selected && Number(change.id) === selectedTaskId)
     ) {
-      setSelectedTaskId(null);
+      changeSelection(null);
     }
   }
 
   function changeEdges(changes: EdgeChange[]) {
     if (changes.some((change) => change.type === "select" && change.selected)) {
-      setSelectedTaskId(null);
+      changeSelection(null);
     }
     setSelectedEdgeIds((current) => {
       const next = new Set(current);
@@ -435,7 +505,7 @@ export function TaskGraph({
             <Button
               key={option}
               size="xs"
-              variant={scale === option ? "secondary" : "ghost"}
+              variant={scale === option ? "default" : "ghost"}
               aria-pressed={scale === option}
               onClick={() => onScaleChange(option)}
             >
@@ -456,25 +526,25 @@ export function TaskGraph({
             </option>
           ))}
         </select>
-        <ul aria-label="Phases" className="flex gap-2 text-muted-foreground">
+        <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 text-muted-foreground [&>li]:whitespace-nowrap">
           <li className="flex items-center gap-1">
             <span className="size-2 rotate-45 border border-muted-foreground" />
             Planned
           </li>
           <li className="flex items-center gap-1">
-            <span className="h-2 border-l-2 border-emerald-500" />
-            Ready
+            <span className={cn("h-2 border-l-2", toneMark.attention)} />
+            Became ready
           </li>
           <li className="flex items-center gap-1">
             <span className="w-3 border-t border-dashed border-muted-foreground" />
             Waiting
           </li>
           <li className="flex items-center gap-1">
-            <span className="h-2 w-3 rounded-sm border border-dashed border-muted-foreground" />
+            <span className={cn("h-2 w-3 rounded-sm border", barStyles.blocked)} />
             Blocked
           </li>
           <li className="flex items-center gap-1">
-            <span className={cn("h-2 w-3 rounded-sm border", readyBarStyle)} />
+            <span className={cn("h-2 w-3 rounded-sm border", barStyles.ready)} />
             Ready to start
           </li>
           {(Object.keys(phaseLabels) as TimelinePhase[]).map((phase) => (
@@ -484,7 +554,7 @@ export function TaskGraph({
             </li>
           ))}
           <li className="flex items-center gap-1">
-            <span className={cn("h-2 w-3 rounded-sm border", doneBarStyle)} />
+            <span className={cn("h-2 w-3 rounded-sm border", barStyles.done)} />
             Done
           </li>
           <li className="flex items-center gap-1">
@@ -492,7 +562,7 @@ export function TaskGraph({
             Due date
           </li>
           <li className="flex items-center gap-1">
-            <span className={cn("h-2 w-3 rounded-sm", behindDueBarStyle)} />
+            <span className={cn("h-2 w-3 rounded-sm", barStyles.behindDue)} />
             Past due
           </li>
         </ul>
@@ -529,13 +599,7 @@ export function TaskGraph({
       )}
       <div
         className="flex min-h-40 flex-1 gap-2"
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            setSelectedTaskId(null);
-          } else {
-            moveSelection(event);
-          }
-        }}
+        onKeyDown={moveSelection}
         onFocus={(event) => {
           // A bar reached with Tab comes into view; a selected one also clears the details sheet.
           const id = (event.target as HTMLElement).closest<HTMLElement>(".react-flow__node")?.dataset.id;
@@ -572,7 +636,7 @@ export function TaskGraph({
               isValidConnection={(c) => canAddDependency(allTasks, Number(c.source), Number(c.target))}
               onConnect={connect}
               onNodesChange={changeNodes}
-              onPaneClick={() => setSelectedTaskId(null)}
+              onPaneClick={() => changeSelection(null)}
               onNodeMouseEnter={(event, node) => {
                 keepTooltip();
                 setHovered({ id: Number(node.id), rect: event.currentTarget.getBoundingClientRect() });
@@ -617,16 +681,40 @@ export function TaskGraph({
           // A floating sheet over the window's right side: the timeline keeps its full width and
           // the details get room to wrap instead of being cut off.
           <aside
+            ref={sheet}
             aria-label="Task details"
             className="fixed inset-y-4 right-4 z-40 flex flex-col overflow-hidden rounded-xl border bg-card shadow-xl"
-            style={{ width: `min(${sheetWidth}px, calc(100vw - ${2 * sheetMargin}px))` }}
+            style={{
+              width: `min(${sheetWidth}px, max(${sheetMinWidth}px, ${sheetShare * 100}vw), calc(100vw - ${2 * sheetMargin}px))`,
+            }}
           >
             <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
               <h3 className="text-xs font-medium text-muted-foreground">Task details</h3>
-              <Button size="icon-xs" variant="ghost" aria-label="Close details" onClick={() => setSelectedTaskId(null)}>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Close details"
+                title="Close details (Esc)"
+                onClick={() => changeSelection(null)}
+              >
                 <XIcon />
               </Button>
             </div>
+            {discarding !== null && (
+              <div
+                role="group"
+                aria-label="Unsaved changes"
+                className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
+              >
+                <span className="min-w-0 flex-1">Discard your unsaved changes to #{selectedTask.id}?</span>
+                <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(null)}>
+                  Keep editing
+                </Button>
+                <Button size="xs" variant="destructive" onClick={() => applySelection(discarding.next)}>
+                  Discard changes
+                </Button>
+              </div>
+            )}
             <ul className="min-h-0 flex-1 overflow-y-auto">{renderDetail(selectedTask)}</ul>
           </aside>
         )}
@@ -675,7 +763,7 @@ function TimelineGrid({ layout }: { layout: TimelineLayout }) {
           <div key={tick.at} className="absolute inset-y-0 border-l border-border/60" style={{ left: tick.x }} />
         ))}
         {layout.nowX !== null && (
-          <div className="absolute inset-y-0 border-l-2 border-red-500" style={{ left: layout.nowX }} />
+          <div className={cn("absolute inset-y-0 border-l-2", nowLine)} style={{ left: layout.nowX }} />
         )}
       </div>
     </div>
@@ -723,10 +811,10 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
           </div>
         ))}
         {layout.nowX !== null && (
-          <div className="absolute top-0 h-full border-l-2 border-red-500" style={{ left: layout.nowX }}>
+          <div className={cn("absolute top-0 h-full border-l-2", nowLine)} style={{ left: layout.nowX }}>
             {/* Only the label row gets a background, so the fine ticks below stay visible. */}
             <span
-              className="block whitespace-nowrap bg-background pl-1 font-medium text-red-500"
+              className={cn("block whitespace-nowrap bg-background pl-1 font-semibold", nowLabel)}
               style={{ height: axisRowHeight }}
             >
               Now {pad(date.getHours())}:{pad(date.getMinutes())}
@@ -798,7 +886,7 @@ function TimelineTooltip({
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
         {agentStatus !== null && <AgentBadge taskId={task.id} status={agentStatus} className="px-1.5 py-0" />}
       </div>
-      <p className="font-medium break-words">{task.title}</p>
+      <p className="break-words-keep font-semibold">{task.title}</p>
       {milestones.length > 0 && (
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
           {milestones.map(({ label, at }) => (
@@ -829,7 +917,7 @@ function TimelineTooltip({
               <dd
                 className={cn(
                   "tabular-nums",
-                  (dueState === "late" || dueState === "overdue") && "text-rose-700 dark:text-rose-300",
+                  (dueState === "late" || dueState === "overdue") && toneText.danger,
                 )}
               >
                 {task.dueDate}
@@ -888,6 +976,21 @@ function TimelineBarView({
   // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
   const faded = isPaused(task) && !ready;
   const behindDue = dueState === "late" || dueState === "overdue";
+  // A label wider than its bar starts after the bar's right end, so no chip sits across the
+  // bar's edge or under its handle.
+  const label = useRef<HTMLDivElement>(null);
+  const [labelOutside, setLabelOutside] = useState(false);
+  useLayoutEffect(() => {
+    const element = label.current;
+    if (element === null) {
+      return;
+    }
+    const minWidth = element.style.minWidth;
+    element.style.minWidth = "0";
+    const natural = element.offsetWidth;
+    element.style.minWidth = minWidth;
+    setLabelOutside(natural > bar.width);
+  }, [bar.width, task.title, workspace, statusLabel, agentStatus]);
   return (
     <div
       data-dimmed={dimmed || undefined}
@@ -907,7 +1010,10 @@ function TimelineBarView({
             <span className="absolute -left-1 -top-1 size-2 rotate-45 border border-muted-foreground bg-background" />
           )}
           {lead.readyX !== null && (
-            <span className="absolute -top-1 h-2 border-l-2 border-emerald-500" style={{ left: lead.readyX - lead.x }} />
+            <span
+              className={cn("absolute -top-1 h-2 border-l-2", toneMark.attention)}
+              style={{ left: lead.readyX - lead.x }}
+            />
           )}
         </div>
       )}
@@ -915,10 +1021,10 @@ function TimelineBarView({
         className={cn(
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
           selected && "ring-2 ring-primary",
-          ready ? readyBarStyle : pending && "border-dashed border-muted-foreground/60 shadow-none",
-          task.status === "done" && doneBarStyle,
-          behindDue && behindDueBarStyle,
-          faded && "opacity-60",
+          ready ? barStyles.ready : pending && barStyles.blocked,
+          task.status === "done" && barStyles.done,
+          faded && barStyles.paused,
+          behindDue && barStyles.behindDue,
         )}
       >
         <div className="absolute inset-x-0 bottom-0 h-1.5">
@@ -932,29 +1038,39 @@ function TimelineBarView({
         </div>
       </div>
       {dueX !== null && (
-        // The end of the due day, across the bar and past its edges, under the label.
+        // The end of the due day, past the bar's edges: a stub above it and a tick through its
+        // lower part, leaving the label row clear.
         <span
           aria-label={`Due date of #${task.id}`}
           title={`Due ${task.dueDate}`}
-          className={cn(
-            "pointer-events-none absolute -inset-y-1 border-l-2",
-            behindDue ? "border-rose-500 dark:border-rose-400" : "border-muted-foreground",
-          )}
+          className="pointer-events-none absolute -inset-y-1 w-0.5"
           style={{ left: dueX - 1 }}
-        />
+        >
+          {[
+            { top: 0, height: 4 },
+            { top: 4 + labelRowHeight, bottom: 0 },
+          ].map((segment) => (
+            <span
+              key={segment.top}
+              className={cn("absolute left-0 border-l-2", behindDue ? toneMark.danger : toneMark.neutral)}
+              style={segment}
+            />
+          ))}
+        </span>
       )}
-      {/* A bar narrower than its label lets the label run past its right end. */}
+      {/* A halo in the background colour keeps grid lines and the Now line from crossing the letters. */}
       <div
-        className={cn(
-          "relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground",
-          faded && "opacity-60",
-        )}
-        style={{ width: "max-content", minWidth: "100%" }}
+        ref={label}
+        className="relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground [text-shadow:0_0_3px_var(--background),0_0_3px_var(--background)]"
+        style={{
+          width: "max-content",
+          ...(labelOutside ? { marginLeft: bar.width + labelGap - 6 } : { minWidth: "100%" }),
+        }}
       >
         {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
         <TaskTypeBadge type={task.taskType} className="bg-card px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
-        <span className="font-medium">{task.title}</span>
+        <span className="font-semibold">{task.title}</span>
         {warnings.length > 0 && (
           <TriangleAlert
             role="img"

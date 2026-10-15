@@ -9,6 +9,7 @@ import {
   usePullRequestStatuses,
   useTasks,
 } from "@/lib/queries";
+import { toneChip, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 const reasonLabels: Record<AttentionReason, string> = {
@@ -19,10 +20,10 @@ const reasonLabels: Record<AttentionReason, string> = {
 };
 
 const reasonStyles: Record<AttentionReason, string> = {
-  agent_blocked: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
-  blocker_note: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200",
-  ci_failed: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200",
-  changes_requested: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
+  agent_blocked: toneChip.attention,
+  blocker_note: toneChip.attention,
+  ci_failed: toneChip.danger,
+  changes_requested: toneChip.attention,
 };
 
 /**
@@ -43,11 +44,11 @@ export function NeedsAttention({ onShow }: { onShow: (id: TaskId) => void }) {
     <section aria-labelledby="attention-heading" className="flex flex-col gap-1">
       <h2
         id="attention-heading"
-        className="flex items-center gap-1.5 px-1 text-xs font-medium uppercase text-amber-700 dark:text-amber-300"
+        className={cn("flex items-center gap-1.5 px-1 text-xs font-medium uppercase", toneText.attention)}
       >
         <BellRing aria-hidden className="size-3.5" />
         Needs attention
-        <span className="ml-auto rounded-full bg-amber-100 px-1.5 tabular-nums text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+        <span className={cn("ml-auto rounded-full px-1.5 tabular-nums", toneChip.attention)}>
           {items.length}
         </span>
       </h2>

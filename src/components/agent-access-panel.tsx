@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import type { McpServerInfo, McpTunnel, McpTunnelState } from "@/lib/bindings";
 import { useMcpServerInfo, useMcpTunnels } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { toneFill } from "@/lib/status-styles";
 
 export function mcpConfig(info: McpServerInfo): string {
   const server = {
@@ -14,8 +15,8 @@ export function mcpConfig(info: McpServerInfo): string {
 }
 
 const tunnelStates: Record<McpTunnelState, { label: string; className: string }> = {
-  open: { label: "Connected", className: "bg-emerald-500" },
-  connecting: { label: "Connecting", className: "bg-amber-500" },
+  open: { label: "Connected", className: toneFill.success },
+  connecting: { label: "Connecting", className: toneFill.attention },
   retrying: { label: "Retrying", className: "bg-destructive" },
 };
 

@@ -1698,6 +1698,81 @@ describe("App", () => {
     });
   });
 
+  it("asks before discarding unsaved edits of a task", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
+    await renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    const title = within(form).getByLabelText("Title of #1");
+    expect(title).toHaveFocus();
+    fireEvent.click(within(form).getByRole("button", { name: "Discard" }));
+    expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit #1" }));
+    const changed = screen.getByRole("form", { name: "Edit task #1" });
+    fireEvent.change(within(changed).getByLabelText("Title of #1"), { target: { value: "Add sign-in" } });
+    fireEvent.keyDown(within(changed).getByLabelText("Title of #1"), { key: "Escape" });
+    const confirm = within(changed).getByRole("group", { name: "Discard changes to #1" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Keep editing" }));
+    expect(within(changed).getByLabelText("Title of #1")).toHaveValue("Add sign-in");
+
+    fireEvent.click(within(changed).getByRole("button", { name: "Discard" }));
+    fireEvent.click(within(changed).getByRole("button", { name: "Discard changes" }));
+    expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
+    expect(mocked.updateTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps the timeline details open while its edit form has unsaved changes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const planned = { ...task(0, 1, "").milestones, plannedAt: new Date(2026, 5, 1).getTime() / 1000 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add UI", { milestones: planned }), task(2, 1, "Write docs", { milestones: planned })],
+    });
+    await renderWorkspace();
+    await screen.findByRole("list", { name: "Tasks" });
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bar = (title: string) =>
+      within(timeline.querySelector(".react-flow__nodes") as HTMLElement)
+        .getByText(title)
+        .closest(".react-flow__node") as HTMLElement;
+    await within(timeline).findByText("Add UI");
+
+    fireEvent.click(bar("Add UI"));
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    fireEvent.click(within(details).getByRole("button", { name: "Edit #1" }));
+    const field = within(details).getByLabelText("Title of #1");
+    fireEvent.change(field, { target: { value: "Add the UI" } });
+
+    // Escape in a field belongs to the form, which asks about its changes; the sheet stays.
+    fireEvent.keyDown(field, { key: "Escape" });
+    const formConfirm = within(details).getByRole("group", { name: "Discard changes to #1" });
+    expect(within(timeline).getByRole("complementary", { name: "Task details" })).toBeInTheDocument();
+    fireEvent.click(within(formConfirm).getByRole("button", { name: "Keep editing" }));
+
+    fireEvent.click(within(details).getByRole("button", { name: "Close details" }));
+    const unsaved = within(details).getByRole("group", { name: "Unsaved changes" });
+    fireEvent.click(bar("Write docs"));
+    expect(within(details).getByLabelText("Title of #1")).toHaveValue("Add the UI");
+    fireEvent.click(within(unsaved).getByRole("button", { name: "Keep editing" }));
+    expect(within(details).queryByRole("group", { name: "Unsaved changes" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.click(
+      within(within(details).getByRole("group", { name: "Unsaved changes" })).getByRole("button", {
+        name: "Discard changes",
+      }),
+    );
+    await waitFor(() =>
+      expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument(),
+    );
+  });
+
   it("previews a Markdown description and shows its plain text in the list", async () => {
     const original = task(1, 1, "Add login", { description: "## Steps\n\n- [x] **form**" });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });

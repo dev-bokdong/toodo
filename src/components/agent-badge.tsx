@@ -1,4 +1,5 @@
 import type { AgentStatus, TaskId } from "@/lib/bindings";
+import { toneChip } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 const agentLabels: Record<AgentStatus, string> = {
@@ -9,10 +10,10 @@ const agentLabels: Record<AgentStatus, string> = {
 };
 
 const agentStyles: Record<AgentStatus, string> = {
-  idle: "bg-muted text-muted-foreground",
-  working: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200",
-  blocked: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
-  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
+  idle: toneChip.neutral,
+  working: toneChip.info,
+  blocked: toneChip.attention,
+  done: toneChip.success,
 };
 
 /** The status herdr reports for the agent working on task `taskId`. */
