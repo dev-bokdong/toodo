@@ -21,7 +21,6 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { TaskGraph } from "@/components/task-graph";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
@@ -87,6 +86,8 @@ import { markdownPreview } from "@/lib/markdown";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
+// The timeline pulls in React Flow, so it loads only when it is first shown.
+const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
@@ -302,31 +303,33 @@ export function TaskList({
               ))}
             </ul>
           ) : (
-            <TaskGraph
-              tasks={[...filtered, ...prerequisites]}
-              allTasks={allTasks.data}
-              dimmed={new Set(prerequisites.map((task) => task.id))}
-              workspaceLabel={(task) =>
-                filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
-              }
-              statusLabel={(task) => statusLabel(task, context.byId)}
-              statusStyle={(task) => statusStyle(task, context.byId)}
-              ready={(task) => shownStatus(task, context.byId) === "ready"}
-              scale={timelineScale}
-              onScaleChange={onTimelineScaleChange}
-              shownTaskId={shownTask?.id ?? null}
-              onTaskShown={() => onTaskShown?.()}
-              renderDetail={(selected) => (
-                <TaskRow
-                  key={selected.id}
-                  task={selected}
-                  tasks={allTasks.data ?? []}
-                  context={context}
-                  showWorkspace
-                  detailed
-                />
-              )}
-            />
+            <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
+              <TaskGraph
+                tasks={[...filtered, ...prerequisites]}
+                allTasks={allTasks.data}
+                dimmed={new Set(prerequisites.map((task) => task.id))}
+                workspaceLabel={(task) =>
+                  filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
+                }
+                statusLabel={(task) => statusLabel(task, context.byId)}
+                statusStyle={(task) => statusStyle(task, context.byId)}
+                ready={(task) => shownStatus(task, context.byId) === "ready"}
+                scale={timelineScale}
+                onScaleChange={onTimelineScaleChange}
+                shownTaskId={shownTask?.id ?? null}
+                onTaskShown={() => onTaskShown?.()}
+                renderDetail={(selected) => (
+                  <TaskRow
+                    key={selected.id}
+                    task={selected}
+                    tasks={allTasks.data ?? []}
+                    context={context}
+                    showWorkspace
+                    detailed
+                  />
+                )}
+              />
+            </Suspense>
           )}
         </>
       )}
