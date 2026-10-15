@@ -39,7 +39,7 @@ pub fn update_task(storage: State<'_, StorageState>, task: TaskEdit) -> CommandR
     edit_task(&mut lock(&storage), task)
 }
 
-fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
+pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
     let title = edit.title.trim();
     if title.is_empty() {
         return Err(CommandError::invalid_input("task title must not be empty"));

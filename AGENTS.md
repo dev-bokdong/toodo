@@ -84,6 +84,8 @@ Layout:
     locally or over `ssh`, `herdr.rs` drives the herdr CLI, `github.rs` opens pull
     requests with `gh`, `ssh.rs` reads and appends hosts in `~/.ssh/config` and lists
     remote directories), each behind a trait with a fake for tests.
+  - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
+    bearer token), served by the app; `tools.rs` holds the tool logic over `Storage`.
   - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema
     changes go in a new entry appended to `migrations.rs`; never edit a released one.
 

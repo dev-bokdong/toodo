@@ -1,6 +1,7 @@
 mod adapters;
 mod commands;
 pub mod domain;
+mod mcp;
 pub mod storage;
 
 use std::sync::{Arc, Mutex};
@@ -51,6 +52,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::issues::link_issue,
             commands::issues::create_issue,
             commands::events::list_agent_statuses,
+            commands::mcp::mcp_server_info,
             commands::review::review_period,
             commands::review::save_report,
             commands::backup::get_backup_settings,
@@ -108,6 +110,11 @@ pub fn run() {
             commands::events::spawn(app.handle().clone())?;
             commands::backup::spawn(app.handle().clone())?;
             commands::completion::spawn(app.handle().clone())?;
+            let mcp = mcp::start(Arc::new(app.handle().clone()), &data_dir);
+            if let Some(error) = &mcp.error {
+                eprintln!("toodo: MCP server not started: {error}");
+            }
+            app.manage(mcp);
             Ok(())
         })
         .run(tauri::generate_context!())

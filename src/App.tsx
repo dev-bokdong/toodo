@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChartColumn, FolderPlus, Layers, ListTodo } from "lucide-react";
+import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { Review } from "@/components/review";
@@ -73,7 +74,8 @@ export default function App() {
             setReviewing(false);
           }}
         />
-        <div className="mt-auto">
+        <div className="mt-auto flex flex-col gap-2">
+          <AgentAccessPanel />
           <BackupPanel />
         </div>
         <div className="flex items-center justify-between gap-2 px-1">

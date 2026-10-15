@@ -62,6 +62,7 @@ vi.mock("@/lib/bindings", () => ({
     listRemoteDirectories: vi.fn(),
     listAgentStatuses: vi.fn(),
     listBackups: vi.fn(),
+    mcpServerInfo: vi.fn(),
     getBackupSettings: vi.fn(),
     saveBackupSettings: vi.fn(),
     exportDatabase: vi.fn(),
@@ -163,6 +164,7 @@ describe("App", () => {
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [] });
     mocked.listAgentStatuses.mockResolvedValue([]);
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
+    mocked.mcpServerInfo.mockResolvedValue({ url: "http://127.0.0.1:47615/mcp", token: "secret", error: null });
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
@@ -992,6 +994,41 @@ describe("App", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("worktree root is not set for machine local");
     expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Planned")).toBeInTheDocument();
+  });
+
+  it("copies the MCP config for agents", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    const panel = await screen.findByRole("region", { name: "Agent access", hidden: true });
+    expect(await within(panel).findByLabelText("MCP server URL")).toHaveTextContent("http://127.0.0.1:47615/mcp");
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy MCP config", hidden: true }));
+    expect(await within(panel).findByText("Copied the MCP config.")).toBeInTheDocument();
+    expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual({
+      mcpServers: {
+        toodo: {
+          type: "http",
+          url: "http://127.0.0.1:47615/mcp",
+          headers: { Authorization: "Bearer secret" },
+        },
+      },
+    });
+  });
+
+  it("shows why the MCP server is not running", async () => {
+    mocked.mcpServerInfo.mockResolvedValue({
+      url: "http://127.0.0.1:47615/mcp",
+      token: "secret",
+      error: "could not listen on port 47615: address in use",
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    const panel = await screen.findByRole("region", { name: "Agent access", hidden: true });
+    expect(await within(panel).findByRole("alert", { hidden: true })).toHaveTextContent("address in use");
+    expect(within(panel).queryByRole("button", { name: "Copy MCP config", hidden: true })).not.toBeInTheDocument();
   });
 
   it("warns while herdr is not running and blocks starting tasks", async () => {

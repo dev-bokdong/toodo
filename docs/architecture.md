@@ -357,6 +357,28 @@ Toodo owns planning, task state, commit records, and pull requests.
   names the repository with `--repo <host>/<owner>/<name>`, derived from the `origin`
   remote URL, so it needs no local checkout. The task branch is pushed by the workspace
   adapter, on the machine that holds the worktree.
+- **MCP server** (`src-tauri/src/mcp/`): lets coding agents plan in Toodo while the app
+  runs, so an agent can split its work into follow-up tasks and connect them.
+  - Served by the app itself (rmcp, Streamable HTTP, stateless JSON responses) on
+    `http://127.0.0.1:47615/mcp`, loopback only. Embedding it shares the database lock
+    with the Tauri commands and emits `TasksChanged`, so the UI refreshes like after any
+    command; a separate process would need its own SQLite locking and change
+    notifications.
+  - Every request needs `Authorization: Bearer <token>`. The token is 32 random bytes,
+    hex encoded, created once in `mcp-token` in the app data directory. rmcp also
+    rejects non-loopback `Host` headers against DNS rebinding.
+  - Tools: `list_workspaces`, `list_tasks`, `current_task` (the task whose worktree
+    contains a given directory), `create_task` (with optional `depends_on`; unknown
+    prerequisites create nothing), `update_task`, `add_dependency`, and
+    `remove_dependency`. They reuse the storage rules, so cycles are rejected. Tool
+    failures come back as tool errors whose text the agent sees.
+  - Starting, completing, concluding, and deleting tasks are not exposed; they touch
+    worktrees, herdr, and pull requests and stay in the app.
+  - If the port is taken, the app runs without the server and the sidebar's Agent
+    access panel shows why. That panel copies an MCP client config with the URL and
+    token (`mcp_server_info`).
+  - Agents on SSH machines cannot reach the loopback port unless the user forwards it,
+    e.g. `ssh -R 47615:127.0.0.1:47615 <host>`.
 - **Storage**: SQLite database `toodo.sqlite3` in the app data directory (`%APPDATA%`)
   for workspaces, machine settings, tasks, dependencies, and commit records
   (`src-tauri/src/storage/`).
@@ -410,5 +432,7 @@ Out of the first scope; revisit when needed.
 - A herdr plugin for in-herdr actions such as "complete task"; herdr plugins are in
   preview on Windows.
 - Native WSL repository support.
+- Reaching the MCP server from agents on SSH machines without a manual port forward,
+  and rotating the MCP access token from the UI.
 - Correcting timeline timestamps by hand, for example to enter work done before the task
   was created in Toodo.
