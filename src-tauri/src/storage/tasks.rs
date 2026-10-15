@@ -23,6 +23,14 @@ pub struct NewTask {
     pub description: String,
 }
 
+/// The dependent task after [`Storage::add_dependencies`], and whether the new
+/// prerequisites paused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddedDependencies {
+    pub task: Task,
+    pub paused: bool,
+}
+
 const TASK_TYPES: [TaskType; 8] = [
     TaskType::Feat,
     TaskType::Fix,
@@ -671,14 +679,53 @@ impl Storage {
     /// unknown tasks, self dependencies, and edges that would close a cycle anywhere in the
     /// DAG of all workspaces, writing nothing.
     pub fn add_dependency(&mut self, task: TaskId, depends_on: TaskId) -> Result<()> {
+        self.add_dependencies(task, &[depends_on]).map(|_| ())
+    }
+
+    /// Makes `task` depend on every task of `depends_on` in one transaction, with the
+    /// rules of [`Self::add_dependency`]; one rejected edge writes nothing. An
+    /// `in_progress` task that is no longer ready afterwards is paused (moved back to
+    /// `planned`, keeping its branch and worktree) until its new prerequisites are done.
+    pub fn add_dependencies(
+        &mut self,
+        task: TaskId,
+        depends_on: &[TaskId],
+    ) -> Result<AddedDependencies> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
-        dag::validate_dependency(&all_tasks(&tx)?, task, depends_on)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
-            [task.0, depends_on.0],
-        )?;
+        for &prerequisite in depends_on {
+            dag::validate_dependency(&all_tasks(&tx)?, task, prerequisite)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                [task.0, prerequisite.0],
+            )?;
+        }
+        let current = find_task(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
+        let paused =
+            current.status == TaskStatus::InProgress && !dag::is_ready(&all_tasks(&tx)?, task)?;
+        if paused {
+            let status = current.status.transition_to(TaskStatus::Planned)?;
+            tx.execute(
+                "UPDATE tasks SET status = ?2 WHERE id = ?1",
+                params![task.0, status.as_str()],
+            )?;
+            record_event(&tx, task, status, at)?;
+        }
+        let task = find_task(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
         tx.commit()?;
-        Ok(())
+        Ok(AddedDependencies { task, paused })
+    }
+
+    /// Forgets the herdr workspace of a task after it was closed; the worktree stays.
+    pub fn clear_task_herdr_workspace(&mut self, id: TaskId) -> Result<Task> {
+        let updated = self.conn.execute(
+            "UPDATE tasks SET herdr_workspace_id = NULL WHERE id = ?1",
+            [id.0],
+        )?;
+        if updated == 0 {
+            return Err(StorageError::TaskNotFound(id));
+        }
+        find_task(&self.conn, id)?.ok_or(StorageError::TaskNotFound(id))
     }
 
     /// Removes the edge `task -> depends_on` if present.

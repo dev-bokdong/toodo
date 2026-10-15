@@ -78,7 +78,8 @@ export const commands = {
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
-	 *  self and cyclic edges.
+	 *  self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
+	 *  paused and its herdr workspace closed.
 	 */
 	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),

@@ -20,6 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AgentBadge } from "@/components/agent-badge";
+import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import type { AgentStatus, Task, TaskId, Timestamp } from "@/lib/bindings";
@@ -31,6 +32,7 @@ import {
   isPaused,
   layoutTimeline,
   relatedTasks,
+  stopsRunningAgent,
   timelineAxis,
   timelineEdgePath,
   timelineScales,
@@ -144,6 +146,8 @@ export function TaskGraph({
   const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
   const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
+  // A dependency drawn onto a task whose running agent it would stop, waiting for confirmation.
+  const [confirmingEdge, setConfirmingEdge] = useState<{ id: TaskId; dependsOn: TaskId } | null>(null);
   const [year, setYear] = useState<number | null>(null);
   // The bar under the pointer, with its place on screen for the hover card.
   const [hovered, setHovered] = useState<{ id: TaskId; rect: DOMRect } | null>(null);
@@ -224,7 +228,14 @@ export function TaskGraph({
   }
 
   function connect({ source, target }: Connection) {
-    addDependency.mutate({ id: Number(target), dependsOn: Number(source) });
+    const edge = { id: Number(target), dependsOn: Number(source) };
+    const task = allTasks.find((other) => other.id === edge.id);
+    const prerequisite = allTasks.find((other) => other.id === edge.dependsOn);
+    if (task !== undefined && stopsRunningAgent(task, prerequisite, agentStatusOf(task))) {
+      setConfirmingEdge(edge);
+    } else {
+      addDependency.mutate(edge);
+    }
   }
 
   function removeEdges(removed: { source: string; target: string }[]) {
@@ -411,6 +422,15 @@ export function TaskGraph({
           </Button>
         )}
       </div>
+      {confirmingEdge !== null && (
+        <PrerequisiteConfirmation
+          taskId={confirmingEdge.id}
+          prerequisite={`#${confirmingEdge.dependsOn}`}
+          pending={addDependency.isPending}
+          onConfirm={() => addDependency.mutate(confirmingEdge, { onSettled: () => setConfirmingEdge(null) })}
+          onCancel={() => setConfirmingEdge(null)}
+        />
+      )}
       {(addDependency.error ?? removeDependency.error) && (
         <p role="alert" className="text-xs text-destructive">
           {(addDependency.error ?? removeDependency.error)?.message}

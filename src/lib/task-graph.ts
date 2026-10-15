@@ -1,11 +1,15 @@
-import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
+import type { AgentStatus, Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 import { workSegments } from "@/lib/timeline";
 
 /** A dependency drawn from the prerequisite (`source`) to the task that waits on it (`target`). */
 export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
 
 /** Statuses whose dependencies can still change; the backend rejects edits for the others. */
-export const dependencyEditableStatuses: TaskStatus[] = ["planned"];
+/**
+ * Statuses whose dependencies can change. A new prerequisite that is not done pauses an
+ * `in_progress` task and closes its herdr workspace.
+ */
+export const dependencyEditableStatuses: TaskStatus[] = ["planned", "in_progress"];
 
 /** Whether `task` was concluded without merging, so tasks that depend on it cannot build on it. */
 export function isNotAdopted(task: Task | undefined): boolean {
@@ -18,6 +22,21 @@ export function dependenciesDone(task: Task, byId: ReadonlyMap<TaskId, Task>): b
     const dependency = byId.get(id);
     return dependency?.status === "done" && !isNotAdopted(dependency);
   });
+}
+
+/**
+ * Whether making `task` depend on `prerequisite` stops its running agent: the prerequisite is
+ * not done (or not adopted), so the task is paused and its herdr workspace closed while the
+ * agent is working or waiting for input.
+ */
+export function stopsRunningAgent(
+  task: Task,
+  prerequisite: Task | undefined,
+  agentStatus: AgentStatus | null | undefined,
+): boolean {
+  const running = agentStatus === "working" || agentStatus === "blocked";
+  const done = prerequisite?.status === "done" && !isNotAdopted(prerequisite);
+  return task.status === "in_progress" && running && !done;
 }
 
 /** A planned task that was worked on before: it keeps its branch and worktree. */

@@ -27,7 +27,7 @@ use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
-pub use tasks::NewTask;
+pub use tasks::{AddedDependencies, NewTask};
 pub use workspaces::NewWorkspace;
 
 pub type Result<T> = std::result::Result<T, StorageError>;

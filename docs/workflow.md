@@ -22,8 +22,18 @@ planned -----------------> in_progress ---------> in_review ---------> done (mer
 
 Whether a `planned` task can be started is not a state: it can be started once every
 task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**), and its dependencies can change while it
-is `planned`. The UI names a `planned` task that was worked on before "Paused" and
+is `planned` or `in_progress`. The UI names a `planned` task that was worked on before "Paused" and
 offers "Resume" instead of "Start".
+
+Work found while a task is in progress that the task needs before it can finish, such as
+fixes found while verifying it, becomes a **prerequisite** of that task, never a
+dependent: the task cannot finish before the fixes, so the fixes must not wait for it.
+Adding a prerequisite that is not done to an `in_progress` task, in the app or by an agent
+through MCP, pauses the task in the same step and closes its herdr workspace; the worktree
+and branch stay. When the task's agent is working or waiting for input, the app asks for
+confirmation first ("Pause and add"), since closing the workspace stops the agent. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
+until those prerequisites are done; resuming opens the kept worktree in herdr again. If
+herdr fails to close the workspace, the task stays paused and the error says so.
 
 Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
 keeps its branch, worktree, herdr workspace, commit records, and pull request, so

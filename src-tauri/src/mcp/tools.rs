@@ -4,9 +4,10 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::adapters::herdr::Herdr;
 use crate::commands::tasks::edit_task;
 use crate::commands::types::{self, Task, TaskEdit, TaskId, TaskType, Workspace, WorkspaceId};
-use crate::commands::{CommandError, CommandResult};
+use crate::commands::{CommandError, CommandResult, StorageState};
 use crate::storage::{self, Storage, StorageError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -46,6 +47,16 @@ pub struct UpdateTask {
     pub title: Option<String>,
     /// Unchanged when omitted.
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AddDependencies {
+    /// The dependent task.
+    pub task_id: TaskId,
+    /// Its prerequisites, from any workspace, which must all be done before `task_id` is
+    /// ready.
+    pub depends_on: Vec<TaskId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -156,10 +167,27 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
     )
 }
 
-/// Adds the edge and returns the dependent task. Self and cyclic edges are rejected.
-pub fn add_dependency(storage: &mut Storage, request: Dependency) -> CommandResult<Task> {
-    storage.add_dependency(request.task_id.into(), request.depends_on.into())?;
-    get_task(storage, request.task_id)
+/// Adds the edges in one step and returns the dependent task. Self and cyclic edges are
+/// rejected, and one rejected edge adds none. An `in_progress` task that a prerequisite
+/// blocks is paused and its herdr workspace closed.
+pub fn add_dependencies(
+    storage: &StorageState,
+    herdr: &Herdr,
+    request: AddDependencies,
+) -> CommandResult<Task> {
+    if request.depends_on.is_empty() {
+        return Err(CommandError::invalid_input(
+            "depends_on must name at least one task",
+        ));
+    }
+    let depends_on: Vec<_> = request.depends_on.iter().map(|&id| id.into()).collect();
+    let task = crate::commands::herdr::add_dependencies(
+        storage,
+        herdr,
+        request.task_id.into(),
+        &depends_on,
+    )?;
+    Ok((&task).into())
 }
 
 pub fn remove_dependency(storage: &mut Storage, request: Dependency) -> CommandResult<Task> {
@@ -177,7 +205,7 @@ fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::CommandErrorKind;
+    use crate::commands::{CommandErrorKind, lock};
     use crate::domain::model::{self, HostPath, WorkspaceLocation};
     use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::NewWorkspace;
@@ -241,22 +269,36 @@ mod tests {
         assert!(storage.list_all_tasks().unwrap().is_empty());
     }
 
+    /// herdr that is never called: planned tasks are not paused.
+    fn idle_herdr() -> Herdr {
+        Herdr::new(Box::new(std::sync::Arc::new(
+            crate::adapters::git::fake::FakeRunner::new([]),
+        )))
+    }
+
     #[test]
     fn a_dependency_that_closes_a_cycle_is_rejected() {
         let (mut storage, workspace) = storage_with_workspace();
         let first = create(&mut storage, workspace, "Schema", vec![]).unwrap();
         let second = create(&mut storage, workspace, "API", vec![first.id]).unwrap();
-        let request = Dependency {
+        let storage = std::sync::Mutex::new(storage);
+        let herdr = idle_herdr();
+        let request = AddDependencies {
             task_id: first.id,
-            depends_on: second.id,
+            depends_on: vec![second.id],
         };
-        let error = add_dependency(&mut storage, request).unwrap_err();
+        let error = add_dependencies(&storage, &herdr, request.clone()).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("cycle"), "{}", error.message);
-        assert!(get_task(&storage, first.id).unwrap().depends_on.is_empty());
+        assert!(
+            get_task(&lock(&storage), first.id)
+                .unwrap()
+                .depends_on
+                .is_empty()
+        );
 
         let removed = remove_dependency(
-            &mut storage,
+            &mut lock(&storage),
             Dependency {
                 task_id: second.id,
                 depends_on: first.id,
@@ -265,9 +307,42 @@ mod tests {
         .unwrap();
         assert!(removed.depends_on.is_empty());
         assert_eq!(
-            add_dependency(&mut storage, request).unwrap().depends_on,
+            add_dependencies(&storage, &herdr, request)
+                .unwrap()
+                .depends_on,
             vec![second.id]
         );
+    }
+
+    #[test]
+    fn adds_several_prerequisites_at_once_and_needs_at_least_one() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Verify", vec![]).unwrap();
+        let fix = create(&mut storage, workspace, "Fix login", vec![]).unwrap();
+        let docs = create(&mut storage, workspace, "Fix docs", vec![]).unwrap();
+        let storage = std::sync::Mutex::new(storage);
+        let herdr = idle_herdr();
+
+        let error = add_dependencies(
+            &storage,
+            &herdr,
+            AddDependencies {
+                task_id: task.id,
+                depends_on: vec![],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let updated = add_dependencies(
+            &storage,
+            &herdr,
+            AddDependencies {
+                task_id: task.id,
+                depends_on: vec![fix.id, docs.id],
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.depends_on, vec![fix.id, docs.id]);
     }
 
     #[test]
