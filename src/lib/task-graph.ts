@@ -1,4 +1,4 @@
-import type { AgentStatus, Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
+import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 import { workSegments } from "@/lib/timeline";
 
 /** A dependency drawn from the prerequisite (`source`) to the task that waits on it (`target`). */
@@ -25,18 +25,13 @@ export function dependenciesDone(task: Task, byId: ReadonlyMap<TaskId, Task>): b
 }
 
 /**
- * Whether making `task` depend on `prerequisite` stops its running agent: the prerequisite is
- * not done (or not adopted), so the task is paused and its herdr workspace closed while the
- * agent is working or waiting for input.
+ * Whether making `task` depend on `prerequisite` pauses it: the task is in progress and the
+ * prerequisite is not done (or not adopted), so its herdr workspace is closed, whatever its
+ * agent is doing.
  */
-export function stopsRunningAgent(
-  task: Task,
-  prerequisite: Task | undefined,
-  agentStatus: AgentStatus | null | undefined,
-): boolean {
-  const running = agentStatus === "working" || agentStatus === "blocked";
+export function pausesStartedTask(task: Task, prerequisite: Task | undefined): boolean {
   const done = prerequisite?.status === "done" && !isNotAdopted(prerequisite);
-  return task.status === "in_progress" && running && !done;
+  return task.status === "in_progress" && !done;
 }
 
 /** A planned task that was worked on before: it keeps its branch and worktree. */

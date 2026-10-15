@@ -32,7 +32,7 @@ import {
   isPaused,
   layoutTimeline,
   relatedTasks,
-  stopsRunningAgent,
+  pausesStartedTask,
   timelineAxis,
   timelineEdgePath,
   timelineScales,
@@ -153,7 +153,7 @@ export function TaskGraph({
   const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
   const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
-  // A dependency drawn onto a task whose running agent it would stop, waiting for confirmation.
+  // A dependency drawn onto a started task that it would pause, waiting for confirmation.
   const [confirmingEdge, setConfirmingEdge] = useState<{ id: TaskId; dependsOn: TaskId } | null>(null);
   const [year, setYear] = useState<number | null>(null);
   // The bar under the pointer, with its place on screen for the hover card.
@@ -239,7 +239,7 @@ export function TaskGraph({
     const edge = { id: Number(target), dependsOn: Number(source) };
     const task = allTasks.find((other) => other.id === edge.id);
     const prerequisite = allTasks.find((other) => other.id === edge.dependsOn);
-    if (task !== undefined && stopsRunningAgent(task, prerequisite, agentStatusOf(task))) {
+    if (task !== undefined && pausesStartedTask(task, prerequisite)) {
       setConfirmingEdge(edge);
     } else {
       addDependency.mutate(edge);

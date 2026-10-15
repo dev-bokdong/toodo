@@ -64,7 +64,7 @@ import {
   dependencyEditableStatuses,
   isNotAdopted,
   isPaused,
-  stopsRunningAgent,
+  pausesStartedTask,
   type TimelineScale,
 } from "@/lib/task-graph";
 import {
@@ -430,7 +430,7 @@ function TaskRow({
   const [concluding, setConcluding] = useState(false);
   const [linkingIssue, setLinkingIssue] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
-  // A prerequisite that would stop the running agent, waiting for confirmation.
+  // A prerequisite that would pause this started task, waiting for confirmation.
   const [confirmingPrerequisite, setConfirmingPrerequisite] = useState<TaskId | null>(null);
   const herdrRunning = herdr.data?.running === true;
   const inReview = task.status === "in_review";
@@ -574,7 +574,7 @@ function TaskRow({
               onChange={(e) => {
                 if (e.target.value) {
                   const prerequisite = Number(e.target.value);
-                  if (stopsRunningAgent(task, context.byId.get(prerequisite), agentStatus)) {
+                  if (pausesStartedTask(task, context.byId.get(prerequisite))) {
                     setConfirmingPrerequisite(prerequisite);
                   } else {
                     addDependency.mutate({ id: task.id, dependsOn: prerequisite });
