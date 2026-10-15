@@ -12,6 +12,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   SquareTerminal,
   StickyNote,
   Trash2,
@@ -55,16 +56,27 @@ import {
 } from "@/lib/queries";
 import { pullRequestStats } from "@/lib/review";
 import { dependenciesDone, isNotAdopted, isPaused, type TimelineScale } from "@/lib/task-graph";
+import {
+  emptyTaskFilter,
+  isFilterActive,
+  matchesFilter,
+  shownStatus,
+  shownStatuses,
+  type ShownStatus,
+  type TaskFilter,
+} from "@/lib/task-filter";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
-const statusLabels: Record<TaskStatus, string> = {
+const statusLabels: Record<ShownStatus, string> = {
   planned: "Planned",
+  paused: "Paused",
   in_progress: "In progress",
   in_review: "In review",
   done: "Done",
+  not_adopted: "Not adopted",
 };
 
 /**
@@ -72,10 +84,7 @@ const statusLabels: Record<TaskStatus, string> = {
  * concluded without merging "Not adopted".
  */
 function statusLabel(task: Task): string {
-  if (isNotAdopted(task)) {
-    return "Not adopted";
-  }
-  return isPaused(task) ? "Paused" : statusLabels[task.status];
+  return statusLabels[shownStatus(task)];
 }
 
 const statusStyles: Record<TaskStatus, string> = {
@@ -128,6 +137,7 @@ export function TaskList({
   const workspaces = useWorkspaces();
   const [view, setView] = useState<"list" | "timeline">("timeline");
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
+  const [taskFilter, setTaskFilter] = useState<TaskFilter>(emptyTaskFilter);
   const names = new Map(workspaces.data?.map((entry) => [entry.id, entry.name]));
   const context: TaskContext = {
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
@@ -141,7 +151,9 @@ export function TaskList({
     context.workspaceName(a).localeCompare(context.workspaceName(b)),
   );
   const filter = timelineWorkspace !== null && filterOptions.includes(timelineWorkspace) ? timelineWorkspace : null;
-  const filtered = filter === null ? tasks : tasks?.filter((task) => task.workspaceId === filter);
+  const filtered = tasks?.filter(
+    (task) => (!showTimeline || filter === null || task.workspaceId === filter) && matchesFilter(task, taskFilter),
+  );
   // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
   const prerequisites =
     filter === null
@@ -183,10 +195,10 @@ export function TaskList({
           }
         />
       )}
-      {allTasks.data && tasks && tasks.length > 0 && (
+      {allTasks.data && tasks && filtered && tasks.length > 0 && (
         <>
-          {workspace === null && (
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {workspace === null && (
               <div role="group" aria-label="Task view" className="flex gap-1">
                 {(["timeline", "list"] as const).map((option) => (
                   <Button
@@ -200,28 +212,35 @@ export function TaskList({
                   </Button>
                 ))}
               </div>
-              {showTimeline && (
-                <select
-                  aria-label="Timeline workspace"
-                  className={compactSelectClass}
-                  value={filter ?? "all"}
-                  onChange={(event) =>
-                    setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
-                  }
-                >
-                  <option value="all">All workspaces</option>
-                  {filterOptions.map((id) => (
-                    <option key={id} value={id}>
-                      {context.workspaceName(id)}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
-          {!showTimeline ? (
+            )}
+            {showTimeline && (
+              <select
+                aria-label="Timeline workspace"
+                className={compactSelectClass}
+                value={filter ?? "all"}
+                onChange={(event) =>
+                  setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
+                }
+              >
+                <option value="all">All workspaces</option>
+                {filterOptions.map((id) => (
+                  <option key={id} value={id}>
+                    {context.workspaceName(id)}
+                  </option>
+                ))}
+              </select>
+            )}
+            <TaskFilterBar filter={taskFilter} onChange={setTaskFilter} />
+          </div>
+          {filtered.length === 0 ? (
+            <EmptyState
+              icon={<Search />}
+              title="No tasks match the search and filters."
+              hint="Change the search text, status, or type, or clear the filters."
+            />
+          ) : !showTimeline ? (
             <ul aria-label="Tasks" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
-              {tasks.map((task) => (
+              {filtered.map((task) => (
                 <TaskRow
                   key={task.id}
                   task={task}
@@ -233,7 +252,7 @@ export function TaskList({
             </ul>
           ) : (
             <TaskGraph
-              tasks={[...(filtered ?? []), ...prerequisites]}
+              tasks={[...filtered, ...prerequisites]}
               allTasks={allTasks.data}
               dimmed={new Set(prerequisites.map((task) => task.id))}
               workspaceLabel={(task) =>
@@ -258,6 +277,58 @@ export function TaskList({
         </>
       )}
     </section>
+  );
+}
+
+/** Search text and status and type filters narrowing the task list and the timeline. */
+function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (filter: TaskFilter) => void }) {
+  return (
+    <div role="search" aria-label="Task filters" className="flex flex-1 flex-wrap items-center justify-end gap-2">
+      <input
+        type="search"
+        aria-label="Search tasks"
+        placeholder="Search title or description"
+        className={cn(compactSelectClass, "w-56")}
+        value={filter.query}
+        onChange={(event) => onChange({ ...filter, query: event.target.value })}
+      />
+      <select
+        aria-label="Status filter"
+        className={compactSelectClass}
+        value={filter.status ?? "all"}
+        onChange={(event) =>
+          onChange({ ...filter, status: event.target.value === "all" ? null : (event.target.value as ShownStatus) })
+        }
+      >
+        <option value="all">All statuses</option>
+        {shownStatuses.map((status) => (
+          <option key={status} value={status}>
+            {statusLabels[status]}
+          </option>
+        ))}
+      </select>
+      <select
+        aria-label="Type filter"
+        className={compactSelectClass}
+        value={filter.type ?? "all"}
+        onChange={(event) =>
+          onChange({ ...filter, type: event.target.value === "all" ? null : (event.target.value as TaskType) })
+        }
+      >
+        <option value="all">All types</option>
+        {taskTypes.map((type) => (
+          <option key={type} value={type}>
+            {type}
+          </option>
+        ))}
+      </select>
+      {isFilterActive(filter) && (
+        <Button size="xs" variant="ghost" onClick={() => onChange(emptyTaskFilter)}>
+          <X />
+          Clear filters
+        </Button>
+      )}
+    </div>
   );
 }
 

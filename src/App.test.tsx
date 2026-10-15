@@ -395,6 +395,47 @@ describe("App", () => {
     expect(within(timeline).getByText("Add herdr API").closest("[data-dimmed]")).toBeNull();
   });
 
+  it("searches tasks and filters them by status and type in every task view", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const planned = { ...task(0, 1, "").milestones, plannedAt };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { description: "SQLite schema", milestones: planned }),
+        task(2, 1, "Fix login", { taskType: "fix", status: "in_progress", milestones: planned }),
+        task(3, 2, "Fix ssh", { taskType: "fix", milestones: planned }),
+      ],
+    });
+    await renderWorkspace();
+
+    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "sqlite" } });
+    expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
+    expect(within(tasks).queryByText("Fix login")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "in_progress" } });
+    expect(await screen.findByText("No tasks match the search and filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    expect(await within(timeline).findByText("Add storage")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Type filter" }), { target: { value: "fix" } });
+    expect(await within(timeline).findByText("Fix ssh")).toBeInTheDocument();
+    expect(within(timeline).getByText("Fix login")).toBeInTheDocument();
+    expect(within(timeline).queryByText("Add storage")).not.toBeInTheDocument();
+
+    // The filters stay when switching to the list of every workspace.
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "SSH" } });
+    const all = screen.getByRole("list", { name: "Tasks" });
+    expect(within(all).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(all).getByText("Fix ssh")).toBeInTheDocument();
+  });
+
   it("opens the details of a task clicked on the timeline and fades tasks outside its chain", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
@@ -830,7 +871,7 @@ describe("App", () => {
     fireEvent.click(start);
 
     const open = await screen.findByRole("button", { name: "Open #1 in herdr" });
-    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In progress")).toBeInTheDocument();
     expect(screen.getByText(/feat\/add-login-1/)).toHaveTextContent("D:\\wt\\toodo\\feat-add-login-1");
     expect(mocked.startTask).toHaveBeenCalledWith(1);
     fireEvent.click(open);
@@ -908,7 +949,7 @@ describe("App", () => {
     fireEvent.click(start);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("worktree root is not set for machine local");
-    expect(screen.getByText("Planned")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Planned")).toBeInTheDocument();
   });
 
   it("warns while herdr is not running and blocks starting tasks", async () => {
@@ -1030,7 +1071,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open pull request for #1" }));
 
     expect(await screen.findByText(pr)).toBeInTheDocument();
-    expect(screen.getByText("In review")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In review")).toBeInTheDocument();
     expect(await screen.findByText("Fix login redirect")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
     expect(mocked.openPullRequest).toHaveBeenCalledWith(1);
@@ -1040,7 +1081,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
     fireEvent.click(screen.getByRole("button", { name: "Complete #1" }));
 
-    expect(await screen.findByText("Done")).toBeInTheDocument();
+    expect(await within(screen.getByRole("list", { name: "Tasks" })).findByText("Done")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Push #1 to its pull request" })).not.toBeInTheDocument();
     expect(mocked.completeTask).toHaveBeenCalledWith(1);
@@ -1061,7 +1102,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open pull request for #1" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("has no commits that are not on main");
-    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In progress")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open pull request for #1" })).toBeEnabled();
   });
 
@@ -1087,7 +1128,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
-    expect(screen.getByText("In review")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
   });
 
@@ -1324,7 +1365,7 @@ describe("App", () => {
 
     expect(await screen.findByRole("button", { name: "Resume #1" })).toBeEnabled();
     expect(mocked.pauseTask).toHaveBeenCalledWith(1);
-    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Paused")).toBeInTheDocument();
     expect(screen.getByLabelText("Timeline of #1")).toHaveTextContent(`Paused ${formatDate(1760200000)}`);
     expect(screen.queryByRole("button", { name: "Pause #1" })).not.toBeInTheDocument();
 
