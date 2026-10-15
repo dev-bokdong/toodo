@@ -36,11 +36,25 @@ pub const PORT: u16 = 47615;
 
 const TOKEN_FILE: &str = "mcp-token";
 
-const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces. \
-Use current_task with your working directory to find the task you are working on, \
-list_workspaces and list_tasks to look around, create_task (with depends_on) to plan \
-follow-up work, and add_dependency/remove_dependency to connect tasks. A task becomes \
-ready only when all tasks it depends on are done.";
+const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
+a task becomes ready only when all tasks it depends on are done.
+
+How to use these tools:
+1. Call current_task with your absolute working directory first. Use its workspace_id \
+for new tasks in the same repository, and its id as a prerequisite of tasks that build \
+on your work. If it finds no task, use list_workspaces to pick the workspace.
+2. Before create_task, call list_tasks for that workspace and reuse a matching task \
+instead of creating a duplicate.
+3. Connect prerequisites in one step with create_task's depends_on; use add_dependency \
+and remove_dependency for existing tasks. task_id is the dependent task and depends_on \
+its prerequisite; self and cyclic dependencies are rejected.
+4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
+rnd), write a short imperative title, and put details in description.
+5. A tool error says what was rejected; change the arguments instead of retrying them \
+unchanged.
+
+Starting, completing, and deleting tasks happen in the Toodo app, not through these \
+tools.";
 
 /// What the app needs to serve the tools: the database and a way to announce changes.
 pub trait Backend: Notifier + Send + Sync + 'static {
