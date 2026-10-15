@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { CompletionNote } from "@/components/task-list";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
@@ -377,8 +376,6 @@ function ReviewSummaryPanel({
   workspaces: Workspace[];
 }) {
   const summary = summarize(period, entries, workspaces);
-  const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
-  const withoutNote = entries.filter(({ outcome, task }) => outcome === "completed" && task.completionNote === null);
   const busiestMonth = Math.max(1, ...(summary.completedPerMonth ?? []).map(({ count }) => count));
   return (
     <section aria-label="Summary" className="flex flex-col gap-3 rounded-lg border p-3">
@@ -400,31 +397,6 @@ function ReviewSummaryPanel({
           <dd className="text-lg font-semibold">{summary.commits}</dd>
         </div>
       </dl>
-      {withoutNote.length > 0 && (
-        <div className="flex flex-col gap-2 rounded-md bg-amber-100 px-2 py-1.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          <p role="status">
-            {withoutNote.length === 1
-              ? "1 completed task has no completion note."
-              : `${withoutNote.length} completed tasks have no completion note.`}{" "}
-            Add a note to each so the report says what the work achieved.
-          </p>
-          <ul aria-label="Completed tasks without a note" className="flex flex-col gap-1.5">
-            {withoutNote.map(({ task }) => (
-              <li key={task.id} className="flex flex-col gap-1 rounded-md bg-background px-2 py-1.5 text-foreground">
-                <div className="flex min-w-0 items-center gap-2">
-                  <TaskTypeBadge type={task.taskType} />
-                  <span className="shrink-0 text-muted-foreground">#{task.id}</span>
-                  <span className="truncate text-sm font-medium">{task.title}</span>
-                  <span className="ml-auto shrink-0 text-muted-foreground">
-                    {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`}
-                  </span>
-                </div>
-                <CompletionNote task={task} />
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         {durationKeys.map((key) => {
           const stat = summary[key];

@@ -212,8 +212,6 @@ export interface ReviewSummary {
   completedPerMonth: { month: string; count: number }[] | null;
   /** Merged pull requests of completed tasks; `null` when none was recorded. */
   changes: ChangeStat | null;
-  /** Completed tasks the user has not written a completion note for. */
-  withoutNote: number;
   /** Completed tasks that were concluded without merging, e.g. research that was not adopted. */
   notAdopted: number;
 }
@@ -299,7 +297,6 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
             }),
             { pullRequests: 0, additions: 0, deletions: 0, changedFiles: 0 },
           ),
-    withoutNote: completed.filter(({ task }) => task.completionNote === null).length,
     notAdopted: completed.filter(({ task }) => task.resolution === "not_adopted").length,
   };
 }
