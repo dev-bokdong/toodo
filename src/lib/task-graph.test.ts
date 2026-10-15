@@ -25,6 +25,7 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     worktreePath: null,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
+    issue: null,
     pullRequestMergedAt: null,
     pullRequest: null,
     resolution: null,

@@ -389,6 +389,7 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
       const notAdopted = task.resolution === "not_adopted";
       const details = [names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`, formatDate(at)];
       if (notAdopted) details.push("not adopted");
+      if (task.issue) details.push(task.issue.url);
       if (task.pullRequestUrl) details.push(task.pullRequestUrl);
       if (task.pullRequest) details.push(pullRequestStats(task.pullRequest));
       lines.push(`- [${task.taskType}] ${task.title} (${details.join(", ")})`);
@@ -430,6 +431,7 @@ const csvColumns = [
   "Completed",
   "Merged",
   "Pull request",
+  "Issue",
   "Commits in period",
   "Active hours",
   "Additions",
@@ -461,6 +463,7 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: 
     time(task.milestones.completedAt),
     time(task.pullRequestMergedAt),
     task.pullRequestUrl,
+    task.issue?.url ?? null,
     commits.length,
     activeHours(activeSeconds(task.timeline, now)),
     task.pullRequest?.additions ?? null,

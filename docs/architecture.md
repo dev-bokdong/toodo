@@ -99,6 +99,7 @@ A unit of work inside a workspace.
 | `worktreePath` | Directory of the task's worktree. |
 | `herdrWorkspaceId` | herdr workspace bound to the worktree, if any. |
 | `pullRequestUrl` | Set when the PR is opened, as the task moves to `in_review`. |
+| `issue` | GitHub issue of the workspace repository the task works on (number and URL), or `null`. Its pull request closes it on merge; see [workflow.md](workflow.md#2-plan-tasks). |
 | `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
 | `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
 | `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
@@ -346,7 +347,7 @@ Toodo owns planning, task state, commit records, and pull requests.
   - `herdr agent list|get|prompt|wait|read`: drive and observe agents in panes.
   - `herdr machine list|status|add`: saved SSH machines for remote workspaces.
   - `herdr api schema` / `herdr api snapshot`: API schema and live runtime state.
-- **Git hosting adapter**: opens pull requests with the `gh` CLI, reusing its
+- **Git hosting adapter**: opens pull requests and reads or opens issues with the `gh` CLI, reusing its
   authentication (`src-tauri/src/adapters/github.rs`). `gh` runs on this machine and
   names the repository with `--repo <host>/<owner>/<name>`, derived from the `origin`
   remote URL, so it needs no local checkout. The task branch is pushed by the workspace

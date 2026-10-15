@@ -7,8 +7,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, PullRequestSnapshot, Task, TaskId, TaskResolution, TaskType,
-    WorkspaceId,
+    CommitRecord, HostPath, LinkedIssue, PullRequestSnapshot, Task, TaskId, TaskResolution,
+    TaskType, WorkspaceId,
 };
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::{PosixPath, WindowsPath};
@@ -66,7 +66,7 @@ const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.descr
         t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url,
         t.pull_request_merged_at, w.kind, t.completion_note, s.number, s.title, s.additions,
         s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
-        s.first_reviewed_at, t.resolution
+        s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url
     FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
         LEFT JOIN pull_request_snapshots s ON s.task_id = t.id";
 
@@ -86,6 +86,7 @@ struct TaskRow {
     completion_note: Option<String>,
     pull_request: Option<PullRequestSnapshot>,
     resolution: Option<String>,
+    issue: Option<LinkedIssue>,
 }
 
 impl TaskRow {
@@ -119,6 +120,13 @@ impl TaskRow {
                 }),
             },
             resolution: row.get(22)?,
+            issue: match row.get::<_, Option<i64>>(23)? {
+                None => None,
+                Some(number) => Some(LinkedIssue {
+                    number,
+                    url: row.get(24)?,
+                }),
+            },
         })
     }
 
@@ -152,6 +160,7 @@ impl TaskRow {
             pull_request_merged_at: self.pull_request_merged_at,
             pull_request: self.pull_request,
             completion_note: self.completion_note,
+            issue: self.issue,
             timeline,
         })
     }
@@ -304,6 +313,7 @@ impl Storage {
             pull_request: None,
             resolution: None,
             completion_note: None,
+            issue: None,
             timeline: vec![TaskEvent { status, at }],
         })
     }
@@ -508,6 +518,26 @@ impl Storage {
         let noted = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(noted)
+    }
+
+    /// Links `issue` to a task; `None` unlinks it. Whether the task may change its issue
+    /// is up to the caller.
+    pub fn set_task_issue(&mut self, id: TaskId, issue: Option<&LinkedIssue>) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let updated = tx.execute(
+            "UPDATE tasks SET issue_number = ?2, issue_url = ?3 WHERE id = ?1",
+            params![
+                id.0,
+                issue.map(|issue| issue.number),
+                issue.map(|issue| issue.url.as_str())
+            ],
+        )?;
+        if updated == 0 {
+            return Err(StorageError::TaskNotFound(id));
+        }
+        let linked = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(linked)
     }
 
     /// Forgets the worktree and herdr workspace of a task after its worktree was removed.

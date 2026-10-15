@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use super::git::{GitError, Invocation, LoggedCommit, Runner, describe};
-use crate::domain::model::PullRequestSnapshot;
+use crate::domain::model::{LinkedIssue, PullRequestSnapshot};
 use crate::domain::remote::GitHubRepository;
 
 /// A pull request to open from `head` into `base`.
@@ -305,6 +305,85 @@ impl GitHub {
         Ok(())
     }
 
+    /// The body of the pull request at `url`.
+    pub fn pull_request_body(&self, url: &str) -> Result<String, GitError> {
+        let invocation = invocation(&["pr", "view", url, "--json", "body"]);
+        let output = self.runner.run(&invocation)?;
+        serde_json::from_str::<Value>(&output)
+            .ok()
+            .and_then(|value| value.get("body")?.as_str().map(str::to_owned))
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// Replaces the body of the pull request at `url`.
+    pub fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError> {
+        self.runner
+            .run(&invocation(&["pr", "edit", url, "--body", body]))?;
+        Ok(())
+    }
+
+    /// Issue `number` of `repository`; fails when it does not exist.
+    pub fn issue(
+        &self,
+        repository: &GitHubRepository,
+        number: i64,
+    ) -> Result<LinkedIssue, GitError> {
+        let repository = repository.to_string();
+        let number = number.to_string();
+        let invocation = invocation(&[
+            "issue",
+            "view",
+            &number,
+            "--repo",
+            &repository,
+            "--json",
+            "number,url",
+        ]);
+        let output = self.runner.run(&invocation)?;
+        serde_json::from_str::<Value>(&output)
+            .ok()
+            .and_then(|value| {
+                Some(LinkedIssue {
+                    number: value.get("number")?.as_i64()?,
+                    url: value.get("url")?.as_str()?.to_owned(),
+                })
+            })
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// Opens an issue in `repository` and returns it.
+    pub fn create_issue(
+        &self,
+        repository: &GitHubRepository,
+        title: &str,
+        body: &str,
+    ) -> Result<LinkedIssue, GitError> {
+        let repository = repository.to_string();
+        let invocation = invocation(&[
+            "issue",
+            "create",
+            "--repo",
+            &repository,
+            "--title",
+            title,
+            "--body",
+            body,
+        ]);
+        let output = self.runner.run(&invocation)?;
+        output
+            .lines()
+            .map(str::trim)
+            .rfind(|line| line.starts_with("https://") || line.starts_with("http://"))
+            .and_then(|url| {
+                let (_, number) = url.rsplit_once("/issues/")?;
+                Some(LinkedIssue {
+                    number: number.parse().ok().filter(|number| *number > 0)?,
+                    url: url.to_owned(),
+                })
+            })
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
     /// The size, reviews, and commits of the merged pull request at `url`.
     pub fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", MERGED_PULL_REQUEST_FIELDS]);
@@ -572,6 +651,90 @@ mod tests {
             github.merged_pull_request(URL),
             Err(GitError::UnexpectedOutput { .. })
         ));
+    }
+
+    const ISSUE: &str = "https://github.com/acme/toodo/issues/12";
+
+    #[test]
+    fn issue_reads_the_number_and_url_of_an_existing_issue() {
+        let (github, runner) = github(vec![
+            Ok(format!(r#"{{"number":12,"url":"{ISSUE}"}}"#)),
+            Ok("{}".to_owned()),
+        ]);
+        assert_eq!(
+            github.issue(&repository(), 12).unwrap(),
+            LinkedIssue {
+                number: 12,
+                url: ISSUE.to_owned()
+            }
+        );
+        assert!(matches!(
+            github.issue(&repository(), 12),
+            Err(GitError::UnexpectedOutput { .. })
+        ));
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0],
+            invocation(&[
+                "issue",
+                "view",
+                "12",
+                "--repo",
+                "github.com/acme/toodo",
+                "--json",
+                "number,url"
+            ])
+        );
+    }
+
+    #[test]
+    fn create_issue_reads_the_number_from_the_printed_url() {
+        let (github, runner) = github(vec![
+            Ok(format!("\nCreating issue in acme/toodo\n\n{ISSUE}\n")),
+            Ok("https://github.com/acme/toodo/pull/3\n".to_owned()),
+        ]);
+        assert_eq!(
+            github
+                .create_issue(&repository(), "Fix login", "Steps")
+                .unwrap(),
+            LinkedIssue {
+                number: 12,
+                url: ISSUE.to_owned()
+            }
+        );
+        assert!(matches!(
+            github.create_issue(&repository(), "Fix login", ""),
+            Err(GitError::UnexpectedOutput { .. })
+        ));
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0].args,
+            [
+                "issue",
+                "create",
+                "--repo",
+                "github.com/acme/toodo",
+                "--title",
+                "Fix login",
+                "--body",
+                "Steps",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn the_body_of_a_pull_request_is_read_and_replaced() {
+        let (github, runner) = github(vec![
+            Ok(r#"{"body":"Adds login.\n"}"#.to_owned()),
+            Ok(String::new()),
+        ]);
+        assert_eq!(github.pull_request_body(URL).unwrap(), "Adds login.\n");
+        github
+            .edit_pull_request_body(URL, "Adds login.\n\nCloses #12")
+            .unwrap();
+        assert_eq!(
+            runner.invocations.lock().unwrap()[1].args,
+            ["pr", "edit", URL, "--body", "Adds login.\n\nCloses #12"].map(str::to_owned)
+        );
     }
 
     #[test]

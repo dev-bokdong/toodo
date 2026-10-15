@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import {
   Check,
+  CircleDot,
   CircleSlash,
   FolderGit2,
   GitBranch,
@@ -25,15 +26,18 @@ import { TaskTypeBadge } from "@/components/task-type-badge";
 import type { Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import {
   CommandFailure,
+  IssueLinkFailure,
   machineOf,
   useAddDependency,
   useAgentStatuses,
   useCommitRecords,
   useCompleteTask,
   useConcludeTask,
+  useCreateIssue,
   useCreateTask,
   useDeleteTask,
   useHerdrStatus,
+  useLinkIssue,
   useMachineSettings,
   useOpenPullRequest,
   useOpenTaskInHerdr,
@@ -328,6 +332,7 @@ function TaskRow({
   const restoreWorktree = useRestoreTaskWorktree();
   const [editing, setEditing] = useState(false);
   const [concluding, setConcluding] = useState(false);
+  const [linkingIssue, setLinkingIssue] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const herdrRunning = herdr.data?.running === true;
   const inReview = task.status === "in_review";
@@ -534,6 +539,9 @@ function TaskRow({
           )}
         </p>
       )}
+      {(task.issue !== null || linkingIssue) && (
+        <TaskIssue task={task} detailed={detailed} linking={linkingIssue} onDone={() => setLinkingIssue(false)} />
+      )}
       <CommitList task={task} detailed={detailed} />
       {final && !editing && <CompletionNote task={task} />}
       {actionError && (
@@ -655,6 +663,17 @@ function TaskRow({
               </>
             ) : (
               <>
+                {!final && task.issue === null && !linkingIssue && (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`Link issue to #${task.id}`}
+                    title="Link a GitHub issue; the pull request closes it on merge"
+                    onClick={() => setLinkingIssue(true)}
+                  >
+                    <CircleDot />
+                  </Button>
+                )}
                 {!final && (
                   <Button
                     size="icon-xs"
@@ -917,6 +936,112 @@ export function CompletionNote({ task }: { task: Task }) {
   );
 }
 
+/** An issue number typed by the user, with or without `#`; `null` unless it is a positive integer. */
+function parseIssueNumber(raw: string): number | null {
+  const match = /^#?(\d{1,9})$/.exec(raw.trim());
+  const number = match ? Number(match[1]) : 0;
+  return number > 0 ? number : null;
+}
+
+/**
+ * The GitHub issue of a task, which its pull request closes on merge, or the form that
+ * links an existing issue or creates one from the task.
+ */
+function TaskIssue({
+  task,
+  detailed,
+  linking,
+  onDone,
+}: {
+  task: Task;
+  detailed: boolean;
+  linking: boolean;
+  onDone: () => void;
+}) {
+  const linkIssue = useLinkIssue();
+  const createIssue = useCreateIssue();
+  const [number, setNumber] = useState("");
+  const parsed = parseIssueNumber(number);
+  const pending = linkIssue.isPending || createIssue.isPending;
+  const error = linkIssue.error ?? createIssue.error;
+  const editable = task.status !== "done";
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (parsed !== null) {
+      linkIssue.mutate({ id: task.id, number: parsed }, { onSuccess: onDone });
+    }
+  }
+
+  const issue = task.issue;
+  const content = issue ? (
+    <p className="flex min-w-0 items-center gap-1 text-xs">
+      {!detailed && <CircleDot aria-hidden className="size-3 shrink-0 text-muted-foreground" />}
+      {!detailed && <span className="sr-only">Issue </span>}
+      <span aria-label={`Issue of #${task.id}`} title={issue.url} className="shrink-0 font-medium tabular-nums">
+        #{issue.number}
+      </span>
+      <span className={cn("min-w-0 font-mono text-muted-foreground select-all", detailed ? "break-all" : "truncate")}>
+        {issue.url}
+      </span>
+      {editable && (
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label={`Unlink issue from #${task.id}`}
+          title="Unlink the issue; a pull request keeps its closing reference"
+          disabled={pending}
+          onClick={() => linkIssue.mutate({ id: task.id, number: null })}
+        >
+          <X />
+        </Button>
+      )}
+    </p>
+  ) : (
+    linking && (
+      <form onSubmit={submit} aria-label={`Issue form of #${task.id}`} className="flex flex-wrap items-center gap-1">
+        <input
+          className={cn(inputClass, "h-7 w-28")}
+          inputMode="numeric"
+          placeholder="Issue #"
+          aria-label={`Issue number of #${task.id}`}
+          value={number}
+          onChange={(e) => setNumber(e.target.value)}
+          autoFocus
+        />
+        <Button type="submit" size="xs" disabled={parsed === null || pending}>
+          {linkIssue.isPending ? "Linking..." : "Link"}
+        </Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          aria-label={`Create issue for #${task.id}`}
+          title="Open a GitHub issue with the title and description of this task and link it"
+          disabled={pending}
+          onClick={() => createIssue.mutate(task.id, { onSuccess: onDone })}
+        >
+          <Plus />
+          {createIssue.isPending ? "Creating..." : "Create issue"}
+        </Button>
+        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
+          Discard
+        </Button>
+      </form>
+    )
+  );
+  return (
+    <>
+      {detailed && issue ? <DetailField label="Issue">{content}</DetailField> : content}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error.message}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** A labeled block of the task details sheet. */
 function DetailField({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -1143,9 +1268,9 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   );
 }
 
-export type TaskDraft = { taskType: TaskType; title: string; description: string };
+export type TaskDraft = { taskType: TaskType; title: string; description: string; issue: string };
 
-const emptyDraft: TaskDraft = { taskType: "feat", title: "", description: "" };
+const emptyDraft: TaskDraft = { taskType: "feat", title: "", description: "", issue: "" };
 
 function NewTaskForm({
   workspace,
@@ -1157,16 +1282,24 @@ function NewTaskForm({
   onChange: (draft: TaskDraft) => void;
 }) {
   const createTask = useCreateTask();
-  const { taskType, title, description } = draft;
+  const { taskType, title, description, issue } = draft;
+  const issueNumber = parseIssueNumber(issue);
+  const invalidIssue = issue.trim() !== "" && issueNumber === null;
   const setTaskType = (value: TaskType) => onChange({ ...draft, taskType: value });
   const setTitle = (value: string) => onChange({ ...draft, title: value });
   const setDescription = (value: string) => onChange({ ...draft, description: value });
+  const setIssue = (value: string) => onChange({ ...draft, issue: value });
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const added = () => onChange({ ...draft, title: "", description: "", issue: "" });
     createTask.mutate(
-      { workspaceId: workspace.id, taskType, title, description },
-      { onSuccess: () => onChange({ ...draft, title: "", description: "" }) },
+      { workspaceId: workspace.id, taskType, title, description, issue: issueNumber },
+      {
+        onSuccess: added,
+        // The task exists even though its issue was not linked; adding it again would duplicate it.
+        onError: (error) => error instanceof IssueLinkFailure && added(),
+      },
     );
   }
 
@@ -1197,18 +1330,30 @@ function NewTaskForm({
           onChange={(e) => setTitle(e.target.value)}
           required
         />
-        <Button type="submit" disabled={createTask.isPending}>
+        <Button type="submit" disabled={createTask.isPending || invalidIssue}>
           <Plus />
           Add task
         </Button>
       </div>
-      <input
-        className={inputClass}
-        placeholder="Description (optional)"
-        aria-label="Description"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-      />
+      <div className="flex gap-2">
+        <input
+          className={inputClass}
+          placeholder="Description (optional)"
+          aria-label="Description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+        <input
+          className={cn(inputClass, "w-36 shrink-0")}
+          inputMode="numeric"
+          placeholder="Issue # (optional)"
+          aria-label="Issue number"
+          aria-invalid={invalidIssue}
+          title="An issue of the workspace repository; the pull request closes it on merge"
+          value={issue}
+          onChange={(e) => setIssue(e.target.value)}
+        />
+      </div>
       {createTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {createTask.error.message}

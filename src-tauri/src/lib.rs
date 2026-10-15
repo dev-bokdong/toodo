@@ -46,6 +46,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::completion::open_pull_request,
             commands::completion::complete_task,
             commands::completion::conclude_task,
+            commands::issues::link_issue,
+            commands::issues::create_issue,
             commands::events::list_agent_statuses,
             commands::review::review_period,
             commands::review::save_report,

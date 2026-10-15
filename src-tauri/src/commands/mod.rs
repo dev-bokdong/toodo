@@ -5,6 +5,7 @@ pub mod backup;
 pub mod completion;
 pub mod events;
 pub mod herdr;
+pub mod issues;
 pub mod machines;
 pub mod review;
 pub mod tasks;

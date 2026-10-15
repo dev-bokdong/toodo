@@ -202,6 +202,7 @@ mod tests {
             pull_request: None,
             resolution: None,
             completion_note: None,
+            issue: None,
             timeline: Vec::new(),
         }
     }

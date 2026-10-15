@@ -396,10 +396,42 @@ export function useRemoveDependency() {
   return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.removeDependency(id, dependsOn)));
 }
 
+/** Links GitHub issue `number` of the workspace repository to a task; `null` unlinks it. */
+export function useLinkIssue() {
+  return useTasksMutation(({ id, number }: { id: TaskId; number: number | null }) =>
+    unwrap(commands.linkIssue(id, number)),
+  );
+}
+
+/** Opens a GitHub issue from the title and description of a task and links it. */
+export function useCreateIssue() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.createIssue(id)));
+}
+
+/** The task was created, but its issue could not be linked. */
+export class IssueLinkFailure extends Error {
+  constructor(taskId: TaskId, issue: number, reason: string) {
+    super(`Task #${taskId} was added, but issue #${issue} could not be linked: ${reason}`);
+    this.name = "IssueLinkFailure";
+  }
+}
+
+/** Creates a task, then links issue `issue` to it when one is given. */
 export function useCreateTask() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (task: NewTask) => unwrap(commands.createTask(task)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    mutationFn: async ({ issue, ...task }: NewTask & { issue: number | null }) => {
+      const created = await unwrap(commands.createTask(task));
+      if (issue === null) {
+        return created;
+      }
+      try {
+        return await unwrap(commands.linkIssue(created.id, issue));
+      } catch (error) {
+        throw new IssueLinkFailure(created.id, issue, error instanceof Error ? error.message : String(error));
+      }
+    },
+    // A task whose issue could not be linked was still created.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
   });
 }
