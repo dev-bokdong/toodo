@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Crosshair, XIcon } from "lucide-react";
+import { Crosshair, TriangleAlert, XIcon } from "lucide-react";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
   BaseEdge,
@@ -27,6 +27,7 @@ import type { AgentStatus, Task, TaskId, Timestamp } from "@/lib/bindings";
 import {
   useAddDependency,
   useAgentStatuses,
+  useBranchFreshness,
   useFocusAgentPane,
   useHerdrStatus,
   useRemoveDependency,
@@ -35,8 +36,11 @@ import {
   canAddDependency,
   dependencyEdges,
   dependencyEditableStatuses,
+  freshnessWarning,
+  isNotAdopted,
   isPaused,
   layoutTimeline,
+  waitingPrerequisites,
   relatedTasks,
   pausesStartedTask,
   timelineAxis,
@@ -64,6 +68,11 @@ type BarNode = Node<
     workspace: string | null;
     dimmed: boolean;
     agentStatus: AgentStatus | null;
+    /** Prerequisites the task waits on, and those concluded without merging that block it. */
+    waitingOn: TaskId[];
+    notAdopted: TaskId[];
+    /** Whether the task has a worktree whose branch can fall behind its base. */
+    checkFreshness: boolean;
   },
   "bar"
 >;
@@ -186,6 +195,7 @@ export function TaskGraph({
   const now = useNow();
   const layout = layoutTimeline(tasks, { now, scale, period: year === null ? null : yearPeriod(year) });
   const placed = new Set(layout.bars.map((bar) => bar.task.id));
+  const byId = new Map(allTasks.map((task) => [task.id, task]));
   const dependencies = dependencyEdges(tasks).filter((edge) => placed.has(edge.source) && placed.has(edge.target));
   // A task that left the timeline, through a filter or a deletion, is no longer selected.
   const selectedTask = placed.has(selectedTaskId ?? -1) ? tasks.find((task) => task.id === selectedTaskId) : undefined;
@@ -225,6 +235,11 @@ export function TaskGraph({
       workspace: workspaceLabel(bar.task),
       dimmed: dimmed.has(bar.task.id) || !inChain(bar.task.id),
       agentStatus: agentStatusOf(bar.task),
+      waitingOn: waitingPrerequisites(bar.task, byId),
+      notAdopted:
+        bar.task.status === "planned" ? bar.task.dependsOn.filter((id) => isNotAdopted(byId.get(id))) : [],
+      checkFreshness:
+        (bar.task.status === "in_progress" || bar.task.status === "in_review") && bar.task.worktreePath !== null,
     },
     selected: bar.task.id === selectedTask?.id,
     deletable: false,
@@ -855,10 +870,21 @@ function TimelineEdge({ sourceX, sourceY, targetX, targetY, markerEnd, style, in
 }
 
 function TimelineBarView({
-  data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, agentStatus },
+  data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, agentStatus, waitingOn, notAdopted, checkFreshness },
   selected,
 }: NodeProps<BarNode>) {
   const { task, phases, pending, lead, dueX, dueState } = bar;
+  // Shares the cached check of the task row, so the bar warns about the same base freshness.
+  const freshness = useBranchFreshness(task.id, checkFreshness);
+  const behindBase = checkFreshness && freshness.data ? freshnessWarning(freshness.data) : null;
+  const conflicting = checkFreshness && freshness.data?.mergeable === "conflicting";
+  const refs = (ids: TaskId[]) => ids.map((id) => `#${id}`).join(", ");
+  const warnings = [
+    notAdopted.length > 0 && `${refs(notAdopted)} not adopted`,
+    waitingOn.length > 0 && `Waiting on ${refs(waitingOn)}`,
+    behindBase,
+  ].filter((warning): warning is string => typeof warning === "string");
+  const severe = notAdopted.length > 0 || conflicting;
   // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
   const faded = isPaused(task) && !ready;
   const behindDue = dueState === "late" || dueState === "overdue";
@@ -929,6 +955,19 @@ function TimelineBarView({
         <TaskTypeBadge type={task.taskType} className="bg-card px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className="font-medium">{task.title}</span>
+        {warnings.length > 0 && (
+          <TriangleAlert
+            role="img"
+            aria-label={`Warnings of #${task.id}: ${warnings.join("; ")}`}
+            data-severe={severe || undefined}
+            className={cn(
+              "size-3.5 shrink-0",
+              severe ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400",
+            )}
+          >
+            <title>{warnings.join("\n")}</title>
+          </TriangleAlert>
+        )}
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
         {agentStatus !== null && <AgentBadge taskId={task.id} status={agentStatus} className="px-1.5 py-0" />}
       </div>
