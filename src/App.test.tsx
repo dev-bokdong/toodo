@@ -79,6 +79,7 @@ vi.mock("@/lib/bindings", () => ({
     tasksChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
+    updateCheckRequested: { listen: vi.fn() },
   },
 }));
 
@@ -190,6 +191,7 @@ describe("App", () => {
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -869,7 +871,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
     expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "2.5" } });
-    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "points" } });
+    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "weeks" } });
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-11-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
@@ -879,7 +881,7 @@ describe("App", () => {
       taskType: "docs",
       title: "Write docs",
       description: "",
-      estimate: { unit: "points", amount: 2.5 },
+      estimate: { unit: "weeks", amount: 2.5 },
       dueDate: "2026-11-01",
     });
     expect(screen.getByLabelText("Estimate")).toHaveValue("");
@@ -1329,6 +1331,61 @@ describe("App", () => {
     );
     expect(screen.queryByRole("note", { name: "Base freshness of #3" })).not.toBeInTheDocument();
     expect(mocked.branchFreshness).toHaveBeenCalledWith(3);
+  });
+
+  it("rechecks base freshness and marks warned tasks on the timeline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const started = { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + 3600 };
+    const worktree = { branch: "feat/x", worktreePath: "D:\\wt\\toodo\\x", herdrWorkspaceId: "w1", milestones: started };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Behind", { status: "in_progress", ...worktree }),
+        task(2, 1, "Conflicting", { status: "in_progress", ...worktree }),
+        task(3, 1, "Waiting", { dependsOn: [1], milestones: { ...started, startedAt: null } }),
+      ],
+    });
+    let synced = false;
+    mocked.branchFreshness.mockImplementation((id) =>
+      Promise.resolve({
+        status: "ok",
+        data: {
+          base: "origin/main",
+          behind: id === 1 && synced ? 0 : 3,
+          fetchError: null,
+          mergeable: id === 2 ? "conflicting" : null,
+          mergeableError: null,
+        },
+      }),
+    );
+    await renderWorkspace();
+
+    expect(await screen.findByRole("note", { name: "Base freshness of #1" })).toHaveTextContent(
+      "3 commits behind origin/main",
+    );
+    // The branch was synced outside Toodo; rechecking clears the warning without waiting.
+    synced = true;
+    fireEvent.click(screen.getByRole("button", { name: "Recheck base freshness of #1" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("note", { name: "Base freshness of #1" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("note", { name: "Base freshness of #2" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bars = timeline.querySelector(".react-flow__nodes") as HTMLElement;
+    expect(
+      await within(bars).findByRole("img", {
+        name: "Warnings of #2: 3 commits behind origin/main; pull request has merge conflicts",
+      }),
+    ).toHaveAttribute("data-severe", "true");
+    expect(within(bars).getByRole("img", { name: "Warnings of #3: Waiting on #1" })).not.toHaveAttribute(
+      "data-severe",
+    );
+    expect(within(bars).queryByRole("img", { name: /^Warnings of #1/ })).not.toBeInTheDocument();
   });
 
   it("records commits, opens a pull request, and completes the task once it is merged", async () => {

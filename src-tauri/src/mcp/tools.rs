@@ -38,7 +38,7 @@ pub struct CreateTask {
     /// Tasks the new task depends on, from any workspace.
     #[serde(default)]
     pub depends_on: Vec<TaskId>,
-    /// Your estimate of the work, in hours of active work or story points.
+    /// Your estimate of the work, in hours, days, weeks, or months of active work.
     #[serde(default)]
     pub estimate: Option<Estimate>,
     /// The day the task should be done by, as YYYY-MM-DD, if the user gave one.
@@ -446,16 +446,16 @@ mod tests {
             (kept.estimate, kept.due_date.as_deref()),
             (planned, Some("2026-10-20"))
         );
-        let points = update(
+        let weeks = update(
             &mut storage,
-            serde_json::json!({ "estimate": { "unit": "points", "amount": 3 }, "due_date": null }),
+            serde_json::json!({ "estimate": { "unit": "weeks", "amount": 3 }, "due_date": null }),
         )
         .unwrap();
         assert_eq!(
-            (points.estimate, points.due_date),
+            (weeks.estimate, weeks.due_date),
             (
                 Some(Estimate {
-                    unit: types::EstimateUnit::Points,
+                    unit: types::EstimateUnit::Weeks,
                     amount: 3.0
                 }),
                 None

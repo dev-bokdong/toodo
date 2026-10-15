@@ -194,6 +194,7 @@ export const events = {
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
+	updateCheckRequested: makeEvent<UpdateCheckRequested>("update-check-requested"),
 };
 
 /* Types */
@@ -300,15 +301,11 @@ export type Estimate = {
 	amount: number,
 };
 
-/**  What an estimate counts. */
-export type EstimateUnit = 
 /**
- *  Hours of active work, compared with the time the task spends in progress or in
- *  review.
+ *  The unit of time an estimate counts, compared with the time the task spends in
+ *  progress or in review. A day is 24 hours, a week 7 days, and a month 30 days.
  */
-"hours" | 
-/**  Story points: relative size. */
-"points";
+export type EstimateUnit = "hours" | "days" | "weeks" | "months";
 
 /**  A machine saved in herdr with `herdr machine add`. */
 export type HerdrMachine = {
@@ -581,6 +578,12 @@ export type TasksChanged = {
 
 /**  Seconds since the Unix epoch (UTC). */
 export type Timestamp = number;
+
+/**
+ *  The user asked to check for an app update from the tray menu; the frontend runs the
+ *  check, since the updater is driven from there.
+ */
+export type UpdateCheckRequested = null;
 
 export type Workspace = {
 	id: WorkspaceId,

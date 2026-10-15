@@ -214,6 +214,24 @@ pub(super) const MIGRATIONS: &[&str] = &[
         CHECK (estimate_amount > 0);
     ALTER TABLE tasks ADD COLUMN due_date TEXT CHECK (date(due_date) IS due_date);
     ",
+    // Version 10: estimates count time only, in hours, days, weeks, or months; points are
+    // gone. Estimates in points have no time to compare with, so they are cleared. The
+    // estimate columns are recreated to change their CHECK constraints: SQLite drops a
+    // column whose own constraints reference another column, but not one referenced by
+    // the constraints of another, so the amount goes before the unit.
+    r"
+    ALTER TABLE tasks RENAME COLUMN estimate_unit TO old_estimate_unit;
+    ALTER TABLE tasks RENAME COLUMN estimate_amount TO old_estimate_amount;
+    ALTER TABLE tasks ADD COLUMN estimate_unit TEXT
+        CHECK (estimate_unit IN ('hours', 'days', 'weeks', 'months'));
+    ALTER TABLE tasks ADD COLUMN estimate_amount REAL
+        CHECK ((estimate_amount IS NULL) = (estimate_unit IS NULL))
+        CHECK (estimate_amount > 0);
+    UPDATE tasks SET estimate_unit = old_estimate_unit, estimate_amount = old_estimate_amount
+        WHERE old_estimate_unit = 'hours';
+    ALTER TABLE tasks DROP COLUMN old_estimate_amount;
+    ALTER TABLE tasks DROP COLUMN old_estimate_unit;
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -590,13 +608,70 @@ mod tests {
         )
         .unwrap();
         for invalid in [
-            "UPDATE tasks SET estimate_unit = 'days' WHERE id = 1",
+            "UPDATE tasks SET estimate_unit = 'minutes' WHERE id = 1",
             "UPDATE tasks SET estimate_unit = NULL WHERE id = 1",
             "UPDATE tasks SET estimate_amount = NULL WHERE id = 1",
             "UPDATE tasks SET estimate_amount = 0 WHERE id = 1",
             "UPDATE tasks SET due_date = '2026-02-29' WHERE id = 1",
             "UPDATE tasks SET due_date = '2026-10-15 12:00' WHERE id = 1",
             "UPDATE tasks SET due_date = 'tomorrow' WHERE id = 1",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn version_10_keeps_hour_estimates_clears_points_and_allows_time_units() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..9] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status, estimate_unit,
+                    estimate_amount, due_date)
+                VALUES (1, 'fix', 'A', 'planned', 'hours', 1.5, '2026-10-20'),
+                       (1, 'feat', 'B', 'planned', 'points', 3, NULL),
+                       (1, 'docs', 'C', 'planned', NULL, NULL, NULL);
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let mut statement = conn
+            .prepare("SELECT estimate_unit, estimate_amount, due_date FROM tasks ORDER BY id")
+            .unwrap();
+        let plans: Vec<(Option<String>, Option<f64>, Option<String>)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            plans,
+            [
+                (
+                    Some("hours".to_owned()),
+                    Some(1.5),
+                    Some("2026-10-20".to_owned())
+                ),
+                (None, None, None),
+                (None, None, None),
+            ]
+        );
+        for unit in ["days", "weeks", "months", "hours"] {
+            conn.execute("UPDATE tasks SET estimate_unit = ?1 WHERE id = 1", [unit])
+                .unwrap();
+        }
+        for invalid in [
+            "UPDATE tasks SET estimate_unit = 'points' WHERE id = 1",
+            "UPDATE tasks SET estimate_unit = NULL WHERE id = 1",
+            "UPDATE tasks SET estimate_amount = 0 WHERE id = 1",
+            "UPDATE tasks SET estimate_unit = 'days' WHERE id = 2",
         ] {
             assert!(conn.execute(invalid, []).is_err(), "{invalid}");
         }

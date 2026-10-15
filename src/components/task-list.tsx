@@ -77,9 +77,11 @@ import { pullRequestStats } from "@/lib/review";
 import {
   dependenciesDone,
   dependencyEditableStatuses,
+  freshnessWarning,
   isNotAdopted,
   isPaused,
   pausesStartedTask,
+  waitingPrerequisites,
   type TimelineScale,
 } from "@/lib/task-graph";
 import {
@@ -503,10 +505,7 @@ function TaskRow({
     removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
   const dependenciesEditable = dependencyEditableStatuses.includes(task.status);
   // A planned task can start (or a paused one resume) once these prerequisites are done.
-  const waitingOn =
-    task.status === "planned" && notAdopted.length === 0
-      ? task.dependsOn.filter((id) => context.byId.get(id)?.status !== "done")
-      : [];
+  const waitingOn = waitingPrerequisites(task, context.byId);
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const actionError =
     startTask.error ??
@@ -960,27 +959,36 @@ function TaskRow({
 function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
   const freshness = useBranchFreshness(taskId, true);
   const label = `Base freshness of #${taskId}`;
+  // After syncing the branch outside Toodo, the warning is checked again right away.
+  const recheck = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      className="ml-1.5 h-5 px-1.5 align-middle"
+      aria-label={`Recheck base freshness of #${taskId}`}
+      title="Check again whether the branch is behind its base"
+      disabled={freshness.isFetching}
+      onClick={() => void freshness.refetch()}
+    >
+      <RefreshCw className={cn("size-3", freshness.isFetching && "animate-spin")} />
+      Recheck
+    </Button>
+  );
   if (freshness.error) {
     return (
       <p role="note" aria-label={label} className="text-xs text-muted-foreground" title={freshness.error.message}>
         Could not check whether the branch is behind its base
+        {recheck}
       </p>
     );
   }
   const data = freshness.data;
-  const conflicting = data?.mergeable === "conflicting";
-  if (!data || (data.behind === 0 && !conflicting)) {
+  const warning = data ? freshnessWarning(data) : null;
+  if (!data || warning === null) {
     return null;
   }
-  const parts: string[] = [];
-  if (data.behind > 0) {
-    parts.push(`${data.behind} ${data.behind === 1 ? "commit" : "commits"} behind ${data.base}`);
-  }
-  if (conflicting) {
-    parts.push("pull request has merge conflicts");
-  } else if (data.mergeable === "mergeable") {
-    parts.push("no merge conflicts");
-  }
+  const conflicting = data.mergeable === "conflicting";
   return (
     <p
       role="note"
@@ -996,8 +1004,9 @@ function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
           .join("\n") || undefined
       }
     >
-      {parts.join("; ")}
+      {warning}
       {data.fetchError && " (not up to date: fetching origin failed)"}
+      {recheck}
     </p>
   );
 }
@@ -1835,7 +1844,9 @@ function PlanFields({
         onChange={(e) => onChange({ ...plan, estimateUnit: e.target.value as EstimateUnit })}
       >
         <option value="hours">hours</option>
-        <option value="points">points</option>
+        <option value="days">days</option>
+        <option value="weeks">weeks</option>
+        <option value="months">months</option>
       </select>
       <label className="flex items-center gap-1">
         Due

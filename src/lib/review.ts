@@ -320,10 +320,8 @@ export interface LateTask {
 
 /** How the work of a period went against its plan: estimates and due dates. */
 export interface PlanVsActual {
-  /** Completed tasks estimated in hours with a recorded active time; durations in seconds. */
-  hours: { tasks: number; estimated: number; actual: number } | null;
-  /** Completed tasks estimated in points. */
-  points: { tasks: number; points: number } | null;
+  /** Completed tasks with an estimate and a recorded active time; durations in seconds. */
+  time: { tasks: number; estimated: number; actual: number } | null;
   /** Completed tasks with a due date, and how many of them were done by it. */
   dueDates: { tasks: number; onTime: number } | null;
   /** Completed tasks done late and open tasks past their due date, the latest first. */
@@ -343,7 +341,6 @@ export function planVsActual(period: ReviewPeriod, entries: ReviewEntry[], now: 
     const actual = activeSeconds(task.timeline, at);
     return estimated === null || actual === null ? [] : [{ estimated, actual }];
   });
-  const pointed = completed.flatMap(({ task }) => (task.estimate?.unit === "points" ? [task.estimate.amount] : []));
   const due = completed.flatMap(({ task }) => {
     const state = dueState(task, now);
     return state === "on_time" || state === "late" ? [state] : [];
@@ -363,7 +360,7 @@ export function planVsActual(period: ReviewPeriod, entries: ReviewEntry[], now: 
   const planned = entries.some(({ task }) => task.estimate !== null || task.dueDate !== null);
   if (!planned) return null;
   return {
-    hours:
+    time:
       timed.length === 0
         ? null
         : {
@@ -371,31 +368,23 @@ export function planVsActual(period: ReviewPeriod, entries: ReviewEntry[], now: 
             estimated: timed.reduce((total, { estimated }) => total + estimated, 0),
             actual: timed.reduce((total, { actual }) => total + actual, 0),
           },
-    points:
-      pointed.length === 0
-        ? null
-        : { tasks: pointed.length, points: pointed.reduce((total, points) => total + points, 0) },
     dueDates:
       due.length === 0 ? null : { tasks: due.length, onTime: due.filter((state) => state === "on_time").length },
     late,
   };
 }
 
-/** Estimated against active hours, e.g. `12h estimated, 15h active (4 tasks, 1.25x)`. */
-export function formatEstimateAccuracy(hours: NonNullable<PlanVsActual["hours"]>): string {
-  return `${formatDuration(hours.estimated)} estimated, ${formatDuration(hours.actual)} active (${plural(
-    hours.tasks,
+/** Estimated against active time, e.g. `12h estimated, 15h active (4 tasks, 1.25x)`. */
+export function formatEstimateAccuracy(time: NonNullable<PlanVsActual["time"]>): string {
+  return `${formatDuration(time.estimated)} estimated, ${formatDuration(time.actual)} active (${plural(
+    time.tasks,
     "task",
-  )}, ${(hours.actual / hours.estimated).toFixed(2)}x)`;
+  )}, ${(time.actual / time.estimated).toFixed(2)}x)`;
 }
 
 /** Share of due dates met, e.g. `3 of 4 (75%)`. */
 export function formatDueRate(dueDates: NonNullable<PlanVsActual["dueDates"]>): string {
   return `${dueDates.onTime} of ${dueDates.tasks} (${Math.round((dueDates.onTime / dueDates.tasks) * 100)}%)`;
-}
-
-export function formatPoints(points: NonNullable<PlanVsActual["points"]>): string {
-  return `${Math.round(points.points * 100) / 100} (${plural(points.tasks, "task")})`;
 }
 
 /** Why a late task is late, e.g. `due 2026-10-10, done 2026-10-12, 1.5d late`. */
@@ -420,7 +409,7 @@ export interface ResearchConclusion {
   adopted: boolean;
 }
 
-/** A completed task that took more active time than its estimate in hours; durations in seconds. */
+/** A completed task that took more active time than its estimate; durations in seconds. */
 export interface Overrun {
   task: Task;
   estimated: number;
@@ -604,8 +593,7 @@ export function reviewMarkdown(
     lines.push(`- ${durationLabels[key]}: ${formatStat(summary[key])}`);
   }
   const plan = planVsActual(period, entries, now);
-  if (plan?.hours) lines.push(`- Estimate vs active time: ${formatEstimateAccuracy(plan.hours)}`);
-  if (plan?.points) lines.push(`- Points completed: ${formatPoints(plan.points)}`);
+  if (plan?.time) lines.push(`- Estimate vs active time: ${formatEstimateAccuracy(plan.time)}`);
   if (plan?.dueDates) lines.push(`- Due dates met: ${formatDueRate(plan.dueDates)}`);
   lines.push("");
   if (plan && plan.late.length > 0) {

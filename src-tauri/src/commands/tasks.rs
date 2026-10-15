@@ -206,7 +206,7 @@ mod tests {
                 title: "  Fix commands ".to_owned(),
                 description: "details".to_owned(),
                 estimate: Some(types::Estimate {
-                    unit: types::EstimateUnit::Points,
+                    unit: types::EstimateUnit::Days,
                     amount: 3.0,
                 }),
                 due_date: Some(" 2026-10-31 ".to_owned()),

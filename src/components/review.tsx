@@ -13,7 +13,6 @@ import {
   formatDuration,
   formatDueRate,
   formatEstimateAccuracy,
-  formatPoints,
   formatReviews,
   groupByOutcome,
   lateDetails,
@@ -399,14 +398,8 @@ function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewE
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         <div className="contents">
           <dt className="text-muted-foreground">Estimate vs active time</dt>
-          <dd>{plan.hours ? formatEstimateAccuracy(plan.hours) : "No completed task estimated in hours"}</dd>
+          <dd>{plan.time ? formatEstimateAccuracy(plan.time) : "No completed task had an estimate"}</dd>
         </div>
-        {plan.points && (
-          <div className="contents">
-            <dt className="text-muted-foreground">Points completed</dt>
-            <dd>{formatPoints(plan.points)}</dd>
-          </div>
-        )}
         <div className="contents">
           <dt className="text-muted-foreground">Due dates met</dt>
           <dd>{plan.dueDates ? formatDueRate(plan.dueDates) : "No completed task had a due date"}</dd>

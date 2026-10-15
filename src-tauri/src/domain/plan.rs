@@ -4,23 +4,25 @@
 
 use std::fmt;
 
-/// What an estimate counts.
+/// The unit of time an estimate counts, compared with the time a task spent in progress
+/// or in review. A day is 24 hours, a week 7 days, and a month 30 days.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EstimateUnit {
-    /// Hours of active work, comparable with the time a task spent in progress or in
-    /// review.
     Hours,
-    /// Story points, relative size without a fixed relation to time.
-    Points,
+    Days,
+    Weeks,
+    Months,
 }
 
 impl EstimateUnit {
-    pub const ALL: [Self; 2] = [Self::Hours, Self::Points];
+    pub const ALL: [Self; 4] = [Self::Hours, Self::Days, Self::Weeks, Self::Months];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hours => "hours",
-            Self::Points => "points",
+            Self::Days => "days",
+            Self::Weeks => "weeks",
+            Self::Months => "months",
         }
     }
 }
@@ -148,7 +150,7 @@ mod tests {
             (estimate.unit(), estimate.amount()),
             (EstimateUnit::Hours, 1.5)
         );
-        assert!(Estimate::new(EstimateUnit::Points, Estimate::MAX_AMOUNT).is_ok());
+        assert!(Estimate::new(EstimateUnit::Weeks, Estimate::MAX_AMOUNT).is_ok());
         for amount in [
             0.0,
             -1.0,
@@ -157,7 +159,7 @@ mod tests {
             Estimate::MAX_AMOUNT + 1.0,
         ] {
             assert!(
-                Estimate::new(EstimateUnit::Points, amount).is_err(),
+                Estimate::new(EstimateUnit::Days, amount).is_err(),
                 "{amount}"
             );
         }

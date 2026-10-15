@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri_specta::{Builder, collect_commands, collect_events};
+use tauri_specta::{Builder, Event, collect_commands, collect_events};
 
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
@@ -72,8 +72,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::events::TasksChanged,
             commands::events::AgentStatusesChanged,
             commands::events::PullRequestStatusesChanged,
+            UpdateCheckRequested,
         ])
 }
+
+/// The user asked to check for an app update from the tray menu; the frontend runs the
+/// check, since the updater is driven from there.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, tauri_specta::Event)]
+pub struct UpdateCheckRequested;
 
 const MAIN_WINDOW: &str = "main";
 
@@ -88,14 +94,28 @@ fn show_main_window(app: &tauri::AppHandle) {
 /// Adds the tray icon that keeps Toodo running after its window is closed.
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Toodo", true, None::<&str>)?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for Updates",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &check_updates, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Toodo")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
+            "check_updates" => {
+                // Shown first so the result of the check is visible.
+                show_main_window(app);
+                if let Err(error) = UpdateCheckRequested.emit(app) {
+                    eprintln!("toodo: failed to request an update check: {error}");
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         })
