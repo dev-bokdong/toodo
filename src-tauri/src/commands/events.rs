@@ -283,7 +283,7 @@ fn machine_tasks(storage: &Storage, machine: &Machine) -> Result<Vec<model::Task
 }
 
 /// Machines that host at least one SSH workspace.
-fn ssh_machines(storage: &Storage) -> Result<HashSet<Machine>, StorageError> {
+pub(crate) fn ssh_machines(storage: &Storage) -> Result<HashSet<Machine>, StorageError> {
     Ok(storage
         .list_workspaces()?
         .into_iter()

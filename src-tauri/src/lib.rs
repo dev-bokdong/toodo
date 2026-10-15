@@ -1,6 +1,7 @@
 mod adapters;
 mod commands;
 pub mod domain;
+mod mcp;
 pub mod storage;
 
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::workspaces::get_workspace,
             commands::workspaces::create_workspace,
             commands::workspaces::update_workspace,
+            commands::workspaces::list_workspace_branches,
+            commands::workspaces::create_workspace_base_branch,
             commands::workspaces::delete_workspace,
             commands::workspaces::get_machine_settings,
             commands::workspaces::save_machine_settings,
@@ -46,7 +49,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::completion::open_pull_request,
             commands::completion::complete_task,
             commands::completion::conclude_task,
+            commands::issues::link_issue,
+            commands::issues::create_issue,
             commands::events::list_agent_statuses,
+            commands::mcp::mcp_server_info,
+            commands::mcp::list_mcp_tunnels,
             commands::review::review_period,
             commands::review::save_report,
             commands::backup::get_backup_settings,
@@ -78,6 +85,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -103,10 +112,30 @@ pub fn run() {
             commands::events::spawn(app.handle().clone())?;
             commands::backup::spawn(app.handle().clone())?;
             commands::completion::spawn(app.handle().clone())?;
+            let mcp = mcp::start(Arc::new(app.handle().clone()), &data_dir);
+            let tunnels: mcp::tunnels::TunnelsState = Arc::new(Mutex::new(
+                mcp::tunnels::Tunnels::new(Box::new(adapters::ssh_tunnel::SshForwarder), mcp::PORT),
+            ));
+            match &mcp.error {
+                Some(error) => eprintln!("toodo: MCP server not started: {error}"),
+                None => mcp::tunnels::spawn(app.handle().clone(), tunnels.clone())?,
+            }
+            app.manage(mcp);
+            app.manage(tunnels);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event
+                && let Some(tunnels) = app.try_state::<mcp::tunnels::TunnelsState>()
+            {
+                tunnels
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .shut_down();
+            }
+        });
 }
 
 #[cfg(test)]

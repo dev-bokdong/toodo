@@ -39,7 +39,7 @@ pub fn update_task(storage: State<'_, StorageState>, task: TaskEdit) -> CommandR
     edit_task(&mut lock(&storage), task)
 }
 
-fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
+pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
     let title = edit.title.trim();
     if title.is_empty() {
         return Err(CommandError::invalid_input("task title must not be empty"));
@@ -124,15 +124,18 @@ pub fn delete_task(
 }
 
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
-/// self and cyclic edges.
-#[tauri::command]
+/// self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
+/// paused and its herdr workspace closed.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn add_dependency(
     storage: State<'_, StorageState>,
+    herdr: State<'_, HerdrState>,
     task_id: TaskId,
     depends_on: TaskId,
 ) -> CommandResult<()> {
-    Ok(lock(&storage).add_dependency(task_id.into(), depends_on.into())?)
+    super::herdr::add_dependencies(&storage, &herdr, task_id.into(), &[depends_on.into()])?;
+    Ok(())
 }
 
 #[tauri::command]

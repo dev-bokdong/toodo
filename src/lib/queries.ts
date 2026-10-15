@@ -10,6 +10,8 @@ import {
   type NewSshHost,
   type NewTask,
   type NewWorkspace,
+  type Task,
+  type TaskAgentStatus,
   type TaskEdit,
   type TaskId,
   type Timestamp,
@@ -17,6 +19,7 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
+import { agentAlerts, notify } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
 
@@ -45,15 +48,36 @@ export const queryKeys = {
   herdrStatus: ["herdr-status"] as const,
   agentStatuses: ["agent-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
+  branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   herdrMachines: ["herdr-machines"] as const,
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
+  mcpServerInfo: ["mcp-server-info"] as const,
+  mcpTunnels: ["mcp-tunnels"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
 };
+
+/** Where agents reach Toodo's MCP server; fixed while the app runs. */
+export function useMcpServerInfo() {
+  return useQuery({
+    queryKey: queryKeys.mcpServerInfo,
+    queryFn: () => commands.mcpServerInfo(),
+    staleTime: Infinity,
+  });
+}
+
+/** Reverse tunnels that let agents on SSH machines reach the MCP server. */
+export function useMcpTunnels() {
+  return useQuery({
+    queryKey: queryKeys.mcpTunnels,
+    queryFn: () => commands.listMcpTunnels(),
+    refetchInterval: 3000,
+  });
+}
 
 /** Backups in Toodo's backup directory, newest first. */
 export function useBackups() {
@@ -167,6 +191,33 @@ export function useUpdateWorkspace() {
   });
 }
 
+/**
+ * Branches of the workspace repository, fetched from `origin` each time the base branch
+ * picker opens so the list matches the remote.
+ */
+export function useWorkspaceBranches(workspace: WorkspaceId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.branches(workspace),
+    queryFn: () => unwrap(commands.listWorkspaceBranches(workspace)),
+    enabled,
+    staleTime: 0,
+  });
+}
+
+/** Creates a branch from an existing one, pushes it, and makes it the workspace base. */
+export function useCreateBaseBranch() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, name, from }: { workspace: WorkspaceId; name: string; from: string }) =>
+      unwrap(commands.createWorkspaceBaseBranch(workspace, name, from)),
+    onSuccess: (workspace) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.branches(workspace.id) }),
+      ]),
+  });
+}
+
 /** Removes a workspace from Toodo with its tasks; the repository and herdr stay untouched. */
 export function useDeleteWorkspace() {
   const queryClient = useQueryClient();
@@ -231,9 +282,19 @@ export function useHerdrEvents() {
           queryClient.invalidateQueries({ queryKey: ["tasks"] }),
         ]),
       ),
-      events.agentStatusesChanged.listen(({ payload }) =>
-        queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses),
-      ),
+      events.agentStatusesChanged.listen(({ payload }) => {
+        const previous = queryClient.getQueryData<TaskAgentStatus[]>(queryKeys.agentStatuses);
+        queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses);
+        // Without a previous snapshot nothing is known to have changed. The app being
+        // in focus means the user already sees the new status on the task.
+        if (previous === undefined || document.hasFocus()) {
+          return;
+        }
+        const tasks = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+        notify(agentAlerts(previous, payload.statuses, tasks)).catch((error: unknown) =>
+          console.error("toodo: failed to show agent notifications", error),
+        );
+      }),
     ];
     return () => {
       for (const subscription of subscriptions) {
@@ -396,10 +457,42 @@ export function useRemoveDependency() {
   return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.removeDependency(id, dependsOn)));
 }
 
+/** Links GitHub issue `number` of the workspace repository to a task; `null` unlinks it. */
+export function useLinkIssue() {
+  return useTasksMutation(({ id, number }: { id: TaskId; number: number | null }) =>
+    unwrap(commands.linkIssue(id, number)),
+  );
+}
+
+/** Opens a GitHub issue from the title and description of a task and links it. */
+export function useCreateIssue() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.createIssue(id)));
+}
+
+/** The task was created, but its issue could not be linked. */
+export class IssueLinkFailure extends Error {
+  constructor(taskId: TaskId, issue: number, reason: string) {
+    super(`Task #${taskId} was added, but issue #${issue} could not be linked: ${reason}`);
+    this.name = "IssueLinkFailure";
+  }
+}
+
+/** Creates a task, then links issue `issue` to it when one is given. */
 export function useCreateTask() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (task: NewTask) => unwrap(commands.createTask(task)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    mutationFn: async ({ issue, ...task }: NewTask & { issue: number | null }) => {
+      const created = await unwrap(commands.createTask(task));
+      if (issue === null) {
+        return created;
+      }
+      try {
+        return await unwrap(commands.linkIssue(created.id, issue));
+      } catch (error) {
+        throw new IssueLinkFailure(created.id, issue, error instanceof Error ? error.message : String(error));
+      }
+    },
+    // A task whose issue could not be linked was still created.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
   });
 }

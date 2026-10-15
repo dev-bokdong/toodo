@@ -22,8 +22,18 @@ planned -----------------> in_progress ---------> in_review ---------> done (mer
 
 Whether a `planned` task can be started is not a state: it can be started once every
 task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**), and its dependencies can change while it
-is `planned`. The UI names a `planned` task that was worked on before "Paused" and
+is `planned` or `in_progress`. The UI names a `planned` task that was worked on before "Paused" and
 offers "Resume" instead of "Start".
+
+Work found while a task is in progress that the task needs before it can finish, such as
+fixes found while verifying it, becomes a **prerequisite** of that task, never a
+dependent: the task cannot finish before the fixes, so the fixes must not wait for it.
+Adding a prerequisite that is not done to an `in_progress` task, in the app or by an agent
+through MCP, pauses the task in the same step and closes its herdr workspace; the worktree
+and branch stay. When the task's agent is working or waiting for input, the app asks for
+confirmation first ("Pause and add"), since closing the workspace stops the agent. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
+until those prerequisites are done; resuming opens the kept worktree in herdr again. If
+herdr fails to close the workspace, the task stays paused and the error says so.
 
 Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
 keeps its branch, worktree, herdr workspace, commit records, and pull request, so
@@ -52,7 +62,11 @@ where the user answers herdr's setup prompts.
 
 Git runs locally as `git.exe` and remotely as `ssh.exe <machine> git ...`. The default
 base branch is the one the user enters, or else the branch `origin/HEAD` points to, or
-else the checked-out branch. Deleting a workspace never deletes its repository, and is
+else the checked-out branch. It can be changed later by picking one of the repository's
+branches (local and `origin` branches, listed after `git fetch --prune origin`) or by
+creating a new branch from one of them (`git branch --no-track <name> <start>`, then
+`git push --set-upstream origin <name>`); both are rejected while a task of the workspace
+is `in_review`. Deleting a workspace never deletes its repository, and is
 rejected while a not-yet-started task of another workspace depends on one of its tasks.
 
 ### 2. Plan tasks
@@ -63,6 +77,16 @@ dependency that would create a cycle and shows which tasks are ready. The creati
 time is recorded as the task's `plannedAt`. The sidebar's "All workspaces" entry lists
 the tasks of every workspace on one timeline (its default view, which can be narrowed to
 one workspace) and in one list.
+
+A task of any type that is not `done` can be linked to a GitHub issue of its workspace
+repository (the repository of the `origin` remote): an existing one by number, checked
+with `gh issue view <number> --repo <repo>`, entered when the task is created or later,
+or a new one that Toodo opens from the task title and description
+(`gh issue create --repo <repo>`). Toodo does not open issues on its own: a task is
+already the record of its work, so an issue is only worth it when others track it on
+GitHub. The pull request of a task with an issue closes the issue on merge, because
+Toodo keeps a closing reference (`Closes #<number>`) in its body (steps 6 and 7).
+Unlinking an issue leaves an existing pull request body as it is.
 
 ### 3. Prepare the worktree
 
@@ -140,8 +164,11 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    `ssh.exe` for remote workspaces), then reuses the open pull request, or, when there
    is none or the last one was closed, opens one with
    `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
-   title and described with the task description. `gh` always runs on this machine, so
-   SSH machines do not need it.
+   title and described with the task description, followed by `Closes #<number>` when
+   the task has an issue. A reused open pull request whose body has no closing reference
+   to the issue (`close`, `fix`, or `resolve` in any form, then `#<number>`) gets one
+   appended (`gh pr edit <url> --body`). `gh` always runs on this machine, so SSH
+   machines do not need it.
 5. In one transaction, stores the commit records and the pull request URL (and, for a
    merged one, its `mergedAt` as `pullRequestMergedAt`) and moves the task to
    `in_review`, which records `reviewAt`. Dependent tasks keep waiting: their worktrees start from the base
@@ -175,8 +202,10 @@ pauses the task.
 
 The user rarely needs to complete a task by hand: while the app runs, Toodo checks the
 pull request of every `in_review` task once a minute and completes each task whose pull
-request was merged, in the same way and with the same checks. Open and closed pull
-requests are left alone. A failed check (e.g. `gh` is not signed in, or a herdr failure)
+request was merged, in the same way and with the same checks. Closed pull requests are
+left alone; an open one only gets the closing reference to the task's issue if its body
+lacks it, so a pull request an agent opened in herdr closes the issue too. Linking an
+issue to a task whose pull request is open adds the reference right away. A failed check (e.g. `gh` is not signed in, or a herdr failure)
 keeps the task `in_review` and is logged once until it changes; the next check tries
 again. The task list refreshes when a task is completed this way.
 

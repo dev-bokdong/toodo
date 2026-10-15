@@ -18,6 +18,10 @@ into a performance report.
 - **Commit tracking**: record the commits (SHA, message, author, time) made for a task.
 - **Completion and PR**: a task's branch is pushed and a pull request opened for it;
   once that pull request is merged on GitHub, Toodo completes the task automatically.
+- **Agent planning (MCP)**: while Toodo runs, coding agents can list tasks, create
+  tasks, and connect dependencies through its local MCP server; copy the client config
+  from the sidebar's Agent access panel. Agents on SSH machines use the same config,
+  through a reverse SSH tunnel Toodo keeps open to each machine with a workspace.
 - **Timeline**: every status change is timestamped; the dependency graph is drawn on a
   time axis showing when each task was planned, started, reviewed, and completed.
 

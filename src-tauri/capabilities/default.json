@@ -8,6 +8,9 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "notification:default",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
   ]
 }

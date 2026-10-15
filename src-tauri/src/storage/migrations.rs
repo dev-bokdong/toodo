@@ -184,6 +184,13 @@ pub(super) const MIGRATIONS: &[&str] = &[
     ALTER TABLE tasks_new RENAME TO tasks;
     CREATE INDEX tasks_workspace_id ON tasks (workspace_id);
     ",
+    // Version 7: the GitHub issue a task works on, whose closing reference Toodo keeps in
+    // the task's pull request. Existing tasks have none.
+    r"
+    ALTER TABLE tasks ADD COLUMN issue_number INTEGER CHECK (issue_number > 0);
+    ALTER TABLE tasks ADD COLUMN issue_url TEXT
+        CHECK ((issue_url IS NULL) = (issue_number IS NULL));
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -441,6 +448,48 @@ mod tests {
         .unwrap();
         conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
         assert_eq!(snapshots(&conn), 0);
+    }
+
+    #[test]
+    fn version_7_links_no_issue_to_existing_tasks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'fix', 'A', 'planned');
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let issue: (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT issue_number, issue_url FROM tasks WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(issue, (None, None));
+        conn.execute(
+            "UPDATE tasks SET issue_number = 12, issue_url = 'https://github.com/acme/toodo/issues/12'
+             WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        for invalid in [
+            "UPDATE tasks SET issue_url = NULL WHERE id = 1",
+            "UPDATE tasks SET issue_number = NULL WHERE id = 1",
+            "UPDATE tasks SET issue_number = 0 WHERE id = 1",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
     }
 
     #[test]

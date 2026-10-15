@@ -2,6 +2,7 @@
 
 pub mod backup;
 pub mod dag;
+pub mod issue;
 pub mod model;
 pub mod naming;
 pub mod path;

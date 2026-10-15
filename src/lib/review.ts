@@ -2,6 +2,7 @@ import type {
   PullRequestSnapshot,
   ReviewEntry,
   ReviewOutcome,
+  Task,
   TaskResolution,
   TaskType,
   Timestamp,
@@ -303,6 +304,98 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
   };
 }
 
+/** Merged pull requests of completed tasks with their size and reviews, summed. */
+export interface PullRequestTotals extends ChangeStat {
+  /** Submitted reviews by anyone but the author, over all pull requests. */
+  reviews: number;
+  /** Pull requests with at least one such review. */
+  reviewed: number;
+}
+
+/** A completed research (`rnd`) task and whether its result was adopted. */
+export interface ResearchConclusion {
+  task: Task;
+  at: Timestamp;
+  adopted: boolean;
+}
+
+/** The highlights of a year: merged pull request snapshots and research conclusions. */
+export interface YearInReview {
+  /** `null` when no completed task recorded a pull request snapshot. */
+  pullRequests: PullRequestTotals | null;
+  /** The merged pull requests with the most changed lines, largest first, at most three. */
+  largest: { task: Task; pullRequest: PullRequestSnapshot }[];
+  /** Completed research tasks, oldest first. */
+  research: ResearchConclusion[];
+}
+
+const largestPullRequests = 3;
+
+/**
+ * Pull request snapshots and research conclusions of the tasks completed in `entries`;
+ * `null` when there is neither.
+ */
+export function yearInReview(entries: ReviewEntry[]): YearInReview | null {
+  const completed = entries.filter((entry) => entry.outcome === "completed");
+  const merged = completed.flatMap(({ task }) => (task.pullRequest ? [{ task, pullRequest: task.pullRequest }] : []));
+  const research = completed
+    .filter(({ task }) => task.taskType === "rnd")
+    .map(({ task, at }) => ({ task, at, adopted: task.resolution !== "not_adopted" }))
+    .sort((a, b) => a.at - b.at || a.task.id - b.task.id);
+  if (merged.length === 0 && research.length === 0) return null;
+  const size = ({ pullRequest }: (typeof merged)[number]) => pullRequest.additions + pullRequest.deletions;
+  return {
+    pullRequests:
+      merged.length === 0
+        ? null
+        : merged.reduce(
+            (total, { pullRequest }) => ({
+              pullRequests: total.pullRequests + 1,
+              additions: total.additions + pullRequest.additions,
+              deletions: total.deletions + pullRequest.deletions,
+              changedFiles: total.changedFiles + pullRequest.changedFiles,
+              reviews: total.reviews + pullRequest.reviewCount,
+              reviewed: total.reviewed + (pullRequest.reviewCount > 0 ? 1 : 0),
+            }),
+            { pullRequests: 0, additions: 0, deletions: 0, changedFiles: 0, reviews: 0, reviewed: 0 },
+          ),
+    largest: [...merged]
+      .sort((a, b) => size(b) - size(a) || a.task.id - b.task.id)
+      .slice(0, largestPullRequests),
+    research,
+  };
+}
+
+/** Reviews of merged pull requests, e.g. `5 reviews on 3 of 4 pull requests`. */
+export function formatReviews(totals: PullRequestTotals): string {
+  return `${plural(totals.reviews, "review")} on ${totals.reviewed} of ${plural(totals.pullRequests, "pull request")}`;
+}
+
+function yearInReviewMarkdown(year: YearInReview): string[] {
+  const lines = ["## Year in review", ""];
+  if (year.pullRequests) {
+    lines.push(
+      `- Merged pull requests: ${formatChanges(year.pullRequests)}`,
+      `- Reviews: ${formatReviews(year.pullRequests)}`,
+    );
+  }
+  if (year.largest.length > 0) {
+    lines.push("- Largest pull requests:");
+    for (const { task, pullRequest } of year.largest) {
+      lines.push(`  - [${task.taskType}] ${task.title} (${pullRequestStats(pullRequest)})`);
+    }
+  }
+  if (year.research.length > 0) {
+    lines.push("- Research conclusions:");
+    for (const { task, adopted } of year.research) {
+      const conclusion = task.completionNote ? `: ${oneLine(task.completionNote)}` : "";
+      lines.push(`  - ${task.title} (${adopted ? "adopted" : "not adopted"})${conclusion}`);
+    }
+  }
+  lines.push("");
+  return lines;
+}
+
 /** The summed size of merged pull requests, e.g. `+120/-30 in 9 files (3 pull requests)`. */
 export function formatChanges(changes: ChangeStat): string {
   return `+${changes.additions}/-${changes.deletions} in ${plural(changes.changedFiles, "file")} (${plural(
@@ -378,6 +471,8 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
     lines.push(`- ${durationLabels[key]}: ${formatStat(summary[key])}`);
   }
   lines.push("");
+  const year = period.kind === "year" ? yearInReview(entries) : null;
+  if (year) lines.push(...yearInReviewMarkdown(year));
   if (summary.completedPerMonth) {
     lines.push("| Month | Completed |", "| --- | --- |");
     for (const { month, count } of summary.completedPerMonth) lines.push(`| ${month} | ${count} |`);
@@ -389,6 +484,7 @@ export function reviewMarkdown(period: ReviewPeriod, entries: ReviewEntry[], wor
       const notAdopted = task.resolution === "not_adopted";
       const details = [names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`, formatDate(at)];
       if (notAdopted) details.push("not adopted");
+      if (task.issue) details.push(task.issue.url);
       if (task.pullRequestUrl) details.push(task.pullRequestUrl);
       if (task.pullRequest) details.push(pullRequestStats(task.pullRequest));
       lines.push(`- [${task.taskType}] ${task.title} (${details.join(", ")})`);
@@ -430,6 +526,7 @@ const csvColumns = [
   "Completed",
   "Merged",
   "Pull request",
+  "Issue",
   "Commits in period",
   "Active hours",
   "Additions",
@@ -461,6 +558,7 @@ export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: 
     time(task.milestones.completedAt),
     time(task.pullRequestMergedAt),
     task.pullRequestUrl,
+    task.issue?.url ?? null,
     commits.length,
     activeHours(activeSeconds(task.timeline, now)),
     task.pullRequest?.additions ?? null,

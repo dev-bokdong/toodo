@@ -6,7 +6,9 @@ import {
   dependencyEdges,
   layoutTimeline,
   relatedTasks,
+  stopsRunningAgent,
   timelineAxis,
+  timelineEdgePath,
   timelineYears,
   yearPeriod,
 } from "@/lib/task-graph";
@@ -24,6 +26,7 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     worktreePath: null,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
+    issue: null,
     pullRequestMergedAt: null,
     pullRequest: null,
     resolution: null,
@@ -53,6 +56,16 @@ describe("dependencyEdges", () => {
     const tasks = [task(1), task(2, { dependsOn: [1, 9] })];
 
     expect(dependencyEdges(tasks)).toEqual([{ id: "1->2", source: 1, target: 2 }]);
+  });
+});
+
+describe("timelineEdgePath", () => {
+  it("runs along the gap above the target row toward a later dependent", () => {
+    expect(timelineEdgePath({ x: 100, y: 20 }, { x: 300, y: 60 }, 40)).toBe("M 100 20 H 108 V 40 H 292 V 60 H 300");
+  });
+
+  it("turns back for a dependent that started the moment its prerequisite finished", () => {
+    expect(timelineEdgePath({ x: 100, y: 20 }, { x: 100, y: 60 }, 40)).toBe("M 100 20 H 108 V 40 H 92 V 60 H 100");
   });
 });
 
@@ -87,6 +100,20 @@ describe("dependenciesDone", () => {
   });
 });
 
+describe("stopsRunningAgent", () => {
+  const started = task(2, { status: "in_progress" });
+
+  it("is true only for a task in progress whose agent works or waits and a prerequisite not done", () => {
+    expect(stopsRunningAgent(started, task(1), "working")).toBe(true);
+    expect(stopsRunningAgent(started, task(1), "blocked")).toBe(true);
+    expect(stopsRunningAgent(started, task(1, { status: "done", resolution: "not_adopted" }), "working")).toBe(true);
+    expect(stopsRunningAgent(started, task(1, { status: "done", resolution: "merged" }), "working")).toBe(false);
+    expect(stopsRunningAgent(started, task(1), "idle")).toBe(false);
+    expect(stopsRunningAgent(started, task(1), null)).toBe(false);
+    expect(stopsRunningAgent(task(3), task(1), "working")).toBe(false);
+  });
+});
+
 describe("canAddDependency", () => {
   const tasks = [
     task(1, { status: "done" }),
@@ -96,16 +123,16 @@ describe("canAddDependency", () => {
     task(5),
   ];
 
-  it("allows a new dependency for a planned task", () => {
+  it("allows a new dependency for a planned or in-progress task", () => {
     expect(canAddDependency(tasks, 3, 2)).toBe(true);
     expect(canAddDependency(tasks, 1, 5)).toBe(true);
+    expect(canAddDependency(tasks, 5, 3)).toBe(true);
   });
 
   it("rejects self, duplicate, and locked edges", () => {
     expect(canAddDependency(tasks, 5, 5)).toBe(false);
     expect(canAddDependency(tasks, 1, 2)).toBe(false);
     expect(canAddDependency(tasks, 5, 4)).toBe(false);
-    expect(canAddDependency(tasks, 5, 3)).toBe(false);
     expect(canAddDependency(tasks, 5, 42)).toBe(false);
   });
 });

@@ -14,6 +14,7 @@ import {
   startOfWeek,
   summarize,
   weekStarting,
+  yearInReview,
 } from "@/lib/review";
 
 afterEach(() => {
@@ -39,6 +40,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       worktreePath: null,
       herdrWorkspaceId: null,
       pullRequestUrl: null,
+      issue: null,
       pullRequestMergedAt: null,
       pullRequest: null,
       resolution: null,
@@ -408,12 +410,96 @@ describe("reviewMarkdown", () => {
   });
 });
 
+describe("yearInReview", () => {
+  const at = local(2026, 6, 1);
+  const sized = (number: number, additions: number, reviewCount: number) => ({
+    ...snapshot(number),
+    additions,
+    deletions: 10,
+    changedFiles: 2,
+    reviewCount,
+  });
+
+  it("sums pull request snapshots and ranks the largest of completed tasks only", () => {
+    const entries = [
+      completed(1, at, {}, { pullRequest: sized(11, 50, 2) }),
+      completed(2, at, {}, { pullRequest: sized(12, 500, 0) }),
+      completed(3, at, {}, { pullRequest: sized(13, 90, 1) }),
+      completed(4, at, {}, { pullRequest: sized(14, 5, 3) }),
+      entry(5, "opened_for_review", { pullRequest: sized(15, 9000, 9) }),
+    ];
+
+    const year = yearInReview(entries);
+
+    expect(year?.pullRequests).toEqual({
+      pullRequests: 4,
+      additions: 645,
+      deletions: 40,
+      changedFiles: 8,
+      reviews: 6,
+      reviewed: 3,
+    });
+    expect(year?.largest.map(({ pullRequest }) => pullRequest.number)).toEqual([12, 13, 11]);
+    expect(year?.research).toEqual([]);
+  });
+
+  it("lists completed research tasks, oldest first, with whether they were adopted", () => {
+    const entries = [
+      completed(1, local(2026, 9, 1), {}, { taskType: "rnd", resolution: "not_adopted", completionNote: "Too slow" }),
+      completed(2, local(2026, 3, 1), {}, { taskType: "rnd", resolution: "merged" }),
+      completed(3, at, {}, { resolution: "not_adopted" }),
+      entry(4, "started", { taskType: "rnd" }),
+    ];
+
+    const year = yearInReview(entries);
+
+    expect(year?.pullRequests).toBeNull();
+    expect(year?.research.map(({ task, adopted }) => [task.id, adopted])).toEqual([
+      [2, true],
+      [1, false],
+    ]);
+    expect(yearInReview([entry(1, "started"), completed(2, at, {})])).toBeNull();
+  });
+
+  it("adds a Year in review section to the Markdown of a year only", () => {
+    const entries = [
+      completed(1, at, {}, { pullRequest: sized(11, 50, 2), title: "Add login" }),
+      completed(2, at, {}, {
+        taskType: "rnd",
+        resolution: "not_adopted",
+        title: "Try a cache",
+        completionNote: "Twice as slow\nas before",
+      }),
+    ];
+
+    const markdown = reviewMarkdown(periodContaining("year", "2026-06-01"), entries, [toodo]);
+
+    expect(markdown).toContain(
+      [
+        "## Year in review",
+        "",
+        "- Merged pull requests: +50/-10 in 2 files (1 pull request)",
+        "- Reviews: 2 reviews on 1 of 1 pull request",
+        "- Largest pull requests:",
+        "  - [feat] Add login (#11, +50/-10 in 2 files, 2 reviews)",
+        "- Research conclusions:",
+        "  - Try a cache (not adopted): Twice as slow as before",
+        "",
+      ].join("\n"),
+    );
+    expect(reviewMarkdown(periodContaining("quarter", "2026-06-01"), entries, [toodo])).not.toContain(
+      "Year in review",
+    );
+  });
+});
+
 describe("reviewCsv", () => {
   it("writes one row per task with local times and quotes fields that need it", () => {
     const at = local(2026, 10, 13, 15);
     const done = completed(7, at, { plannedAt: local(2026, 10, 1, 9) }, {
       title: 'Fix "login", then\nlogout',
       pullRequestUrl: "https://github.com/acme/toodo/pull/3",
+      issue: { number: 12, url: "https://github.com/acme/toodo/issues/12" },
       pullRequestMergedAt: at - hour,
       pullRequest: snapshot(3),
       completionNote: "Cut login time\n  in half, finally",
@@ -434,9 +520,9 @@ describe("reviewCsv", () => {
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
-          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0,3,120,30,4,2,"Cut login time in half, finally"',
-          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,0,0.5,,,,,",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
+          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,120,30,4,2,"Cut login time in half, finally"',
+          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,,0,0.5,,,,,",
         ].join("\r\n") +
         "\r\n",
     );

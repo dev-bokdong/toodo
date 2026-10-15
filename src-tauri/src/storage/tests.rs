@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, Machine, MachineLabel, MachineSettings, Task, TaskType, Workspace,
-    WorkspaceLocation,
+    CommitRecord, HostPath, LinkedIssue, Machine, MachineLabel, MachineSettings, Task, TaskType,
+    Workspace, WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
@@ -442,6 +442,79 @@ fn a_paused_task_keeps_its_work_and_starts_again_once_its_dependencies_are_done(
             (InProgress, 500)
         ]
     );
+}
+
+#[test]
+fn a_prerequisite_that_is_not_done_pauses_a_task_in_progress() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    let docs = add_task(&mut storage, &workspace, "Docs");
+    set_now(&now, 200);
+    storage.set_task_status(a.id, InProgress).unwrap();
+    let mut started = storage.get_task(a.id).unwrap().unwrap();
+    started.branch = Some("feat/a-1".to_owned());
+    started.herdr_workspace_id = Some("w1".to_owned());
+    storage.update_task(&started).unwrap();
+
+    set_now(&now, 300);
+    let added = storage.add_dependencies(a.id, &[fix.id, docs.id]).unwrap();
+
+    assert!(added.paused);
+    assert_eq!(added.task.status, Planned);
+    assert_eq!(added.task.depends_on, [fix.id, docs.id].into());
+    assert_eq!(added.task.branch.as_deref(), Some("feat/a-1"));
+    assert_eq!(added.task.herdr_workspace_id.as_deref(), Some("w1"));
+    assert_eq!(
+        timeline(&storage, &a),
+        [(Planned, 100), (InProgress, 200), (Planned, 300)]
+    );
+    let cleared = storage.clear_task_herdr_workspace(a.id).unwrap();
+    assert_eq!(cleared.herdr_workspace_id, None);
+    assert_eq!(cleared.branch.as_deref(), Some("feat/a-1"));
+}
+
+#[test]
+fn a_done_prerequisite_or_a_task_in_review_is_not_paused() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let base = add_task(&mut storage, &workspace, "Base");
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    for task in [&base, &a, &b] {
+        storage.set_task_status(task.id, InProgress).unwrap();
+    }
+    storage.set_task_status(base.id, InReview).unwrap();
+    storage.set_task_status(base.id, Done).unwrap();
+    storage.set_task_status(b.id, InReview).unwrap();
+
+    let added = storage.add_dependencies(a.id, &[base.id]).unwrap();
+    assert!(!added.paused);
+    assert_eq!(added.task.status, InProgress);
+    let added = storage.add_dependencies(b.id, &[fix.id]).unwrap();
+    assert!(!added.paused);
+    assert_eq!(added.task.status, InReview);
+}
+
+#[test]
+fn one_rejected_prerequisite_adds_none_and_keeps_the_task_in_progress() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    let follow_up = add_task(&mut storage, &workspace, "Follow-up");
+    storage.add_dependency(follow_up.id, a.id).unwrap();
+    storage.set_task_status(a.id, InProgress).unwrap();
+
+    assert!(matches!(
+        storage.add_dependencies(a.id, &[fix.id, follow_up.id]),
+        Err(StorageError::Dependency(dag::DependencyError::Cycle(_)))
+    ));
+    let a = storage.get_task(a.id).unwrap().unwrap();
+    assert_eq!(a.status, InProgress);
+    assert!(a.depends_on.is_empty());
 }
 
 #[test]
@@ -994,4 +1067,27 @@ fn base_branch_cannot_change_while_a_task_is_in_review() {
     storage.complete_task(task.id, Some(1), None, &[]).unwrap();
     workspace.default_base_branch = "main".to_owned();
     storage.update_workspace(&workspace).unwrap();
+}
+
+#[test]
+fn a_linked_issue_is_stored_with_the_task_until_it_is_unlinked() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let task = add_task(&mut storage, &workspace, "Fix login");
+    assert_eq!(task.issue, None);
+    let issue = LinkedIssue {
+        number: 12,
+        url: "https://github.com/acme/toodo/issues/12".to_owned(),
+    };
+
+    let linked = storage.set_task_issue(task.id, Some(&issue)).unwrap();
+    assert_eq!(linked.issue.as_ref(), Some(&issue));
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), linked);
+
+    let unlinked = storage.set_task_issue(task.id, None).unwrap();
+    assert_eq!(unlinked.issue, None);
+    assert!(matches!(
+        storage.set_task_issue(TaskId(999), Some(&issue)),
+        Err(StorageError::TaskNotFound(TaskId(999)))
+    ));
 }

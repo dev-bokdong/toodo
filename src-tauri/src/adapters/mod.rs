@@ -6,3 +6,4 @@ pub mod github;
 pub mod herdr;
 pub mod herdr_events;
 pub mod ssh;
+pub mod ssh_tunnel;

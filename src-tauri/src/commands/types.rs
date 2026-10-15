@@ -1,23 +1,24 @@
 //! Serializable shapes of the domain model exchanged with the frontend. Inputs are
 //! validated when they are converted into domain types.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
-use crate::adapters::{herdr, ssh};
+use crate::adapters::{git, herdr, ssh};
 use crate::domain::{backup, model, path, review, ssh_config, status, timeline};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
 // instead of the `bigint` specta requires for `i64` by default.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(transparent)]
 pub struct WorkspaceId(#[specta(type = Number)] pub i64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(transparent)]
 pub struct TaskId(#[specta(type = Number)] pub i64);
 
@@ -310,6 +311,25 @@ impl From<&herdr::SavedMachine> for HerdrMachine {
     }
 }
 
+/// Branches of a workspace repository a base branch can be picked from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchList {
+    /// Local and `origin` branch names, sorted, without `origin/` prefixes.
+    pub names: Vec<String>,
+    /// Why fetching `origin` failed; the names are then the ones known locally.
+    pub fetch_error: Option<String>,
+}
+
+impl From<git::BranchList> for BranchList {
+    fn from(list: git::BranchList) -> Self {
+        Self {
+            names: list.names,
+            fetch_error: list.fetch_error,
+        }
+    }
+}
+
 /// Subdirectories of a directory on a remote machine, for the folder browser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -328,7 +348,7 @@ impl From<&ssh::RemoteDirectory> for RemoteDirectory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskType {
     Feat,
@@ -439,6 +459,8 @@ pub struct Task {
     pub worktree_path: Option<String>,
     pub herdr_workspace_id: Option<String>,
     pub pull_request_url: Option<String>,
+    /// The GitHub issue this task works on; its pull request closes it on merge.
+    pub issue: Option<LinkedIssue>,
     /// Merge time of the pull request reported by GitHub.
     pub pull_request_merged_at: Option<Timestamp>,
     /// The pull request as GitHub reported it when its merge completed the task; `null`
@@ -451,6 +473,24 @@ pub struct Task {
     /// recorded it.
     pub timeline: Vec<TaskEvent>,
     pub milestones: TaskMilestones,
+}
+
+/// A GitHub issue of the workspace repository linked to a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedIssue {
+    #[specta(type = Number)]
+    pub number: i64,
+    pub url: String,
+}
+
+impl From<&model::LinkedIssue> for LinkedIssue {
+    fn from(issue: &model::LinkedIssue) -> Self {
+        Self {
+            number: issue.number,
+            url: issue.url.clone(),
+        }
+    }
 }
 
 /// A merged pull request as GitHub reported it when it completed its task.
@@ -540,6 +580,7 @@ impl From<&model::Task> for Task {
             worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
+            issue: task.issue.as_ref().map(LinkedIssue::from),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
             pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
             completion_note: task.completion_note.clone(),
@@ -763,7 +804,7 @@ impl From<&storage::BackupFile> for BackupEntry {
     }
 }
 
-pub(super) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
+pub(crate) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
     items.iter().map(U::from).collect()
 }
 

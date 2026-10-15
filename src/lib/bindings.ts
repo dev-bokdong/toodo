@@ -16,6 +16,17 @@ export const commands = {
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("create_workspace", { workspace })),
 	/**  Saves the name, location, and default base branch of an existing workspace. */
 	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(__TAURI_INVOKE("update_workspace", { workspace })),
+	/**
+	 *  Branches of the workspace repository to pick a base branch from: local and `origin`
+	 *  branches after fetching `origin`. Git may run over `ssh`, so this runs off the main
+	 *  thread.
+	 */
+	listWorkspaceBranches: (id: WorkspaceId) => typedError<BranchList, CommandError>(__TAURI_INVOKE("list_workspace_branches", { id })),
+	/**
+	 *  Creates branch `name` from the existing branch `from` in the workspace repository,
+	 *  pushes it to `origin`, and makes it the default base branch of the workspace.
+	 */
+	createWorkspaceBaseBranch: (id: WorkspaceId, name: string, from: string) => typedError<Workspace, CommandError>(__TAURI_INVOKE("create_workspace_base_branch", { id, name, from })),
 	/**  Deletes a workspace together with its tasks, dependencies, and commit records. */
 	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(__TAURI_INVOKE("delete_workspace", { id })),
 	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(__TAURI_INVOKE("get_machine_settings", { machine })),
@@ -67,7 +78,8 @@ export const commands = {
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("delete_task", { id, force })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
-	 *  self and cyclic edges.
+	 *  self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
+	 *  paused and its herdr workspace closed.
 	 */
 	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("add_dependency", { taskId, dependsOn })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("remove_dependency", { taskId, dependsOn })),
@@ -114,7 +126,21 @@ export const commands = {
 	 *  closed. The branch and worktree stay, and its dependents keep waiting.
 	 */
 	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("conclude_task", { id, note })),
+	/**
+	 *  Links issue `number` of the workspace repository to a task that is not done, after
+	 *  checking that the issue exists; `null` unlinks the current issue. An open pull
+	 *  request of the task gets a closing reference to the issue.
+	 */
+	linkIssue: (id: TaskId, number: number | null) => typedError<Task, CommandError>(__TAURI_INVOKE("link_issue", { id, number })),
+	/**
+	 *  Opens an issue in the workspace repository with the title and description of a task
+	 *  that is not done and has no issue yet, and links it to the task. An open pull request
+	 *  of the task gets a closing reference to the issue.
+	 */
+	createIssue: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("create_issue", { id })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
+	mcpServerInfo: () => __TAURI_INVOKE<McpServerInfo>("mcp_server_info"),
+	listMcpTunnels: () => __TAURI_INVOKE<McpTunnel[]>("list_mcp_tunnels"),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
@@ -180,6 +206,14 @@ export type BackupSettings = {
 	keep: number,
 };
 
+/**  Branches of a workspace repository a base branch can be picked from. */
+export type BranchList = {
+	/**  Local and `origin` branch names, sorted, without `origin/` prefixes. */
+	names: string[],
+	/**  Why fetching `origin` failed; the names are then the ones known locally. */
+	fetchError: string | null,
+};
+
 export type CommandError = {
 	kind: CommandErrorKind,
 	message: string,
@@ -231,6 +265,12 @@ export type HerdrStatus = {
 	version: string | null,
 };
 
+/**  A GitHub issue of the workspace repository linked to a task. */
+export type LinkedIssue = {
+	number: number,
+	url: string,
+};
+
 export type Machine = { kind: "local" } | { kind: "ssh"; label: string };
 
 export type MachineSettings = {
@@ -241,6 +281,24 @@ export type MachineSettings = {
 	 */
 	worktreeRoot: string | null,
 };
+
+export type McpServerInfo = {
+	url: string,
+	/**  Bearer token agents send in the `Authorization` header. */
+	token: string | null,
+	/**  Why the server is not running, e.g. its port is taken. */
+	error: string | null,
+};
+
+/**  The reverse tunnel that lets agents on one SSH machine reach the MCP server. */
+export type McpTunnel = {
+	machine: string,
+	state: McpTunnelState,
+	/**  Why the last tunnel ended, until a new one is open. */
+	error: string | null,
+};
+
+export type McpTunnelState = "connecting" | "open" | "retrying";
 
 /**  A remote machine to append to the user's SSH config. */
 export type NewSshHost = {
@@ -320,6 +378,8 @@ export type Task = {
 	worktreePath: string | null,
 	herdrWorkspaceId: string | null,
 	pullRequestUrl: string | null,
+	/**  The GitHub issue this task works on; its pull request closes it on merge. */
+	issue: LinkedIssue | null,
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
 	/**

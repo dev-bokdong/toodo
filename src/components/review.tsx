@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { CompletionNote } from "@/components/task-list";
+import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
 import type { ReviewEntry, ReviewOutcome, Workspace } from "@/lib/bindings";
@@ -10,6 +12,7 @@ import {
   durationLabels,
   formatChanges,
   formatDuration,
+  formatReviews,
   groupByOutcome,
   outcomeLabels,
   periodBounds,
@@ -24,6 +27,7 @@ import {
   shiftPeriod,
   summarize,
   weekStarting,
+  yearInReview,
   type PeriodKind,
   type ReviewPeriod,
 } from "@/lib/review";
@@ -224,6 +228,7 @@ export function Review() {
       {review.data && review.data.length > 0 && (
         <ReviewSummaryPanel period={period} entries={review.data} workspaces={workspaces.data ?? []} />
       )}
+      {period.kind === "year" && review.data && <YearInReviewPanel entries={review.data} />}
       {review.data &&
         groupByOutcome(review.data).map((group) => (
           <section key={group.outcome} aria-label={outcomeLabels[group.outcome]} className="flex flex-col gap-2">
@@ -235,7 +240,7 @@ export function Review() {
               {group.entries.map(({ task, at, commits }) => (
                 <li key={task.id} className="flex flex-col gap-1 px-3 py-2">
                   <div className="flex items-center gap-2">
-                    <span className="rounded-md border px-1.5 text-xs font-medium">{task.taskType}</span>
+                    <TaskTypeBadge type={task.taskType} />
                     <span className="truncate text-sm font-medium">{task.title}</span>
                     {task.resolution === "not_adopted" && (
                       <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-200">
@@ -279,6 +284,89 @@ export function Review() {
   );
 }
 
+function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
+  const year = yearInReview(entries);
+  if (year === null) return null;
+  return (
+    <section aria-labelledby="year-in-review-heading" className="flex flex-col gap-3 rounded-lg border p-3">
+      <h3 id="year-in-review-heading" className="text-sm font-semibold">
+        Year in review
+      </h3>
+      {year.pullRequests && (
+        <dl className="flex flex-wrap gap-x-6 gap-y-2">
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Merged pull requests</dt>
+            <dd className="text-lg font-semibold">{year.pullRequests.pullRequests}</dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Lines changed</dt>
+            <dd className="text-lg font-semibold">
+              <span className="text-emerald-700 dark:text-emerald-300">+{year.pullRequests.additions}</span>
+              <span className="text-muted-foreground"> / </span>
+              <span className="text-rose-700 dark:text-rose-300">-{year.pullRequests.deletions}</span>
+            </dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Files changed</dt>
+            <dd className="text-lg font-semibold">{year.pullRequests.changedFiles}</dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-xs text-muted-foreground">Reviews</dt>
+            <dd className="text-lg font-semibold" title={formatReviews(year.pullRequests)}>
+              {year.pullRequests.reviews}
+              <span className="ml-1 text-xs font-normal text-muted-foreground">
+                on {year.pullRequests.reviewed} of {year.pullRequests.pullRequests}
+              </span>
+            </dd>
+          </div>
+        </dl>
+      )}
+      {year.largest.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">Largest pull requests</h4>
+          <ol aria-label="Largest pull requests" className="flex flex-col gap-1">
+            {year.largest.map(({ task, pullRequest }) => (
+              <li key={task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                <TaskTypeBadge type={task.taskType} />
+                <span className="truncate font-medium">{task.title}</span>
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">{pullRequestStats(pullRequest)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {year.research.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">Research conclusions</h4>
+          <ul aria-label="Research conclusions" className="flex flex-col divide-y rounded-md border">
+            {year.research.map(({ task, at, adopted }) => (
+              <li key={task.id} className="flex flex-col gap-1 px-2 py-1.5">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                  <span className="truncate font-medium">{task.title}</span>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
+                      adopted
+                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                        : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200",
+                    )}
+                  >
+                    {adopted ? "Adopted" : "Not adopted"}
+                  </span>
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{formatDate(at)}</span>
+                </div>
+                <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line text-xs">
+                  {task.completionNote ?? <span className="text-muted-foreground">No conclusion written.</span>}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ReviewSummaryPanel({
   period,
   entries,
@@ -289,6 +377,8 @@ function ReviewSummaryPanel({
   workspaces: Workspace[];
 }) {
   const summary = summarize(period, entries, workspaces);
+  const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
+  const withoutNote = entries.filter(({ outcome, task }) => outcome === "completed" && task.completionNote === null);
   const busiestMonth = Math.max(1, ...(summary.completedPerMonth ?? []).map(({ count }) => count));
   return (
     <section aria-label="Summary" className="flex flex-col gap-3 rounded-lg border p-3">
@@ -310,13 +400,30 @@ function ReviewSummaryPanel({
           <dd className="text-lg font-semibold">{summary.commits}</dd>
         </div>
       </dl>
-      {summary.withoutNote > 0 && (
-        <p role="status" className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          {summary.withoutNote === 1
-            ? "1 completed task has no completion note."
-            : `${summary.withoutNote} completed tasks have no completion note.`}{" "}
-          Add notes in the task list so the report says what the work achieved.
-        </p>
+      {withoutNote.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-md bg-amber-100 px-2 py-1.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          <p role="status">
+            {withoutNote.length === 1
+              ? "1 completed task has no completion note."
+              : `${withoutNote.length} completed tasks have no completion note.`}{" "}
+            Add a note to each so the report says what the work achieved.
+          </p>
+          <ul aria-label="Completed tasks without a note" className="flex flex-col gap-1.5">
+            {withoutNote.map(({ task }) => (
+              <li key={task.id} className="flex flex-col gap-1 rounded-md bg-background px-2 py-1.5 text-foreground">
+                <div className="flex min-w-0 items-center gap-2">
+                  <TaskTypeBadge type={task.taskType} />
+                  <span className="shrink-0 text-muted-foreground">#{task.id}</span>
+                  <span className="truncate text-sm font-medium">{task.title}</span>
+                  <span className="ml-auto shrink-0 text-muted-foreground">
+                    {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`}
+                  </span>
+                </div>
+                <CompletionNote task={task} />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         {durationKeys.map((key) => {

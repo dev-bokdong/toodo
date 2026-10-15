@@ -99,6 +99,7 @@ A unit of work inside a workspace.
 | `worktreePath` | Directory of the task's worktree. |
 | `herdrWorkspaceId` | herdr workspace bound to the worktree, if any. |
 | `pullRequestUrl` | Set when the PR is opened, as the task moves to `in_review`. |
+| `issue` | GitHub issue of the workspace repository the task works on (number and URL), or `null`. Its pull request closes it on merge; see [workflow.md](workflow.md#2-plan-tasks). |
 | `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
 | `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
 | `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
@@ -150,6 +151,10 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   being worked on or done are dropped with the workspace.
 - Dependents of a task can be planned at any time but only started (or resumed) once
   ready.
+- Dependencies change while a task is `planned` or `in_progress`. A new prerequisite that
+  is not done pauses an `in_progress` task in the same transaction (back to `planned`,
+  with a status event) and its herdr workspace is closed afterwards, keeping the worktree
+  (see [workflow.md](workflow.md#task-states)).
 - A topological order of the DAG is the suggested execution order.
 
 ### CommitRecord
@@ -250,6 +255,11 @@ generated or guessed by an agent.
   says how many completed tasks have no completion note yet, and how many completed
   tasks were concluded without merging (not adopted); the Markdown report marks those
   tasks "not adopted" and lists their conclusion.
+- A year review adds a "Year in review" section, also in its Markdown report, from the
+  tasks completed in the year: their merged pull request snapshots summed (pull
+  requests, lines added and deleted, changed files, and reviews with how many pull
+  requests got one), the three largest pull requests by changed lines, and every
+  completed `rnd` task with whether it was adopted and its conclusion.
 - The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
   task with its milestones as local times, its resolution (`Merged` or `Not adopted`), its
   active hours so far, the size and review count of its pull request, and its completion
@@ -346,11 +356,48 @@ Toodo owns planning, task state, commit records, and pull requests.
   - `herdr agent list|get|prompt|wait|read`: drive and observe agents in panes.
   - `herdr machine list|status|add`: saved SSH machines for remote workspaces.
   - `herdr api schema` / `herdr api snapshot`: API schema and live runtime state.
-- **Git hosting adapter**: opens pull requests with the `gh` CLI, reusing its
+- **Git hosting adapter**: opens pull requests and reads or opens issues with the `gh` CLI, reusing its
   authentication (`src-tauri/src/adapters/github.rs`). `gh` runs on this machine and
   names the repository with `--repo <host>/<owner>/<name>`, derived from the `origin`
   remote URL, so it needs no local checkout. The task branch is pushed by the workspace
   adapter, on the machine that holds the worktree.
+- **MCP server** (`src-tauri/src/mcp/`): lets coding agents plan in Toodo while the app
+  runs, so an agent can split its work into follow-up tasks and connect them.
+  - Served by the app itself (rmcp, Streamable HTTP, stateless JSON responses) on
+    `http://127.0.0.1:47615/mcp`, loopback only. Embedding it shares the database lock
+    with the Tauri commands and emits `TasksChanged`, so the UI refreshes like after any
+    command; a separate process would need its own SQLite locking and change
+    notifications.
+  - Every request needs `Authorization: Bearer <token>`. The token is 32 random bytes,
+    hex encoded, created once in `mcp-token` in the app data directory. rmcp also
+    rejects non-loopback `Host` headers against DNS rebinding.
+  - Tools: `list_workspaces`, `list_tasks`, `current_task` (the task whose worktree
+    contains a given directory), `create_task` (with optional `depends_on`; unknown
+    prerequisites create nothing), `update_task`, `add_dependency` (several
+    prerequisites in one call; it pauses an `in_progress` task they block and closes its
+    herdr workspace, like the app), and `remove_dependency`. They reuse the storage
+    rules, so cycles are rejected. The server instructions tell agents that work their
+    task needs before it can finish is a prerequisite of their task, added last. Tool
+    failures come back as tool errors whose text the agent sees.
+  - Starting, completing, concluding, and deleting tasks are not exposed; they touch
+    worktrees, herdr, and pull requests and stay in the app.
+  - If the port is taken, the app runs without the server and the sidebar's Agent
+    access panel shows why. That panel copies an MCP client config with the URL and
+    token (`mcp_server_info`).
+  - Agents on SSH machines reach the server through reverse tunnels
+    (`src-tauri/src/mcp/tunnels.rs`): while the server runs, Toodo keeps one
+    `ssh -v -N -R 127.0.0.1:47615:127.0.0.1:47615 -- <host>` per machine with an SSH
+    workspace (`BatchMode`, `ExitOnForwardFailure`, `ServerAliveInterval=15`,
+    `ControlPath=none` so the forward never outlives the process in a shared master
+    connection). Agents there use the same URL and token as local ones.
+  - A tunnel counts as open once ssh logs `remote forward success`. One that ends,
+    e.g. because the remote port is taken by another Toodo, is opened again after
+    1 s, doubling up to 60 s; the delay resets once a tunnel opens. Tunnels of
+    machines without workspaces are stopped, and all of them when the app exits. The
+    Agent access panel lists each machine's tunnel state and last error
+    (`list_mcp_tunnels`).
+  - The forwarded port listens on the remote loopback only, so other users of that
+    machine can reach it; the bearer token keeps them out.
 - **Storage**: SQLite database `toodo.sqlite3` in the app data directory (`%APPDATA%`)
   for workspaces, machine settings, tasks, dependencies, and commit records
   (`src-tauri/src/storage/`).
@@ -404,5 +451,6 @@ Out of the first scope; revisit when needed.
 - A herdr plugin for in-herdr actions such as "complete task"; herdr plugins are in
   preview on Windows.
 - Native WSL repository support.
+- Rotating the MCP access token from the UI.
 - Correcting timeline timestamps by hand, for example to enter work done before the task
   was created in Toodo.
