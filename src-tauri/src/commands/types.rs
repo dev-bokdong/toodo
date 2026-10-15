@@ -330,6 +330,44 @@ impl From<git::BranchList> for BranchList {
     }
 }
 
+/// How far an `in_progress` or `in_review` task's branch has fallen behind its base
+/// branch, e.g. after a prerequisite was merged into the base.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchFreshness {
+    /// The revision counted against: `origin/<base>` when it exists, else `<base>`.
+    pub base: String,
+    /// Commits on the base that the branch does not contain.
+    pub behind: u32,
+    /// Why fetching `origin` failed; `behind` is then against the last fetched base.
+    pub fetch_error: Option<String>,
+    /// Whether the task's pull request merges without conflicts; `None` without a pull
+    /// request or when it could not be read.
+    pub mergeable: Option<MergeState>,
+    /// Why the pull request could not be read.
+    pub mergeable_error: Option<String>,
+}
+
+/// Whether GitHub can merge a pull request into its base without conflicts; `unknown`
+/// until GitHub has computed it, and for a pull request that is no longer open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeState {
+    Mergeable,
+    Conflicting,
+    Unknown,
+}
+
+impl From<github::MergeState> for MergeState {
+    fn from(mergeable: github::MergeState) -> Self {
+        match mergeable {
+            github::MergeState::Mergeable => Self::Mergeable,
+            github::MergeState::Conflicting => Self::Conflicting,
+            github::MergeState::Unknown => Self::Unknown,
+        }
+    }
+}
+
 /// Subdirectories of a directory on a remote machine, for the folder browser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
