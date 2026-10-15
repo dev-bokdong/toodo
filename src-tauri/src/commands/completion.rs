@@ -30,6 +30,7 @@ use super::{CommandError, CommandResult, GitHubState, GitState, HerdrState, Stor
 use crate::adapters::git::Git;
 use crate::adapters::github::{GitHub, NewPullRequest, PullRequest, PullRequestState};
 use crate::adapters::herdr::Herdr;
+use crate::domain::issue::{closes_issue, with_closing_reference};
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
 use crate::domain::status::TaskStatus;
@@ -209,17 +210,43 @@ fn open(
         )));
     }
     git.push_branch(&checkout.location, &checkout.worktree, &checkout.branch)?;
+    let issue = checkout.task.issue.as_ref();
     let pull_request_url = match existing {
-        Some(pull_request) => pull_request.url,
-        None => github.create_pull_request(&NewPullRequest {
-            repository: &repository,
-            head: &checkout.branch,
-            base: &checkout.base,
-            title: &checkout.task.title,
-            body: &checkout.task.description,
-        })?,
+        Some(pull_request) => {
+            if let Some(issue) = issue {
+                ensure_closing_reference(github, &pull_request.url, issue)?;
+            }
+            pull_request.url
+        }
+        None => {
+            let body = match issue {
+                Some(issue) => with_closing_reference(&checkout.task.description, issue.number),
+                None => checkout.task.description.clone(),
+            };
+            github.create_pull_request(&NewPullRequest {
+                repository: &repository,
+                head: &checkout.branch,
+                base: &checkout.base,
+                title: &checkout.task.title,
+                body: &body,
+            })?
+        }
     };
     Ok(lock(storage).open_pull_request(id, &records, &pull_request_url, None)?)
+}
+
+/// Appends a closing reference to `issue` to the body of the open pull request at `url`
+/// unless the body already has one, so merging the pull request closes the issue.
+pub(super) fn ensure_closing_reference(
+    github: &GitHub,
+    url: &str,
+    issue: &model::LinkedIssue,
+) -> CommandResult<()> {
+    let body = github.pull_request_body(url)?;
+    if !closes_issue(&body, issue.number) {
+        github.edit_pull_request_body(url, &with_closing_reference(&body, issue.number))?;
+    }
+    Ok(())
 }
 
 /// Rejects a pull request that does not merge into the workspace's base branch: the
@@ -291,7 +318,13 @@ fn complete_if_merged(
     check_base(&pull_request, &base)?;
     match pull_request.state {
         PullRequestState::Merged => {}
-        PullRequestState::Open => return Ok(Completion::Open(pull_request_url)),
+        PullRequestState::Open => {
+            // Pull requests opened outside Toodo, e.g. by an agent, get the reference here.
+            if let Some(issue) = &task.issue {
+                ensure_closing_reference(github, &pull_request_url, issue)?;
+            }
+            return Ok(Completion::Open(pull_request_url));
+        }
         PullRequestState::Closed => return Ok(Completion::Closed(pull_request_url)),
     }
     // Read before anything changes: if `gh` fails, the task stays `in_review` and the
@@ -1540,6 +1573,121 @@ mod tests {
             invocations(&gh_runner)[2].args[..2],
             ["pr", "view"].map(str::to_owned)
         );
+    }
+
+    const ISSUE: &str = "https://github.com/acme/toodo/issues/12";
+
+    fn link_issue(fixture: &Fixture) {
+        lock(&fixture.storage)
+            .set_task_issue(
+                fixture.task.id,
+                Some(&model::LinkedIssue {
+                    number: 12,
+                    url: ISSUE.to_owned(),
+                }),
+            )
+            .unwrap();
+    }
+
+    fn body(text: &str) -> Result<String, GitError> {
+        Ok(serde_json::json!({ "body": text }).to_string())
+    }
+
+    #[test]
+    fn a_new_pull_request_of_a_task_with_an_issue_closes_it() {
+        let fixture = local_fixture();
+        link_issue(&fixture);
+        let git_runner = runner(vec![
+            log(&[SHA_A]),
+            origin("git@github.com:acme/toodo.git"),
+            Ok(String::new()),
+        ]);
+        let gh_runner = runner(vec![Ok("[]".to_owned()), Ok(format!("{PR}\n"))]);
+        let (git, github) = adapters(&git_runner, &gh_runner);
+
+        open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+
+        let create = &invocations(&gh_runner)[1].args;
+        assert_eq!(create[1], "create");
+        assert_eq!(create.last().unwrap(), "Implement Add login\n\nCloses #12");
+        assert_eq!(invocations(&gh_runner).len(), 2);
+    }
+
+    #[test]
+    fn an_adopted_open_pull_request_gets_a_closing_reference_unless_it_has_one() {
+        for (existing, edited) in [
+            ("Work by an agent", Some("Work by an agent\n\nCloses #12")),
+            ("Work by an agent\n\nfixes #12", None),
+        ] {
+            let fixture = local_fixture();
+            link_issue(&fixture);
+            let git_runner = runner(vec![
+                log(&[SHA_A]),
+                origin("git@github.com:acme/toodo.git"),
+                Ok(String::new()),
+            ]);
+            let gh_runner = runner(vec![
+                listed("OPEN", "main"),
+                body(existing),
+                Ok(String::new()),
+            ]);
+            let (git, github) = adapters(&git_runner, &gh_runner);
+
+            let in_review = open(&fixture.storage, &git, &github, fixture.task.id).unwrap();
+
+            assert_eq!(in_review.status, TaskStatus::InReview);
+            let calls = invocations(&gh_runner);
+            assert_eq!(
+                calls[1].args,
+                ["pr", "view", PR, "--json", "body"].map(str::to_owned)
+            );
+            match edited {
+                Some(edited) => assert_eq!(
+                    calls[2].args,
+                    ["pr", "edit", PR, "--body", edited].map(str::to_owned)
+                ),
+                None => assert_eq!(calls.len(), 2),
+            }
+        }
+    }
+
+    #[test]
+    fn a_pull_request_opened_by_an_agent_gets_a_closing_reference_in_the_same_check() {
+        let fixture = local_fixture();
+        link_issue(&fixture);
+        let git_runner = runner(vec![origin("git@github.com:acme/toodo.git"), log(&[SHA_A])]);
+        let gh_runner = runner(vec![
+            listed("OPEN", "main"),
+            viewed("OPEN", "main"),
+            body("Work by an agent"),
+            Ok(String::new()),
+            viewed("OPEN", "main"),
+            body("Work by an agent\n\nCloses #12"),
+        ]);
+        let (git, github) = adapters(&git_runner, &gh_runner);
+        let recorder = Recorder::default();
+        let mut failures = HashMap::new();
+
+        for _ in 0..2 {
+            check_pull_requests(
+                &fixture.storage,
+                &git,
+                &github,
+                &no_herdr(),
+                &recorder,
+                &mut failures,
+            );
+        }
+
+        assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
+        assert!(failures.is_empty());
+        let calls = invocations(&gh_runner);
+        assert_eq!(
+            calls[3].args,
+            ["pr", "edit", PR, "--body", "Work by an agent\n\nCloses #12"].map(str::to_owned)
+        );
+        // The second check finds the reference and edits nothing.
+        assert_eq!(calls.len(), 6);
     }
 
     #[test]

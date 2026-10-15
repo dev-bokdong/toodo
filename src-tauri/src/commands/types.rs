@@ -439,6 +439,8 @@ pub struct Task {
     pub worktree_path: Option<String>,
     pub herdr_workspace_id: Option<String>,
     pub pull_request_url: Option<String>,
+    /// The GitHub issue this task works on; its pull request closes it on merge.
+    pub issue: Option<LinkedIssue>,
     /// Merge time of the pull request reported by GitHub.
     pub pull_request_merged_at: Option<Timestamp>,
     /// The pull request as GitHub reported it when its merge completed the task; `null`
@@ -451,6 +453,24 @@ pub struct Task {
     /// recorded it.
     pub timeline: Vec<TaskEvent>,
     pub milestones: TaskMilestones,
+}
+
+/// A GitHub issue of the workspace repository linked to a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedIssue {
+    #[specta(type = Number)]
+    pub number: i64,
+    pub url: String,
+}
+
+impl From<&model::LinkedIssue> for LinkedIssue {
+    fn from(issue: &model::LinkedIssue) -> Self {
+        Self {
+            number: issue.number,
+            url: issue.url.clone(),
+        }
+    }
 }
 
 /// A merged pull request as GitHub reported it when it completed its task.
@@ -540,6 +560,7 @@ impl From<&model::Task> for Task {
             worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
+            issue: task.issue.as_ref().map(LinkedIssue::from),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
             pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
             completion_note: task.completion_note.clone(),

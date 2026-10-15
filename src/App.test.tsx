@@ -45,6 +45,8 @@ vi.mock("@/lib/bindings", () => ({
     openPullRequest: vi.fn(),
     completeTask: vi.fn(),
     concludeTask: vi.fn(),
+    linkIssue: vi.fn(),
+    createIssue: vi.fn(),
     listHerdrMachines: vi.fn(),
     addHerdrMachine: vi.fn(),
     listSshHosts: vi.fn(),
@@ -98,6 +100,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     worktreePath: null,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
+    issue: null,
     pullRequestMergedAt: null,
     pullRequest: null,
     resolution: null,
@@ -705,6 +708,55 @@ describe("App", () => {
       title: "Write docs",
       description: "",
     });
+  });
+
+  it("links the issue number given with a new task", async () => {
+    const issue = { number: 12, url: "https://github.com/acme/toodo/issues/12" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [] });
+    mocked.createTask.mockResolvedValue({ status: "ok", data: task(5, 1, "Fix login") });
+    mocked.linkIssue.mockResolvedValue({ status: "ok", data: task(5, 1, "Fix login", { issue }) });
+    await renderWorkspace();
+
+    await screen.findByText("No tasks in this workspace yet.");
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Fix login", { issue })] });
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Fix login" } });
+    fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "#12x" } });
+    expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "#12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add task" }));
+
+    expect(await screen.findByLabelText("Issue of #5")).toHaveTextContent("#12");
+    expect(mocked.linkIssue).toHaveBeenCalledWith(5, 12);
+    expect(screen.getByLabelText("Issue number")).toHaveValue("");
+  });
+
+  it("links an issue to a task from its row and unlinks it", async () => {
+    const issue = { number: 12, url: "https://github.com/acme/toodo/issues/12" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login")] });
+    mocked.linkIssue
+      .mockResolvedValueOnce({ status: "error", error: { kind: "external", message: "issue #9 not found" } })
+      .mockResolvedValue({ status: "ok", data: task(1, 1, "Fix login", { issue }) });
+    await renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Link issue to #1" }));
+    const number = screen.getByLabelText("Issue number of #1");
+    fireEvent.change(number, { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Link" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("issue #9 not found");
+
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login", { issue })] });
+    fireEvent.change(number, { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Link" }));
+    expect(await screen.findByLabelText("Issue of #1")).toHaveTextContent("#12");
+    expect(mocked.linkIssue).toHaveBeenLastCalledWith(1, 12);
+    expect(screen.queryByRole("button", { name: "Link issue to #1" })).not.toBeInTheDocument();
+
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login")] });
+    fireEvent.click(screen.getByRole("button", { name: "Unlink issue from #1" }));
+    expect(await screen.findByRole("button", { name: "Link issue to #1" })).toBeInTheDocument();
+    expect(mocked.linkIssue).toHaveBeenLastCalledWith(1, null);
   });
 
   it("starts a ready task in herdr and shows its worktree", async () => {

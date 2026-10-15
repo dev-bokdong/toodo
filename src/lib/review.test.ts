@@ -39,6 +39,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       worktreePath: null,
       herdrWorkspaceId: null,
       pullRequestUrl: null,
+      issue: null,
       pullRequestMergedAt: null,
       pullRequest: null,
       resolution: null,
@@ -414,6 +415,7 @@ describe("reviewCsv", () => {
     const done = completed(7, at, { plannedAt: local(2026, 10, 1, 9) }, {
       title: 'Fix "login", then\nlogout',
       pullRequestUrl: "https://github.com/acme/toodo/pull/3",
+      issue: { number: 12, url: "https://github.com/acme/toodo/issues/12" },
       pullRequestMergedAt: at - hour,
       pullRequest: snapshot(3),
       completionNote: "Cut login time\n  in half, finally",
@@ -434,9 +436,9 @@ describe("reviewCsv", () => {
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
-          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,0,3,120,30,4,2,"Cut login time in half, finally"',
-          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,0,0.5,,,,,",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Additions,Deletions,Changed files,Reviews,Completion note",
+          '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,120,30,4,2,"Cut login time in half, finally"',
+          "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,,0,0.5,,,,,",
         ].join("\r\n") +
         "\r\n",
     );

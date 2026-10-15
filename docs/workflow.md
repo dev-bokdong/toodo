@@ -64,6 +64,16 @@ time is recorded as the task's `plannedAt`. The sidebar's "All workspaces" entry
 the tasks of every workspace on one timeline (its default view, which can be narrowed to
 one workspace) and in one list.
 
+A task of any type that is not `done` can be linked to a GitHub issue of its workspace
+repository (the repository of the `origin` remote): an existing one by number, checked
+with `gh issue view <number> --repo <repo>`, entered when the task is created or later,
+or a new one that Toodo opens from the task title and description
+(`gh issue create --repo <repo>`). Toodo does not open issues on its own: a task is
+already the record of its work, so an issue is only worth it when others track it on
+GitHub. The pull request of a task with an issue closes the issue on merge, because
+Toodo keeps a closing reference (`Closes #<number>`) in its body (steps 6 and 7).
+Unlinking an issue leaves an existing pull request body as it is.
+
 ### 3. Prepare the worktree
 
 When the user starts a `planned` task whose dependencies are all `done`, Toodo:
@@ -140,8 +150,11 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    `ssh.exe` for remote workspaces), then reuses the open pull request, or, when there
    is none or the last one was closed, opens one with
    `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
-   title and described with the task description. `gh` always runs on this machine, so
-   SSH machines do not need it.
+   title and described with the task description, followed by `Closes #<number>` when
+   the task has an issue. A reused open pull request whose body has no closing reference
+   to the issue (`close`, `fix`, or `resolve` in any form, then `#<number>`) gets one
+   appended (`gh pr edit <url> --body`). `gh` always runs on this machine, so SSH
+   machines do not need it.
 5. In one transaction, stores the commit records and the pull request URL (and, for a
    merged one, its `mergedAt` as `pullRequestMergedAt`) and moves the task to
    `in_review`, which records `reviewAt`. Dependent tasks keep waiting: their worktrees start from the base
@@ -175,8 +188,10 @@ pauses the task.
 
 The user rarely needs to complete a task by hand: while the app runs, Toodo checks the
 pull request of every `in_review` task once a minute and completes each task whose pull
-request was merged, in the same way and with the same checks. Open and closed pull
-requests are left alone. A failed check (e.g. `gh` is not signed in, or a herdr failure)
+request was merged, in the same way and with the same checks. Closed pull requests are
+left alone; an open one only gets the closing reference to the task's issue if its body
+lacks it, so a pull request an agent opened in herdr closes the issue too. Linking an
+issue to a task whose pull request is open adds the reference right away. A failed check (e.g. `gh` is not signed in, or a herdr failure)
 keeps the task `in_review` and is logged once until it changes; the next check tries
 again. The task list refreshes when a task is completed this way.
 

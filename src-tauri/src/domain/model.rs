@@ -206,6 +206,9 @@ pub struct Task {
     pub worktree_path: Option<HostPath>,
     pub herdr_workspace_id: Option<String>,
     pub pull_request_url: Option<String>,
+    /// The GitHub issue of the workspace repository this task works on; its pull request
+    /// closes it on merge.
+    pub issue: Option<LinkedIssue>,
     /// Merge time of the pull request reported by GitHub, in seconds since the Unix
     /// epoch.
     pub pull_request_merged_at: Option<i64>,
@@ -215,6 +218,13 @@ pub struct Task {
     pub completion_note: Option<String>,
     /// Status history, oldest event first.
     pub timeline: Vec<TaskEvent>,
+}
+
+/// A GitHub issue linked to a task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedIssue {
+    pub number: i64,
+    pub url: String,
 }
 
 /// A merged pull request as GitHub reported it when it completed its task, kept so

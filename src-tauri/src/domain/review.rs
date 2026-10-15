@@ -139,6 +139,7 @@ mod tests {
             pull_request: None,
             resolution: None,
             completion_note: None,
+            issue: None,
             timeline: history
                 .iter()
                 .map(|&(status, at)| TaskEvent { status, at })

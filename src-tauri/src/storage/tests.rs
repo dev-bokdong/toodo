@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, Machine, MachineLabel, MachineSettings, Task, TaskType, Workspace,
-    WorkspaceLocation,
+    CommitRecord, HostPath, LinkedIssue, Machine, MachineLabel, MachineSettings, Task, TaskType,
+    Workspace, WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
@@ -994,4 +994,27 @@ fn base_branch_cannot_change_while_a_task_is_in_review() {
     storage.complete_task(task.id, Some(1), None, &[]).unwrap();
     workspace.default_base_branch = "main".to_owned();
     storage.update_workspace(&workspace).unwrap();
+}
+
+#[test]
+fn a_linked_issue_is_stored_with_the_task_until_it_is_unlinked() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let task = add_task(&mut storage, &workspace, "Fix login");
+    assert_eq!(task.issue, None);
+    let issue = LinkedIssue {
+        number: 12,
+        url: "https://github.com/acme/toodo/issues/12".to_owned(),
+    };
+
+    let linked = storage.set_task_issue(task.id, Some(&issue)).unwrap();
+    assert_eq!(linked.issue.as_ref(), Some(&issue));
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), linked);
+
+    let unlinked = storage.set_task_issue(task.id, None).unwrap();
+    assert_eq!(unlinked.issue, None);
+    assert!(matches!(
+        storage.set_task_issue(TaskId(999), Some(&issue)),
+        Err(StorageError::TaskNotFound(TaskId(999)))
+    ));
 }

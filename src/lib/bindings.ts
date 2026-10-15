@@ -114,6 +114,18 @@ export const commands = {
 	 *  closed. The branch and worktree stay, and its dependents keep waiting.
 	 */
 	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("conclude_task", { id, note })),
+	/**
+	 *  Links issue `number` of the workspace repository to a task that is not done, after
+	 *  checking that the issue exists; `null` unlinks the current issue. An open pull
+	 *  request of the task gets a closing reference to the issue.
+	 */
+	linkIssue: (id: TaskId, number: number | null) => typedError<Task, CommandError>(__TAURI_INVOKE("link_issue", { id, number })),
+	/**
+	 *  Opens an issue in the workspace repository with the title and description of a task
+	 *  that is not done and has no issue yet, and links it to the task. An open pull request
+	 *  of the task gets a closing reference to the issue.
+	 */
+	createIssue: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("create_issue", { id })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
@@ -231,6 +243,12 @@ export type HerdrStatus = {
 	version: string | null,
 };
 
+/**  A GitHub issue of the workspace repository linked to a task. */
+export type LinkedIssue = {
+	number: number,
+	url: string,
+};
+
 export type Machine = { kind: "local" } | { kind: "ssh"; label: string };
 
 export type MachineSettings = {
@@ -320,6 +338,8 @@ export type Task = {
 	worktreePath: string | null,
 	herdrWorkspaceId: string | null,
 	pullRequestUrl: string | null,
+	/**  The GitHub issue this task works on; its pull request closes it on merge. */
+	issue: LinkedIssue | null,
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
 	/**
