@@ -47,6 +47,7 @@ vi.mock("@/lib/bindings", () => ({
     saveMachineSettings: vi.fn(),
     startTask: vi.fn(),
     openTaskInHerdr: vi.fn(),
+    focusAgentPane: vi.fn(),
     restoreTaskWorktree: vi.fn(),
     closeTaskWorkspace: vi.fn(),
     listCommitRecords: vi.fn(),
@@ -581,7 +582,7 @@ describe("App", () => {
     expect(summary).toHaveTextContent("Add storage");
     expect(summary).toHaveTextContent(`Completed${formatDate(plannedAt + 3600)}`);
     fireEvent.mouseLeave(bar("Add storage"));
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
 
     // Rows follow the dependency chain: storage, then UI, then docs.
     const heading = async (title: string) =>
@@ -1728,6 +1729,103 @@ describe("App", () => {
     expect(note).toHaveClass("text-muted-foreground");
     expect(screen.getByRole("button", { name: "Start #3" })).toBeDisabled();
     expect(screen.queryByRole("note", { name: "Waiting prerequisites of #4" })).not.toBeInTheDocument();
+  });
+
+  it("focuses the agent pane of a task from the hover card and the task details", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const milestones = { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + 3600 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { status: "in_progress", herdrWorkspaceId: "w27", milestones }),
+        task(2, 1, "Add UI", { status: "in_progress", herdrWorkspaceId: "w28", milestones }),
+      ],
+    });
+    mocked.listAgentStatuses.mockResolvedValue([{ taskId: 1, status: "working" }]);
+    mocked.focusAgentPane.mockResolvedValue({ status: "ok", data: null });
+    renderApp();
+
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bar = async (title: string) =>
+      (await within(timeline.querySelector(".react-flow__nodes") as HTMLElement).findByText(title)).closest(
+        ".react-flow__node",
+      ) as HTMLElement;
+    await within(timeline).findByLabelText("Agent of #1");
+
+    // A task without an agent offers nothing to focus.
+    fireEvent.mouseEnter(await bar("Add UI"));
+    const other = await screen.findByRole("tooltip", { name: "Summary of #2" });
+    expect(within(other).queryByRole("button", { name: /Focus agent pane/ })).not.toBeInTheDocument();
+
+    fireEvent.mouseEnter(await bar("Add storage"));
+    const summary = await screen.findByRole("tooltip", { name: "Summary of #1" });
+    fireEvent.click(within(summary).getByRole("button", { name: "Focus agent pane of #1" }));
+    await waitFor(() => expect(mocked.focusAgentPane).toHaveBeenCalledWith(1));
+
+    fireEvent.click(await bar("Add storage"));
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    fireEvent.click(within(details).getByRole("button", { name: "Focus agent pane of #1" }));
+    await waitFor(() => expect(mocked.focusAgentPane).toHaveBeenCalledTimes(2));
+  });
+
+  it("gathers tasks needing attention in the sidebar and shows one on the timeline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const milestones = { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + 3600 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { status: "in_progress", herdrWorkspaceId: "w27", milestones }),
+        task(2, 1, "Fix redirect", {
+          status: "in_review",
+          pullRequestUrl: "https://github.com/o/r/pull/2",
+          milestones,
+        }),
+        task(3, 1, "Add UI", {
+          status: "in_progress",
+          milestones,
+          notes: [{ kind: "blocker", body: "Need an account", at: plannedAt + 7200 }],
+        }),
+        task(4, 1, "Write docs", { milestones: { ...milestones, startedAt: null } }),
+      ],
+    });
+    mocked.listAgentStatuses.mockResolvedValue([{ taskId: 1, status: "blocked" }]);
+    mocked.listPullRequestStatuses.mockResolvedValue([{ taskId: 2, checks: "failing", review: "changes_requested" }]);
+    mocked.focusAgentPane.mockResolvedValue({ status: "ok", data: null });
+    renderApp();
+
+    const attention = await screen.findByRole("region", { name: /Needs attention/ });
+    const items = await within(attention).findAllByRole("listitem");
+    expect(items.map((item) => [...item.querySelectorAll("[data-reason]")].map((reason) => reason.textContent))).toEqual(
+      [["Agent needs input"], ["Blocker"], ["CI failed", "Changes requested"]],
+    );
+    expect(items[0]).toHaveTextContent("#1Add storage");
+    expect(within(items[1]).queryByRole("button", { name: /Focus agent pane/ })).not.toBeInTheDocument();
+
+    fireEvent.click(within(items[0]).getByRole("button", { name: "Focus agent pane of #1" }));
+    await waitFor(() => expect(mocked.focusAgentPane).toHaveBeenCalledWith(1));
+
+    // The task shows even from the list view, with a filter hiding it.
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "planned" } });
+    expect(screen.queryByRole("region", { name: "Task timeline" })).not.toBeInTheDocument();
+    fireEvent.click(within(items[2]).getByRole("button", { name: /Fix redirect/ }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByRole("heading", { name: "Fix redirect" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Status filter" })).toHaveValue("all");
+
+    // Once the agent is answered and the pull request fixed, the task leaves the group.
+    const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
+    act(() => {
+      onAgentStatuses({ event: "agent-statuses-changed", id: 1, payload: { statuses: [] } });
+    });
+    await waitFor(() => expect(within(attention).getAllByRole("listitem")).toHaveLength(2));
   });
 
   it("shows the latest agent note in the list and every note in the task details", async () => {
