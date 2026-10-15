@@ -52,7 +52,11 @@ where the user answers herdr's setup prompts.
 
 Git runs locally as `git.exe` and remotely as `ssh.exe <machine> git ...`. The default
 base branch is the one the user enters, or else the branch `origin/HEAD` points to, or
-else the checked-out branch. Deleting a workspace never deletes its repository, and is
+else the checked-out branch. It can be changed later by picking one of the repository's
+branches (local and `origin` branches, listed after `git fetch --prune origin`) or by
+creating a new branch from one of them (`git branch --no-track <name> <start>`, then
+`git push --set-upstream origin <name>`); both are rejected while a task of the workspace
+is `in_review`. Deleting a workspace never deletes its repository, and is
 rejected while a not-yet-started task of another workspace depends on one of its tasks.
 
 ### 2. Plan tasks

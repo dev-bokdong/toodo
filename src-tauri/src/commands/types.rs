@@ -6,7 +6,7 @@ use specta::Type;
 use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
-use crate::adapters::{herdr, ssh};
+use crate::adapters::{git, herdr, ssh};
 use crate::domain::{backup, model, path, review, ssh_config, status, timeline};
 use crate::storage;
 
@@ -306,6 +306,25 @@ impl From<&herdr::SavedMachine> for HerdrMachine {
             target: machine.target.clone(),
             session: machine.session.clone(),
             enabled: machine.enabled,
+        }
+    }
+}
+
+/// Branches of a workspace repository a base branch can be picked from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchList {
+    /// Local and `origin` branch names, sorted, without `origin/` prefixes.
+    pub names: Vec<String>,
+    /// Why fetching `origin` failed; the names are then the ones known locally.
+    pub fetch_error: Option<String>,
+}
+
+impl From<git::BranchList> for BranchList {
+    fn from(list: git::BranchList) -> Self {
+        Self {
+            names: list.names,
+            fetch_error: list.fetch_error,
         }
     }
 }
