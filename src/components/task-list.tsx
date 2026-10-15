@@ -434,9 +434,9 @@ function TaskRow({
   const dirtyWorktree =
     removableWorktree && deleteTask.error instanceof CommandFailure && deleteTask.error.kind === "rejected";
   const dependenciesEditable = dependencyEditableStatuses.includes(task.status);
-  // A paused task resumes once these prerequisites are done.
+  // A planned task can start (or a paused one resume) once these prerequisites are done.
   const waitingOn =
-    paused && notAdopted.length === 0
+    task.status === "planned" && notAdopted.length === 0
       ? task.dependsOn.filter((id) => context.byId.get(id)?.status !== "done")
       : [];
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
@@ -610,7 +610,7 @@ function TaskRow({
         <p
           role="note"
           aria-label={`Waiting prerequisites of #${task.id}`}
-          className="text-xs text-amber-700 dark:text-amber-300"
+          className={cn("text-xs", paused ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}
         >
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
