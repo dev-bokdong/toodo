@@ -5,6 +5,7 @@ import App from "@/App";
 import { formatDate } from "@/lib/timeline";
 import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notification";
 import {
   commands,
   events,
@@ -18,6 +19,11 @@ import {
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
+vi.mock("@tauri-apps/plugin-notification", () => ({
+  isPermissionGranted: vi.fn(),
+  requestPermission: vi.fn(),
+  sendNotification: vi.fn(),
+}));
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -819,6 +825,40 @@ describe("App", () => {
       onTasksChanged({ event: "tasks-changed", id: 2, payload: { workspaceId: 1 } });
     });
     await waitFor(() => expect(mocked.listTasks.mock.calls.length).toBeGreaterThan(loads));
+  });
+
+  it("notifies the desktop when an agent needs input while the app is in the background", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add login", { status: "in_progress", herdrWorkspaceId: "w27" })],
+    });
+    mocked.listAgentStatuses.mockResolvedValue([{ taskId: 1, status: "working" }]);
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    const focus = vi.spyOn(document, "hasFocus");
+    await renderWorkspace();
+
+    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    expect(await within(tasks).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
+    const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
+
+    focus.mockReturnValue(true);
+    act(() => {
+      onAgentStatuses({ event: "agent-statuses-changed", id: 1, payload: { statuses: [{ taskId: 1, status: "done" }] } });
+    });
+    focus.mockReturnValue(false);
+    act(() => {
+      onAgentStatuses({ event: "agent-statuses-changed", id: 2, payload: { statuses: [{ taskId: 1, status: "working" }] } });
+    });
+    act(() => {
+      onAgentStatuses({ event: "agent-statuses-changed", id: 3, payload: { statuses: [{ taskId: 1, status: "blocked" }] } });
+    });
+
+    await waitFor(() =>
+      expect(sendNotification).toHaveBeenCalledWith({ title: "Agent needs input", body: "#1 Add login" }),
+    );
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    focus.mockRestore();
   });
 
   it("restores the worktree of an active task that lost it", async () => {
