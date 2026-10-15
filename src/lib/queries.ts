@@ -54,10 +54,20 @@ export const queryKeys = {
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
+  mcpServerInfo: ["mcp-server-info"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
   remoteDirectories: (machine: string, path: string | null) =>
     ["remote-directories", machine, path] as const,
 };
+
+/** Where agents reach Toodo's MCP server; fixed while the app runs. */
+export function useMcpServerInfo() {
+  return useQuery({
+    queryKey: queryKeys.mcpServerInfo,
+    queryFn: () => commands.mcpServerInfo(),
+    staleTime: Infinity,
+  });
+}
 
 /** Backups in Toodo's backup directory, newest first. */
 export function useBackups() {

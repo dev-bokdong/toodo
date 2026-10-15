@@ -7,6 +7,7 @@ pub mod events;
 pub mod herdr;
 pub mod issues;
 pub mod machines;
+pub mod mcp;
 pub mod review;
 pub mod tasks;
 pub mod types;
@@ -68,6 +69,13 @@ impl CommandError {
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self {
             kind: CommandErrorKind::InvalidInput,
+            message: message.into(),
+        }
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommandErrorKind::NotFound,
             message: message.into(),
         }
     }
@@ -179,7 +187,7 @@ impl From<StorageError> for CommandError {
 /// Locks the database. Every storage write runs in a transaction that rolls back when
 /// dropped, so a panic in another command cannot leave partial writes behind and a
 /// poisoned lock is safe to reuse.
-fn lock(storage: &StorageState) -> MutexGuard<'_, Storage> {
+pub(crate) fn lock(storage: &StorageState) -> MutexGuard<'_, Storage> {
     storage.lock().unwrap_or_else(PoisonError::into_inner)
 }
 

@@ -1,0 +1,367 @@
+//! MCP server for coding agents, embedded in the app so it shares the database lock and
+//! tells the frontend about changes like any command.
+//!
+//! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
+//! in the app data directory. Agents can read workspaces and tasks, create and edit
+//! tasks, and connect dependencies; starting, completing, and deleting tasks stay in the
+//! app.
+
+mod tools;
+
+use std::fs;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::path::Path;
+use std::sync::Arc;
+
+use axum::extract::{Request, State};
+use axum::http::{StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
+use serde::Serialize;
+use tauri::{AppHandle, Manager};
+
+use crate::commands::events::Notifier;
+use crate::commands::types::Task;
+use crate::commands::{CommandResult, StorageState, lock};
+use crate::domain::model;
+
+pub const PORT: u16 = 47615;
+
+const TOKEN_FILE: &str = "mcp-token";
+
+const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
+a task becomes ready only when all tasks it depends on are done.
+
+How to use these tools:
+1. Call current_task with your absolute working directory first. Use its workspace_id \
+for new tasks in the same repository, and its id as a prerequisite of tasks that build \
+on your work. If it finds no task, use list_workspaces to pick the workspace.
+2. Before create_task, call list_tasks for that workspace and reuse a matching task \
+instead of creating a duplicate.
+3. Connect prerequisites in one step with create_task's depends_on; use add_dependency \
+and remove_dependency for existing tasks. task_id is the dependent task and depends_on \
+its prerequisite; self and cyclic dependencies are rejected.
+4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
+rnd), write a short imperative title, and put details in description.
+5. A tool error says what was rejected; change the arguments instead of retrying them \
+unchanged.
+
+Starting, completing, and deleting tasks happen in the Toodo app, not through these \
+tools.";
+
+/// What the app needs to serve the tools: the database and a way to announce changes.
+pub trait Backend: Notifier + Send + Sync + 'static {
+    fn storage(&self) -> &StorageState;
+}
+
+impl Backend for AppHandle {
+    fn storage(&self) -> &StorageState {
+        self.state::<StorageState>().inner()
+    }
+}
+
+/// How agents reach the server, shown in the app; `error` tells why it is not running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerStatus {
+    pub url: String,
+    pub token: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Starts the server in the background. Failures, e.g. the port being taken, are
+/// reported in the status rather than stopping the app.
+pub fn start(backend: Arc<dyn Backend>, data_dir: &Path) -> ServerStatus {
+    let url = format!("http://127.0.0.1:{PORT}/mcp");
+    let token = match load_token(&data_dir.join(TOKEN_FILE)) {
+        Ok(token) => token,
+        Err(error) => {
+            return ServerStatus {
+                url,
+                token: None,
+                error: Some(format!(
+                    "could not read or create the access token: {error}"
+                )),
+            };
+        }
+    };
+    let listener = match bind(SocketAddr::from((Ipv4Addr::LOCALHOST, PORT))) {
+        Ok(listener) => listener,
+        Err(error) => {
+            return ServerStatus {
+                url,
+                token: Some(token),
+                error: Some(format!("could not listen on port {PORT}: {error}")),
+            };
+        }
+    };
+    let app = router(backend, token.clone());
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = serve(listener, app).await {
+            eprintln!("toodo: MCP server stopped: {error}");
+        }
+    });
+    ServerStatus {
+        url,
+        token: Some(token),
+        error: None,
+    }
+}
+
+fn bind(address: SocketAddr) -> io::Result<TcpListener> {
+    let listener = TcpListener::bind(address)?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+async fn serve(listener: TcpListener, app: axum::Router) -> io::Result<()> {
+    axum::serve(tokio::net::TcpListener::from_std(listener)?, app).await
+}
+
+/// The token in `path`, created with 32 random bytes on first use.
+fn load_token(path: &Path) -> io::Result<String> {
+    match fs::read_to_string(path) {
+        Ok(token) if !token.trim().is_empty() => return Ok(token.trim().to_owned()),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    fs::write(path, &token)?;
+    Ok(token)
+}
+
+fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
+    let service = StreamableHttpService::new(
+        move || Ok(ToodoMcp::new(backend.clone())),
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false)
+            .with_json_response(true),
+    );
+    axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(
+            Arc::new(token),
+            require_token,
+        ))
+}
+
+async fn require_token(State(token): State<Arc<String>>, request: Request, next: Next) -> Response {
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if presented.is_some_and(|presented| same_secret(presented, &token)) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            "missing or wrong Toodo MCP access token",
+        )
+            .into_response()
+    }
+}
+
+/// Compares without stopping at the first difference, so timing does not leak the token.
+fn same_secret(presented: &str, token: &str) -> bool {
+    presented.len() == token.len()
+        && presented
+            .bytes()
+            .zip(token.bytes())
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
+}
+
+#[derive(Clone)]
+struct ToodoMcp {
+    backend: Arc<dyn Backend>,
+    tool_router: ToolRouter<Self>,
+}
+
+#[tool_router]
+impl ToodoMcp {
+    fn new(backend: Arc<dyn Backend>) -> Self {
+        Self {
+            backend,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Runs a tool that changes a task and announces the change to the frontend.
+    fn change(
+        &self,
+        apply: impl FnOnce(&mut crate::storage::Storage) -> CommandResult<Task>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = apply(&mut lock(self.backend.storage()));
+        if let Ok(task) = &result {
+            self.backend
+                .tasks_changed(model::WorkspaceId(task.workspace_id.0));
+        }
+        reply(result)
+    }
+
+    #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
+    fn list_workspaces(&self) -> Result<CallToolResult, ErrorData> {
+        reply(tools::list_workspaces(&lock(self.backend.storage())))
+    }
+
+    #[tool(
+        description = "List tasks with status and depends_on, of one workspace or of all workspaces."
+    )]
+    fn list_tasks(
+        &self,
+        Parameters(request): Parameters<tools::ListTasks>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::list_tasks(&lock(self.backend.storage()), request))
+    }
+
+    #[tool(description = "Find the Toodo task whose worktree contains the given directory.")]
+    fn current_task(
+        &self,
+        Parameters(request): Parameters<tools::CurrentTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::current_task(&lock(self.backend.storage()), request))
+    }
+
+    #[tool(
+        description = "Create a planned task in a workspace, optionally depending on existing tasks."
+    )]
+    fn create_task(
+        &self,
+        Parameters(request): Parameters<tools::CreateTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::create_task(storage, request))
+    }
+
+    #[tool(description = "Change the type, title, or description of a task.")]
+    fn update_task(
+        &self,
+        Parameters(request): Parameters<tools::UpdateTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::update_task(storage, request))
+    }
+
+    #[tool(
+        description = "Make task_id depend on depends_on. Rejects self and cyclic dependencies."
+    )]
+    fn add_dependency(
+        &self,
+        Parameters(request): Parameters<tools::Dependency>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::add_dependency(storage, request))
+    }
+
+    #[tool(description = "Remove the dependency of task_id on depends_on.")]
+    fn remove_dependency(
+        &self,
+        Parameters(request): Parameters<tools::Dependency>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::remove_dependency(storage, request))
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for ToodoMcp {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(INSTRUCTIONS)
+    }
+}
+
+/// Tool failures are tool-level errors, so the agent sees the reason, e.g. a cycle.
+fn reply<T: Serialize>(result: CommandResult<T>) -> Result<CallToolResult, ErrorData> {
+    match result {
+        Ok(value) => {
+            let json = serde_json::to_string_pretty(&value)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
+        }
+        Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+            "{:?}: {}",
+            error.kind, error.message
+        ))])),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_token_is_created_once_and_then_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(TOKEN_FILE);
+        let token = load_token(&path).unwrap();
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(load_token(&path).unwrap(), token);
+    }
+
+    struct TestBackend(StorageState);
+
+    impl Notifier for TestBackend {
+        fn tasks_changed(&self, _: model::WorkspaceId) {}
+        fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
+    }
+
+    impl Backend for TestBackend {
+        fn storage(&self) -> &StorageState {
+            &self.0
+        }
+    }
+
+    fn post_initialize(address: SocketAddr, authorization: &str) -> String {
+        use std::io::{Read, Write};
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\n{authorization}\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn only_requests_with_the_token_reach_the_tools() {
+        let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let backend = Arc::new(TestBackend(std::sync::Mutex::new(storage)));
+        tauri::async_runtime::spawn(serve(listener, router(backend, "secret".to_owned())));
+
+        assert!(post_initialize(address, "").starts_with("HTTP/1.1 401"));
+        let wrong = post_initialize(address, "Authorization: Bearer secreT\r\n");
+        assert!(wrong.starts_with("HTTP/1.1 401"), "{wrong}");
+        let accepted = post_initialize(address, "Authorization: Bearer secret\r\n");
+        assert!(accepted.starts_with("HTTP/1.1 200"), "{accepted}");
+        assert!(accepted.contains(r#""name":"toodo""#), "{accepted}");
+    }
+
+    #[test]
+    fn secrets_match_only_when_equal() {
+        assert!(same_secret("abc", "abc"));
+        assert!(!same_secret("abd", "abc"));
+        assert!(!same_secret("ab", "abc"));
+    }
+}

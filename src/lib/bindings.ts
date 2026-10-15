@@ -138,6 +138,7 @@ export const commands = {
 	 */
 	createIssue: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("create_issue", { id })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
+	mcpServerInfo: () => __TAURI_INVOKE<McpServerInfo>("mcp_server_info"),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
@@ -277,6 +278,14 @@ export type MachineSettings = {
 	 *  be started.
 	 */
 	worktreeRoot: string | null,
+};
+
+export type McpServerInfo = {
+	url: string,
+	/**  Bearer token agents send in the `Authorization` header. */
+	token: string | null,
+	/**  Why the server is not running, e.g. its port is taken. */
+	error: string | null,
 };
 
 /**  A remote machine to append to the user's SSH config. */

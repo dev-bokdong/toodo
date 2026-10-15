@@ -1,6 +1,7 @@
 //! Serializable shapes of the domain model exchanged with the frontend. Inputs are
 //! validated when they are converted into domain types.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Number;
@@ -13,11 +14,11 @@ use crate::storage;
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
 // instead of the `bigint` specta requires for `i64` by default.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(transparent)]
 pub struct WorkspaceId(#[specta(type = Number)] pub i64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(transparent)]
 pub struct TaskId(#[specta(type = Number)] pub i64);
 
@@ -347,7 +348,7 @@ impl From<&ssh::RemoteDirectory> for RemoteDirectory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskType {
     Feat,
@@ -803,7 +804,7 @@ impl From<&storage::BackupFile> for BackupEntry {
     }
 }
 
-pub(super) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
+pub(crate) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
     items.iter().map(U::from).collect()
 }
 
