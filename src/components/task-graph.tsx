@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { XIcon } from "lucide-react";
+import { Crosshair, XIcon } from "lucide-react";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
   BaseEdge,
@@ -24,7 +24,13 @@ import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import type { AgentStatus, Task, TaskId, Timestamp } from "@/lib/bindings";
-import { useAddDependency, useAgentStatuses, useRemoveDependency } from "@/lib/queries";
+import {
+  useAddDependency,
+  useAgentStatuses,
+  useFocusAgentPane,
+  useHerdrStatus,
+  useRemoveDependency,
+} from "@/lib/queries";
 import {
   canAddDependency,
   dependencyEdges,
@@ -79,6 +85,8 @@ const sheetWidth = 480;
 const sheetMargin = 16;
 /** Width of the hover card of a bar. */
 const tooltipWidth = 288;
+/** How long the hover card stays after the pointer leaves its bar, so the pointer can reach the card. */
+const tooltipGraceMs = 200;
 /** Keys that move the selection between timeline rows, and where each one goes. */
 const rowKeys: Record<string, "previous" | "next" | "first" | "last"> = {
   ArrowUp: "previous",
@@ -129,6 +137,8 @@ export function TaskGraph({
   ready,
   scale,
   onScaleChange,
+  shownTaskId = null,
+  onTaskShown,
   renderDetail,
 }: {
   /** Tasks drawn on the timeline. */
@@ -145,11 +155,16 @@ export function TaskGraph({
   ready: (task: Task) => boolean;
   scale: TimelineScale;
   onScaleChange: (scale: TimelineScale) => void;
+  /** A task to select and pan to once it is on the timeline; `onTaskShown` is called when it is. */
+  shownTaskId?: TaskId | null;
+  onTaskShown?: () => void;
   /** Details of the task selected on the timeline, with its actions. */
   renderDetail: (task: Task) => ReactNode;
 }) {
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
+  const focusAgent = useFocusAgentPane();
+  const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
   const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
@@ -158,6 +173,9 @@ export function TaskGraph({
   const [year, setYear] = useState<number | null>(null);
   // The bar under the pointer, with its place on screen for the hover card.
   const [hovered, setHovered] = useState<{ id: TaskId; rect: DOMRect } | null>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // A shown task selected before the timeline was ready, revealed once it is.
+  const pendingReveal = useRef<TaskId | null>(null);
   const colorMode = useThemePreference();
   const container = useRef<HTMLDivElement>(null);
   const flow = useRef<ReactFlowInstance<BarNode> | null>(null);
@@ -226,13 +244,47 @@ export function TaskGraph({
     return agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status ?? null;
   }
 
+  // A shown task hidden by the selected year brings back the whole timeline.
+  const shownPlaced = shownTaskId !== null && placed.has(shownTaskId);
+  useEffect(() => {
+    if (shownTaskId === null) {
+      return;
+    }
+    if (!shownPlaced) {
+      setYear(null);
+      return;
+    }
+    if (flow.current === null) {
+      pendingReveal.current = shownTaskId;
+    }
+    select(shownTaskId);
+    onTaskShown?.();
+    // Runs for a new request, or once the requested task reaches the timeline.
+  }, [shownTaskId, shownPlaced]);
+
+  useEffect(() => () => clearTimeout(hideTimer.current), []);
+
+  function keepTooltip() {
+    clearTimeout(hideTimer.current);
+  }
+
+  function hideTooltip() {
+    clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setHovered(null), tooltipGraceMs);
+  }
+
   const selected = dependencies.filter((edge) => selectedEdgeIds.has(edge.id) && editable(edge.target));
   const hoveredBar = layout.bars.find((bar) => bar.task.id === hovered?.id);
 
   function showLatest(instance: ReactFlowInstance<BarNode>) {
     flow.current = instance;
     const visible = container.current?.clientWidth ?? 0;
-    void instance.setViewport({ x: Math.min(16, visible - layout.width - 16), y: 0, zoom: 1 });
+    void instance.setViewport({ x: Math.min(16, visible - layout.width - 16), y: 0, zoom: 1 }).then(() => {
+      if (pendingReveal.current !== null) {
+        reveal(pendingReveal.current, true);
+        pendingReveal.current = null;
+      }
+    });
   }
 
   function connect({ source, target }: Connection) {
@@ -443,9 +495,9 @@ export function TaskGraph({
           onCancel={() => setConfirmingEdge(null)}
         />
       )}
-      {(addDependency.error ?? removeDependency.error) && (
+      {(addDependency.error ?? removeDependency.error ?? focusAgent.error) && (
         <p role="alert" className="text-xs text-destructive">
-          {(addDependency.error ?? removeDependency.error)?.message}
+          {(addDependency.error ?? removeDependency.error ?? focusAgent.error)?.message}
         </p>
       )}
       <div
@@ -494,10 +546,11 @@ export function TaskGraph({
               onConnect={connect}
               onNodesChange={changeNodes}
               onPaneClick={() => setSelectedTaskId(null)}
-              onNodeMouseEnter={(event, node) =>
-                setHovered({ id: Number(node.id), rect: event.currentTarget.getBoundingClientRect() })
-              }
-              onNodeMouseLeave={() => setHovered(null)}
+              onNodeMouseEnter={(event, node) => {
+                keepTooltip();
+                setHovered({ id: Number(node.id), rect: event.currentTarget.getBoundingClientRect() });
+              }}
+              onNodeMouseLeave={hideTooltip}
               onMoveStart={() => setHovered(null)}
               autoPanOnNodeFocus={false}
               onEdgesChange={changeEdges}
@@ -521,6 +574,16 @@ export function TaskGraph({
             statusStyle={statusStyle(hoveredBar.task)}
             agentStatus={agentStatusOf(hoveredBar.task)}
             now={now}
+            focusAgent={
+              agentStatusOf(hoveredBar.task) !== null && hoveredBar.task.herdrWorkspaceId !== null
+                ? {
+                    disabled: herdr.data?.running !== true || focusAgent.isPending,
+                    run: () => focusAgent.mutate(hoveredBar.task.id),
+                  }
+                : null
+            }
+            onMouseEnter={keepTooltip}
+            onMouseLeave={() => setHovered(null)}
           />
         )}
         {selectedTask !== undefined && (
@@ -661,6 +724,9 @@ function TimelineTooltip({
   statusStyle,
   agentStatus,
   now,
+  focusAgent,
+  onMouseEnter,
+  onMouseLeave,
 }: {
   task: Task;
   anchor: DOMRect;
@@ -670,6 +736,11 @@ function TimelineTooltip({
   statusStyle: string;
   agentStatus: AgentStatus | null;
   now: Timestamp;
+  /** Focuses the task's agent pane in herdr; `null` when the task has no agent. */
+  focusAgent: { disabled: boolean; run: () => void } | null;
+  /** Mouse, not pointer, events: they come after the bar's `mouseleave`, which starts the hiding. */
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
 }) {
   const milestones = reachedMilestones(task.milestones);
   const active = activeSeconds(task.timeline, now);
@@ -683,7 +754,9 @@ function TimelineTooltip({
     <div
       role="tooltip"
       aria-label={`Summary of #${task.id}`}
-      className="pointer-events-none fixed z-50 flex flex-col gap-1.5 rounded-lg border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg"
+      className="fixed z-50 flex flex-col gap-1.5 rounded-lg border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
       style={{
         left,
         width: tooltipWidth,
@@ -714,7 +787,21 @@ function TimelineTooltip({
           )}
         </dl>
       )}
-      <p className="text-muted-foreground">Click for details</p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-muted-foreground">Click for details</p>
+        {focusAgent !== null && (
+          <Button
+            size="xs"
+            variant="outline"
+            aria-label={`Focus agent pane of #${task.id}`}
+            disabled={focusAgent.disabled}
+            onClick={focusAgent.run}
+          >
+            <Crosshair />
+            Focus agent pane
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

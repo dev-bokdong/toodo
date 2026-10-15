@@ -342,6 +342,14 @@ impl Herdr {
         Ok(())
     }
 
+    /// Focuses the agent running in a pane: its workspace, its tab, and the pane itself.
+    pub fn focus_agent(&self, machine: &Machine, pane_id: &str) -> Result<(), HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(profile_id.as_deref(), &["agent", "focus", pane_id]);
+        self.runner.run(&invocation)?;
+        Ok(())
+    }
+
     /// Machines saved in herdr, in herdr's order.
     pub fn list_machines(&self) -> Result<Vec<SavedMachine>, HerdrError> {
         let invocation = invocation(None, &["machine", "list", "--json"]);

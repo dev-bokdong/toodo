@@ -94,6 +94,12 @@ export const commands = {
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
 	/**
+	 *  Focuses the pane of the agent working on a started task, the one that needs the user
+	 *  most when its herdr workspace has several. Without a recognized agent it focuses the
+	 *  workspace like [`open_task_in_herdr`].
+	 */
+	focusAgentPane: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("focus_agent_pane", { id })),
+	/**
 	 *  Checks out the branch of an `in_progress` or `in_review` task that lost its worktree,
 	 *  e.g. because it was removed in herdr, into a new worktree opened in herdr. The branch
 	 *  is taken from `origin` when the repository no longer has it.
