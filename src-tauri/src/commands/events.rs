@@ -24,7 +24,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
 
-use super::types::{AgentStatus, TaskAgentStatus, WorkspaceId};
+use super::types::{AgentStatus, TaskAgentStatus, TaskPullRequestStatus, WorkspaceId};
 use super::{HerdrState, StorageState, lock};
 use crate::adapters::herdr::{self, Herdr, HerdrError};
 use crate::adapters::herdr_events::{
@@ -50,6 +50,13 @@ pub struct AgentStatusesChanged {
     pub statuses: Vec<TaskAgentStatus>,
 }
 
+/// The CI or review state of the pull request of an `in_review` task changed; carries
+/// all of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+pub struct PullRequestStatusesChanged {
+    pub statuses: Vec<TaskPullRequestStatus>,
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn list_agent_statuses(statuses: State<'_, AgentStatusState>) -> Vec<TaskAgentStatus> {
@@ -73,6 +80,7 @@ fn all_statuses(by_machine: &HashMap<Machine, Vec<TaskAgentStatus>>) -> Vec<Task
 pub trait Notifier {
     fn tasks_changed(&self, workspace: model::WorkspaceId);
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]);
+    fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]);
 }
 
 impl Notifier for AppHandle {
@@ -93,6 +101,18 @@ impl Notifier for AppHandle {
             eprintln!(
                 "toodo: failed to emit {}: {error}",
                 AgentStatusesChanged::NAME
+            );
+        }
+    }
+
+    fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]) {
+        let event = PullRequestStatusesChanged {
+            statuses: statuses.to_vec(),
+        };
+        if let Err(error) = event.emit(self) {
+            eprintln!(
+                "toodo: failed to emit {}: {error}",
+                PullRequestStatusesChanged::NAME
             );
         }
     }
@@ -457,6 +477,8 @@ mod tests {
         fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
             self.statuses.lock().unwrap().push(statuses.to_vec());
         }
+
+        fn pull_request_statuses_changed(&self, _: &[TaskPullRequestStatus]) {}
     }
 
     struct Fixture {

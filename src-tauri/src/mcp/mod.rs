@@ -348,6 +348,11 @@ mod tests {
     impl Notifier for TestBackend {
         fn tasks_changed(&self, _: model::WorkspaceId) {}
         fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
+        fn pull_request_statuses_changed(
+            &self,
+            _: &[crate::commands::types::TaskPullRequestStatus],
+        ) {
+        }
     }
 
     impl Backend for TestBackend {

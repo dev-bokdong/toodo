@@ -12,12 +12,15 @@
 //! `in_progress` task and moves the task to `in_review` when one was opened outside
 //! Toodo (e.g. by an agent in herdr), then checks the pull requests of `in_review` tasks
 //! and completes each task whose pull request was merged, as the `complete_task` command
-//! would.
+//! would. For each pull request still open, it keeps the CI and review state and tells
+//! the frontend through [`PullRequestStatusesChanged`] when one changes.
 //!
 //! [`TasksChanged`]: super::events::TasksChanged
+//! [`PullRequestStatusesChanged`]: super::events::PullRequestStatusesChanged
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -28,7 +31,9 @@ use super::herdr::{WORKSPACE_NOT_FOUND, has_code};
 use super::types::{self, CommitRecord, Task, TaskId};
 use super::{CommandError, CommandResult, GitHubState, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::adapters::github::{GitHub, NewPullRequest, PullRequest, PullRequestState};
+use crate::adapters::github::{
+    GitHub, NewPullRequest, PullRequest, PullRequestState, PullRequestStatus,
+};
 use crate::adapters::herdr::Herdr;
 use crate::domain::issue::{closes_issue, with_closing_reference};
 use crate::domain::model::{self, WorkspaceLocation};
@@ -269,7 +274,7 @@ fn complete(
 ) -> CommandResult<model::Task> {
     match complete_if_merged(storage, github, herdr, id)? {
         Completion::Completed(task) => Ok(*task),
-        Completion::Open(url) => Err(CommandError::rejected(format!(
+        Completion::Open(url, _) => Err(CommandError::rejected(format!(
             "pull request {url} is not merged yet; merge it before completing the task"
         ))),
         Completion::Closed(url) => Err(CommandError::rejected(format!(
@@ -282,8 +287,9 @@ fn complete(
 enum Completion {
     /// The pull request was merged and the task is now `done`.
     Completed(Box<model::Task>),
-    /// The pull request at this URL is still open; the task stays `in_review`.
-    Open(String),
+    /// The pull request at this URL is still open, with this CI and review state; the
+    /// task stays `in_review`.
+    Open(String, PullRequestStatus),
     /// The pull request at this URL was closed without merging; the task stays
     /// `in_review`.
     Closed(String),
@@ -314,7 +320,8 @@ fn complete_if_merged(
             )));
         }
     };
-    let pull_request = github.pull_request(&pull_request_url)?;
+    let viewed = github.pull_request(&pull_request_url)?;
+    let pull_request = viewed.pull_request;
     check_base(&pull_request, &base)?;
     match pull_request.state {
         PullRequestState::Merged => {}
@@ -323,7 +330,7 @@ fn complete_if_merged(
             if let Some(issue) = &task.issue {
                 ensure_closing_reference(github, &pull_request_url, issue)?;
             }
-            return Ok(Completion::Open(pull_request_url));
+            return Ok(Completion::Open(pull_request_url, viewed.status));
         }
         PullRequestState::Closed => return Ok(Completion::Closed(pull_request_url)),
     }
@@ -405,7 +412,7 @@ fn conclude(
         _ => Vec::new(),
     };
     if let Some(url) = &task.pull_request_url {
-        match github.pull_request(url)?.state {
+        match github.pull_request(url)?.pull_request.state {
             PullRequestState::Open => github.close_pull_request(url, note)?,
             PullRequestState::Closed => {}
             PullRequestState::Merged => {
@@ -478,6 +485,36 @@ fn adopt_pull_request(
     )?))
 }
 
+/// CI and review state of the open pull request of each `in_review` task, as of the last
+/// check.
+pub type PullRequestStatusState = Mutex<HashMap<model::TaskId, PullRequestStatus>>;
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_pull_request_statuses(
+    statuses: State<'_, PullRequestStatusState>,
+) -> Vec<types::TaskPullRequestStatus> {
+    all_statuses(&lock_statuses(&statuses))
+}
+
+fn lock_statuses(
+    statuses: &PullRequestStatusState,
+) -> MutexGuard<'_, HashMap<model::TaskId, PullRequestStatus>> {
+    statuses.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The pull request statuses, ordered by task ID.
+fn all_statuses(
+    statuses: &HashMap<model::TaskId, PullRequestStatus>,
+) -> Vec<types::TaskPullRequestStatus> {
+    let mut all: Vec<_> = statuses
+        .iter()
+        .map(|(&id, &status)| types::TaskPullRequestStatus::new(id, status))
+        .collect();
+    all.sort_by_key(|status| status.task_id.0);
+    all
+}
+
 /// How often the pull requests of `in_progress` and `in_review` tasks are checked.
 const PULL_REQUEST_CHECK_PERIOD: Duration = Duration::from_secs(60);
 
@@ -496,6 +533,7 @@ pub fn spawn(app: AppHandle) -> io::Result<()> {
                     &app.state::<HerdrState>(),
                     &app,
                     &mut failures,
+                    &app.state::<PullRequestStatusState>(),
                 );
                 thread::sleep(PULL_REQUEST_CHECK_PERIOD);
             }
@@ -507,7 +545,8 @@ pub fn spawn(app: AppHandle) -> io::Result<()> {
 /// completes every `in_review` task whose pull request was merged (including the ones
 /// just moved), and announces each change. `failures` holds the last failure of each
 /// task, so a failure that repeats on every check (e.g. `gh` is not signed in) is logged
-/// once.
+/// once. `statuses` gets the CI and review state of each pull request still open; a
+/// failed check keeps the last one known.
 fn check_pull_requests(
     storage: &StorageState,
     git: &Git,
@@ -515,6 +554,7 @@ fn check_pull_requests(
     herdr: &Herdr,
     notifier: &dyn Notifier,
     failures: &mut HashMap<model::TaskId, String>,
+    statuses: &PullRequestStatusState,
 ) {
     let in_progress = match in_progress_tasks(&lock(storage)) {
         Ok(tasks) => tasks,
@@ -544,12 +584,24 @@ fn check_pull_requests(
         }
     };
     failures.retain(|id, _| in_progress.contains(id) || in_review.contains(id));
+    let before = lock_statuses(statuses).clone();
+    let mut after = before.clone();
+    after.retain(|id, _| in_review.contains(id));
     for id in in_review {
         match complete_if_merged(storage, github, herdr, id) {
             Ok(completion) => {
                 failures.remove(&id);
-                if let Completion::Completed(task) = completion {
-                    notifier.tasks_changed(task.workspace_id);
+                match completion {
+                    Completion::Completed(task) => {
+                        after.remove(&id);
+                        notifier.tasks_changed(task.workspace_id);
+                    }
+                    Completion::Open(_, status) => {
+                        after.insert(id, status);
+                    }
+                    Completion::Closed(_) => {
+                        after.remove(&id);
+                    }
                 }
             }
             Err(error) => {
@@ -561,6 +613,10 @@ fn check_pull_requests(
                 );
             }
         }
+    }
+    if after != before {
+        notifier.pull_request_statuses_changed(&all_statuses(&after));
+        *lock_statuses(statuses) = after;
     }
 }
 
@@ -966,7 +1022,22 @@ mod tests {
 
     /// `gh pr view` output.
     fn viewed(state: &str, base: &str) -> Result<String, GitError> {
-        Ok(pull_request_json(state, base))
+        viewed_with(state, base, "[]", "\"\"")
+    }
+
+    /// `gh pr view` output with these `statusCheckRollup` and `reviewDecision` values.
+    fn viewed_with(
+        state: &str,
+        base: &str,
+        checks: &str,
+        decision: &str,
+    ) -> Result<String, GitError> {
+        let mut view: serde_json::Value =
+            serde_json::from_str(&pull_request_json(state, base)).unwrap();
+        view["statusCheckRollup"] = serde_json::from_str(checks).unwrap();
+        view["reviewDecision"] = serde_json::from_str(decision).unwrap();
+        view["latestReviews"] = serde_json::json!([]);
+        Ok(view.to_string())
     }
 
     /// `gh pr view` output with the size, reviews, and commits of the merged pull
@@ -1176,7 +1247,14 @@ mod tests {
         assert!(dependent_ready(&fixture));
         assert_eq!(
             invocations(&gh_runner)[0].args,
-            ["pr", "view", PR, "--json", "url,state,baseRefName,mergedAt"].map(str::to_owned)
+            [
+                "pr",
+                "view",
+                PR,
+                "--json",
+                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews"
+            ]
+            .map(str::to_owned)
         );
         assert_eq!(invocations(&gh_runner)[1].args[..3], ["pr", "view", PR]);
     }
@@ -1414,7 +1492,10 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Recorder(Mutex<Vec<model::WorkspaceId>>);
+    struct Recorder(
+        Mutex<Vec<model::WorkspaceId>>,
+        Mutex<Vec<Vec<types::TaskPullRequestStatus>>>,
+    );
 
     impl Notifier for Recorder {
         fn tasks_changed(&self, workspace: model::WorkspaceId) {
@@ -1422,6 +1503,10 @@ mod tests {
         }
 
         fn agent_statuses_changed(&self, _: &[types::TaskAgentStatus]) {}
+
+        fn pull_request_statuses_changed(&self, statuses: &[types::TaskPullRequestStatus]) {
+            self.1.lock().unwrap().push(statuses.to_vec());
+        }
     }
 
     #[test]
@@ -1436,6 +1521,7 @@ mod tests {
         let (herdr, herdr_runner) = closing_herdr();
         let recorder = Recorder::default();
         let mut failures = HashMap::new();
+        let statuses = PullRequestStatusState::default();
 
         check_pull_requests(
             &fixture.storage,
@@ -1444,6 +1530,7 @@ mod tests {
             &herdr,
             &recorder,
             &mut failures,
+            &statuses,
         );
         assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
         assert!(recorder.0.lock().unwrap().is_empty());
@@ -1456,6 +1543,7 @@ mod tests {
             &herdr,
             &recorder,
             &mut failures,
+            &statuses,
         );
         let done = stored(&fixture, &fixture.task);
         assert_eq!(done.status, TaskStatus::Done);
@@ -1473,8 +1561,69 @@ mod tests {
             &herdr,
             &recorder,
             &mut failures,
+            &statuses,
         );
         assert_eq!(invocations(&gh_runner).len(), 3);
+    }
+
+    #[test]
+    fn checks_keep_the_ci_and_review_state_of_open_pull_requests_and_announce_changes() {
+        let fixture = in_review_fixture();
+        let running = r#"[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]"#;
+        let failing = r#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]"#;
+        let github = GitHub::new(Box::new(runner(vec![
+            viewed_with("OPEN", "main", running, "\"\""),
+            viewed_with("OPEN", "main", running, "\"\""),
+            viewed_with("OPEN", "main", failing, "\"CHANGES_REQUESTED\""),
+            Err(failed()),
+            viewed("MERGED", "main"),
+            merged_details(&[]),
+        ])));
+        let (herdr, _) = closing_herdr();
+        let recorder = Recorder::default();
+        let mut failures = HashMap::new();
+        let statuses = PullRequestStatusState::default();
+        let check = |failures: &mut HashMap<_, _>| {
+            check_pull_requests(
+                &fixture.storage,
+                &no_git(),
+                &github,
+                &herdr,
+                &recorder,
+                failures,
+                &statuses,
+            );
+        };
+        let status = |checks, review| types::TaskPullRequestStatus {
+            task_id: fixture.task.id.into(),
+            checks: Some(checks),
+            review,
+        };
+        let pending = status(types::ChecksStatus::Pending, types::ReviewStatus::Pending);
+        let failed = status(
+            types::ChecksStatus::Failing,
+            types::ReviewStatus::ChangesRequested,
+        );
+
+        // An unchanged state is announced once; a failed check keeps the last one.
+        for _ in 0..4 {
+            check(&mut failures);
+        }
+        assert_eq!(
+            *recorder.1.lock().unwrap(),
+            [vec![pending], vec![failed.clone()]]
+        );
+        assert_eq!(list(&statuses), [failed]);
+
+        // A merged pull request leaves no state behind.
+        check(&mut failures);
+        assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::Done);
+        assert!(recorder.1.lock().unwrap().last().unwrap().is_empty());
+        assert!(list(&statuses).is_empty());
+    }
+
+    fn list(statuses: &PullRequestStatusState) -> Vec<types::TaskPullRequestStatus> {
+        all_statuses(&lock_statuses(statuses))
     }
 
     #[test]
@@ -1486,6 +1635,7 @@ mod tests {
         ])));
         let recorder = Recorder::default();
         let mut failures = HashMap::new();
+        let statuses = PullRequestStatusState::default();
 
         check_pull_requests(
             &fixture.storage,
@@ -1494,6 +1644,7 @@ mod tests {
             &no_herdr(),
             &recorder,
             &mut failures,
+            &statuses,
         );
         assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
         assert_eq!(failures.keys().collect::<Vec<_>>(), [&fixture.task.id]);
@@ -1505,6 +1656,7 @@ mod tests {
             &no_herdr(),
             &recorder,
             &mut failures,
+            &statuses,
         );
         assert!(failures.is_empty());
         assert!(recorder.0.lock().unwrap().is_empty());
@@ -1526,6 +1678,7 @@ mod tests {
         let (git, github) = adapters(&git_runner, &gh_runner);
         let recorder = Recorder::default();
         let mut failures = HashMap::new();
+        let statuses = PullRequestStatusState::default();
 
         check_pull_requests(
             &fixture.storage,
@@ -1534,6 +1687,7 @@ mod tests {
             &no_herdr(),
             &recorder,
             &mut failures,
+            &statuses,
         );
         assert_eq!(stored(&fixture, &fixture.task), fixture.task);
         assert!(recorder.0.lock().unwrap().is_empty());
@@ -1545,6 +1699,7 @@ mod tests {
             &no_herdr(),
             &recorder,
             &mut failures,
+            &statuses,
         );
         let in_review = stored(&fixture, &fixture.task);
         assert_eq!(in_review.status, TaskStatus::InReview);
@@ -1667,6 +1822,7 @@ mod tests {
         let (git, github) = adapters(&git_runner, &gh_runner);
         let recorder = Recorder::default();
         let mut failures = HashMap::new();
+        let statuses = PullRequestStatusState::default();
 
         for _ in 0..2 {
             check_pull_requests(
@@ -1676,6 +1832,7 @@ mod tests {
                 &no_herdr(),
                 &recorder,
                 &mut failures,
+                &statuses,
             );
         }
 
@@ -1703,6 +1860,7 @@ mod tests {
         let (herdr, herdr_runner) = closing_herdr();
         let recorder = Recorder::default();
         let mut failures = HashMap::new();
+        let statuses = PullRequestStatusState::default();
 
         check_pull_requests(
             &fixture.storage,
@@ -1711,6 +1869,7 @@ mod tests {
             &herdr,
             &recorder,
             &mut failures,
+            &statuses,
         );
 
         let done = stored(&fixture, &fixture.task);
@@ -1734,6 +1893,7 @@ mod tests {
         let (git, github) = adapters(&git_runner, &gh_runner);
         let recorder = Recorder::default();
         let mut failures = HashMap::new();
+        let statuses = PullRequestStatusState::default();
 
         check_pull_requests(
             &fixture.storage,
@@ -1742,6 +1902,7 @@ mod tests {
             &no_herdr(),
             &recorder,
             &mut failures,
+            &statuses,
         );
         assert!(failures.is_empty());
         check_pull_requests(
@@ -1751,6 +1912,7 @@ mod tests {
             &no_herdr(),
             &recorder,
             &mut failures,
+            &statuses,
         );
         assert!(
             failures[&fixture.task.id].contains("merges into develop"),
