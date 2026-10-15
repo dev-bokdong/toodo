@@ -36,7 +36,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-background text-foreground">
-      <aside className="flex w-64 shrink-0 flex-col gap-4 border-r bg-sidebar p-3 text-sidebar-foreground">
+      <aside className="flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground">
         <h1 className="flex items-center gap-2 px-1 text-lg font-semibold tracking-tight">
           <span
             aria-hidden

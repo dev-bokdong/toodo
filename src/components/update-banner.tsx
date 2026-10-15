@@ -3,6 +3,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { Button } from "@/components/ui/button";
+import { tonePanel } from "@/lib/status-styles";
+import { cn } from "@/lib/utils";
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -55,7 +57,7 @@ export function UpdateBanner() {
     <div
       role="status"
       aria-label="App update"
-      className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
+      className={cn("mb-4 flex items-center justify-between gap-3 rounded-lg px-3 py-2", tonePanel.info)}
     >
       <div className="flex min-w-0 flex-col gap-0.5">
         <p className="text-sm font-medium">Toodo {available.version} is available</p>

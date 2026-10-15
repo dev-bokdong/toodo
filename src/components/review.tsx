@@ -35,16 +35,19 @@ import {
   type PeriodKind,
   type ReviewPeriod,
 } from "@/lib/review";
+import { toneChip, toneFill, toneText } from "@/lib/status-styles";
 import { formatDate } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 const outcomeStyles: Record<ReviewOutcome, string> = {
-  completed: "text-emerald-700 dark:text-emerald-300",
-  opened_for_review: "text-violet-700 dark:text-violet-300",
-  started: "text-amber-700 dark:text-amber-300",
-  worked_on: "text-sky-700 dark:text-sky-300",
-  planned: "text-muted-foreground",
+  completed: toneText.success,
+  opened_for_review: toneText.review,
+  started: toneText.progress,
+  worked_on: toneText.progress,
+  planned: toneText.neutral,
 };
+
+const notAdoptedChip = cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", toneChip.neutral);
 
 const periodKinds: { kind: PeriodKind; label: string }[] = [
   { kind: "week", label: "Week" },
@@ -126,7 +129,7 @@ export function Review() {
             <Button
               key={kind}
               size="sm"
-              variant={period.kind === kind ? "secondary" : "ghost"}
+              variant={period.kind === kind ? "default" : "ghost"}
               aria-pressed={period.kind === kind}
               onClick={() => switchKind(kind)}
             >
@@ -248,9 +251,7 @@ export function Review() {
                     <TaskTypeBadge type={task.taskType} />
                     <span className="truncate text-sm font-medium">{task.title}</span>
                     {task.resolution === "not_adopted" && (
-                      <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-200">
-                        Not adopted
-                      </span>
+                      <span className={notAdoptedChip}>Not adopted</span>
                     )}
                     <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                       {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; {formatDate(at)}
@@ -306,9 +307,9 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
           <div className="flex flex-col">
             <dt className="text-xs text-muted-foreground">Lines changed</dt>
             <dd className="text-lg font-semibold">
-              <span className="text-emerald-700 dark:text-emerald-300">+{year.pullRequests.additions}</span>
+              <span>+{year.pullRequests.additions}</span>
               <span className="text-muted-foreground"> / </span>
-              <span className="text-rose-700 dark:text-rose-300">-{year.pullRequests.deletions}</span>
+              <span>-{year.pullRequests.deletions}</span>
             </dd>
           </div>
           <div className="flex flex-col">
@@ -351,9 +352,7 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
                   <span
                     className={cn(
                       "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                      adopted
-                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-                        : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200",
+                      adopted ? toneChip.success : toneChip.neutral,
                     )}
                   >
                     {adopted ? "Adopted" : "Not adopted"}
@@ -421,7 +420,7 @@ function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewE
               <li key={late.task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                 <TaskTypeBadge type={late.task.taskType} />
                 <span className="truncate font-medium">{late.task.title}</span>
-                <span className="ml-auto shrink-0 text-xs text-rose-700 dark:text-rose-300">{lateDetails(late)}</span>
+                <span className={cn("ml-auto shrink-0 text-xs", toneText.danger)}>{lateDetails(late)}</span>
               </li>
             ))}
           </ul>
@@ -454,7 +453,7 @@ function ReviewSummaryPanel({
         {summary.notAdopted > 0 && (
           <div className="flex flex-col">
             <dt className="text-xs text-muted-foreground">Not adopted</dt>
-            <dd className="text-lg font-semibold text-rose-700 dark:text-rose-300">{summary.notAdopted}</dd>
+            <dd className={cn("text-lg font-semibold", toneText.neutral)}>{summary.notAdopted}</dd>
           </div>
         )}
         <div className="flex flex-col">
@@ -504,7 +503,7 @@ function ReviewSummaryPanel({
                 <span className="w-16 shrink-0 font-mono text-muted-foreground">{month}</span>
                 <span
                   aria-hidden
-                  className="h-2 rounded-sm bg-emerald-500/70"
+                  className={cn("h-2 rounded-sm", toneFill.success)}
                   style={{ width: `${(count / busiestMonth) * 60}%`, minWidth: count > 0 ? 4 : 0 }}
                 />
                 <span>{count}</span>

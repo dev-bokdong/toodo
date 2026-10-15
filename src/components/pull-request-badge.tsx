@@ -1,4 +1,5 @@
 import type { ChecksStatus, ReviewStatus, TaskId, TaskPullRequestStatus } from "@/lib/bindings";
+import { toneChip } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 const checksLabels: Record<ChecksStatus, string> = {
@@ -8,9 +9,9 @@ const checksLabels: Record<ChecksStatus, string> = {
 };
 
 const checksStyles: Record<ChecksStatus, string> = {
-  passing: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
-  failing: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200",
-  pending: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200",
+  passing: toneChip.success,
+  failing: toneChip.danger,
+  pending: toneChip.info,
 };
 
 const reviewLabels: Record<ReviewStatus, string> = {
@@ -20,9 +21,9 @@ const reviewLabels: Record<ReviewStatus, string> = {
 };
 
 const reviewStyles: Record<ReviewStatus, string> = {
-  approved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
-  changes_requested: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
-  pending: "bg-muted text-muted-foreground",
+  approved: toneChip.success,
+  changes_requested: toneChip.attention,
+  pending: toneChip.neutral,
 };
 
 const pillClass = "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium";

@@ -15,7 +15,7 @@ export function ThemeToggle() {
       {options.map(({ value, label, Icon }) => (
         <Button
           key={value}
-          variant={preference === value ? "secondary" : "ghost"}
+          variant={preference === value ? "default" : "ghost"}
           size="icon-sm"
           aria-label={label}
           aria-pressed={preference === value}
