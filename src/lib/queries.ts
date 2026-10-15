@@ -10,6 +10,8 @@ import {
   type NewSshHost,
   type NewTask,
   type NewWorkspace,
+  type Task,
+  type TaskAgentStatus,
   type TaskEdit,
   type TaskId,
   type Timestamp,
@@ -17,6 +19,7 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
+import { agentAlerts, notify } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
 
@@ -231,9 +234,19 @@ export function useHerdrEvents() {
           queryClient.invalidateQueries({ queryKey: ["tasks"] }),
         ]),
       ),
-      events.agentStatusesChanged.listen(({ payload }) =>
-        queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses),
-      ),
+      events.agentStatusesChanged.listen(({ payload }) => {
+        const previous = queryClient.getQueryData<TaskAgentStatus[]>(queryKeys.agentStatuses);
+        queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses);
+        // Without a previous snapshot nothing is known to have changed. The app being
+        // in focus means the user already sees the new status on the task.
+        if (previous === undefined || document.hasFocus()) {
+          return;
+        }
+        const tasks = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+        notify(agentAlerts(previous, payload.statuses, tasks)).catch((error: unknown) =>
+          console.error("toodo: failed to show agent notifications", error),
+        );
+      }),
     ];
     return () => {
       for (const subscription of subscriptions) {
