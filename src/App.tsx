@@ -9,7 +9,7 @@ import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { UpdateBanner } from "@/components/update-banner";
+import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
@@ -88,11 +88,14 @@ export default function App() {
           <AgentAccessPanel />
           <BackupPanel />
         </div>
-        <div className="flex items-center justify-between gap-2 px-1">
+        <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1">
           <p className="text-xs text-muted-foreground">
             {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
           </p>
-          <ThemeToggle />
+          <UpdateCheck />
+          <div className="ml-auto">
+            <ThemeToggle />
+          </div>
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
