@@ -1575,6 +1575,22 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Resume #2" })).toBeDisabled();
   });
 
+  it("shows which prerequisites a planned task waits on", async () => {
+    const done = task(1, 1, "Add storage", { status: "done", resolution: "merged" });
+    const open = task(2, 1, "Add login");
+    const blocked = task(3, 1, "Verify login", { dependsOn: [1, 2] });
+    const ready = task(4, 1, "Add logout", { dependsOn: [1] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done, open, blocked, ready] });
+    await renderWorkspace();
+
+    const note = await screen.findByRole("note", { name: "Waiting prerequisites of #3" });
+    expect(note).toHaveTextContent(/^Waiting on #2$/);
+    expect(note).toHaveClass("text-muted-foreground");
+    expect(screen.getByRole("button", { name: "Start #3" })).toBeDisabled();
+    expect(screen.queryByRole("note", { name: "Waiting prerequisites of #4" })).not.toBeInTheDocument();
+  });
+
   it("asks before a prerequisite stops the running agent of a task", async () => {
     const fix = task(1, 1, "Fix login");
     const started = task(2, 1, "Verify login", {
