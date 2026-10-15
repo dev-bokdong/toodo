@@ -4,9 +4,10 @@
 //! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
 //! in the app data directory. Agents can read workspaces and tasks, create and edit
 //! tasks, and connect dependencies; starting, completing, and deleting tasks stay in the
-//! app.
+//! app. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
 
 mod tools;
+pub mod tunnels;
 
 use std::fs;
 use std::io;

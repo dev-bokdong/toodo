@@ -139,6 +139,7 @@ export const commands = {
 	createIssue: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("create_issue", { id })),
 	listAgentStatuses: () => __TAURI_INVOKE<TaskAgentStatus[]>("list_agent_statuses"),
 	mcpServerInfo: () => __TAURI_INVOKE<McpServerInfo>("mcp_server_info"),
+	listMcpTunnels: () => __TAURI_INVOKE<McpTunnel[]>("list_mcp_tunnels"),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
@@ -287,6 +288,16 @@ export type McpServerInfo = {
 	/**  Why the server is not running, e.g. its port is taken. */
 	error: string | null,
 };
+
+/**  The reverse tunnel that lets agents on one SSH machine reach the MCP server. */
+export type McpTunnel = {
+	machine: string,
+	state: McpTunnelState,
+	/**  Why the last tunnel ended, until a new one is open. */
+	error: string | null,
+};
+
+export type McpTunnelState = "connecting" | "open" | "retrying";
 
 /**  A remote machine to append to the user's SSH config. */
 export type NewSshHost = {

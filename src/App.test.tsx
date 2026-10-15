@@ -63,6 +63,7 @@ vi.mock("@/lib/bindings", () => ({
     listAgentStatuses: vi.fn(),
     listBackups: vi.fn(),
     mcpServerInfo: vi.fn(),
+    listMcpTunnels: vi.fn(),
     getBackupSettings: vi.fn(),
     saveBackupSettings: vi.fn(),
     exportDatabase: vi.fn(),
@@ -165,6 +166,7 @@ describe("App", () => {
     mocked.listAgentStatuses.mockResolvedValue([]);
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
     mocked.mcpServerInfo.mockResolvedValue({ url: "http://127.0.0.1:47615/mcp", token: "secret", error: null });
+    mocked.listMcpTunnels.mockResolvedValue([]);
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
@@ -1015,6 +1017,22 @@ describe("App", () => {
         },
       },
     });
+  });
+
+  it("shows the tunnels to remote machines", async () => {
+    mocked.listMcpTunnels.mockResolvedValue([
+      { machine: "devbox", state: "open", error: null },
+      { machine: "gpu", state: "retrying", error: "Error: remote port forwarding failed for listen port 47615" },
+    ]);
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    const panel = await screen.findByRole("region", { name: "Agent access", hidden: true });
+    const devbox = await within(panel).findByRole("listitem", { name: "Tunnel to devbox", hidden: true });
+    expect(devbox).toHaveTextContent("Connected");
+    const gpu = within(panel).getByRole("listitem", { name: "Tunnel to gpu", hidden: true });
+    expect(gpu).toHaveTextContent("Retrying");
+    expect(gpu).toHaveTextContent("remote port forwarding failed");
   });
 
   it("shows why the MCP server is not running", async () => {
