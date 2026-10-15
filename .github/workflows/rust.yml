@@ -1,0 +1,58 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - "src-tauri/**"
+      - "src/lib/bindings.ts"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "src/lib/bindings.ts"
+      - ".github/workflows/rust.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  rust:
+    name: Rust
+    # Toodo targets Windows, so the backend (including its cfg(windows) code) is checked there.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Check that the TypeScript bindings are up to date
+        run: git diff --exit-code -- ../src/lib/bindings.ts
