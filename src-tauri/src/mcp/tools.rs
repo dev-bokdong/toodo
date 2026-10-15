@@ -4,10 +4,9 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::adapters::herdr::Herdr;
 use crate::commands::tasks::edit_task;
 use crate::commands::types::{self, Task, TaskEdit, TaskId, TaskType, Workspace, WorkspaceId};
-use crate::commands::{CommandError, CommandResult, StorageState};
+use crate::commands::{CommandError, CommandResult};
 use crate::domain::model::NoteKind;
 use crate::storage::{self, Storage, StorageError};
 
@@ -180,25 +179,17 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
 
 /// Adds the edges in one step and returns the dependent task. Self and cyclic edges are
 /// rejected, and one rejected edge adds none. An `in_progress` task that a prerequisite
-/// blocks is paused and its herdr workspace closed.
-pub fn add_dependencies(
-    storage: &StorageState,
-    herdr: &Herdr,
-    request: AddDependencies,
-) -> CommandResult<Task> {
+/// blocks is paused; its herdr workspace stays open, and the app asks the user whether to
+/// close it, since that ends the agent's session.
+pub fn add_dependencies(storage: &mut Storage, request: AddDependencies) -> CommandResult<Task> {
     if request.depends_on.is_empty() {
         return Err(CommandError::invalid_input(
             "depends_on must name at least one task",
         ));
     }
     let depends_on: Vec<_> = request.depends_on.iter().map(|&id| id.into()).collect();
-    let task = crate::commands::herdr::add_dependencies(
-        storage,
-        herdr,
-        request.task_id.into(),
-        &depends_on,
-    )?;
-    Ok((&task).into())
+    let added = storage.add_dependencies(request.task_id.into(), &depends_on)?;
+    Ok((&added.task).into())
 }
 
 pub fn remove_dependency(storage: &mut Storage, request: Dependency) -> CommandResult<Task> {
@@ -226,7 +217,7 @@ fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{CommandErrorKind, lock};
+    use crate::commands::CommandErrorKind;
     use crate::domain::model::{self, HostPath, WorkspaceLocation};
     use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::NewWorkspace;
@@ -290,36 +281,22 @@ mod tests {
         assert!(storage.list_all_tasks().unwrap().is_empty());
     }
 
-    /// herdr that is never called: planned tasks are not paused.
-    fn idle_herdr() -> Herdr {
-        Herdr::new(Box::new(std::sync::Arc::new(
-            crate::adapters::git::fake::FakeRunner::new([]),
-        )))
-    }
-
     #[test]
     fn a_dependency_that_closes_a_cycle_is_rejected() {
         let (mut storage, workspace) = storage_with_workspace();
         let first = create(&mut storage, workspace, "Schema", vec![]).unwrap();
         let second = create(&mut storage, workspace, "API", vec![first.id]).unwrap();
-        let storage = std::sync::Mutex::new(storage);
-        let herdr = idle_herdr();
         let request = AddDependencies {
             task_id: first.id,
             depends_on: vec![second.id],
         };
-        let error = add_dependencies(&storage, &herdr, request.clone()).unwrap_err();
+        let error = add_dependencies(&mut storage, request.clone()).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("cycle"), "{}", error.message);
-        assert!(
-            get_task(&lock(&storage), first.id)
-                .unwrap()
-                .depends_on
-                .is_empty()
-        );
+        assert!(get_task(&storage, first.id).unwrap().depends_on.is_empty());
 
         let removed = remove_dependency(
-            &mut lock(&storage),
+            &mut storage,
             Dependency {
                 task_id: second.id,
                 depends_on: first.id,
@@ -328,9 +305,7 @@ mod tests {
         .unwrap();
         assert!(removed.depends_on.is_empty());
         assert_eq!(
-            add_dependencies(&storage, &herdr, request)
-                .unwrap()
-                .depends_on,
+            add_dependencies(&mut storage, request).unwrap().depends_on,
             vec![second.id]
         );
     }
@@ -341,12 +316,9 @@ mod tests {
         let task = create(&mut storage, workspace, "Verify", vec![]).unwrap();
         let fix = create(&mut storage, workspace, "Fix login", vec![]).unwrap();
         let docs = create(&mut storage, workspace, "Fix docs", vec![]).unwrap();
-        let storage = std::sync::Mutex::new(storage);
-        let herdr = idle_herdr();
 
         let error = add_dependencies(
-            &storage,
-            &herdr,
+            &mut storage,
             AddDependencies {
                 task_id: task.id,
                 depends_on: vec![],
@@ -355,8 +327,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
         let updated = add_dependencies(
-            &storage,
-            &herdr,
+            &mut storage,
             AddDependencies {
                 task_id: task.id,
                 depends_on: vec![fix.id, docs.id],
@@ -364,6 +335,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated.depends_on, vec![fix.id, docs.id]);
+    }
+
+    #[test]
+    fn a_blocking_prerequisite_pauses_the_task_but_leaves_its_herdr_workspace_open() {
+        use crate::domain::status::TaskStatus;
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Verify", vec![]).unwrap();
+        let fix = create(&mut storage, workspace, "Fix login", vec![]).unwrap();
+        storage
+            .set_task_status(task.id.into(), TaskStatus::InProgress)
+            .unwrap();
+        storage
+            .set_task_herdr_workspace(task.id.into(), "w1")
+            .unwrap();
+
+        add_dependencies(
+            &mut storage,
+            AddDependencies {
+                task_id: task.id,
+                depends_on: vec![fix.id],
+            },
+        )
+        .unwrap();
+
+        let paused = storage.get_task(task.id.into()).unwrap().unwrap();
+        assert_eq!(paused.status, TaskStatus::Planned);
+        assert_eq!(paused.herdr_workspace_id.as_deref(), Some("w1"));
     }
 
     #[test]

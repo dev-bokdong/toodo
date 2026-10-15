@@ -20,7 +20,7 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
-import { agentAlerts, notify, pullRequestAlerts, type AgentAlert } from "@/lib/agent-alerts";
+import { agentAlerts, notify, pausedAlerts, pullRequestAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
 
@@ -322,13 +322,21 @@ export function useHerdrEvents() {
     }
 
     const subscriptions = [
-      events.tasksChanged.listen(() =>
-        Promise.all([
+      events.tasksChanged.listen(async () => {
+        const previous = queryClient.getQueryData<Task[]>(queryKeys.tasks);
+        await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
           // A task completed in the background got the commits of its pull request.
           queryClient.invalidateQueries({ queryKey: ["tasks"] }),
-        ]),
-      ),
+        ]);
+        if (previous === undefined || document.hasFocus()) {
+          return;
+        }
+        const next = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+        notify(pausedAlerts(previous, next)).catch((error: unknown) =>
+          console.error("toodo: failed to show pause notifications", error),
+        );
+      }),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),
@@ -477,6 +485,11 @@ function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
 /** Pauses a started task: it becomes planned again and keeps its branch and worktree. */
 export function usePauseTask() {
   return useTasksMutation((id: TaskId) => unwrap(commands.pauseTask(id)));
+}
+
+/** Closes the herdr workspace of a paused task; its worktree is kept for resuming. */
+export function useCloseTaskWorkspace() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.closeTaskWorkspace(id)));
 }
 
 /** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */

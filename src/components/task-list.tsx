@@ -34,6 +34,7 @@ import {
   machineOf,
   useAddDependency,
   useAgentStatuses,
+  useCloseTaskWorkspace,
   useBranchFreshness,
   usePullRequestStatuses,
   useCommitRecords,
@@ -430,7 +431,10 @@ function TaskRow({
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const restoreWorktree = useRestoreTaskWorktree();
+  const closeWorkspace = useCloseTaskWorkspace();
   const [editing, setEditing] = useState(false);
+  // The user chose to keep the herdr workspace of this paused task open for now.
+  const [keepingWorkspace, setKeepingWorkspace] = useState(false);
   const [concluding, setConcluding] = useState(false);
   const [linkingIssue, setLinkingIssue] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
@@ -471,6 +475,7 @@ function TaskRow({
     pauseTask.error ??
     deleteTask.error ??
     restoreWorktree.error ??
+    closeWorkspace.error ??
     addDependency.error ??
     removeDependency.error;
   const candidates = tasks.filter(
@@ -628,6 +633,15 @@ function TaskRow({
         >
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
+      )}
+      {paused && waitingOn.length > 0 && task.herdrWorkspaceId !== null && (
+        <OpenWorkspaceNote
+          taskId={task.id}
+          collapsed={keepingWorkspace}
+          disabled={!herdrRunning || closeWorkspace.isPending}
+          onClose={() => closeWorkspace.mutate(task.id)}
+          onKeep={() => setKeepingWorkspace(true)}
+        />
       )}
       {hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       <TaskTimeline task={task} detailed={detailed} />
@@ -1221,6 +1235,65 @@ function TaskIssue({
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * Asks whether to close the herdr workspace that a task paused on a new prerequisite still
+ * has, e.g. because an agent added the prerequisite through MCP. Collapsed after "Keep
+ * open", it still offers to close it.
+ */
+function OpenWorkspaceNote({
+  taskId,
+  collapsed,
+  disabled,
+  onClose,
+  onKeep,
+}: {
+  taskId: TaskId;
+  collapsed: boolean;
+  disabled: boolean;
+  onClose: () => void;
+  onKeep: () => void;
+}) {
+  const close = (
+    <Button
+      size="xs"
+      variant="outline"
+      aria-label={`Close herdr workspace of #${taskId}`}
+      title="Close the herdr workspace, which ends its agent session; the worktree is kept"
+      disabled={disabled}
+      onClick={onClose}
+    >
+      <X />
+      Close workspace
+    </Button>
+  );
+  if (collapsed) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>herdr workspace still open</span>
+        {close}
+      </div>
+    );
+  }
+  return (
+    <div
+      role="group"
+      aria-label={`Herdr workspace of paused #${taskId}`}
+      className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
+    >
+      <p>
+        Paused for a new prerequisite, but its herdr workspace is still open. Close it? This ends its agent
+        session; the worktree is kept for resuming.
+      </p>
+      <div className="flex gap-2">
+        {close}
+        <Button size="xs" variant="ghost" aria-label={`Keep herdr workspace of #${taskId} open`} onClick={onKeep}>
+          Keep open
+        </Button>
+      </div>
+    </div>
   );
 }
 
