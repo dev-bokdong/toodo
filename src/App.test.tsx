@@ -79,6 +79,7 @@ vi.mock("@/lib/bindings", () => ({
     tasksChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
+    updateCheckRequested: { listen: vi.fn() },
   },
 }));
 
@@ -190,6 +191,7 @@ describe("App", () => {
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
   });
 
   it("shows the backend version once the app info command resolves", async () => {

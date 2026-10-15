@@ -1,8 +1,13 @@
-import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { RefreshCw } from "lucide-react";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { Button } from "@/components/ui/button";
+import { events } from "@/lib/bindings";
+import { cn } from "@/lib/utils";
+
+const UPDATE_QUERY_KEY = ["app-update"];
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -19,7 +24,7 @@ async function checkForUpdate(): Promise<Update | null> {
 
 export function UpdateBanner() {
   const update = useQuery({
-    queryKey: ["app-update"],
+    queryKey: UPDATE_QUERY_KEY,
     queryFn: checkForUpdate,
     refetchInterval: CHECK_INTERVAL_MS,
     // Closing the window hides the app to the tray, which can leave the document hidden
@@ -73,5 +78,56 @@ export function UpdateBanner() {
           : "Install and restart"}
       </Button>
     </div>
+  );
+}
+
+/**
+ * Checks for an app update on demand, from this button or the tray menu, and says what it
+ * found; unlike the background check, a failure is shown since the user asked for it.
+ * An available update is stored where `UpdateBanner` shows it.
+ */
+export function UpdateCheck() {
+  const queryClient = useQueryClient();
+  const manual = useMutation({
+    mutationFn: () => check(),
+    onSuccess: (found) => queryClient.setQueryData(UPDATE_QUERY_KEY, found),
+  });
+  const run = manual.mutate;
+
+  useEffect(() => {
+    const subscription = events.updateCheckRequested.listen(() => run());
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, [run]);
+
+  const result = manual.isPending
+    ? "Checking for updates..."
+    : manual.isError
+      ? `Update check failed: ${manual.error instanceof Error ? manual.error.message : String(manual.error)}`
+      : manual.isSuccess
+        ? manual.data
+          ? `Toodo ${manual.data.version} is available`
+          : "Toodo is up to date"
+        : null;
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-label="Check for updates"
+        title="Check for updates"
+        disabled={manual.isPending}
+        onClick={() => run()}
+      >
+        <RefreshCw className={cn(manual.isPending && "animate-spin")} />
+      </Button>
+      {result && (
+        <p role="status" aria-label="Update check" className="order-last basis-full text-xs break-words text-muted-foreground">
+          {result}
+        </p>
+      )}
+    </>
   );
 }

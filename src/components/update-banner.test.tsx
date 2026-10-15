@@ -1,25 +1,29 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
-import { UpdateBanner } from "@/components/update-banner";
+import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
+import { events } from "@/lib/bindings";
 
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
+vi.mock("@/lib/bindings", () => ({ events: { updateCheckRequested: { listen: vi.fn() } } }));
 
 const mockedCheck = vi.mocked(check);
 const mockedRelaunch = vi.mocked(relaunch);
+const mockedListen = vi.mocked(events.updateCheckRequested.listen);
 
 function availableUpdate(downloadAndInstall: Update["downloadAndInstall"]): Update {
   return { version: "0.2.0", currentVersion: "0.1.0", downloadAndInstall } as Update;
 }
 
-function renderBanner() {
+function renderBanner(withCheck = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
       <UpdateBanner />
+      {withCheck && <UpdateCheck />}
     </QueryClientProvider>,
   );
 }
@@ -27,6 +31,7 @@ function renderBanner() {
 describe("UpdateBanner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mockedListen.mockResolvedValue(() => {});
   });
 
   it("stays hidden when no update is available", async () => {
@@ -75,5 +80,50 @@ describe("UpdateBanner", () => {
     expect(await screen.findByText("Update failed: signature mismatch")).toBeInTheDocument();
     expect(mockedRelaunch).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Install and restart" })).toBeEnabled();
+  });
+});
+
+describe("UpdateCheck", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockedListen.mockResolvedValue(() => {});
+  });
+
+  it("says the app is up to date when a manual check finds nothing", async () => {
+    mockedCheck.mockResolvedValue(null);
+    renderBanner(true);
+    await waitFor(() => expect(mockedCheck).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+
+    expect(await screen.findByRole("status", { name: "Update check" })).toHaveTextContent("Toodo is up to date");
+    expect(mockedCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows why a manual check failed", async () => {
+    mockedCheck.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error("offline"));
+    renderBanner(true);
+    await waitFor(() => expect(mockedCheck).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+
+    expect(await screen.findByRole("status", { name: "Update check" })).toHaveTextContent(
+      "Update check failed: offline",
+    );
+  });
+
+  it("shows the banner when the tray menu asks for a check that finds an update", async () => {
+    mockedCheck.mockResolvedValueOnce(null).mockResolvedValueOnce(availableUpdate(vi.fn()));
+    renderBanner(true);
+    await waitFor(() => expect(mockedCheck).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("status", { name: "App update" })).not.toBeInTheDocument();
+
+    const [[onRequested]] = mockedListen.mock.calls;
+    act(() => {
+      onRequested({ event: "update-check-requested", id: 1, payload: null });
+    });
+
+    expect(await screen.findByRole("status", { name: "App update" })).toHaveTextContent("Toodo 0.2.0 is available");
+    expect(screen.getByRole("status", { name: "Update check" })).toHaveTextContent("Toodo 0.2.0 is available");
   });
 });
