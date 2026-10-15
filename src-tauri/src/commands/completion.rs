@@ -98,15 +98,15 @@ pub fn conclude_task(
 
 /// An `in_progress` or `in_review` task with the workspace and worktree its git commands
 /// run in.
-struct Checkout {
-    task: model::Task,
-    location: WorkspaceLocation,
-    base: String,
-    branch: String,
-    worktree: String,
+pub(super) struct Checkout {
+    pub(super) task: model::Task,
+    pub(super) location: WorkspaceLocation,
+    pub(super) base: String,
+    pub(super) branch: String,
+    pub(super) worktree: String,
 }
 
-fn checkout(storage: &StorageState, id: model::TaskId) -> CommandResult<Checkout> {
+pub(super) fn checkout(storage: &StorageState, id: model::TaskId) -> CommandResult<Checkout> {
     let storage = lock(storage);
     let task = storage
         .get_task(id)?

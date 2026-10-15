@@ -127,6 +127,13 @@ export const commands = {
 	 */
 	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("conclude_task", { id, note })),
 	/**
+	 *  Counts the commits of the base branch (fetched from `origin` first) that the task's
+	 *  branch lacks, and asks GitHub whether its pull request, if any, merges without
+	 *  conflicts. A failing fetch or pull request lookup is reported in the result rather
+	 *  than failing the whole check.
+	 */
+	branchFreshness: (id: TaskId) => typedError<BranchFreshness, CommandError>(__TAURI_INVOKE("branch_freshness", { id })),
+	/**
 	 *  Links issue `number` of the workspace repository to a task that is not done, after
 	 *  checking that the issue exists; `null` unlinks the current issue. An open pull
 	 *  request of the task gets a closing reference to the issue.
@@ -204,6 +211,26 @@ export type BackupSettings = {
 	intervalHours: number,
 	/**  Number of automatic backups kept; older ones are deleted. */
 	keep: number,
+};
+
+/**
+ *  How far an `in_progress` or `in_review` task's branch has fallen behind its base
+ *  branch, e.g. after a prerequisite was merged into the base.
+ */
+export type BranchFreshness = {
+	/**  The revision counted against: `origin/<base>` when it exists, else `<base>`. */
+	base: string,
+	/**  Commits on the base that the branch does not contain. */
+	behind: number,
+	/**  Why fetching `origin` failed; `behind` is then against the last fetched base. */
+	fetchError: string | null,
+	/**
+	 *  Whether the task's pull request merges without conflicts; `None` without a pull
+	 *  request or when it could not be read.
+	 */
+	mergeable: MergeState | null,
+	/**  Why the pull request could not be read. */
+	mergeableError: string | null,
 };
 
 /**  Branches of a workspace repository a base branch can be picked from. */
@@ -299,6 +326,12 @@ export type McpTunnel = {
 };
 
 export type McpTunnelState = "connecting" | "open" | "retrying";
+
+/**
+ *  Whether GitHub can merge a pull request into its base without conflicts; `unknown`
+ *  until GitHub has computed it, and for a pull request that is no longer open.
+ */
+export type MergeState = "mergeable" | "conflicting" | "unknown";
 
 /**  A remote machine to append to the user's SSH config. */
 export type NewSshHost = {

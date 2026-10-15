@@ -50,6 +50,7 @@ vi.mock("@/lib/bindings", () => ({
     restoreTaskWorktree: vi.fn(),
     listCommitRecords: vi.fn(),
     refreshCommitRecords: vi.fn(),
+    branchFreshness: vi.fn(),
     openPullRequest: vi.fn(),
     completeTask: vi.fn(),
     concludeTask: vi.fn(),
@@ -161,6 +162,10 @@ describe("App", () => {
       data: { machine, worktreeRoot: null },
     }));
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    mocked.branchFreshness.mockResolvedValue({
+      status: "ok",
+      data: { base: "origin/main", behind: 0, fetchError: null, mergeable: null, mergeableError: null },
+    });
     mocked.listSshHosts.mockResolvedValue({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [] });
     mocked.listAgentStatuses.mockResolvedValue([]);
@@ -1221,6 +1226,45 @@ describe("App", () => {
 
     expect(await screen.findByText("Locked while #3 is in review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Change base branch" })).toBeDisabled();
+  });
+
+  it("warns when a started task's branch is behind its base or conflicts with it", async () => {
+    const worktree = { branch: "feat/x", worktreePath: "D:\\wt\\toodo\\x", herdrWorkspaceId: "w1" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Behind", { status: "in_progress", ...worktree }),
+        task(2, 1, "Conflicting", {
+          status: "in_review",
+          ...worktree,
+          pullRequestUrl: "https://github.com/acme/toodo/pull/2",
+        }),
+        task(3, 1, "Fresh", { status: "in_progress", ...worktree }),
+      ],
+    });
+    mocked.branchFreshness.mockImplementation((id) =>
+      Promise.resolve({
+        status: "ok",
+        data: {
+          base: "origin/main",
+          behind: id === 3 ? 0 : 3,
+          fetchError: null,
+          mergeable: id === 2 ? "conflicting" : null,
+          mergeableError: null,
+        },
+      }),
+    );
+    await renderWorkspace();
+
+    expect(await screen.findByRole("note", { name: "Base freshness of #1" })).toHaveTextContent(
+      "3 commits behind origin/main",
+    );
+    expect(await screen.findByRole("note", { name: "Base freshness of #2" })).toHaveTextContent(
+      "3 commits behind origin/main; pull request has merge conflicts",
+    );
+    expect(screen.queryByRole("note", { name: "Base freshness of #3" })).not.toBeInTheDocument();
+    expect(mocked.branchFreshness).toHaveBeenCalledWith(3);
   });
 
   it("records commits, opens a pull request, and completes the task once it is merged", async () => {

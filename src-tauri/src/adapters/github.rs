@@ -40,6 +40,15 @@ pub struct PullRequest {
     pub merged_at: Option<i64>,
 }
 
+/// Whether GitHub can merge a pull request into its base without conflicts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeState {
+    Mergeable,
+    Conflicting,
+    /// GitHub has not computed it yet, or the pull request is no longer open.
+    Unknown,
+}
+
 /// Fields requested with `--json` for a [`PullRequest`].
 const PULL_REQUEST_FIELDS: &str = "url,state,baseRefName,mergedAt";
 
@@ -396,6 +405,21 @@ impl GitHub {
     }
 }
 
+impl GitHub {
+    /// Whether the pull request at `url` merges into its base without conflicts.
+    pub fn mergeable(&self, url: &str) -> Result<MergeState, GitError> {
+        let invocation = invocation(&["pr", "view", url, "--json", "mergeable"]);
+        let output = self.runner.run(&invocation)?;
+        let value: Option<Value> = serde_json::from_str(&output).ok();
+        match value.as_ref().and_then(|value| value["mergeable"].as_str()) {
+            Some("MERGEABLE") => Ok(MergeState::Mergeable),
+            Some("CONFLICTING") => Ok(MergeState::Conflicting),
+            Some("UNKNOWN") => Ok(MergeState::Unknown),
+            _ => Err(unexpected(&invocation, &output)),
+        }
+    }
+}
+
 fn invocation(args: &[&str]) -> Invocation {
     Invocation {
         program: "gh",
@@ -438,6 +462,27 @@ mod tests {
             base: base.to_owned(),
             merged_at: (state == PullRequestState::Merged).then_some(MERGED_AT_SECONDS),
         }
+    }
+
+    #[test]
+    fn mergeable_reads_whether_the_pull_request_conflicts() {
+        let (github, runner) = github(vec![
+            Ok(r#"{"mergeable":"MERGEABLE"}"#.to_owned()),
+            Ok(r#"{"mergeable":"CONFLICTING"}"#.to_owned()),
+            Ok(r#"{"mergeable":"UNKNOWN"}"#.to_owned()),
+            Ok(r#"{"mergeable":null}"#.to_owned()),
+        ]);
+        assert_eq!(github.mergeable(URL).unwrap(), MergeState::Mergeable);
+        assert_eq!(github.mergeable(URL).unwrap(), MergeState::Conflicting);
+        assert_eq!(github.mergeable(URL).unwrap(), MergeState::Unknown);
+        assert!(matches!(
+            github.mergeable(URL),
+            Err(GitError::UnexpectedOutput { .. })
+        ));
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0].args,
+            ["pr", "view", URL, "--json", "mergeable"].map(str::to_owned)
+        );
     }
 
     #[test]

@@ -50,6 +50,7 @@ export const queryKeys = {
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
   branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
+  branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
   herdrMachines: ["herdr-machines"] as const,
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
@@ -201,6 +202,21 @@ export function useWorkspaceBranches(workspace: WorkspaceId, enabled: boolean) {
     queryFn: () => unwrap(commands.listWorkspaceBranches(workspace)),
     enabled,
     staleTime: 0,
+  });
+}
+
+/**
+ * How far a started task's branch is behind its base and whether its pull request conflicts.
+ * Each check fetches the base from origin, so it runs every few minutes rather than on every render.
+ */
+export function useBranchFreshness(taskId: TaskId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.branchFreshness(taskId),
+    queryFn: () => unwrap(commands.branchFreshness(taskId)),
+    enabled,
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    retry: false,
   });
 }
 

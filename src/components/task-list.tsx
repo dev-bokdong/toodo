@@ -33,6 +33,7 @@ import {
   machineOf,
   useAddDependency,
   useAgentStatuses,
+  useBranchFreshness,
   useCommitRecords,
   useCompleteTask,
   useConcludeTask,
@@ -621,6 +622,7 @@ function TaskRow({
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
       )}
+      {hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       <TaskTimeline task={task} detailed={detailed} />
       {detailed && task.branch && (
         <DetailField label="Branch">
@@ -863,6 +865,52 @@ function TaskRow({
 }
 
 /** The status of `task` as a pill with a colored dot. */
+/** Warns when a started task's branch is behind its base, e.g. after a prerequisite was merged. */
+function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
+  const freshness = useBranchFreshness(taskId, true);
+  const label = `Base freshness of #${taskId}`;
+  if (freshness.error) {
+    return (
+      <p role="note" aria-label={label} className="text-xs text-muted-foreground" title={freshness.error.message}>
+        Could not check whether the branch is behind its base
+      </p>
+    );
+  }
+  const data = freshness.data;
+  const conflicting = data?.mergeable === "conflicting";
+  if (!data || (data.behind === 0 && !conflicting)) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (data.behind > 0) {
+    parts.push(`${data.behind} ${data.behind === 1 ? "commit" : "commits"} behind ${data.base}`);
+  }
+  if (conflicting) {
+    parts.push("pull request has merge conflicts");
+  } else if (data.mergeable === "mergeable") {
+    parts.push("no merge conflicts");
+  }
+  return (
+    <p
+      role="note"
+      aria-label={label}
+      data-conflicting={conflicting || undefined}
+      className={cn(
+        "text-xs",
+        conflicting ? "text-rose-700 dark:text-rose-300" : "text-amber-700 dark:text-amber-300",
+      )}
+      title={
+        [data.fetchError && `Fetching origin failed: ${data.fetchError}`, data.mergeableError]
+          .filter(Boolean)
+          .join("\n") || undefined
+      }
+    >
+      {parts.join("; ")}
+      {data.fetchError && " (not up to date: fetching origin failed)"}
+    </p>
+  );
+}
+
 function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
   return (
     <span
