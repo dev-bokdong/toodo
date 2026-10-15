@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { formatDate } from "@/lib/timeline";
 import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
@@ -156,6 +156,12 @@ async function renderWorkspace(name: RegExp = /^toodo/) {
 }
 
 describe("App", () => {
+  // The timeline and Markdown are lazy-loaded; transform them once here so no test pays for
+  // that within its timeout.
+  beforeAll(async () => {
+    await Promise.all([import("@/components/task-graph"), import("@/components/markdown")]);
+  });
+
   beforeEach(() => {
     vi.useRealTimers();
     vi.resetAllMocks();
