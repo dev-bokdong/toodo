@@ -24,6 +24,7 @@ import { TaskGraph } from "@/components/task-graph";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
+import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type { Task, TaskId, TaskStatus, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
@@ -34,6 +35,7 @@ import {
   useAddDependency,
   useAgentStatuses,
   useBranchFreshness,
+  usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
   useConcludeTask,
@@ -417,6 +419,7 @@ function TaskRow({
 }) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
+  const pullRequestStatuses = usePullRequestStatuses();
   const startTask = useStartTask();
   const openTask = useOpenTaskInHerdr();
   const refreshCommits = useRefreshCommitRecords();
@@ -438,6 +441,9 @@ function TaskRow({
   const active = task.status === "in_progress" || inReview;
   const hasWorktree = active && task.worktreePath !== null;
   const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
+  const pullRequestStatus = inReview
+    ? pullRequestStatuses.data?.find((entry) => entry.taskId === task.id)
+    : undefined;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
   const paused = isPaused(task);
@@ -502,6 +508,7 @@ function TaskRow({
                 {task.title}
               </span>
             )}
+            {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
           </div>
           {detailed && <h3 className="text-base font-semibold leading-snug break-words">{task.title}</h3>}

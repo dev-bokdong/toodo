@@ -62,6 +62,7 @@ vi.mock("@/lib/bindings", () => ({
     addSshHost: vi.fn(),
     listRemoteDirectories: vi.fn(),
     listAgentStatuses: vi.fn(),
+    listPullRequestStatuses: vi.fn(),
     listBackups: vi.fn(),
     mcpServerInfo: vi.fn(),
     listMcpTunnels: vi.fn(),
@@ -75,6 +76,7 @@ vi.mock("@/lib/bindings", () => ({
   events: {
     tasksChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
+    pullRequestStatusesChanged: { listen: vi.fn() },
   },
 }));
 
@@ -169,12 +171,14 @@ describe("App", () => {
     mocked.listSshHosts.mockResolvedValue({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [] });
     mocked.listAgentStatuses.mockResolvedValue([]);
+    mocked.listPullRequestStatuses.mockResolvedValue([]);
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
     mocked.mcpServerInfo.mockResolvedValue({ url: "http://127.0.0.1:47615/mcp", token: "secret", error: null });
     mocked.listMcpTunnels.mockResolvedValue([]);
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -1004,6 +1008,47 @@ describe("App", () => {
       expect(sendNotification).toHaveBeenCalledWith({ title: "Agent needs input", body: "#1 Add login" }),
     );
     expect(sendNotification).toHaveBeenCalledTimes(1);
+    focus.mockRestore();
+  });
+
+  it("shows the CI and review state of pull requests in review and notifies when they need the user", async () => {
+    const pullRequestUrl = "https://github.com/acme/toodo/pull/12";
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add login", { status: "in_review", pullRequestUrl }),
+        task(2, 1, "Add logout", { status: "in_progress" }),
+      ],
+    });
+    // A stale entry of a task no longer in review is not shown.
+    mocked.listPullRequestStatuses.mockResolvedValue([
+      { taskId: 1, checks: "pending", review: "pending" },
+      { taskId: 2, checks: "failing", review: "pending" },
+    ]);
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await renderWorkspace();
+
+    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    expect(await within(tasks).findByLabelText("CI of #1")).toHaveTextContent("CI running");
+    expect(within(tasks).getByLabelText("Review of #1")).toHaveTextContent("Review pending");
+    expect(within(tasks).queryByLabelText("CI of #2")).not.toBeInTheDocument();
+
+    const [[onPullRequestStatuses]] = mockedEvents.pullRequestStatusesChanged.listen.mock.calls;
+    act(() => {
+      onPullRequestStatuses({
+        event: "pull-request-statuses-changed",
+        id: 1,
+        payload: { statuses: [{ taskId: 1, checks: "failing", review: "changes_requested" }] },
+      });
+    });
+
+    await waitFor(() => expect(within(tasks).getByLabelText("CI of #1")).toHaveTextContent("CI failed"));
+    expect(within(tasks).getByLabelText("Review of #1")).toHaveTextContent("Changes requested");
+    await waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(2));
+    expect(sendNotification).toHaveBeenCalledWith({ title: "CI failed", body: "#1 Add login" });
+    expect(sendNotification).toHaveBeenCalledWith({ title: "Changes requested", body: "#1 Add login" });
     focus.mockRestore();
   });
 

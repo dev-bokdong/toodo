@@ -52,6 +52,108 @@ pub enum MergeState {
 /// Fields requested with `--json` for a [`PullRequest`].
 const PULL_REQUEST_FIELDS: &str = "url,state,baseRefName,mergedAt";
 
+/// Combined result of the CI checks of a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksState {
+    Passing,
+    Failing,
+    /// At least one check is queued or running and none failed.
+    Pending,
+}
+
+/// Where the reviews of a pull request stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    /// Nobody approved or requested changes yet.
+    Pending,
+}
+
+/// CI and review state of an open pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullRequestStatus {
+    /// `None` when the pull request has no checks.
+    pub checks: Option<ChecksState>,
+    pub review: ReviewState,
+}
+
+/// A pull request read with [`GitHub::pull_request`], with its CI and review state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewedPullRequest {
+    pub pull_request: PullRequest,
+    pub status: PullRequestStatus,
+}
+
+/// Fields requested with `--json` for a [`ViewedPullRequest`].
+const VIEWED_PULL_REQUEST_FIELDS: &str =
+    "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews";
+
+fn parse_viewed_pull_request(value: &Value) -> Option<ViewedPullRequest> {
+    Some(ViewedPullRequest {
+        pull_request: parse_pull_request(value)?,
+        status: PullRequestStatus {
+            checks: parse_checks(value.get("statusCheckRollup")?.as_array()?)?,
+            review: parse_review(value)?,
+        },
+    })
+}
+
+/// Combines check runs (GitHub Actions) and commit statuses: any failure fails the
+/// pull request, otherwise any unfinished check keeps it pending.
+fn parse_checks(rollup: &[Value]) -> Option<Option<ChecksState>> {
+    let mut combined = None;
+    for check in rollup {
+        let field = |name: &str| check.get(name).and_then(Value::as_str);
+        let state = match field("__typename")? {
+            "CheckRun" if field("status")? != "COMPLETED" => ChecksState::Pending,
+            "CheckRun" => match field("conclusion")? {
+                "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
+                    ChecksState::Failing
+                }
+                _ => ChecksState::Passing,
+            },
+            "StatusContext" => match field("state")? {
+                "FAILURE" | "ERROR" => ChecksState::Failing,
+                "PENDING" | "EXPECTED" => ChecksState::Pending,
+                _ => ChecksState::Passing,
+            },
+            _ => continue,
+        };
+        combined = Some(match (combined, state) {
+            (Some(ChecksState::Failing), _) | (_, ChecksState::Failing) => ChecksState::Failing,
+            (Some(ChecksState::Pending), _) | (_, ChecksState::Pending) => ChecksState::Pending,
+            _ => ChecksState::Passing,
+        });
+    }
+    Some(combined)
+}
+
+/// The review decision GitHub computes from required reviews. Without required reviews
+/// it is empty, so the latest review of each reviewer decides instead.
+fn parse_review(value: &Value) -> Option<ReviewState> {
+    let decision = match value.get("reviewDecision")? {
+        Value::Null => "",
+        Value::String(decision) => decision.as_str(),
+        _ => return None,
+    };
+    match decision {
+        "APPROVED" => return Some(ReviewState::Approved),
+        "CHANGES_REQUESTED" => return Some(ReviewState::ChangesRequested),
+        "REVIEW_REQUIRED" => return Some(ReviewState::Pending),
+        _ => {}
+    }
+    let mut review = ReviewState::Pending;
+    for latest in value.get("latestReviews")?.as_array()? {
+        match latest.get("state")?.as_str()? {
+            "CHANGES_REQUESTED" => return Some(ReviewState::ChangesRequested),
+            "APPROVED" => review = ReviewState::Approved,
+            _ => {}
+        }
+    }
+    Some(review)
+}
+
 fn parse_pull_request(value: &Value) -> Option<PullRequest> {
     let field = |name: &str| value.get(name).and_then(Value::as_str);
     let state = match field("state")? {
@@ -295,14 +397,14 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// The pull request at `url`.
-    pub fn pull_request(&self, url: &str) -> Result<PullRequest, GitError> {
-        let invocation = invocation(&["pr", "view", url, "--json", PULL_REQUEST_FIELDS]);
+    /// The pull request at `url`, with its CI and review state.
+    pub fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError> {
+        let invocation = invocation(&["pr", "view", url, "--json", VIEWED_PULL_REQUEST_FIELDS]);
         let output = self.runner.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .as_ref()
-            .and_then(parse_pull_request)
+            .and_then(parse_viewed_pull_request)
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
@@ -569,7 +671,7 @@ mod tests {
                 "null".to_owned()
             };
             Ok(format!(
-                r#"{{"baseRefName":"develop","mergedAt":{merged_at},"state":"{state}","url":"{URL}"}}"#
+                r#"{{"baseRefName":"develop","latestReviews":[],"mergedAt":{merged_at},"reviewDecision":"","state":"{state}","statusCheckRollup":[],"url":"{URL}"}}"#
             ))
         };
         let (github, runner) = github(vec![
@@ -585,7 +687,13 @@ mod tests {
         ] {
             assert_eq!(
                 github.pull_request(URL).unwrap(),
-                pull_request(state, "develop")
+                ViewedPullRequest {
+                    pull_request: pull_request(state, "develop"),
+                    status: PullRequestStatus {
+                        checks: None,
+                        review: ReviewState::Pending,
+                    },
+                }
             );
         }
         assert!(matches!(
@@ -599,9 +707,94 @@ mod tests {
                 "view",
                 URL,
                 "--json",
-                "url,state,baseRefName,mergedAt"
+                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews"
             ])
         );
+    }
+
+    #[test]
+    fn pull_request_combines_checks_and_reviews() {
+        let run = |status: &str, conclusion: &str| {
+            format!(
+                r#"{{"__typename":"CheckRun","status":"{status}","conclusion":"{conclusion}"}}"#
+            )
+        };
+        let context =
+            |state: &str| format!(r#"{{"__typename":"StatusContext","state":"{state}"}}"#);
+        let review = |state: &str| format!(r#"{{"state":"{state}"}}"#);
+        let view = |checks: &[String], decision: &str, reviews: &[String]| {
+            Ok(format!(
+                r#"{{"baseRefName":"main","latestReviews":[{}],"mergedAt":null,"reviewDecision":{decision},"state":"OPEN","statusCheckRollup":[{}],"url":"{URL}"}}"#,
+                reviews.join(","),
+                checks.join(","),
+            ))
+        };
+        let passed = run("COMPLETED", "SUCCESS");
+        let skipped = run("COMPLETED", "SKIPPED");
+        let running = run("IN_PROGRESS", "");
+        let failed = run("COMPLETED", "FAILURE");
+        let cases = [
+            // Required reviews decide on their own.
+            (
+                view(&[passed.clone(), skipped.clone()], r#""APPROVED""#, &[]),
+                Some(ChecksState::Passing),
+                ReviewState::Approved,
+            ),
+            (
+                view(
+                    &[passed.clone(), running.clone()],
+                    r#""CHANGES_REQUESTED""#,
+                    &[],
+                ),
+                Some(ChecksState::Pending),
+                ReviewState::ChangesRequested,
+            ),
+            (
+                view(
+                    &[running.clone(), failed.clone()],
+                    r#""REVIEW_REQUIRED""#,
+                    &[review("APPROVED")],
+                ),
+                Some(ChecksState::Failing),
+                ReviewState::Pending,
+            ),
+            // Without required reviews, the latest reviews decide.
+            (
+                view(
+                    &[context("SUCCESS")],
+                    r#""""#,
+                    &[review("COMMENTED"), review("APPROVED")],
+                ),
+                Some(ChecksState::Passing),
+                ReviewState::Approved,
+            ),
+            (
+                view(
+                    &[context("PENDING")],
+                    "null",
+                    &[review("APPROVED"), review("CHANGES_REQUESTED")],
+                ),
+                Some(ChecksState::Pending),
+                ReviewState::ChangesRequested,
+            ),
+            (
+                view(
+                    &[passed.clone(), context("ERROR")],
+                    r#""""#,
+                    &[review("COMMENTED")],
+                ),
+                Some(ChecksState::Failing),
+                ReviewState::Pending,
+            ),
+        ];
+        let (github, _) = github(cases.iter().map(|(view, ..)| view.clone()).collect());
+        for (index, (_, checks, review)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                github.pull_request(URL).unwrap().status,
+                PullRequestStatus { checks, review },
+                "case {index}"
+            );
+        }
     }
 
     /// `gh pr view --json` output of a merged pull request by `ada`.

@@ -133,6 +133,7 @@ export const commands = {
 	 *  than failing the whole check.
 	 */
 	branchFreshness: (id: TaskId) => typedError<BranchFreshness, CommandError>(__TAURI_INVOKE("branch_freshness", { id })),
+	listPullRequestStatuses: () => __TAURI_INVOKE<TaskPullRequestStatus[]>("list_pull_request_statuses"),
 	/**
 	 *  Links issue `number` of the workspace repository to a task that is not done, after
 	 *  checking that the issue exists; `null` unlinks the current issue. An open pull
@@ -179,6 +180,7 @@ export const commands = {
 /** Events */
 export const events = {
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
+	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 };
 
@@ -240,6 +242,9 @@ export type BranchList = {
 	/**  Why fetching `origin` failed; the names are then the ones known locally. */
 	fetchError: string | null,
 };
+
+/**  Combined result of the CI checks of a pull request. */
+export type ChecksStatus = "passing" | "failing" | "pending";
 
 export type CommandError = {
 	kind: CommandErrorKind,
@@ -373,6 +378,14 @@ export type PullRequestSnapshot = {
 	firstReviewedAt: Timestamp | null,
 };
 
+/**
+ *  The CI or review state of the pull request of an `in_review` task changed; carries
+ *  all of them.
+ */
+export type PullRequestStatusesChanged = {
+	statuses: TaskPullRequestStatus[],
+};
+
 /**  Subdirectories of a directory on a remote machine, for the folder browser. */
 export type RemoteDirectory = {
 	/**  Absolute POSIX path of the listed directory. */
@@ -395,6 +408,9 @@ export type ReviewEntry = {
  *  reached in the period, or `worked_on` when it only got commits.
  */
 export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
+
+/**  Where the reviews of a pull request stand. */
+export type ReviewStatus = "approved" | "changes_requested" | "pending";
 
 export type Task = {
 	id: TaskId,
@@ -471,6 +487,17 @@ export type TaskMilestones = {
 	completedAt: Timestamp | null,
 	/**  The latest pause, unless the task was started again after it. */
 	pausedAt: Timestamp | null,
+};
+
+/**
+ *  CI and review state of the open pull request of an `in_review` task, as of the last
+ *  background check.
+ */
+export type TaskPullRequestStatus = {
+	taskId: TaskId,
+	/**  `null` when the pull request has no checks. */
+	checks: ChecksStatus | null,
+	review: ReviewStatus,
 };
 
 /**  How a `done` task ended. */
