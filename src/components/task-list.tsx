@@ -839,7 +839,7 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
 }
 
 /** The completion note of a done task, which reviews include, or a button to write one. */
-function CompletionNote({ task }: { task: Task }) {
+export function CompletionNote({ task }: { task: Task }) {
   const setNote = useSetCompletionNote();
   const [editing, setEditing] = useState(false);
   const [note, setNoteText] = useState("");
