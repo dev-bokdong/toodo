@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bump": "node scripts/bump-version.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
