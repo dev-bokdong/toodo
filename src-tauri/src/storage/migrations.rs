@@ -191,6 +191,18 @@ pub(super) const MIGRATIONS: &[&str] = &[
     ALTER TABLE tasks ADD COLUMN issue_url TEXT
         CHECK ((issue_url IS NULL) = (issue_number IS NULL));
     ",
+    // Version 8: notes that agents leave on a task while working on it, through the MCP
+    // server: progress and decisions, or what blocks them. Existing tasks have none.
+    r"
+    CREATE TABLE task_notes (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('progress', 'blocker')),
+        body TEXT NOT NULL CHECK (body <> ''),
+        at INTEGER NOT NULL
+    );
+    CREATE INDEX task_notes_task_id ON task_notes (task_id);
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -490,6 +502,47 @@ mod tests {
         ] {
             assert!(conn.execute(invalid, []).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn version_8_adds_no_notes_and_drops_them_with_their_task() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..7] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 7).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'fix', 'A', 'planned');
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let notes = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM task_notes", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(notes(&conn), 0);
+        for invalid in [
+            "INSERT INTO task_notes (task_id, kind, body, at) VALUES (1, 'idea', 'x', 1)",
+            "INSERT INTO task_notes (task_id, kind, body, at) VALUES (1, 'progress', '', 1)",
+            "INSERT INTO task_notes (task_id, kind, body, at) VALUES (9, 'progress', 'x', 1)",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
+        conn.execute(
+            "INSERT INTO task_notes (task_id, kind, body, at) VALUES (1, 'blocker', 'No access', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+        assert_eq!(notes(&conn), 0);
     }
 
     #[test]

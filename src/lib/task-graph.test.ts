@@ -31,6 +31,7 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     pullRequest: null,
     resolution: null,
     completionNote: null,
+    notes: [],
     timeline: [],
     milestones: {
       plannedAt: null,

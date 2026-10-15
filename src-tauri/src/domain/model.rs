@@ -191,6 +191,36 @@ impl TaskResolution {
     }
 }
 
+/// What a note left on a task records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NoteKind {
+    /// Progress made or a decision taken while working on the task.
+    Progress,
+    /// Something that stops the work until someone acts on it.
+    Blocker,
+}
+
+impl NoteKind {
+    pub const ALL: [Self; 2] = [Self::Progress, Self::Blocker];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Progress => "progress",
+            Self::Blocker => "blocker",
+        }
+    }
+}
+
+/// A note an agent left on a task while working on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskNote {
+    pub kind: NoteKind,
+    /// Non-empty Markdown.
+    pub body: String,
+    /// Time the note was left, in seconds since the Unix epoch.
+    pub at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub id: TaskId,
@@ -218,6 +248,8 @@ pub struct Task {
     pub completion_note: Option<String>,
     /// Status history, oldest event first.
     pub timeline: Vec<TaskEvent>,
+    /// Notes left on the task, oldest first.
+    pub notes: Vec<TaskNote>,
 }
 
 /// A GitHub issue linked to a task.

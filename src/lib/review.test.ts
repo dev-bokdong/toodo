@@ -45,6 +45,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       pullRequest: null,
       resolution: null,
       completionNote: null,
+      notes: [],
       timeline: [],
       milestones: {
         plannedAt: null,
@@ -398,6 +399,26 @@ describe("reviewMarkdown", () => {
     expect(reviewMarkdown(weekStarting("2026-10-12"), entries.slice(0, 1), [toodo])).not.toContain(
       "not adopted",
     );
+  });
+
+  it("lists the agent notes left on a task during the period", () => {
+    const week = weekStarting("2026-10-12");
+    const working = entry(1, "started", {
+      notes: [
+        { kind: "progress", body: "Planned last week", at: local(2026, 10, 11, 23) },
+        { kind: "progress", body: "Chose PKCE\nover implicit flow", at: local(2026, 10, 13, 9) },
+        { kind: "blocker", body: "No test account", at: local(2026, 10, 18, 23) },
+        { kind: "progress", body: "Next week", at: local(2026, 10, 19) },
+      ],
+    });
+
+    const markdown = reviewMarkdown(week, [working], [toodo]);
+
+    expect(markdown).toContain(
+      "- [feat] Task 1 (toodo, 2026-10-13)\n  - Progress: Chose PKCE over implicit flow\n  - Blocker: No test account\n",
+    );
+    expect(markdown).not.toContain("Planned last week");
+    expect(markdown).not.toContain("Next week");
   });
 
   it("says so when the period has no recorded activity", () => {

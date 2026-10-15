@@ -118,6 +118,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     pullRequest: null,
     resolution: null,
     completionNote: null,
+    notes: [],
     timeline: [],
     milestones: {
       plannedAt: null,
@@ -1679,6 +1680,38 @@ describe("App", () => {
     expect(note).toHaveClass("text-muted-foreground");
     expect(screen.getByRole("button", { name: "Start #3" })).toBeDisabled();
     expect(screen.queryByRole("note", { name: "Waiting prerequisites of #4" })).not.toBeInTheDocument();
+  });
+
+  it("shows the latest agent note in the list and every note in the task details", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const noted = task(1, 1, "Add login", {
+      status: "in_progress",
+      milestones: { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + 3600 },
+      notes: [
+        { kind: "progress", body: "Chose **PKCE** over the implicit flow", at: plannedAt + 7200 },
+        { kind: "blocker", body: "Need a test account for the provider", at: plannedAt + 10800 },
+      ],
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [noted, task(2, 1, "Add logout")] });
+    await renderWorkspace();
+
+    const latest = await screen.findByLabelText("Latest note of #1");
+    expect(latest).toHaveTextContent("BlockerNeed a test account for the provider+1 more");
+    expect(screen.queryByLabelText("Latest note of #2")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bars = timeline.querySelector(".react-flow__nodes") as HTMLElement;
+    fireEvent.click((await within(bars).findByText("Add login")).closest(".react-flow__node") as HTMLElement);
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    const notes = await within(details).findByRole("list", { name: "Notes of #1" });
+    const items = within(notes).getAllByRole("listitem");
+    expect(items.map((item) => item.querySelector("[data-note-kind]")?.textContent)).toEqual(["Progress", "Blocker"]);
+    expect(await within(items[0]).findByText("PKCE")).toBeInTheDocument();
+    expect(items[1]).toHaveTextContent("Need a test account for the provider");
   });
 
   it("asks before a prerequisite pauses a started task, whatever its agent does", async () => {
