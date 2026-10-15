@@ -86,6 +86,7 @@ const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "tes
 
 const statusLabels: Record<ShownStatus, string> = {
   planned: "Planned",
+  ready: "Ready",
   paused: "Paused",
   in_progress: "In progress",
   in_review: "In review",
@@ -94,11 +95,11 @@ const statusLabels: Record<ShownStatus, string> = {
 };
 
 /**
- * The status of `task`, naming a planned task that was worked on before "Paused" and a task
- * concluded without merging "Not adopted".
+ * The status of `task`, naming a planned task that can be started now "Ready", one that was
+ * worked on before "Paused" and a task concluded without merging "Not adopted".
  */
-function statusLabel(task: Task): string {
-  return statusLabels[shownStatus(task)];
+function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
+  return statusLabels[shownStatus(task, byId)];
 }
 
 const statusStyles: Record<TaskStatus, string> = {
@@ -110,8 +111,17 @@ const statusStyles: Record<TaskStatus, string> = {
 
 const notAdoptedStyle = "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200";
 
-function statusStyle(task: Task): string {
-  return isNotAdopted(task) ? notAdoptedStyle : statusStyles[task.status];
+const readyStyle = "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
+
+function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
+  switch (shownStatus(task, byId)) {
+    case "not_adopted":
+      return notAdoptedStyle;
+    case "ready":
+      return readyStyle;
+    default:
+      return statusStyles[task.status];
+  }
 }
 
 /** What the task list needs to name tasks of other workspaces. */
@@ -166,7 +176,7 @@ export function TaskList({
   );
   const filter = timelineWorkspace !== null && filterOptions.includes(timelineWorkspace) ? timelineWorkspace : null;
   const filtered = tasks?.filter(
-    (task) => (!showTimeline || filter === null || task.workspaceId === filter) && matchesFilter(task, taskFilter),
+    (task) => (!showTimeline || filter === null || task.workspaceId === filter) && matchesFilter(task, taskFilter, context.byId),
   );
   // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
   const prerequisites =
@@ -272,8 +282,9 @@ export function TaskList({
               workspaceLabel={(task) =>
                 filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
               }
-              statusLabel={statusLabel}
-              statusStyle={statusStyle}
+              statusLabel={(task) => statusLabel(task, context.byId)}
+              statusStyle={(task) => statusStyle(task, context.byId)}
+              ready={(task) => shownStatus(task, context.byId) === "ready"}
               scale={timelineScale}
               onScaleChange={onTimelineScaleChange}
               renderDetail={(selected) => (
@@ -477,7 +488,7 @@ function TaskRow({
       ) : (
         <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
           <div className={cn("flex min-w-0 items-center gap-2", detailed && "flex-wrap")}>
-            <StatusBadge task={task} />
+            <StatusBadge task={task} byId={context.byId} />
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             {showWorkspace && (
               <span className="shrink-0 rounded-md bg-muted px-1.5 text-xs text-muted-foreground">
@@ -861,16 +872,16 @@ function TaskRow({
 }
 
 /** The status of `task` as a pill with a colored dot. */
-function StatusBadge({ task }: { task: Task }) {
+function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
   return (
     <span
       className={cn(
         "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        statusStyle(task),
+        statusStyle(task, byId),
       )}
     >
       <span aria-hidden className="size-1.5 rounded-full bg-current opacity-80" />
-      {statusLabel(task)}
+      {statusLabel(task, byId)}
     </span>
   );
 }

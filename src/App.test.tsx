@@ -200,7 +200,8 @@ describe("App", () => {
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
     const dependencies = within(tasks).getByRole("group", { name: "Dependencies of #2" });
     expect(within(dependencies).getByText("#1")).toBeInTheDocument();
-    expect(within(tasks).getByText("Planned")).toBeInTheDocument();
+    // Its only prerequisite is done, so #2 can be started now.
+    expect(within(tasks).getByText("Ready")).toBeInTheDocument();
     const timeline = within(tasks).getByLabelText("Timeline of #1");
     expect(timeline).toHaveTextContent(`Planned ${formatDate(1760000000)}`);
     expect(timeline).toHaveTextContent(`Completed ${formatDate(1760500000)}`);
@@ -446,6 +447,47 @@ describe("App", () => {
     const all = screen.getByRole("list", { name: "Tasks" });
     expect(within(all).getAllByRole("listitem")).toHaveLength(1);
     expect(within(all).getByText("Fix ssh")).toBeInTheDocument();
+  });
+
+  it("filters the tasks that can be started now in the list and on the timeline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const planned = { ...task(0, 1, "").milestones, plannedAt };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", {
+          status: "done",
+          resolution: "merged",
+          milestones: { ...planned, completedAt: plannedAt + 3600 },
+        }),
+        task(2, 1, "Add UI", { dependsOn: [1], milestones: planned }),
+        task(3, 1, "Write docs", { dependsOn: [4], milestones: planned }),
+        task(4, 2, "Fix ssh", { status: "in_progress", milestones: planned }),
+      ],
+    });
+    await renderWorkspace();
+
+    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    expect(await within(tasks).findByText("Add UI")).toBeInTheDocument();
+    expect(within(tasks).getByText("Ready")).toBeInTheDocument();
+    expect(within(tasks).getByText("Planned")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "ready" } });
+    expect(within(tasks).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(tasks).getByText("Add UI")).toBeInTheDocument();
+
+    // Waiting on a task of another workspace keeps #3 out of the timeline too.
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const bars = timeline.querySelector(".react-flow__nodes") as HTMLElement;
+    expect(await within(bars).findByText("Write docs")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "ready" } });
+    expect(await within(bars).findByText("Add UI")).toBeInTheDocument();
+    expect(within(bars).getByText("Ready")).toBeInTheDocument();
+    expect(within(bars).queryByText("Write docs")).not.toBeInTheDocument();
+    expect(within(bars).queryByText("Add storage")).not.toBeInTheDocument();
   });
 
   it("opens the details of a task clicked on the timeline and fades tasks outside its chain", async () => {
@@ -995,7 +1037,7 @@ describe("App", () => {
     fireEvent.click(start);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("worktree root is not set for machine local");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Planned")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Ready")).toBeInTheDocument();
   });
 
   it("copies the MCP config for agents", async () => {

@@ -53,6 +53,7 @@ type BarNode = Node<
     bar: TimelineBar;
     statusLabel: string;
     statusStyle: string;
+    ready: boolean;
     workspace: string | null;
     dimmed: boolean;
     agentStatus: AgentStatus | null;
@@ -103,6 +104,9 @@ const phaseLabels: Record<TimelinePhase, string> = {
 /** The bar of a finished task is tinted green; its phase strip still shows how the work went. */
 const doneBarStyle = "border-emerald-500 bg-emerald-100 dark:bg-emerald-950";
 
+/** A task not started yet whose prerequisites are all done is drawn solid; one still blocked, dashed. */
+const readyBarStyle = "border-sky-500 shadow-none";
+
 const pad = (value: number) => String(value).padStart(2, "0");
 
 /** The current time in Unix seconds, refreshed every `nowRefreshMs`. */
@@ -122,6 +126,7 @@ export function TaskGraph({
   workspaceLabel,
   statusLabel,
   statusStyle,
+  ready,
   scale,
   onScaleChange,
   renderDetail,
@@ -136,6 +141,8 @@ export function TaskGraph({
   workspaceLabel: (task: Task) => string | null;
   statusLabel: (task: Task) => string;
   statusStyle: (task: Task) => string;
+  /** Whether a planned task can be started now; its bar is drawn solid instead of dashed. */
+  ready: (task: Task) => boolean;
   scale: TimelineScale;
   onScaleChange: (scale: TimelineScale) => void;
   /** Details of the task selected on the timeline, with its actions. */
@@ -192,6 +199,7 @@ export function TaskGraph({
       bar,
       statusLabel: statusLabel(bar.task),
       statusStyle: statusStyle(bar.task),
+      ready: ready(bar.task),
       workspace: workspaceLabel(bar.task),
       dimmed: dimmed.has(bar.task.id) || !inChain(bar.task.id),
       agentStatus: agentStatusOf(bar.task),
@@ -392,7 +400,11 @@ export function TaskGraph({
           </li>
           <li className="flex items-center gap-1">
             <span className="h-2 w-3 rounded-sm border border-dashed border-muted-foreground" />
-            Not started
+            Blocked
+          </li>
+          <li className="flex items-center gap-1">
+            <span className={cn("h-2 w-3 rounded-sm border", readyBarStyle)} />
+            Ready to start
           </li>
           {(Object.keys(phaseLabels) as TimelinePhase[]).map((phase) => (
             <li key={phase} className="flex items-center gap-1">
@@ -720,7 +732,7 @@ function TimelineEdge({ sourceX, sourceY, targetX, targetY, markerEnd, style, in
 }
 
 function TimelineBarView({
-  data: { bar, statusLabel, statusStyle, workspace, dimmed, agentStatus },
+  data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, agentStatus },
   selected,
 }: NodeProps<BarNode>) {
   const { task, phases, pending, lead } = bar;
@@ -747,7 +759,7 @@ function TimelineBarView({
         className={cn(
           "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
           selected && "ring-2 ring-primary",
-          pending && "border-dashed border-muted-foreground/60 shadow-none",
+          pending && (ready ? readyBarStyle : "border-dashed border-muted-foreground/60 shadow-none"),
           task.status === "done" && doneBarStyle,
           isPaused(task) && "opacity-60",
         )}
