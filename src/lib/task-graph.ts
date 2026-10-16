@@ -1,5 +1,5 @@
 import type { BranchFreshness, Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
-import { workSegments } from "@/lib/timeline";
+import { type WorkState, workSegments } from "@/lib/timeline";
 import { dueEnd, dueState, type DueState } from "@/lib/plan";
 
 /** A dependency drawn from the prerequisite (`source`) to the task that waits on it (`target`). */
@@ -197,7 +197,13 @@ export function timelineEdgePath(source: Point, target: Point, rowHeight: number
 /** A half-open time range `[start, end)`, in Unix seconds. */
 export type Period = { start: Timestamp; end: Timestamp };
 
-export type TimelinePhase = "in_progress" | "in_review" | "paused";
+export type TimelinePhase = "in_progress" | "in_review";
+
+/** Narrowest pause, in pixels, that cuts a bar in two; a shorter one stays inside its block. */
+export const timelinePauseMinWidth = 6;
+
+/** A horizontal stretch of a bar, relative to the bar's `x`. */
+export type TimelineSpan = { x: number; width: number };
 
 export type TimelineBar = {
   task: Task;
@@ -209,6 +215,13 @@ export type TimelineBar = {
   pending: boolean;
   /** Phases in time order, positioned relative to `x` at true scale; a phase may repeat after a pause. */
   phases: { phase: TimelinePhase; x: number; width: number }[];
+  /** The solid stretches of the bar, between its pauses; one for a bar without any. */
+  blocks: TimelineSpan[];
+  /**
+   * The pauses cut out of the bar, drawn as dashed lines. A paused task's last one runs
+   * past the bar's end, from its pause to now.
+   */
+  pauses: TimelineSpan[];
   /** The wait before the bar, from `plannedAt` to `x`; null when there was none. */
   lead: TimelineLead | null;
   /** The end of the due day relative to `x`; null without a due date or when it is off the axis. */
@@ -276,10 +289,10 @@ export function taskInterval(task: Task, now: Timestamp): Period | null {
  * The phases of a bar covering `[start, end)`, from the status history; a task without
  * recorded history falls back to its milestones, which know nothing about pauses.
  */
-function taskPhases(task: Task, { start, end }: Period): { phase: TimelinePhase; start: Timestamp; end: Timestamp }[] {
+function taskPhases(task: Task, { start, end }: Period): { phase: WorkState; start: Timestamp; end: Timestamp }[] {
   const segments = workSegments(task.timeline);
   const { reviewAt } = task.milestones;
-  const phases: { phase: TimelinePhase; start: Timestamp; end: Timestamp }[] =
+  const phases: { phase: WorkState; start: Timestamp; end: Timestamp }[] =
     segments.length > 0
       ? segments.map((segment) => ({ phase: segment.state, start: segment.start, end: segment.end ?? end }))
       : [
@@ -309,6 +322,22 @@ function taskLead(
     planned: plannedAt >= start,
     readyX: ready !== null && ready < x ? ready - x : null,
   };
+}
+
+/** The stretches of `[0, width)` left between `pauses`, which are in order and do not overlap. */
+function barBlocks(width: number, pauses: TimelineSpan[]): TimelineSpan[] {
+  const blocks: TimelineSpan[] = [];
+  let from = 0;
+  for (const pause of pauses) {
+    if (pause.x > from) {
+      blocks.push({ x: from, width: Math.min(pause.x, width) - from });
+    }
+    from = Math.max(from, pause.x + pause.width);
+  }
+  if (from < width) {
+    blocks.push({ x: from, width: width - from });
+  }
+  return blocks;
 }
 
 type Placed = { task: Task; interval: Period };
@@ -496,6 +525,7 @@ export function layoutTimeline(
     let x: number;
     let width: number;
     let phases: TimelineBar["phases"] = [];
+    let pauses: TimelineSpan[] = [];
     if (pending) {
       const after = task.dependsOn.flatMap((id) => {
         const edge = rightEdges.get(id);
@@ -506,11 +536,18 @@ export function layoutTimeline(
     } else {
       x = scaleX(clipped.start);
       width = Math.max(scaleX(clipped.end) - x, timelineBarMinWidth);
-      phases = taskPhases(task, clipped).map((phase) => ({
-        phase: phase.phase,
-        x: scaleX(phase.start) - x,
-        width: scaleX(phase.end) - scaleX(phase.start),
-      }));
+      for (const phase of taskPhases(task, clipped)) {
+        const span = { x: scaleX(phase.start) - x, width: scaleX(phase.end) - scaleX(phase.start) };
+        if (phase.phase !== "paused") {
+          phases.push({ phase: phase.phase, ...span });
+        } else if (span.width >= timelinePauseMinWidth) {
+          pauses.push(span);
+        }
+      }
+      const pausedUntil = scaleX(Math.min(now, end)) - x;
+      if (isPaused(task) && pausedUntil - width >= timelinePauseMinWidth) {
+        pauses = [...pauses, { x: width, width: pausedUntil - width }];
+      }
     }
     rightEdges.set(task.id, x + width);
     const due = task.dueDate === null ? null : dueEnd(task.dueDate);
@@ -521,6 +558,8 @@ export function layoutTimeline(
       width,
       pending,
       phases,
+      blocks: barBlocks(width, pauses),
+      pauses,
       lead: taskLead(task, readyAt(task, byId), x, start, scaleX),
       dueX: due !== null && due >= start && due <= end ? scaleX(due) - x : null,
       dueState: dueState(task, now),
