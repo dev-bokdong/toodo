@@ -193,7 +193,7 @@ describe("layoutTimeline", () => {
     expect(bars.get(2)).toMatchObject({ x: 3 * 48, width: 7 * 48, pending: false });
     expect(bars.get(2)!.lead).toEqual({ x: -1.5 * 48, planned: true, readyX: null });
     expect(bars.get(2)!.phases).toEqual([{ phase: "in_progress", x: 0, width: 7 * 48 }]);
-    expect(bars.get(3)).toMatchObject({ x: layout.nowX, width: 120, pending: true, phases: [] });
+    expect(bars.get(3)).toMatchObject({ x: layout.nowX, width: 28, pending: true, phases: [] });
     expect(layout.rows).toBe(3);
     expect(layout.unplaced).toEqual([unknown]);
   });
@@ -335,9 +335,22 @@ describe("layoutTimeline", () => {
     expect(layout.bars.map((bar) => bar.task.id)).toEqual([1, 6, 5, 7, 8]);
     const x = new Map(layout.bars.map((bar) => [bar.task.id, bar.x]));
     expect(x.get(6)).toBe(layout.nowX);
-    expect(x.get(5)).toBe(layout.nowX! + 120 + 16);
-    expect(x.get(7)).toBe(layout.nowX! + 2 * (120 + 16));
+    expect(x.get(5)).toBe(layout.nowX! + 28 + 16);
+    expect(x.get(7)).toBe(layout.nowX! + 2 * (28 + 16));
     expect(x.get(8)).toBe(layout.nowX);
+  });
+
+  it("draws a task not started as long as its estimate, but never narrower than one without", () => {
+    const long = task(6, { status: "planned", estimate: { unit: "days", amount: 2 } });
+    const short = task(5, { status: "planned", dependsOn: [6], estimate: { unit: "hours", amount: 1 } });
+    const next = task(7, { status: "planned", dependsOn: [5] });
+
+    const layout = layoutTimeline([long, short, next], { now, scale: "day", period: null });
+
+    const bars = new Map(layout.bars.map((bar) => [bar.task.id, bar]));
+    expect(bars.get(6)).toMatchObject({ x: layout.nowX, width: 2 * 48 });
+    expect(bars.get(5)).toMatchObject({ x: layout.nowX! + 2 * 48 + 16, width: 28 });
+    expect(bars.get(7)).toMatchObject({ x: layout.nowX! + 2 * 48 + 16 + 28 + 16, width: 28 });
   });
 
   it("narrows the axis to a period and clips the bars that cross it", () => {
