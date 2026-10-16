@@ -115,18 +115,31 @@ When the user starts a `planned` task whose dependencies are all `done`, Toodo:
    `Initial commit` on it (staged files stay staged), and pushes it to `origin` when that
    remote exists, so the base branch exists for the worktree and the pull request. If
    any of this fails, the task stays `planned`.
-4. Calls `herdr worktree create --cwd <repository> --path <dir> --branch <branch>
-   --base <baseBranch> --no-focus` (prefixed with `--machine <label>` for SSH
-   workspaces) to create the git worktree and open it as a herdr workspace. If herdr
-   fails, the task stays `planned` and nothing is stored.
-5. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
+4. Creates the task branch from the latest base on `origin`, so it contains pull
+   requests merged since the user last updated the local base: runs
+   `git fetch --quiet origin <baseBranch>` (on the SSH machine for SSH workspaces), then
+   `git branch --no-track <branch> origin/<baseBranch>`. The branch gets no upstream, so
+   pulling on it never pulls the base and a push cannot land on the base; the first
+   `git push --set-upstream origin <branch>` sets its own remote branch. Only `origin/*`
+   references change; the local base branch and its working copy are untouched. Without
+   an `origin` remote, or when `origin` has no `<baseBranch>`, the branch starts from the
+   local `<baseBranch>`. When the fetch fails (network, authentication), it also starts
+   from the local base and the task gets a progress note "Started from local
+   `<baseBranch>` (`<commit>`) because fetching origin failed: `<error>`", which the MCP
+   `start_task` reply includes. An existing branch of that name is used as it is.
+5. Calls `herdr worktree create --cwd <repository> --path <dir> --branch <branch>
+   --base <start> --no-focus` (prefixed with `--machine <label>` for SSH
+   workspaces) to check the branch out into a git worktree and open it as a herdr
+   workspace. If herdr fails, the branch created in step 4 is deleted again, the task
+   stays `planned`, and nothing is stored.
+6. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
    `in_progress`, which records `startedAt`.
 
 A paused task that already has a branch resumes on it instead ("Resume"): Toodo opens its
 kept worktree with `herdr worktree open --cwd <repository> --path <worktreePath>
 --no-focus`, which also finds the herdr workspace that still has it open. If the
 checkout is gone, the branch is checked out into a new worktree like "Restore worktree"
-(step 4), or created from `<baseBranch>` when neither the repository nor `origin` has it.
+(step 5) without fetching, or created from the local `<baseBranch>` when neither the repository nor `origin` has it.
 `startedAt` stays the time of the first start.
 
 ### 4. Implement in herdr

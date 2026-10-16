@@ -582,7 +582,12 @@ mod tests {
             r#"{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w27"}}}"#;
         let backend = Arc::new(TestBackend::scripted(
             storage,
-            vec![Ok("abc\n".to_owned())],
+            vec![
+                Ok("abc\n".to_owned()),
+                Ok(String::new()),
+                Err(crate::adapters::git::fake::failed()),
+                Ok(String::new()),
+            ],
             vec![Ok(created.to_owned())],
         ));
         let server = ToodoMcp::new(backend.clone());

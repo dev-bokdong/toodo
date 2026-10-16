@@ -25,7 +25,9 @@ pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> 
 /// Creates the worktree of a `planned` task whose dependencies are done through herdr
 /// and moves the task to `in_progress`. Requires a worktree root for the machine of the
 /// task's workspace. An empty repository first gets an initial commit on the workspace's
-/// base branch. A paused task resumes on its branch, in its worktree if it still has one.
+/// base branch. A new task branch starts from the freshly fetched `origin/<base>` without an
+/// upstream; without `origin`, or when the fetch fails (noted on the task), from the local
+/// base. A paused task resumes on its branch, in its worktree if it still has one.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn start_task(
@@ -136,24 +138,52 @@ pub(crate) fn start(
         None
     };
     // herdr checks out an existing branch as is and ignores the base.
+    let mut fetch_failure = None;
+    let mut created_branch = false;
     let base = match source {
         Some(source) => source,
         None => {
-            git.create_initial_commit(&workspace.location, &workspace.default_base_branch)?;
-            workspace.default_base_branch.clone()
+            let base = &workspace.default_base_branch;
+            git.create_initial_commit(&workspace.location, base)?;
+            if resumed {
+                base.clone()
+            } else {
+                let start = git.task_branch_start(&workspace.location, base)?;
+                created_branch =
+                    git.create_task_branch(&workspace.location, &checkout.branch, &start.start)?;
+                fetch_failure = start.fetch_failure;
+                start.start
+            }
         }
     };
     let path = checkout.path.to_string();
-    let herdr_workspace_id = herdr.create_worktree(
-        &machine,
-        &NewWorktree {
-            repository,
-            path: &path,
-            branch: &checkout.branch,
-            base: &base,
-        },
-    )?;
-    Ok(lock(storage).start_task(id, &checkout, &herdr_workspace_id)?)
+    let herdr_workspace_id = herdr
+        .create_worktree(
+            &machine,
+            &NewWorktree {
+                repository,
+                path: &path,
+                branch: &checkout.branch,
+                base: &base,
+            },
+        )
+        .inspect_err(|_| {
+            if created_branch {
+                // The herdr error is what the user needs; a branch left behind is reused
+                // by the next attempt.
+                let _ = git.delete_branch(&workspace.location, &checkout.branch);
+            }
+        })?;
+    let mut storage = lock(storage);
+    let started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
+    let Some(failure) = fetch_failure else {
+        return Ok(started);
+    };
+    let note = format!(
+        "Started from local {base} ({}) because fetching origin failed: {}",
+        failure.commit, failure.error
+    );
+    Ok(storage.add_task_note(id, model::NoteKind::Progress, &note)?)
 }
 
 fn restore(
@@ -505,11 +535,16 @@ mod tests {
         (Herdr::new(Box::new(runner.clone())), runner)
     }
 
-    /// Git for a repository whose base branch already exists.
+    /// Git for a repository without `origin` whose base branch already exists; a new task
+    /// branch is created from it, and deleted again when herdr fails.
     fn existing_base() -> Git {
-        Git::new(Box::new(Arc::new(FakeRunner::new(vec![Ok(
-            "abc\n".to_owned()
-        )]))))
+        Git::new(Box::new(Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok(String::new()),
+            Err(failed()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]))))
     }
 
     fn invocations(runner: &FakeRunner) -> Vec<Invocation> {
@@ -664,6 +699,11 @@ mod tests {
             Ok(String::new()),
             Ok(String::new()),
             Ok(String::new()),
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+            Ok("def\n".to_owned()),
+            Err(failed()),
+            Ok(String::new()),
         ]));
         let git = Git::new(Box::new(git_runner.clone()));
         let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
@@ -811,6 +851,309 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::External);
         assert!(error.message.ends_with("fatal: invalid reference: main"));
         assert_eq!(stored(&fixture), fixture.task);
+    }
+
+    fn git_commands(runner: &FakeRunner) -> Vec<String> {
+        invocations(runner)
+            .iter()
+            .map(|invocation| invocation.args[2..].join(" "))
+            .collect()
+    }
+
+    fn herdr_base(runner: &FakeRunner) -> String {
+        let args = invocations(runner).pop().unwrap().args;
+        args[args.len() - 2].clone()
+    }
+
+    #[test]
+    fn a_new_branch_starts_from_the_fetched_origin_base_without_an_upstream() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+            Ok("def\n".to_owned()),
+            Err(failed()),
+            Ok(String::new()),
+        ]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        let started = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(
+            git_commands(&git_runner),
+            [
+                "rev-parse --verify --quiet refs/heads/main",
+                "remote",
+                "fetch --quiet origin main",
+                "rev-parse --verify --quiet refs/remotes/origin/main",
+                "rev-parse --verify --quiet refs/heads/feat/add-login-1",
+                "branch --no-track feat/add-login-1 origin/main",
+            ]
+        );
+        assert_eq!(herdr_base(&runner), "origin/main");
+        assert!(started.notes.is_empty());
+    }
+
+    #[test]
+    fn a_repository_without_origin_starts_from_the_local_base() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok("upstream\n".to_owned()),
+            Err(failed()),
+            Ok(String::new()),
+        ]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        let started = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        let commands = git_commands(&git_runner);
+        assert!(!commands.iter().any(|command| command.starts_with("fetch")));
+        assert_eq!(commands[3], "branch --no-track feat/add-login-1 main");
+        assert_eq!(herdr_base(&runner), "main");
+        assert!(started.notes.is_empty());
+    }
+
+    #[test]
+    fn a_base_that_origin_does_not_have_starts_from_the_local_base_without_a_note() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok("origin\n".to_owned()),
+            Err(failed()),
+            Ok(String::new()),
+            Err(failed()),
+            Ok(String::new()),
+        ]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        let started = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(
+            git_commands(&git_runner)[3],
+            "ls-remote --heads origin refs/heads/main"
+        );
+        assert_eq!(herdr_base(&runner), "main");
+        assert!(started.notes.is_empty());
+    }
+
+    #[test]
+    fn a_failed_fetch_starts_from_the_local_base_and_notes_why() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let offline = || GitError::Failed {
+            command: "git fetch --quiet origin main".to_owned(),
+            stderr: "Could not resolve host: github.com".to_owned(),
+        };
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok("origin\n".to_owned()),
+            Err(offline()),
+            Err(offline()),
+            Ok("e00697a\n".to_owned()),
+            Err(failed()),
+            Ok(String::new()),
+        ]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        let started = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(
+            git_commands(&git_runner)[6],
+            "branch --no-track feat/add-login-1 main"
+        );
+        assert_eq!(herdr_base(&runner), "main");
+        assert_eq!(started.status, TaskStatus::InProgress);
+        let notes: Vec<_> = started
+            .notes
+            .iter()
+            .map(|note| (note.kind, note.body.as_str()))
+            .collect();
+        assert_eq!(
+            notes,
+            [(
+                model::NoteKind::Progress,
+                "Started from local main (e00697a) because fetching origin failed: \
+                 `git fetch --quiet origin main` failed: Could not resolve host: github.com"
+            )]
+        );
+        assert_eq!(stored(&fixture), started);
+        // MCP start_task replies with the same task, note included.
+        let reply = serde_json::to_value(super::super::types::Task::from(&started)).unwrap();
+        assert_eq!(
+            reply["notes"][0]["body"],
+            "Started from local main (e00697a) because fetching origin failed: \
+             `git fetch --quiet origin main` failed: Could not resolve host: github.com"
+        );
+    }
+
+    #[test]
+    fn a_herdr_failure_deletes_the_branch_it_created() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok(String::new()),
+            Err(failed()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, _) = herdr(vec![herdr_failed("worktree_create_failed")]);
+
+        start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(
+            git_commands(&git_runner).last().unwrap(),
+            "branch -D feat/add-login-1"
+        );
+        assert_eq!(stored(&fixture), fixture.task);
+    }
+
+    #[test]
+    fn an_existing_branch_is_checked_out_as_is() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok(String::new()),
+            Ok("fed\n".to_owned()),
+        ]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, _) = herdr(vec![herdr_failed("worktree_create_failed")]);
+
+        start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap_err();
+
+        // Neither created nor deleted: the branch is not Toodo's to remove.
+        assert!(
+            !git_commands(&git_runner)
+                .iter()
+                .any(|command| command.starts_with("branch"))
+        );
+    }
+
+    #[test]
+    fn a_resumed_task_neither_fetches_nor_moves_its_branch() {
+        let (fixture, _, _) = paused_task(Vec::new());
+        lock(&fixture.storage)
+            .clear_task_worktree(fixture.task.id)
+            .unwrap();
+        let git_runner = Arc::new(FakeRunner::new(vec![Ok("abc\n".to_owned())]));
+        let git = Git::new(Box::new(git_runner.clone()));
+        let (herdr, runner) = herdr(vec![Ok(RECREATED.to_owned())]);
+
+        let resumed = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(resumed.status, TaskStatus::InProgress);
+        assert_eq!(
+            git_commands(&git_runner),
+            ["rev-parse --verify --quiet refs/heads/feat/add-login-1"]
+        );
+        assert_eq!(herdr_base(&runner), "feat/add-login-1");
+    }
+
+    /// Runs real git with the placeholder workspace path replaced by a real directory, so a
+    /// Windows workspace path works on every platform.
+    struct MappedRunner {
+        placeholder: &'static str,
+        dir: String,
+    }
+
+    impl crate::adapters::git::Runner for MappedRunner {
+        fn run(&self, invocation: &Invocation) -> Result<String, GitError> {
+            crate::adapters::git::ProcessRunner.run(&Invocation {
+                program: invocation.program,
+                args: invocation
+                    .args
+                    .iter()
+                    .map(|arg| arg.replace(self.placeholder, &self.dir))
+                    .collect(),
+            })
+        }
+
+        fn run_in_terminal(&self, _: &Invocation) -> Result<(), GitError> {
+            unreachable!("start never opens a terminal")
+        }
+    }
+
+    fn real_git(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Toodo Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).into_owned())
+        }
+    }
+
+    #[test]
+    fn a_new_branch_contains_what_was_merged_into_origin_since_the_last_pull() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let origin = root.join("origin.git");
+        let origin_url = origin.to_str().unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| real_git(dir, args).unwrap();
+        git(
+            root,
+            &["init", "--bare", "--initial-branch=main", origin_url],
+        );
+        let seed = root.join("seed");
+        git(root, &["clone", "--quiet", origin_url, "seed"]);
+        git(&seed, &["commit", "--allow-empty", "-m", "First"]);
+        git(&seed, &["push", "--quiet", "origin", "HEAD:main"]);
+        git(root, &["clone", "--quiet", origin_url, "workspace"]);
+        git(root, &["clone", "--quiet", origin_url, "other"]);
+        let workspace = root.join("workspace");
+        let other = root.join("other");
+        git(
+            &other,
+            &["commit", "--allow-empty", "-m", "Merged elsewhere"],
+        );
+        git(&other, &["push", "--quiet", "origin", "main"]);
+        let merged = git(&other, &["rev-parse", "HEAD"]);
+        let local_main = git(&workspace, &["rev-parse", "refs/heads/main"]);
+
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_adapter = Git::new(Box::new(MappedRunner {
+            placeholder: r"C:\dev\toodo",
+            dir: workspace.to_str().unwrap().to_owned(),
+        }));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        let started = start(&fixture.storage, &git_adapter, &herdr, fixture.task.id).unwrap();
+
+        assert!(started.notes.is_empty(), "{:?}", started.notes);
+        assert_eq!(herdr_base(&runner), "origin/main");
+        let branch = "feat/add-login-1";
+        git(
+            &workspace,
+            &["merge-base", "--is-ancestor", &merged, branch],
+        );
+        let upstream = format!("{branch}@{{upstream}}");
+        assert!(real_git(&workspace, &["rev-parse", "--abbrev-ref", &upstream]).is_err());
+        assert_eq!(
+            git(&workspace, &["rev-parse", "refs/heads/main"]),
+            local_main
+        );
+        assert_eq!(
+            git(&workspace, &["symbolic-ref", "--short", "HEAD"]),
+            "main"
+        );
+        assert_eq!(git(&workspace, &["status", "--porcelain"]), "");
     }
 
     const REMOVED: &str = r#"{"id":"cli:worktree:remove","result":{"type":"worktree_removed"}}"#;

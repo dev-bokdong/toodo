@@ -277,6 +277,102 @@ impl Git {
         Ok(None)
     }
 
+    /// Where a new task branch should start: `origin/<base>` right after fetching it, so
+    /// the branch contains everything merged into the base even when the local base is
+    /// behind. Only `origin/*` references are updated; the local base and its working copy
+    /// are left alone. A repository without `origin`, or whose `origin` has no `base`,
+    /// starts from the local `base`; so does a failed fetch, which is reported together
+    /// with the local base's commit.
+    pub fn task_branch_start(
+        &self,
+        repo: &WorkspaceLocation,
+        base: &str,
+    ) -> Result<BranchStart, GitError> {
+        let path = Some(location_path(repo));
+        let local = || BranchStart {
+            start: base.to_owned(),
+            fetch_failure: None,
+        };
+        if !self.has_origin(repo)? {
+            return Ok(local());
+        }
+        let fetch_error = match self.run(repo, path, &["fetch", "--quiet", "origin", base]) {
+            Ok(_) => None,
+            Err(error @ GitError::Failed { .. }) => Some(error),
+            Err(error) => return Err(error),
+        };
+        let Some(fetch_error) = fetch_error else {
+            let remote_base = format!("refs/remotes/origin/{base}");
+            return match self.run(
+                repo,
+                path,
+                &["rev-parse", "--verify", "--quiet", &remote_base],
+            ) {
+                Ok(_) => Ok(BranchStart {
+                    start: format!("origin/{base}"),
+                    fetch_failure: None,
+                }),
+                // A fetch refspec that does not map to `origin/*`.
+                Err(GitError::Failed { .. }) => Ok(local()),
+                Err(error) => Err(error),
+            };
+        };
+        // Fetching a branch `origin` does not have fails too; that is no failure to report.
+        let remote_head = format!("refs/heads/{base}");
+        if let Ok(heads) = self.run(
+            repo,
+            path,
+            &["ls-remote", "--heads", "origin", &remote_head],
+        ) && heads.trim().is_empty()
+        {
+            return Ok(local());
+        }
+        let local_base = format!("refs/heads/{base}");
+        let commit = self.run(
+            repo,
+            path,
+            &["rev-parse", "--short", "--verify", &local_base],
+        )?;
+        Ok(BranchStart {
+            start: base.to_owned(),
+            fetch_failure: Some(FetchFailure {
+                commit: commit.trim().to_owned(),
+                error: fetch_error.to_string(),
+            }),
+        })
+    }
+
+    /// Creates the task branch `branch` at `start` without an upstream, so pulling on it
+    /// never pulls the base and a push cannot land on the base; its first push sets its own
+    /// remote branch as upstream. An existing `branch` is left as it is. Returns whether
+    /// the branch was created.
+    pub fn create_task_branch(
+        &self,
+        repo: &WorkspaceLocation,
+        branch: &str,
+        start: &str,
+    ) -> Result<bool, GitError> {
+        let path = Some(location_path(repo));
+        let reference = format!("refs/heads/{branch}");
+        match self.run(
+            repo,
+            path,
+            &["rev-parse", "--verify", "--quiet", &reference],
+        ) {
+            Ok(_) => return Ok(false),
+            Err(GitError::Failed { .. }) => {}
+            Err(error) => return Err(error),
+        }
+        self.run(repo, path, &["branch", "--no-track", branch, start])?;
+        Ok(true)
+    }
+
+    /// Deletes the local `branch`, e.g. a task branch whose worktree could not be created.
+    pub fn delete_branch(&self, repo: &WorkspaceLocation, branch: &str) -> Result<(), GitError> {
+        self.run(repo, Some(location_path(repo)), &["branch", "-D", branch])?;
+        Ok(())
+    }
+
     /// Commits reachable from `branch` but not from `base`, oldest first, read in the
     /// repository or worktree at `dir` on the machine of `location`.
     pub fn commits_between(
@@ -506,6 +602,23 @@ pub struct BranchList {
     pub names: Vec<String>,
     /// Why fetching `origin` failed, when it did.
     pub fetch_error: Option<String>,
+}
+
+/// Where [`Git::task_branch_start`] starts a new task branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchStart {
+    /// `origin/<base>` after a successful fetch, else the local `<base>`.
+    pub start: String,
+    /// Why fetching `origin` failed, when the branch starts from the local base because
+    /// of it.
+    pub fetch_failure: Option<FetchFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchFailure {
+    /// Abbreviated commit of the local base the branch starts from.
+    pub commit: String,
+    pub error: String,
 }
 
 /// How far a branch is behind its base, as counted by [`Git::commits_behind`].
