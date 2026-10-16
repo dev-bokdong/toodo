@@ -44,6 +44,14 @@ keeps its branch, worktree, herdr workspace, commit records, and pull request, s
 resuming it continues the same work (see step 3). `done` is a final state. A task that
 is abandoned is deleted (step 8); a paused one stays in the reports.
 
+Agents can start, complete, and conclude tasks through Toodo's MCP server too
+(`start_task`, `complete_task`, `conclude_task`), with the same steps and checks as the
+app (steps 3, 7, and 7b) and the same status history, so a task can go from request to
+merge without the user. Two differences: concluding through MCP rejects a task whose
+pull request is still open instead of closing it, and agents are told never to start,
+complete, or conclude their own task, whose pull request's merge completes it. Deleting
+(step 8) stays in the app.
+
 Every state change is recorded with its time in the task's status history, which feeds
 the timeline view and year-end reports (see
 [architecture.md](architecture.md#task-timeline)).

@@ -375,7 +375,8 @@ Toodo owns planning, task state, commit records, and pull requests.
   remote URL, so it needs no local checkout. The task branch is pushed by the workspace
   adapter, on the machine that holds the worktree.
 - **MCP server** (`src-tauri/src/mcp/`): lets coding agents plan in Toodo while the app
-  runs, so an agent can split its work into follow-up tasks and connect them.
+  runs, so an agent can split its work into follow-up tasks and connect them, and start
+  and finish other tasks without the user clicking through the app.
   - Served by the app itself (rmcp, Streamable HTTP, stateless JSON responses) on
     `http://127.0.0.1:47615/mcp`, loopback only. Embedding it shares the database lock
     with the Tauri commands and emits `TasksChanged`, so the UI refreshes like after any
@@ -397,8 +398,19 @@ Toodo owns planning, task state, commit records, and pull requests.
     work; Toodo never prompts agents itself. Notes show in the task list (latest) and the
     task details (all), and period reviews list the notes left during the period. Tool
     failures come back as tool errors whose text the agent sees.
-  - Starting, completing, concluding, and deleting tasks are not exposed; they touch
-    worktrees, herdr, and pull requests and stay in the app.
+  - `start_task`, `complete_task`, and `conclude_task` run the app's own commands
+    (`commands::herdr::start`, `commands::completion::complete` and `conclude`) on a
+    blocking thread, with the same adapters, checks, and status history, and emit
+    `TasksChanged`. Starting creates or reopens the worktree like Start or Resume and is
+    rejected for the same reasons (not ready, not `planned`, no worktree root);
+    completing needs a merged pull request, as the background check does. Concluding
+    differs in one rule: a task whose pull request is still open is rejected instead of
+    closing it, because closing a pull request stays a decision for the user in the app.
+  - An MCP request does not say which session sent it, so nothing in code stops an
+    agent from finishing its own task; the server instructions, tool descriptions, and
+    the `toodo` skill tell agents never to start, complete, or conclude the task
+    `current_task` finds for them, since its pull request's merge completes it.
+  - Deleting tasks is not exposed: it cannot be undone and stays in the app.
   - If the port is taken, the app runs without the server and the sidebar's Agent
     access panel shows why. That panel copies an MCP client config with the URL and
     token (`mcp_server_info`).

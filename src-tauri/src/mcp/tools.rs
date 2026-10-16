@@ -1,14 +1,20 @@
 //! What the MCP tools do, over the same storage as the Tauri commands, so agents follow
 //! the rules the UI follows: the dependency DAG stays acyclic and readiness stays in sync.
+//! Starting, completing, and concluding tasks run the app's own commands.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::adapters::git::Git;
+use crate::adapters::github::GitHub;
+use crate::adapters::herdr::Herdr;
+use crate::commands::completion::{self, OpenPullRequest};
+use crate::commands::herdr as herdr_commands;
 use crate::commands::tasks::edit_task;
 use crate::commands::types::{
     self, Estimate, Task, TaskEdit, TaskId, TaskType, Workspace, WorkspaceId,
 };
-use crate::commands::{CommandError, CommandResult};
+use crate::commands::{CommandError, CommandResult, StorageState};
 use crate::domain::model::NoteKind;
 use crate::storage::{self, Storage, StorageError};
 
@@ -98,6 +104,23 @@ pub struct AddNote {
     /// The task the note is about, usually your current task.
     pub task_id: TaskId,
     /// What happened, in GitHub-flavored Markdown.
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskRef {
+    /// The task. Never your own task, the one current_task finds.
+    pub id: TaskId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ConcludeTask {
+    /// The task. Never your own task, the one current_task finds.
+    pub id: TaskId,
+    /// The conclusion in GitHub-flavored Markdown: what was tried or found and why the
+    /// work ends without a merge. Kept as the task's completion note.
     pub note: String,
 }
 
@@ -249,6 +272,47 @@ pub fn add_note(storage: &mut Storage, kind: NoteKind, request: AddNote) -> Comm
     }
     let task = storage.add_task_note(request.task_id.into(), kind, note)?;
     Ok((&task).into())
+}
+
+/// Starts or resumes a ready `planned` task as the app's Start does.
+pub fn start_task(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: TaskRef,
+) -> CommandResult<Task> {
+    Ok((&herdr_commands::start(storage, git, herdr, request.id.into())?).into())
+}
+
+/// Completes an `in_review` task whose pull request is merged, as the app does.
+pub fn complete_task(
+    storage: &StorageState,
+    github: &GitHub,
+    herdr: &Herdr,
+    request: TaskRef,
+) -> CommandResult<Task> {
+    Ok((&completion::complete(storage, github, herdr, request.id.into())?).into())
+}
+
+/// Concludes a task without merging as the app does, except that a task whose pull
+/// request is still open is rejected instead of closing it.
+pub fn conclude_task(
+    storage: &StorageState,
+    git: &Git,
+    github: &GitHub,
+    herdr: &Herdr,
+    request: ConcludeTask,
+) -> CommandResult<Task> {
+    Ok((&completion::conclude(
+        storage,
+        git,
+        github,
+        herdr,
+        request.id.into(),
+        &request.note,
+        OpenPullRequest::Reject,
+    )?)
+        .into())
 }
 
 fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
@@ -613,5 +677,205 @@ mod tests {
         };
         assert_eq!(find("/wt/app/feat-remote-1/src").unwrap().task.id, task.id);
         assert!(find("/WT/app/feat-remote-1").is_err());
+    }
+
+    type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
+
+    /// An adapter whose runner returns `results` in order, and the runner.
+    fn fake<T>(
+        new: impl FnOnce(Box<dyn crate::adapters::git::Runner>) -> T,
+        results: Scripted,
+    ) -> (T, std::sync::Arc<crate::adapters::git::fake::FakeRunner>) {
+        let runner = std::sync::Arc::new(crate::adapters::git::fake::FakeRunner::new(results));
+        (new(Box::new(runner.clone())), runner)
+    }
+
+    const PR: &str = "https://github.com/acme/toodo/pull/12";
+
+    /// `gh pr view` output for the pull request in `state`.
+    fn viewed(state: &str) -> Result<String, crate::adapters::git::GitError> {
+        let merged_at = if state == "MERGED" {
+            r#""2026-10-09T14:47:45Z""#
+        } else {
+            "null"
+        };
+        Ok(format!(
+            r#"{{"baseRefName":"main","mergedAt":{merged_at},"state":"{state}","url":"{PR}","statusCheckRollup":[],"reviewDecision":"","latestReviews":[]}}"#
+        ))
+    }
+
+    const MERGED_DETAILS: &str = r#"{"additions":1,"author":{"login":"ada"},"changedFiles":1,"commits":[],"deletions":0,"mergeCommit":{"oid":"2222222222222222222222222222222222222222"},"number":12,"reviews":[],"title":"Add login"}"#;
+
+    const CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
+
+    /// A task started in herdr workspace `w27`, in review with a pull request if
+    /// `in_review`, and a planned task that depends on it.
+    fn started(in_review: bool) -> (StorageState, Task, Task) {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        let dependent = create(&mut storage, workspace, "Use login", vec![task.id]).unwrap();
+        let checkout = crate::domain::naming::TaskCheckout {
+            path: HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap()),
+            branch: "feat/add-login-1".to_owned(),
+        };
+        let mut started = storage
+            .start_task(task.id.into(), &checkout, "w27")
+            .unwrap();
+        if in_review {
+            started = storage
+                .open_pull_request(task.id.into(), &[], PR, None)
+                .unwrap();
+        }
+        (std::sync::Mutex::new(storage), (&started).into(), dependent)
+    }
+
+    fn stored(storage: &StorageState, id: TaskId) -> Task {
+        get_task(&crate::commands::lock(storage), id).unwrap()
+    }
+
+    fn last_status(task: &Task) -> Option<types::TaskStatus> {
+        task.timeline.last().map(|event| event.status)
+    }
+
+    #[test]
+    fn start_is_rejected_for_a_task_that_is_not_ready_or_not_planned() {
+        let (storage, task, dependent) = started(false);
+        let (git, git_runner) = fake(Git::new, vec![]);
+        let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
+
+        let error = start_task(&storage, &git, &herdr, TaskRef { id: dependent.id }).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("dependencies are done"),
+            "{}",
+            error.message
+        );
+        let error = start_task(&storage, &git, &herdr, TaskRef { id: task.id }).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+
+        assert!(git_runner.invocations.lock().unwrap().is_empty());
+        assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, dependent.id), dependent);
+    }
+
+    #[test]
+    fn complete_finishes_a_task_whose_pull_request_is_merged_and_only_that() {
+        let (storage, task, _) = started(true);
+        let (open, _) = fake(GitHub::new, vec![viewed("OPEN")]);
+        let (no_herdr, _) = fake(Herdr::new, vec![]);
+
+        let error = complete_task(&storage, &open, &no_herdr, TaskRef { id: task.id }).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("is not merged yet"),
+            "{}",
+            error.message
+        );
+        assert_eq!(stored(&storage, task.id), task);
+
+        let (merged, _) = fake(
+            GitHub::new,
+            vec![viewed("MERGED"), Ok(MERGED_DETAILS.to_owned())],
+        );
+        let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
+        let done = complete_task(&storage, &merged, &herdr, TaskRef { id: task.id }).unwrap();
+        assert_eq!(done.status, types::TaskStatus::Done);
+        assert_eq!(done.resolution, Some(types::TaskResolution::Merged));
+        assert_eq!(last_status(&done), Some(types::TaskStatus::Done));
+        assert_eq!(done.herdr_workspace_id, None);
+        assert_eq!(stored(&storage, task.id), done);
+        assert_eq!(
+            herdr_runner.invocations.lock().unwrap()[0].args,
+            ["workspace", "close", "w27"]
+        );
+    }
+
+    #[test]
+    fn complete_is_rejected_for_a_task_that_is_not_in_review() {
+        let (storage, task, _) = started(false);
+        let (github, gh_runner) = fake(GitHub::new, vec![]);
+        let (herdr, _) = fake(Herdr::new, vec![]);
+
+        let error = complete_task(&storage, &github, &herdr, TaskRef { id: task.id }).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("only an in_review task"),
+            "{}",
+            error.message
+        );
+        assert!(gh_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, task.id), task);
+    }
+
+    fn conclusion(id: TaskId, note: &str) -> ConcludeTask {
+        ConcludeTask {
+            id,
+            note: note.to_owned(),
+        }
+    }
+
+    #[test]
+    fn conclude_finishes_a_task_without_a_pull_request_as_not_adopted() {
+        let (storage, task, dependent) = started(false);
+        let (git, _) = fake(Git::new, vec![Ok(String::new())]);
+        let (github, gh_runner) = fake(GitHub::new, vec![]);
+        let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
+
+        let done = conclude_task(
+            &storage,
+            &git,
+            &github,
+            &herdr,
+            conclusion(task.id, " Duplicate of #7 "),
+        )
+        .unwrap();
+
+        assert_eq!(done.status, types::TaskStatus::Done);
+        assert_eq!(done.resolution, Some(types::TaskResolution::NotAdopted));
+        assert_eq!(done.completion_note.as_deref(), Some("Duplicate of #7"));
+        assert_eq!(last_status(&done), Some(types::TaskStatus::Done));
+        assert_eq!(stored(&storage, task.id), done);
+        assert!(gh_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(herdr_runner.invocations.lock().unwrap().len(), 1);
+        assert_eq!(
+            stored(&storage, dependent.id).status,
+            types::TaskStatus::Planned
+        );
+    }
+
+    #[test]
+    fn conclude_is_rejected_without_a_note_and_while_a_pull_request_is_open() {
+        let (storage, task, _) = started(true);
+        let (no_git, _) = fake(Git::new, vec![]);
+        let (no_github, _) = fake(GitHub::new, vec![]);
+        let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
+
+        let error = conclude_task(
+            &storage,
+            &no_git,
+            &no_github,
+            &herdr,
+            conclusion(task.id, " \n"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+
+        let (git, _) = fake(Git::new, vec![Ok(String::new())]);
+        let (github, gh_runner) = fake(GitHub::new, vec![viewed("OPEN")]);
+        let error = conclude_task(
+            &storage,
+            &git,
+            &github,
+            &herdr,
+            conclusion(task.id, "Not adopted"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("is still open"), "{}", error.message);
+        // Only the state was read; the pull request was not closed.
+        assert_eq!(gh_runner.invocations.lock().unwrap().len(), 1);
+        assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, task.id), task);
     }
 }
