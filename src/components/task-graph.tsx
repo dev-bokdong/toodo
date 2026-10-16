@@ -80,6 +80,7 @@ type BarNode = Node<
 
 const nodeTypes = { bar: TimelineBarView };
 const edgeTypes = { timeline: TimelineEdge };
+const highlightedEdgeStyle = { stroke: "var(--foreground)", strokeWidth: 2 };
 
 /** Height of the axis header: a row of coarse ticks above a row of fine ticks. */
 const axisRowHeight = 18;
@@ -265,16 +266,23 @@ export function TaskGraph({
     width: bar.width,
     height: barHeight,
   }));
-  const edges: Edge[] = dependencies.map((edge) => ({
-    id: edge.id,
-    source: String(edge.source),
-    target: String(edge.target),
-    type: "timeline",
-    selected: selectedEdgeIds.has(edge.id),
-    deletable: editable(edge.target),
-    markerEnd: { type: MarkerType.ArrowClosed },
-    style: inChain(edge.source) && inChain(edge.target) ? undefined : { opacity: 0.2 },
-  }));
+  const edges: Edge[] = dependencies.map((edge) => {
+    const related = inChain(edge.source) && inChain(edge.target);
+    // The lines of the selected task's chain stand out along with its bars.
+    const highlighted = chain !== null && related;
+    return {
+      id: edge.id,
+      source: String(edge.source),
+      target: String(edge.target),
+      type: "timeline",
+      selected: selectedEdgeIds.has(edge.id),
+      deletable: editable(edge.target),
+      markerEnd: highlighted
+        ? { type: MarkerType.ArrowClosed, color: "var(--foreground)", width: 8, height: 8 }
+        : { type: MarkerType.ArrowClosed },
+      style: highlighted ? highlightedEdgeStyle : related ? undefined : { opacity: 0.2 },
+    };
+  });
   function agentStatusOf(task: Task): AgentStatus | null {
     if (task.status !== "in_progress" && task.status !== "in_review") {
       return null;
@@ -623,6 +631,8 @@ export function TaskGraph({
               edges={edges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
+              // Arrowheads take the line color (`--xy-edge-stroke`) instead of a fixed light gray.
+              defaultMarkerColor={null}
               onInit={showLatest}
               minZoom={1}
               maxZoom={1}
