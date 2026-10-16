@@ -80,6 +80,7 @@ type BarNode = Node<
 
 const nodeTypes = { bar: TimelineBarView };
 const edgeTypes = { timeline: TimelineEdge };
+const highlightedEdgeStyle = { stroke: "var(--foreground)", strokeWidth: 2 };
 
 /** Height of the axis header: a row of coarse ticks above a row of fine ticks. */
 const axisRowHeight = 18;
@@ -133,13 +134,11 @@ const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", w
 const phaseStyles: Record<TimelinePhase, string> = {
   in_progress: toneFill.progress,
   in_review: toneFill.review,
-  paused: toneFill.neutral,
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
   in_progress: "In progress",
   in_review: "In review",
-  paused: "Paused",
 };
 
 
@@ -265,16 +264,23 @@ export function TaskGraph({
     width: bar.width,
     height: barHeight,
   }));
-  const edges: Edge[] = dependencies.map((edge) => ({
-    id: edge.id,
-    source: String(edge.source),
-    target: String(edge.target),
-    type: "timeline",
-    selected: selectedEdgeIds.has(edge.id),
-    deletable: editable(edge.target),
-    markerEnd: { type: MarkerType.ArrowClosed },
-    style: inChain(edge.source) && inChain(edge.target) ? undefined : { opacity: 0.2 },
-  }));
+  const edges: Edge[] = dependencies.map((edge) => {
+    const related = inChain(edge.source) && inChain(edge.target);
+    // The lines of the selected task's chain stand out along with its bars.
+    const highlighted = chain !== null && related;
+    return {
+      id: edge.id,
+      source: String(edge.source),
+      target: String(edge.target),
+      type: "timeline",
+      selected: selectedEdgeIds.has(edge.id),
+      deletable: editable(edge.target),
+      markerEnd: highlighted
+        ? { type: MarkerType.ArrowClosed, color: "var(--foreground)", width: 8, height: 8 }
+        : { type: MarkerType.ArrowClosed },
+      style: highlighted ? highlightedEdgeStyle : related ? undefined : { opacity: 0.2 },
+    };
+  });
   function agentStatusOf(task: Task): AgentStatus | null {
     if (task.status !== "in_progress" && task.status !== "in_review") {
       return null;
@@ -537,7 +543,7 @@ export function TaskGraph({
           </li>
           <li className="flex items-center gap-1">
             <span className="w-3 border-t border-dashed border-muted-foreground" />
-            Waiting
+            Waiting or paused
           </li>
           <li className="flex items-center gap-1">
             <span className={cn("h-2 w-3 rounded-sm border", barStyles.blocked)} />
@@ -623,6 +629,8 @@ export function TaskGraph({
               edges={edges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
+              // Arrowheads take the line color (`--xy-edge-stroke`) instead of a fixed light gray.
+              defaultMarkerColor={null}
               onInit={showLatest}
               minZoom={1}
               maxZoom={1}
@@ -961,7 +969,7 @@ function TimelineBarView({
   data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, agentStatus, waitingOn, notAdopted, checkFreshness },
   selected,
 }: NodeProps<BarNode>) {
-  const { task, phases, pending, lead, dueX, dueState } = bar;
+  const { task, phases, blocks, pauses, pending, lead, dueX, dueState } = bar;
   // Shares the cached check of the task row, so the bar warns about the same base freshness.
   const freshness = useBranchFreshness(task.id, checkFreshness);
   const behindBase = checkFreshness && freshness.data ? freshnessWarning(freshness.data) : null;
@@ -976,6 +984,8 @@ function TimelineBarView({
   // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
   const faded = isPaused(task) && !ready;
   const behindDue = dueState === "late" || dueState === "overdue";
+  // A paused task's dashed line runs on past the bar to now.
+  const drawnWidth = Math.max(bar.width, ...pauses.map((pause) => pause.x + pause.width));
   // A label wider than its bar starts after the bar's right end, so no chip sits across the
   // bar's edge or under its handle.
   const label = useRef<HTMLDivElement>(null);
@@ -1017,26 +1027,42 @@ function TimelineBarView({
           )}
         </div>
       )}
-      <div
-        className={cn(
-          "absolute inset-0 overflow-hidden rounded-md border bg-card shadow-sm",
-          selected && "ring-2 ring-primary",
-          ready ? barStyles.ready : pending && barStyles.blocked,
-          task.status === "done" && barStyles.done,
-          faded && barStyles.paused,
-          behindDue && barStyles.behindDue,
-        )}
-      >
-        <div className="absolute inset-x-0 bottom-0 h-1.5">
-          {phases.map((phase) => (
-            <span
-              key={phase.x}
-              className={cn("absolute inset-y-0", phaseStyles[phase.phase])}
-              style={{ left: phase.x, width: phase.width }}
-            />
-          ))}
+      {pauses.map((pause) => (
+        // A pause cuts the bar, like the wait before it: the blocks of work on either side are
+        // joined by a dashed line.
+        <div
+          key={pause.x}
+          aria-hidden
+          data-pause
+          className="pointer-events-none absolute top-1/2 border-t border-dashed border-muted-foreground/70"
+          style={{ left: pause.x, width: pause.width }}
+        />
+      ))}
+      {blocks.map((block) => (
+        <div
+          key={block.x}
+          data-block
+          className={cn(
+            "absolute inset-y-0 overflow-hidden rounded-md border bg-card shadow-sm",
+            selected && "ring-2 ring-primary",
+            ready ? barStyles.ready : pending && barStyles.blocked,
+            task.status === "done" && barStyles.done,
+            faded && barStyles.paused,
+            behindDue && barStyles.behindDue,
+          )}
+          style={{ left: block.x, width: block.width }}
+        >
+          <div className="absolute inset-x-0 bottom-0 h-1.5">
+            {phases.map((phase) => (
+              <span
+                key={phase.x}
+                className={cn("absolute inset-y-0", phaseStyles[phase.phase])}
+                style={{ left: phase.x - block.x, width: phase.width }}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      ))}
       {dueX !== null && (
         // The end of the due day, past the bar's edges: a stub above it and a tick through its
         // lower part, leaving the label row clear.
@@ -1064,7 +1090,7 @@ function TimelineBarView({
         className="relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground [text-shadow:0_0_3px_var(--background),0_0_3px_var(--background)]"
         style={{
           width: "max-content",
-          ...(labelOutside ? { marginLeft: bar.width + labelGap - 6 } : { minWidth: "100%" }),
+          ...(labelOutside ? { marginLeft: drawnWidth + labelGap - 6 } : { minWidth: "100%" }),
         }}
       >
         {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
