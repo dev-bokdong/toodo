@@ -5,7 +5,8 @@
 //! in the app data directory. Agents can read workspaces and tasks, create and edit
 //! tasks, connect dependencies, and leave progress and blocker notes in a task's history;
 //! starting, completing, and deleting tasks stay in the app. The `toodo` skill, the
-//! workflow for working on a task, is served as a resource at [`SKILL_URI`]. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
+//! workflow for working on a task, is served as a resource at [`SKILL_URI`] and, for
+//! clients that cannot read resources, by the `read_toodo_skill` tool. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
 
 mod tools;
 pub mod tunnels;
@@ -51,10 +52,11 @@ const SKILL: &str = include_str!("toodo-skill.md");
 const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
 a task becomes ready only when all tasks it depends on are done.
 
-Before you work on a Toodo task or create tasks, read the resource \
-skill://toodo/SKILL.md (the toodo skill) unless you already have it: it is the workflow \
-from the task description to a pull request into the workspace base branch, including \
-when to stop for prerequisite tasks, and the format of task descriptions.
+Before you work on a Toodo task or create tasks, read the toodo skill unless you \
+already have it: the resource skill://toodo/SKILL.md, or the read_toodo_skill tool if \
+you cannot read resources. It is the workflow from the task description to a pull \
+request into the workspace base branch, including when to stop for prerequisite tasks, \
+and the format of task descriptions.
 
 How to use these tools:
 1. Call current_task with your absolute working directory first. Use its workspaceId \
@@ -259,6 +261,13 @@ impl ToodoMcp {
                 .tasks_changed(model::WorkspaceId(task.workspace_id.0));
         }
         reply(result)
+    }
+
+    #[tool(
+        description = "Return the toodo skill (Markdown), the same text as the resource skill://toodo/SKILL.md: the workflow for working on a Toodo task. Read it before you work on a task or create tasks."
+    )]
+    fn read_toodo_skill(&self) -> Result<CallToolResult, ErrorData> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(SKILL)]))
     }
 
     #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
@@ -491,6 +500,16 @@ mod tests {
             "{text}"
         );
         assert!(read_skill("skill://toodo/other.md").is_err());
+    }
+
+    #[test]
+    fn the_skill_tool_returns_the_skill_text() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let server = ToodoMcp::new(Arc::new(TestBackend(std::sync::Mutex::new(storage))));
+        assert!(server.tool_router.has_route("read_toodo_skill"));
+        let result = serde_json::to_value(server.read_toodo_skill().unwrap()).unwrap();
+        assert_eq!(result["content"][0]["text"], SKILL);
+        assert_ne!(result["isError"], true);
     }
 
     #[test]
