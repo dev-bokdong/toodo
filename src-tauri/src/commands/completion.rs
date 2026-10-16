@@ -86,8 +86,9 @@ pub fn complete_task(
 /// Concludes an `in_progress` or `in_review` task without merging, e.g. research whose
 /// result is not adopted: the task becomes `done` as `not_adopted` with `note`, the
 /// conclusion, as its completion note. The commits of its branch are recorded, an open
-/// pull request is closed with the conclusion as a comment, and its herdr workspace is
-/// closed. The branch and worktree stay, and its dependents keep waiting.
+/// pull request of its branch, recorded or not, is closed with the conclusion as a
+/// comment and recorded, and its herdr workspace is closed. The branch and worktree stay,
+/// and its dependents keep waiting.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn conclude_task(
@@ -333,7 +334,20 @@ fn complete_if_merged(
     };
     let pull_request_url = match (task.status, task.pull_request_url) {
         (TaskStatus::InReview, Some(url)) => url,
-        (status, _) => {
+        (TaskStatus::Done, _) => {
+            let resolution = task
+                .resolution
+                .map_or("done", model::TaskResolution::as_str);
+            return Err(CommandError::rejected(format!(
+                "task {id} is already done as {resolution}; there is nothing left to complete"
+            )));
+        }
+        (status, Some(_)) => {
+            return Err(CommandError::rejected(format!(
+                "task {id} is {status}; only an in_review task can be completed"
+            )));
+        }
+        (status, None) => {
             return Err(CommandError::rejected(format!(
                 "task {id} is {status} without a pull request; only an in_review task can be completed"
             )));
@@ -431,24 +445,39 @@ pub(crate) fn conclude(
         )?,
         _ => Vec::new(),
     };
-    if let Some(url) = &task.pull_request_url {
-        match github.pull_request(url)?.pull_request.state {
-            PullRequestState::Open => match open_pull_request {
-                OpenPullRequest::Close => github.close_pull_request(url, note)?,
-                OpenPullRequest::Reject => {
-                    return Err(CommandError::rejected(format!(
-                        "pull request {url} is still open; concluding through MCP never closes a pull request, so the user concludes this task in the Toodo app, which closes it with the conclusion as a comment"
-                    )));
-                }
-            },
-            PullRequestState::Closed => {}
-            PullRequestState::Merged => {
+    // The pull requests of the branch on GitHub decide, not only the recorded one: an
+    // agent may have opened one that the background check has not adopted yet.
+    let pull_requests = match &task.branch {
+        Some(branch) => branch_pull_requests(git, github, &workspace, branch)?,
+        None => Vec::new(),
+    };
+    if let Some(merged) = pull_requests
+        .iter()
+        .find(|pull_request| pull_request.state == PullRequestState::Merged)
+    {
+        return Err(CommandError::rejected(format!(
+            "pull request {} was merged; the task completes with the merge instead",
+            merged.url
+        )));
+    }
+    let closed = match pull_requests
+        .iter()
+        .find(|pull_request| pull_request.state == PullRequestState::Open)
+    {
+        None => None,
+        Some(open) => match open_pull_request {
+            OpenPullRequest::Close => {
+                github.close_pull_request(&open.url, note)?;
+                Some(open.url.as_str())
+            }
+            OpenPullRequest::Reject => {
                 return Err(CommandError::rejected(format!(
-                    "pull request {url} was merged; the task completes with the merge instead"
+                    "pull request {} is still open; concluding through MCP never closes a pull request, so the user concludes this task in the Toodo app, which closes it with the conclusion as a comment",
+                    open.url
                 )));
             }
-        }
-    }
+        },
+    };
     // A workspace herdr no longer has was already closed, e.g. by the user.
     if let Some(workspace_id) = &task.herdr_workspace_id {
         match herdr.close_workspace(&workspace.location.machine(), workspace_id) {
@@ -457,7 +486,31 @@ pub(crate) fn conclude(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(lock(storage).conclude_task(id, note, &records)?)
+    Ok(lock(storage).conclude_task(id, note, &records, closed)?)
+}
+
+/// The pull requests from `branch` into the base branch of `workspace` on GitHub, newest
+/// first. A repository without an `origin` remote, or whose `origin` is not on GitHub,
+/// has none.
+fn branch_pull_requests(
+    git: &Git,
+    github: &GitHub,
+    workspace: &model::Workspace,
+    branch: &str,
+) -> CommandResult<Vec<PullRequest>> {
+    let location = &workspace.location;
+    if !git.has_origin(location)? {
+        return Ok(Vec::new());
+    }
+    let path = match location {
+        WorkspaceLocation::Local { path } => path.as_str(),
+        WorkspaceLocation::Ssh { path, .. } => path.as_str(),
+    };
+    let origin = git.origin_url(location, path)?;
+    let Some(repository) = GitHubRepository::from_remote_url(&origin) else {
+        return Ok(Vec::new());
+    };
+    Ok(github.pull_requests_into(&repository, branch, &workspace.default_base_branch)?)
 }
 
 /// Moves an `in_progress` task to `in_review` when its branch has an open or merged
@@ -1360,8 +1413,12 @@ mod tests {
     #[test]
     fn concluding_closes_the_open_pull_request_and_keeps_dependents_waiting() {
         let fixture = in_review_fixture();
-        let git_runner = runner(vec![log(&[SHA_A, SHA_B])]);
-        let gh_runner = runner(vec![viewed("OPEN", "main"), Ok(String::new())]);
+        let git_runner = runner(vec![
+            log(&[SHA_A, SHA_B]),
+            Ok("origin\n".to_owned()),
+            origin("git@github.com:acme/toodo.git"),
+        ]);
+        let gh_runner = runner(vec![listed("OPEN", "main"), Ok(String::new())]);
         let (git, github) = adapters(&git_runner, &gh_runner);
         let (herdr, herdr_runner) = closing_herdr();
 
@@ -1395,7 +1452,21 @@ mod tests {
         assert_eq!(concluded.herdr_workspace_id, None);
         assert_eq!(stored(&fixture, &fixture.task), concluded);
         assert_eq!(recorded_shas(&fixture), [SHA_A, SHA_B]);
-        assert_eq!(git_commands(&git_runner), ["log"]);
+        assert_eq!(git_commands(&git_runner), ["log", "remote", "remote"]);
+        assert_eq!(
+            invocations(&gh_runner)[0].args[..8],
+            [
+                "pr",
+                "list",
+                "--repo",
+                "github.com/acme/toodo",
+                "--head",
+                "feat/add-login-1",
+                "--base",
+                "main"
+            ]
+            .map(str::to_owned)
+        );
         assert_eq!(
             invocations(&gh_runner)[1].args,
             [
@@ -1415,10 +1486,14 @@ mod tests {
     }
 
     #[test]
-    fn concluding_an_in_progress_task_without_a_pull_request_skips_gh() {
+    fn concluding_an_in_progress_task_whose_branch_has_no_pull_request() {
         let fixture = local_fixture();
-        let git_runner = runner(vec![log(&[])]);
-        let gh_runner = runner(Vec::new());
+        let git_runner = runner(vec![
+            log(&[]),
+            Ok("origin\n".to_owned()),
+            origin("git@github.com:acme/toodo.git"),
+        ]);
+        let gh_runner = runner(vec![Ok("[]\n".to_owned())]);
         let (git, github) = adapters(&git_runner, &gh_runner);
 
         let concluded = conclude(
@@ -1436,7 +1511,8 @@ mod tests {
             concluded.resolution,
             Some(model::TaskResolution::NotAdopted)
         );
-        assert!(invocations(&gh_runner).is_empty());
+        assert_eq!(concluded.pull_request_url, None);
+        assert_eq!(invocations(&gh_runner).len(), 1);
         assert!(recorded_shas(&fixture).is_empty());
         assert!(!dependent_ready(&fixture));
 
@@ -1457,8 +1533,8 @@ mod tests {
     #[test]
     fn concluding_a_task_whose_pull_request_was_closed_does_not_close_it_again() {
         let fixture = in_review_fixture();
-        let gh_runner = runner(vec![viewed("CLOSED", "main")]);
-        let (git, github) = adapters(&runner(vec![log(&[SHA_A])]), &gh_runner);
+        let gh_runner = runner(vec![listed("CLOSED", "main")]);
+        let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
 
         let concluded = conclude(
             &fixture.storage,
@@ -1479,8 +1555,8 @@ mod tests {
     fn concluding_without_closing_rejects_an_open_pull_request_and_changes_nothing() {
         let fixture = in_review_fixture();
         let before = stored(&fixture, &fixture.task);
-        let gh_runner = runner(vec![viewed("OPEN", "main")]);
-        let (git, github) = adapters(&runner(vec![log(&[SHA_A])]), &gh_runner);
+        let gh_runner = runner(vec![listed("OPEN", "main")]);
+        let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
 
         let error = conclude(
             &fixture.storage,
@@ -1534,8 +1610,8 @@ mod tests {
                 .contains("only an in_progress or in_review task")
         );
 
-        let gh_runner = runner(vec![viewed("MERGED", "main")]);
-        let (git, github) = adapters(&runner(vec![log(&[SHA_A])]), &gh_runner);
+        let gh_runner = runner(vec![listed("MERGED", "main")]);
+        let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
         let error = conclude(
             &fixture.storage,
             &git,
@@ -1550,6 +1626,178 @@ mod tests {
         assert!(error.message.contains("was merged"), "{}", error.message);
         assert_eq!(invocations(&gh_runner).len(), 1);
         assert_eq!(stored(&fixture, &fixture.task), before);
+    }
+
+    /// A git whose branch log has `shas` and whose `origin` is on GitHub.
+    fn github_checkout(shas: &[&str]) -> Arc<FakeRunner> {
+        runner(vec![
+            log(shas),
+            Ok("origin\n".to_owned()),
+            origin("git@github.com:acme/toodo.git"),
+        ])
+    }
+
+    #[test]
+    fn concluding_finds_an_open_pull_request_that_was_not_recorded_yet() {
+        let fixture = local_fixture();
+        let before = stored(&fixture, &fixture.task);
+        assert_eq!(before.pull_request_url, None);
+
+        // Through MCP the conclusion is rejected and nothing changes.
+        let gh_runner = runner(vec![listed("OPEN", "main")]);
+        let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
+        let error = conclude(
+            &fixture.storage,
+            &git,
+            &github,
+            &no_herdr(),
+            fixture.task.id,
+            "Not adopted",
+            OpenPullRequest::Reject,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains(&format!("{PR} is still open")),
+            "{}",
+            error.message
+        );
+        assert_eq!(invocations(&gh_runner).len(), 1);
+        assert_eq!(stored(&fixture, &fixture.task), before);
+        assert!(recorded_shas(&fixture).is_empty());
+
+        // The app closes it with the conclusion, records it, and concludes.
+        let gh_runner = runner(vec![listed("OPEN", "main"), Ok(String::new())]);
+        let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
+        let concluded = conclude(
+            &fixture.storage,
+            &git,
+            &github,
+            &closing_herdr().0,
+            fixture.task.id,
+            "Not adopted",
+            OpenPullRequest::Close,
+        )
+        .unwrap();
+        assert_eq!(concluded.status, TaskStatus::Done);
+        assert_eq!(
+            concluded.resolution,
+            Some(model::TaskResolution::NotAdopted)
+        );
+        assert_eq!(concluded.pull_request_url.as_deref(), Some(PR));
+        assert_eq!(stored(&fixture, &fixture.task), concluded);
+        assert_eq!(
+            invocations(&gh_runner)[1].args,
+            ["pr", "close", PR, "--comment", "Not adopted"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn concluding_is_rejected_for_a_merged_pull_request_that_was_not_recorded_yet() {
+        let fixture = local_fixture();
+        let before = stored(&fixture, &fixture.task);
+        for open_pull_request in [OpenPullRequest::Reject, OpenPullRequest::Close] {
+            let gh_runner = runner(vec![listed("MERGED", "main")]);
+            let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
+            let error = conclude(
+                &fixture.storage,
+                &git,
+                &github,
+                &no_herdr(),
+                fixture.task.id,
+                "Not adopted",
+                open_pull_request,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::Rejected);
+            assert!(
+                error.message.contains("completes with the merge"),
+                "{}",
+                error.message
+            );
+            assert_eq!(invocations(&gh_runner).len(), 1);
+            assert_eq!(stored(&fixture, &fixture.task), before);
+        }
+    }
+
+    #[test]
+    fn concluding_skips_gh_for_a_repository_without_origin() {
+        let fixture = local_fixture();
+        let git_runner = runner(vec![log(&[]), Ok(String::new())]);
+        let gh_runner = runner(Vec::new());
+        let (git, github) = adapters(&git_runner, &gh_runner);
+
+        let concluded = conclude(
+            &fixture.storage,
+            &git,
+            &github,
+            &closing_herdr().0,
+            fixture.task.id,
+            "Not worth it",
+            OpenPullRequest::Reject,
+        )
+        .unwrap();
+
+        assert_eq!(concluded.status, TaskStatus::Done);
+        assert_eq!(git_commands(&git_runner), ["log", "remote"]);
+        assert!(invocations(&gh_runner).is_empty());
+    }
+
+    #[test]
+    fn concluding_fails_and_changes_nothing_when_the_lookup_fails() {
+        let fixture = in_review_fixture();
+        let before = stored(&fixture, &fixture.task);
+        let gh_runner = runner(vec![Err(GitError::Failed {
+            command: "gh pr list".to_owned(),
+            stderr: "error connecting to api.github.com".to_owned(),
+        })]);
+        let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
+
+        let error = conclude(
+            &fixture.storage,
+            &git,
+            &github,
+            &no_herdr(),
+            fixture.task.id,
+            "Not adopted",
+            OpenPullRequest::Close,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.message.contains("error connecting to api.github.com"),
+            "{}",
+            error.message
+        );
+        assert_eq!(invocations(&gh_runner).len(), 1);
+        assert_eq!(stored(&fixture, &fixture.task), before);
+        assert!(recorded_shas(&fixture).is_empty());
+    }
+
+    #[test]
+    fn completing_a_done_task_says_how_it_was_done() {
+        let fixture = local_fixture();
+        let git_runner = runner(vec![log(&[]), Ok(String::new())]);
+        let (git, github) = adapters(&git_runner, &runner(Vec::new()));
+        conclude(
+            &fixture.storage,
+            &git,
+            &github,
+            &closing_herdr().0,
+            fixture.task.id,
+            "Not worth it",
+            OpenPullRequest::Close,
+        )
+        .unwrap();
+
+        let error = complete(&fixture.storage, &github, &no_herdr(), fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("is already done as not_adopted"),
+            "{}",
+            error.message
+        );
     }
 
     #[derive(Default)]

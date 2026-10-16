@@ -368,6 +368,42 @@ impl GitHub {
             .transpose()
     }
 
+    /// The pull requests from `head` into `base`, in any state, newest first. They may
+    /// have been opened outside Toodo, e.g. by an agent in herdr.
+    pub fn pull_requests_into(
+        &self,
+        repository: &GitHubRepository,
+        head: &str,
+        base: &str,
+    ) -> Result<Vec<PullRequest>, GitError> {
+        let repository = repository.to_string();
+        let invocation = invocation(&[
+            "pr",
+            "list",
+            "--repo",
+            &repository,
+            "--head",
+            head,
+            "--base",
+            base,
+            "--state",
+            "all",
+            "--json",
+            PULL_REQUEST_FIELDS,
+            "--limit",
+            "100",
+        ]);
+        let output = self.runner.run(&invocation)?;
+        let unexpected = || unexpected(&invocation, &output);
+        let pull_requests: Value = serde_json::from_str(&output).map_err(|_| unexpected())?;
+        pull_requests
+            .as_array()
+            .ok_or_else(unexpected)?
+            .iter()
+            .map(|pull_request| parse_pull_request(pull_request).ok_or_else(unexpected))
+            .collect()
+    }
+
     /// Opens a pull request and returns its URL.
     pub fn create_pull_request(
         &self,
@@ -641,6 +677,55 @@ mod tests {
                 "url,state,baseRefName,mergedAt",
                 "--limit",
                 "1",
+            ])
+        );
+    }
+
+    #[test]
+    fn pull_requests_into_reads_every_pull_request_from_the_head_into_the_base() {
+        let (github, runner) = github(vec![
+            Ok(format!(
+                r#"[{{"baseRefName":"main","mergedAt":null,"state":"OPEN","url":"{URL}"}},{{"baseRefName":"main","mergedAt":"{MERGED_AT}","state":"MERGED","url":"{URL}"}}]"#
+            )),
+            Ok("[]\n".to_owned()),
+            Ok(format!(r#"[{{"url":"{URL}","state":"OPEN"}}]"#)),
+        ]);
+        assert_eq!(
+            github
+                .pull_requests_into(&repository(), "feat/x-1", "main")
+                .unwrap(),
+            [
+                pull_request(PullRequestState::Open, "main"),
+                pull_request(PullRequestState::Merged, "main"),
+            ]
+        );
+        assert_eq!(
+            github
+                .pull_requests_into(&repository(), "feat/x-1", "main")
+                .unwrap(),
+            []
+        );
+        assert!(matches!(
+            github.pull_requests_into(&repository(), "feat/x-1", "main"),
+            Err(GitError::UnexpectedOutput { .. })
+        ));
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0],
+            invocation(&[
+                "pr",
+                "list",
+                "--repo",
+                "github.com/acme/toodo",
+                "--head",
+                "feat/x-1",
+                "--base",
+                "main",
+                "--state",
+                "all",
+                "--json",
+                "url,state,baseRefName,mergedAt",
+                "--limit",
+                "100",
             ])
         );
     }

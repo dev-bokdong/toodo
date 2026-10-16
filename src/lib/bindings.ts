@@ -134,8 +134,9 @@ export const commands = {
 	 *  Concludes an `in_progress` or `in_review` task without merging, e.g. research whose
 	 *  result is not adopted: the task becomes `done` as `not_adopted` with `note`, the
 	 *  conclusion, as its completion note. The commits of its branch are recorded, an open
-	 *  pull request is closed with the conclusion as a comment, and its herdr workspace is
-	 *  closed. The branch and worktree stay, and its dependents keep waiting.
+	 *  pull request of its branch, recorded or not, is closed with the conclusion as a
+	 *  comment and recorded, and its herdr workspace is closed. The branch and worktree stay,
+	 *  and its dependents keep waiting.
 	 */
 	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("conclude_task", { id, note })),
 	/**

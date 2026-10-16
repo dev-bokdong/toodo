@@ -408,7 +408,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Finish an in_progress or in_review task without merging, as Conclude in the Toodo app does: the task becomes done (not_adopted) with note, the reason, as its completion note, its herdr workspace is closed, and its dependents stay blocked. For research that is not adopted, a duplicate, or work no longer needed. Rejected when note is empty and while the task has an open pull request, which only the user closes, by concluding the task in the app. Never conclude your own task, the one current_task finds."
+        description = "Finish an in_progress or in_review task without merging, as Conclude in the Toodo app does: the task becomes done (not_adopted) with note, the reason, as its completion note, its herdr workspace is closed, and its dependents stay blocked. For research that is not adopted, a duplicate, or work no longer needed. Rejected when note is empty, when its branch has a merged pull request, and while its branch has an open pull request, even one Toodo has not recorded yet, which only the user closes, by concluding the task in the app. Never conclude your own task, the one current_task finds."
     )]
     async fn conclude_task(
         &self,
