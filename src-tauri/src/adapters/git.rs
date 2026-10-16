@@ -462,7 +462,8 @@ impl Git {
         Ok(())
     }
 
-    fn has_origin(&self, repo: &WorkspaceLocation) -> Result<bool, GitError> {
+    /// Whether the repository of the workspace at `repo` has an `origin` remote.
+    pub fn has_origin(&self, repo: &WorkspaceLocation) -> Result<bool, GitError> {
         Ok(self
             .run(repo, Some(location_path(repo)), &["remote"])?
             .lines()

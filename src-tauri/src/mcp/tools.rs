@@ -704,6 +704,27 @@ mod tests {
         ))
     }
 
+    /// `gh pr list` output with the pull request in `state`.
+    fn listed(state: &str) -> Result<String, crate::adapters::git::GitError> {
+        let merged_at = if state == "MERGED" {
+            r#""2026-10-09T14:47:45Z""#
+        } else {
+            "null"
+        };
+        Ok(format!(
+            r#"[{{"baseRefName":"main","mergedAt":{merged_at},"state":"{state}","url":"{PR}"}}]"#
+        ))
+    }
+
+    /// Git output for a branch log with no commits and an `origin` on GitHub.
+    fn github_checkout() -> Scripted {
+        vec![
+            Ok(String::new()),
+            Ok("origin\n".to_owned()),
+            Ok("git@github.com:acme/toodo.git\n".to_owned()),
+        ]
+    }
+
     const MERGED_DETAILS: &str = r#"{"additions":1,"author":{"login":"ada"},"changedFiles":1,"commits":[],"deletions":0,"mergeCommit":{"oid":"2222222222222222222222222222222222222222"},"number":12,"reviews":[],"title":"Add login"}"#;
 
     const CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
@@ -818,8 +839,8 @@ mod tests {
     #[test]
     fn conclude_finishes_a_task_without_a_pull_request_as_not_adopted() {
         let (storage, task, dependent) = started(false);
-        let (git, _) = fake(Git::new, vec![Ok(String::new())]);
-        let (github, gh_runner) = fake(GitHub::new, vec![]);
+        let (git, _) = fake(Git::new, github_checkout());
+        let (github, gh_runner) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
 
         let done = conclude_task(
@@ -836,7 +857,8 @@ mod tests {
         assert_eq!(done.completion_note.as_deref(), Some("Duplicate of #7"));
         assert_eq!(last_status(&done), Some(types::TaskStatus::Done));
         assert_eq!(stored(&storage, task.id), done);
-        assert!(gh_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(done.pull_request_url, None);
+        assert_eq!(gh_runner.invocations.lock().unwrap().len(), 1);
         assert_eq!(herdr_runner.invocations.lock().unwrap().len(), 1);
         assert_eq!(
             stored(&storage, dependent.id).status,
@@ -861,8 +883,8 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
 
-        let (git, _) = fake(Git::new, vec![Ok(String::new())]);
-        let (github, gh_runner) = fake(GitHub::new, vec![viewed("OPEN")]);
+        let (git, _) = fake(Git::new, github_checkout());
+        let (github, gh_runner) = fake(GitHub::new, vec![listed("OPEN")]);
         let error = conclude_task(
             &storage,
             &git,
@@ -877,5 +899,35 @@ mod tests {
         assert_eq!(gh_runner.invocations.lock().unwrap().len(), 1);
         assert!(herdr_runner.invocations.lock().unwrap().is_empty());
         assert_eq!(stored(&storage, task.id), task);
+    }
+
+    #[test]
+    fn conclude_is_rejected_for_a_pull_request_toodo_has_not_recorded_yet() {
+        // In progress: the background check has not adopted the pull request yet.
+        let (storage, task, _) = started(false);
+        assert_eq!(task.pull_request_url, None);
+        for (state, reason) in [
+            ("OPEN", "is still open"),
+            ("MERGED", "completes with the merge"),
+        ] {
+            let (git, _) = fake(Git::new, github_checkout());
+            let (github, gh_runner) = fake(GitHub::new, vec![listed(state)]);
+            let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
+
+            let error = conclude_task(
+                &storage,
+                &git,
+                &github,
+                &herdr,
+                conclusion(task.id, "Not adopted"),
+            )
+            .unwrap_err();
+
+            assert_eq!(error.kind, CommandErrorKind::Rejected);
+            assert!(error.message.contains(reason), "{}", error.message);
+            assert_eq!(gh_runner.invocations.lock().unwrap().len(), 1);
+            assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+            assert_eq!(stored(&storage, task.id), task);
+        }
     }
 }

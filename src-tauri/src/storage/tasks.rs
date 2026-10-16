@@ -571,13 +571,15 @@ impl Storage {
     /// Moves an `in_progress` or `in_review` task to `done` without merging, as
     /// `not_adopted`, in one transaction: stores `note`, the conclusion, as its completion
     /// note and forgets its herdr workspace, which was closed. Non-empty `commits` replace
-    /// its commit records. The branch, worktree path, and pull request URL stay, and its
-    /// dependents keep waiting: work that was not adopted is not there to build on.
+    /// its commit records, and `pull_request_url`, a pull request closed with the
+    /// conclusion, replaces its pull request URL. The branch and worktree path stay, and
+    /// its dependents keep waiting: work that was not adopted is not there to build on.
     pub fn conclude_task(
         &mut self,
         id: TaskId,
         note: &str,
         commits: &[CommitRecord],
+        pull_request_url: Option<&str>,
     ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
@@ -585,13 +587,15 @@ impl Storage {
         let status = task.status.conclude()?;
         tx.execute(
             "UPDATE tasks
-             SET status = ?2, resolution = ?3, completion_note = ?4, herdr_workspace_id = NULL
+             SET status = ?2, resolution = ?3, completion_note = ?4, herdr_workspace_id = NULL,
+                 pull_request_url = COALESCE(?5, pull_request_url)
              WHERE id = ?1",
             params![
                 id.0,
                 status.as_str(),
                 TaskResolution::NotAdopted.as_str(),
-                note
+                note,
+                pull_request_url
             ],
         )?;
         if !commits.is_empty() {
