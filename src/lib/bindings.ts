@@ -89,7 +89,9 @@ export const commands = {
 	 *  Creates the worktree of a `planned` task whose dependencies are done through herdr
 	 *  and moves the task to `in_progress`. Requires a worktree root for the machine of the
 	 *  task's workspace. An empty repository first gets an initial commit on the workspace's
-	 *  base branch. A paused task resumes on its branch, in its worktree if it still has one.
+	 *  base branch. A new task branch starts from the freshly fetched `origin/<base>` without an
+	 *  upstream; without `origin`, or when the fetch fails (noted on the task), from the local
+	 *  base. A paused task resumes on its branch, in its worktree if it still has one.
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
