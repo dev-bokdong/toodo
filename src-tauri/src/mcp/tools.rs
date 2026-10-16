@@ -2,7 +2,7 @@
 //! the rules the UI follows: the dependency DAG stays acyclic and readiness stays in sync.
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::commands::tasks::edit_task;
 use crate::commands::types::{
@@ -118,10 +118,20 @@ pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<Ta
     Ok(types::map_all(&tasks))
 }
 
+/// The current task, with the base branch its pull request goes into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentTaskReply {
+    #[serde(flatten)]
+    pub task: Task,
+    /// The default base branch of the task's workspace.
+    pub base_branch: String,
+}
+
 /// The task whose worktree contains `cwd`; the innermost one if worktrees are nested.
-pub fn current_task(storage: &Storage, request: CurrentTask) -> CommandResult<Task> {
+pub fn current_task(storage: &Storage, request: CurrentTask) -> CommandResult<CurrentTaskReply> {
     let cwd = comparable_path(&request.cwd);
-    storage
+    let task = storage
         .list_all_tasks()?
         .iter()
         .filter_map(|task| {
@@ -133,13 +143,20 @@ pub fn current_task(storage: &Storage, request: CurrentTask) -> CommandResult<Ta
             inside.then_some((worktree.len(), task))
         })
         .max_by_key(|(length, _)| *length)
-        .map(|(_, task)| task.into())
+        .map(|(_, task)| Task::from(task))
         .ok_or_else(|| {
             CommandError::not_found(format!(
                 "no Toodo task has a worktree containing {}",
                 request.cwd
             ))
-        })
+        })?;
+    let workspace = storage
+        .get_workspace(task.workspace_id.into())?
+        .ok_or(StorageError::WorkspaceNotFound(task.workspace_id.into()))?;
+    Ok(CurrentTaskReply {
+        task,
+        base_branch: workspace.default_base_branch,
+    })
 }
 
 /// A path with `/` separators and no trailing separator; Windows paths, which are
@@ -552,8 +569,16 @@ mod tests {
             )
         };
 
-        assert_eq!(find(r"D:\wt\toodo\feat-schema-1").unwrap().id, task.id);
-        assert_eq!(find("d:/WT/toodo/feat-schema-1/src/").unwrap().id, task.id);
+        let found = find(r"D:\wt\toodo\feat-schema-1").unwrap();
+        assert_eq!(found.task.id, task.id);
+        assert_eq!(found.base_branch, "main");
+        let json = serde_json::to_value(&found).unwrap();
+        assert_eq!(json["baseBranch"], "main");
+        assert_eq!(json["id"], serde_json::json!(task.id));
+        assert_eq!(
+            find("d:/WT/toodo/feat-schema-1/src/").unwrap().task.id,
+            task.id
+        );
         let error = find(r"D:\wt\toodo\feat-schema-10").unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
         assert!(find(r"D:\wt\toodo").is_err());
@@ -586,7 +611,7 @@ mod tests {
                 },
             )
         };
-        assert_eq!(find("/wt/app/feat-remote-1/src").unwrap().id, task.id);
+        assert_eq!(find("/wt/app/feat-remote-1/src").unwrap().task.id, task.id);
         assert!(find("/WT/app/feat-remote-1").is_err());
     }
 }

@@ -4,7 +4,8 @@
 //! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
 //! in the app data directory. Agents can read workspaces and tasks, create and edit
 //! tasks, connect dependencies, and leave progress and blocker notes in a task's history;
-//! starting, completing, and deleting tasks stay in the app. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
+//! starting, completing, and deleting tasks stay in the app. The `toodo` skill, the
+//! workflow for working on a task, is served as a resource at [`SKILL_URI`]. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
 
 mod tools;
 pub mod tunnels;
@@ -21,10 +22,15 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ServerCapabilities, ServerConfig,
+};
+use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
+use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -37,13 +43,23 @@ pub const PORT: u16 = 47615;
 
 const TOKEN_FILE: &str = "mcp-token";
 
+/// URI of the `toodo` skill resource.
+const SKILL_URI: &str = "skill://toodo/SKILL.md";
+
+const SKILL: &str = include_str!("toodo-skill.md");
+
 const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
 a task becomes ready only when all tasks it depends on are done.
 
+Before you work on a Toodo task or create tasks, read the resource \
+skill://toodo/SKILL.md (the toodo skill) unless you already have it: it is the workflow \
+from the task description to a pull request into the workspace base branch, including \
+when to stop for prerequisite tasks, and the format of task descriptions.
+
 How to use these tools:
-1. Call current_task with your absolute working directory first. Use its workspace_id \
-for new tasks in the same repository. If it finds no task, use list_workspaces to pick \
-the workspace.
+1. Call current_task with your absolute working directory first. Use its workspaceId \
+for new tasks in the same repository and its baseBranch as the base of your pull \
+request. If it finds no task, use list_workspaces to pick the workspace.
 2. Before create_task, call list_tasks for that workspace and reuse a matching task \
 instead of creating a duplicate.
 3. A dependency points from a task to the tasks that must be done before it: task_id is \
@@ -64,8 +80,10 @@ task after it. Use remove_dependency to drop an edge.
 4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
 rnd), write a short imperative title, and put details in description. Write the \
 description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
-issue body): short paragraphs, `-` lists, `- [ ]` task lists for acceptance criteria, \
-backticks for code, paths, and commands, fenced code blocks, and links; no raw HTML. \
+issue body) with three sections: `## Purpose` (the outcome and why), `## Background` \
+(context, what prompted it, related tasks, constraints), and `## Done when` (a `- [ ]` \
+task list of verifiable criteria). Use `-` lists, backticks for code, paths, and \
+commands, fenced code blocks, and links; no raw HTML. \
 When you split work into tasks, set estimate to your expected size of each (hours, \
 days, weeks, or months of active work); the user's reviews compare it \
 with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
@@ -81,7 +99,8 @@ edits. Neither tool changes the task's status.
 unchanged.
 
 Starting, completing, and deleting tasks happen in the Toodo app, not through these \
-tools.";
+tools. A pull request from the task branch into baseBranch moves the task to \
+in_review, and its merge completes the task; never merge it yourself.";
 
 /// What the app needs to serve the tools: the database and a way to announce changes.
 pub trait Backend: Notifier + Send + Sync + 'static {
@@ -327,13 +346,57 @@ impl ToodoMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ToodoMcp {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions(INSTRUCTIONS)
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new(
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(INSTRUCTIONS)
     }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(vec![skill_resource()]))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        read_skill(&request.uri).map(ReadResourceResponse::from)
+    }
+}
+
+fn skill_resource() -> Resource {
+    Resource::new(SKILL_URI, "toodo")
+        .with_title("Toodo skill")
+        .with_description(
+            "Workflow for working on a Toodo task: from its description to a pull request \
+             into the base branch, stopping for prerequisite tasks, and the task description \
+             format.",
+        )
+        .with_mime_type("text/markdown")
+}
+
+fn read_skill(uri: &str) -> Result<ReadResourceResult, ErrorData> {
+    if uri != SKILL_URI {
+        return Err(ErrorData::resource_not_found(
+            format!("no Toodo resource {uri}; the only one is {SKILL_URI}"),
+            None,
+        ));
+    }
+    Ok(ReadResourceResult::new(vec![
+        ResourceContents::text(SKILL, SKILL_URI).with_mime_type("text/markdown"),
+    ]))
 }
 
 /// Tool failures are tool-level errors, so the agent sees the reason, e.g. a cycle.
@@ -414,6 +477,20 @@ mod tests {
         let accepted = post_initialize(address, "Authorization: Bearer secret\r\n");
         assert!(accepted.starts_with("HTTP/1.1 200"), "{accepted}");
         assert!(accepted.contains(r#""name":"toodo""#), "{accepted}");
+    }
+
+    #[test]
+    fn the_skill_is_listed_and_readable_by_its_uri() {
+        assert_eq!(skill_resource().uri, SKILL_URI);
+        let read = read_skill(SKILL_URI).unwrap();
+        let [ResourceContents::TextResourceContents { text, .. }] = read.contents.as_slice() else {
+            panic!("expected one text content: {read:?}");
+        };
+        assert!(
+            text.starts_with("---") && text.contains("name: toodo"),
+            "{text}"
+        );
+        assert!(read_skill("skill://toodo/other.md").is_err());
     }
 
     #[test]
