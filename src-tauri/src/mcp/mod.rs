@@ -5,8 +5,9 @@
 //! in the app data directory. Agents can read workspaces and tasks, create and edit
 //! tasks, connect dependencies, and leave progress and blocker notes in a task's history;
 //! starting, completing, and deleting tasks stay in the app. The `toodo` skill, the
-//! workflow for working on a task, is served as a resource at [`SKILL_URI`] and, for
-//! clients that cannot read resources, by the `read_toodo_skill` tool. Agents on SSH machines reach it through the reverse tunnels of [`tunnels`].
+//! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
+//! as a resource, since not every client can read resources. Agents on SSH machines reach
+//! the server through the reverse tunnels of [`tunnels`].
 
 mod tools;
 pub mod tunnels;
@@ -23,15 +24,10 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ServerCapabilities, ServerConfig,
-};
-use rmcp::service::RequestContext;
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
+use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -44,17 +40,13 @@ pub const PORT: u16 = 47615;
 
 const TOKEN_FILE: &str = "mcp-token";
 
-/// URI of the `toodo` skill resource.
-const SKILL_URI: &str = "skill://toodo/SKILL.md";
-
 const SKILL: &str = include_str!("toodo-skill.md");
 
 const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
 a task becomes ready only when all tasks it depends on are done.
 
 Before you work on a Toodo task or create tasks, read the toodo skill unless you \
-already have it: the resource skill://toodo/SKILL.md, or the read_toodo_skill tool if \
-you cannot read resources. It is the workflow from the task description to a pull \
+already have it: call the read_toodo_skill tool. It is the workflow from the task description to a pull \
 request into the workspace base branch, including when to stop for prerequisite tasks, \
 and the format of task descriptions.
 
@@ -264,7 +256,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Return the toodo skill (Markdown), the same text as the resource skill://toodo/SKILL.md: the workflow for working on a Toodo task. Read it before you work on a task or create tasks."
+        description = "Return the toodo skill (Markdown): the workflow for working on a Toodo task. Read it before you work on a task or create tasks."
     )]
     fn read_toodo_skill(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![ContentBlock::text(SKILL)]))
@@ -355,57 +347,13 @@ impl ToodoMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ToodoMcp {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .build(),
-        )
-        .with_server_info(Implementation::new(
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION"),
-        ))
-        .with_instructions(INSTRUCTIONS)
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(INSTRUCTIONS)
     }
-
-    async fn list_resources(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(vec![skill_resource()]))
-    }
-
-    async fn read_resource(
-        &self,
-        request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResponse, ErrorData> {
-        read_skill(&request.uri).map(ReadResourceResponse::from)
-    }
-}
-
-fn skill_resource() -> Resource {
-    Resource::new(SKILL_URI, "toodo")
-        .with_title("Toodo skill")
-        .with_description(
-            "Workflow for working on a Toodo task: from its description to a pull request \
-             into the base branch, stopping for prerequisite tasks, and the task description \
-             format.",
-        )
-        .with_mime_type("text/markdown")
-}
-
-fn read_skill(uri: &str) -> Result<ReadResourceResult, ErrorData> {
-    if uri != SKILL_URI {
-        return Err(ErrorData::resource_not_found(
-            format!("no Toodo resource {uri}; the only one is {SKILL_URI}"),
-            None,
-        ));
-    }
-    Ok(ReadResourceResult::new(vec![
-        ResourceContents::text(SKILL, SKILL_URI).with_mime_type("text/markdown"),
-    ]))
 }
 
 /// Tool failures are tool-level errors, so the agent sees the reason, e.g. a cycle.
@@ -489,26 +437,13 @@ mod tests {
     }
 
     #[test]
-    fn the_skill_is_listed_and_readable_by_its_uri() {
-        assert_eq!(skill_resource().uri, SKILL_URI);
-        let read = read_skill(SKILL_URI).unwrap();
-        let [ResourceContents::TextResourceContents { text, .. }] = read.contents.as_slice() else {
-            panic!("expected one text content: {read:?}");
-        };
-        assert!(
-            text.starts_with("---") && text.contains("name: toodo"),
-            "{text}"
-        );
-        assert!(read_skill("skill://toodo/other.md").is_err());
-    }
-
-    #[test]
     fn the_skill_tool_returns_the_skill_text() {
         let storage = crate::storage::Storage::open_in_memory().unwrap();
         let server = ToodoMcp::new(Arc::new(TestBackend(std::sync::Mutex::new(storage))));
         assert!(server.tool_router.has_route("read_toodo_skill"));
         let result = serde_json::to_value(server.read_toodo_skill().unwrap()).unwrap();
         assert_eq!(result["content"][0]["text"], SKILL);
+        assert!(SKILL.starts_with("---") && SKILL.contains("name: toodo"));
         assert_ne!(result["isError"], true);
     }
 
