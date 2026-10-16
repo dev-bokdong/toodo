@@ -1,6 +1,6 @@
 import type { BranchFreshness, Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 import { type WorkState, workSegments } from "@/lib/timeline";
-import { dueEnd, dueState, type DueState } from "@/lib/plan";
+import { dueEnd, dueState, estimatedSeconds, type DueState } from "@/lib/plan";
 
 /** A dependency drawn from the prerequisite (`source`) to the task that waits on it (`target`). */
 export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
@@ -167,8 +167,13 @@ export const timelineScales: TimelineScale[] = ["hour", "day", "week", "month"];
 
 export const pixelsPerDay: Record<TimelineScale, number> = { hour: 960, day: 48, week: 12, month: 3 };
 
-/** Width of the bar of a task that has not started: it has no duration yet, only a place in line. */
-export const timelinePendingWidth = 120;
+/**
+ * Width of the bar of a task that has not started and has no estimate: it has no duration yet,
+ * only a place in line. An estimated one is as long as its estimate, but never narrower.
+ */
+export const timelinePendingWidth = 28;
+/** Room kept at the right end of the axis for the label of a narrow bar, which spills past it. */
+const timelineLabelRoom = 120;
 /** Narrowest bar drawn for a task that has started, so a short task stays visible. */
 export const timelineBarMinWidth = 4;
 /** Horizontal space kept between a prerequisite's bar and a waiting dependent's bar. */
@@ -532,7 +537,8 @@ export function layoutTimeline(
         return edge === undefined ? [] : [edge + timelineBarGap];
       });
       x = Math.max(scaleX(clipped.start), ...after);
-      width = timelinePendingWidth;
+      const estimate = estimatedSeconds(task.estimate);
+      width = Math.max(estimate === null ? 0 : (estimate / day) * pixelsPerDay[scale], timelinePendingWidth);
     } else {
       x = scaleX(clipped.start);
       width = Math.max(scaleX(clipped.end) - x, timelineBarMinWidth);
@@ -572,8 +578,7 @@ export function layoutTimeline(
     rows: bars.length,
     start,
     end,
-    // Room for the label of a narrow bar, which spills past its right end.
-    width: Math.max(scaleX(end), ...bars.map((bar) => bar.x + Math.max(bar.width, timelinePendingWidth))),
+    width: Math.max(scaleX(end), ...bars.map((bar) => bar.x + Math.max(bar.width, timelineLabelRoom))),
     scale,
     period,
     nowX: now >= start && now <= end ? scaleX(now) : null,

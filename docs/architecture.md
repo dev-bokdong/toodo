@@ -205,7 +205,9 @@ workspaces are still drawn, dimmed and labeled with their workspace.
 - Every task has its own row. Rows are in dependency order: a task comes after all the
   tasks it depends on, otherwise in order of start time. A task that has not started is
   also placed to the right of its prerequisites' bars, so a chain of waiting tasks reads
-  left to right from the current time.
+  left to right from the current time. Its bar is as long as its estimate at the current
+  scale, or a small fixed box without one; its label sits past the bar's right end when
+  it does not fit inside.
 - Dependency edges run from the prerequisite's bar to the dependent's bar.
 - The visible range can be zoomed (hour, day, week, month) and narrowed to a period such
   as a calendar year, the unit of a performance report.
