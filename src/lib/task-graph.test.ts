@@ -165,6 +165,8 @@ describe("layoutTimeline", () => {
           { phase: "in_progress", x: 0, width: 2 * 48 },
           { phase: "in_review", x: 2 * 48, width: 48 },
         ],
+        blocks: [{ x: 0, width: 3 * 48 }],
+        pauses: [],
         lead: { x: -2 * 48, planned: true, readyX: null },
         dueX: null,
         dueState: null,
@@ -226,10 +228,13 @@ describe("layoutTimeline", () => {
       width: 2 * 48,
       pending: false,
       phases: [{ phase: "in_progress", x: 0, width: 2 * 48 }],
+      blocks: [{ x: 0, width: 2 * 48 }],
+      // The pause runs on past the bar to now.
+      pauses: [{ x: 2 * 48, width: 6 * 48 }],
     });
   });
 
-  it("shows the pauses of a resumed task as phases between its stretches of work", () => {
+  it("cuts the bar of a resumed task at its pauses, between its stretches of work", () => {
     const resumed = task(6, {
       status: "done",
       branch: "feat/task-6-6",
@@ -249,10 +254,34 @@ describe("layoutTimeline", () => {
     expect(layout.bars[0]).toMatchObject({ x: 48, width: 5 * 48 });
     expect(layout.bars[0].phases).toEqual([
       { phase: "in_progress", x: 0, width: 48 },
-      { phase: "paused", x: 48, width: 2 * 48 },
       { phase: "in_progress", x: 3 * 48, width: 48 },
       { phase: "in_review", x: 4 * 48, width: 48 },
     ]);
+    expect(layout.bars[0].pauses).toEqual([{ x: 48, width: 2 * 48 }]);
+    expect(layout.bars[0].blocks).toEqual([
+      { x: 0, width: 48 },
+      { x: 3 * 48, width: 2 * 48 },
+    ]);
+  });
+
+  it("keeps a bar whole across a pause too short to see at its scale", () => {
+    const resumed = task(7, {
+      status: "done",
+      branch: "feat/task-7-7",
+      timeline: [
+        { status: "in_progress", at: jan(2) },
+        { status: "planned", at: jan(3) },
+        { status: "in_progress", at: jan(4) },
+        { status: "done", at: jan(7) },
+      ],
+      milestones: milestones({ plannedAt: jan(2), startedAt: jan(2), completedAt: jan(7) }),
+    });
+
+    const month = layoutTimeline([resumed], { now, scale: "month", period: null });
+    const day = layoutTimeline([resumed], { now, scale: "day", period: null });
+
+    expect(month.bars[0]).toMatchObject({ pauses: [], blocks: [{ x: 0, width: 5 * 3 }] });
+    expect(day.bars[0].pauses).toEqual([{ x: 48, width: 48 }]);
   });
 
   it("moves bars that wait at now along with the current time", () => {
