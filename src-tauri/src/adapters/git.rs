@@ -282,7 +282,8 @@ impl Git {
     /// behind. Only `origin/*` references are updated; the local base and its working copy
     /// are left alone. A repository without `origin`, or whose `origin` has no `base`,
     /// starts from the local `base`; so does a failed fetch, which is reported together
-    /// with the local base's commit.
+    /// with the local base's commit. Ref-lock contention is retried up to three total
+    /// fetch attempts before falling back.
     pub fn task_branch_start(
         &self,
         repo: &WorkspaceLocation,
@@ -296,10 +297,23 @@ impl Git {
         if !self.has_origin(repo)? {
             return Ok(local());
         }
-        let fetch_error = match self.run(repo, path, &["fetch", "--quiet", "origin", base]) {
-            Ok(_) => None,
-            Err(error @ GitError::Failed { .. }) => Some(error),
-            Err(error) => return Err(error),
+        let mut retries = 0;
+        let fetch_error = loop {
+            match self.run(repo, path, &["fetch", "--quiet", "origin", base]) {
+                Ok(_) => break None,
+                Err(GitError::Failed { stderr, .. })
+                    if retries < 2
+                        && (stderr.contains("cannot lock ref")
+                            || (stderr.contains("fetching ref ")
+                                && (stderr.contains("failed: reference already exists")
+                                    || stderr
+                                        .contains("failed: incorrect old value provided")))) =>
+                {
+                    retries += 1;
+                }
+                Err(error @ GitError::Failed { .. }) => break Some(error),
+                Err(error) => return Err(error),
+            }
         };
         let Some(fetch_error) = fetch_error else {
             let remote_base = format!("refs/remotes/origin/{base}");
@@ -748,6 +762,109 @@ mod tests {
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    fn ref_lock_failure(attempt: usize) -> GitError {
+        GitError::Failed {
+            command: "git fetch --quiet origin main".to_owned(),
+            stderr: format!(
+                "error: cannot lock ref 'refs/remotes/origin/main': \
+                 is at commit-{attempt} but expected old-commit"
+            ),
+        }
+    }
+
+    #[test]
+    fn task_branch_start_retries_ref_lock_failures_before_using_origin() {
+        for failures in [1, 2] {
+            let results = std::iter::once(Ok("origin\n".to_owned()))
+                .chain((1..=failures).map(|attempt| Err(ref_lock_failure(attempt))))
+                .chain([Ok(String::new()), Ok("remote-sha\n".to_owned())])
+                .collect();
+            let (git, runner) = git(results);
+
+            let start = git.task_branch_start(&local(r"C:\dev\a"), "main").unwrap();
+
+            assert_eq!(start.start, "origin/main");
+            assert_eq!(start.fetch_failure, None);
+            assert_eq!(
+                git_commands(&runner),
+                std::iter::once(args(&["remote"]))
+                    .chain(std::iter::repeat_n(
+                        args(&["fetch", "--quiet", "origin", "main"]),
+                        failures + 1
+                    ))
+                    .chain([args(&[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        "refs/remotes/origin/main"
+                    ])])
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn task_branch_start_falls_back_after_three_ref_lock_failures() {
+        let (git, runner) = git(vec![
+            Ok("origin\n".to_owned()),
+            Err(ref_lock_failure(1)),
+            Err(ref_lock_failure(2)),
+            Err(ref_lock_failure(3)),
+            Ok("remote-sha\trefs/heads/main\n".to_owned()),
+            Ok("local-sha\n".to_owned()),
+        ]);
+
+        let start = git.task_branch_start(&local(r"C:\dev\a"), "main").unwrap();
+
+        assert_eq!(start.start, "main");
+        assert_eq!(
+            start.fetch_failure,
+            Some(FetchFailure {
+                commit: "local-sha".to_owned(),
+                error: ref_lock_failure(3).to_string(),
+            })
+        );
+        assert_eq!(git_commands(&runner).len(), 6);
+    }
+
+    #[test]
+    fn task_branch_start_retries_rejected_fetch_ref_updates() {
+        for reason in ["reference already exists", "incorrect old value provided"] {
+            let (git, _) = git(vec![
+                Ok("origin\n".to_owned()),
+                Err(GitError::Failed {
+                    command: "git fetch --quiet origin main".to_owned(),
+                    stderr: format!(
+                        "error: fetching ref refs/remotes/origin/main failed: {reason}"
+                    ),
+                }),
+                Ok(String::new()),
+                Ok("remote-sha\n".to_owned()),
+            ]);
+
+            let start = git.task_branch_start(&local(r"C:\dev\a"), "main").unwrap();
+
+            assert_eq!(start.start, "origin/main", "{reason}");
+            assert_eq!(start.fetch_failure, None);
+        }
+    }
+
+    #[test]
+    fn task_branch_start_does_not_retry_spawn_failures() {
+        let spawn = GitError::Spawn {
+            program: "git".to_owned(),
+            message: "cannot lock ref executable not found".to_owned(),
+        };
+        let (git, runner) = git(vec![Ok("origin\n".to_owned()), Err(spawn.clone())]);
+
+        let error = git
+            .task_branch_start(&local(r"C:\dev\a"), "main")
+            .unwrap_err();
+
+        assert_eq!(error, spawn);
+        assert_eq!(git_commands(&runner).len(), 2);
     }
 
     #[test]
