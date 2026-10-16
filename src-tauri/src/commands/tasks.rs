@@ -279,7 +279,9 @@ mod tests {
         storage
             .set_task_status(task.id, TaskStatus::InProgress)
             .unwrap();
-        storage.conclude_task(task.id, "Too slow", &[]).unwrap();
+        storage
+            .conclude_task(task.id, "Too slow", &[], None)
+            .unwrap();
 
         let error = note_completion(&mut storage, task.id.into(), " ").unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);

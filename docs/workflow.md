@@ -48,7 +48,7 @@ Agents can start, complete, and conclude tasks through Toodo's MCP server too
 (`start_task`, `complete_task`, `conclude_task`), with the same steps and checks as the
 app (steps 3, 7, and 7b) and the same status history, so a task can go from request to
 merge without the user. Two differences: concluding through MCP rejects a task whose
-pull request is still open instead of closing it, and agents are told never to start,
+branch has a pull request still open, recorded or not, instead of closing it, and agents are told never to start,
 complete, or conclude their own task, whose pull request's merge completes it. Deleting
 (step 8) stays in the app.
 
@@ -264,16 +264,20 @@ conclusion: what was tried, what was found, and why it is not adopted. Toodo
 2. Records the commits of the branch that are not on the base branch, as when
    refreshing commits; a task without a worktree, or a branch whose log is empty, keeps
    the commit records stored earlier.
-3. If the task has a pull request, reads its state (`gh pr view <url> --json
-   url,state,baseRefName,mergedAt`). An open one is closed without merging, with the
-   conclusion as a comment (`gh pr close <url> --comment <conclusion>`); a closed one is
-   left alone; a merged one is rejected, since that task completes with its merge (step
-   7).
+3. If the task has a branch and the repository's `origin` is on GitHub, looks up the
+   pull requests from the branch into the workspace base branch (`gh pr list --head
+   <branch> --base <base> --state all`), whether or not Toodo recorded one: an agent may
+   have opened one that the background check has not adopted yet. A merged one rejects
+   the conclusion, since that task completes with its merge (step 7). An open one is
+   closed without merging, with the conclusion as a comment (`gh pr close <url>
+   --comment <conclusion>`), and its URL is recorded on the task; closed ones are left
+   alone. If the lookup fails, nothing is concluded and the error is shown.
 4. Closes the task's herdr workspace as in step 7, keeping the worktree on disk.
 5. Moves the task to `done` with the resolution `not_adopted` (recording `completedAt`),
    stores the conclusion as its completion note, and clears `herdrWorkspaceId`, in one
-   transaction. The branch, worktree, and pull request URL stay, so the work can be
-   looked at later.
+   transaction. The branch, worktree, and pull request URL stay (the URL of a pull
+   request closed in step 3 replaces the recorded one), so the work can be looked at
+   later.
 
 The tasks that depend on it are not released: they were planned to build on work that
 is not there. The task list marks the dependency and says it was not adopted, and the
