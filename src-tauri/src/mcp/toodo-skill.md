@@ -7,8 +7,14 @@ description: Work on a Toodo task from its description to a pull request into th
 
 Toodo tracks your task and turns your pull request into the task's status: it moves the
 task to `in_review` once a pull request from the task branch into the base branch exists,
-and to `done` once that pull request is merged. Starting, completing, and deleting tasks
-happen in the Toodo app.
+and to `done` once that pull request is merged.
+
+Never start, complete, or conclude your own task (the one `current_task` finds) with
+`start_task`, `complete_task`, or `conclude_task`: it was started for you, and the merge
+of its pull request completes it. Those tools are for other tasks, e.g. starting a ready
+task for another agent session or concluding a duplicate. `conclude_task` never closes a
+pull request; a task with an open one is concluded by the user in the Toodo app.
+Deleting tasks happens in the Toodo app only.
 
 ## 1. Start
 
