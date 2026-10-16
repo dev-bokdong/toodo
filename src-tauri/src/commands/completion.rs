@@ -98,7 +98,26 @@ pub fn conclude_task(
     id: TaskId,
     note: String,
 ) -> CommandResult<Task> {
-    Ok((&conclude(&storage, &git, &github, &herdr, id.into(), &note)?).into())
+    Ok((&conclude(
+        &storage,
+        &git,
+        &github,
+        &herdr,
+        id.into(),
+        &note,
+        OpenPullRequest::Close,
+    )?)
+        .into())
+}
+
+/// What concluding does with a pull request of the task that is still open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenPullRequest {
+    /// Close it with the conclusion as a comment, as the app does.
+    Close,
+    /// Reject the conclusion and leave the pull request and the task as they are, as
+    /// agents do through MCP: closing a pull request stays a decision for the user.
+    Reject,
 }
 
 /// An `in_progress` or `in_review` task with the workspace and worktree its git commands
@@ -266,7 +285,7 @@ fn check_base(pull_request: &PullRequest, base: &str) -> CommandResult<()> {
     )))
 }
 
-fn complete(
+pub(crate) fn complete(
     storage: &StorageState,
     github: &GitHub,
     herdr: &Herdr,
@@ -366,13 +385,14 @@ fn complete_if_merged(
     )))
 }
 
-fn conclude(
+pub(crate) fn conclude(
     storage: &StorageState,
     git: &Git,
     github: &GitHub,
     herdr: &Herdr,
     id: model::TaskId,
     note: &str,
+    open_pull_request: OpenPullRequest,
 ) -> CommandResult<model::Task> {
     let note = note.trim();
     if note.is_empty() {
@@ -413,7 +433,14 @@ fn conclude(
     };
     if let Some(url) = &task.pull_request_url {
         match github.pull_request(url)?.pull_request.state {
-            PullRequestState::Open => github.close_pull_request(url, note)?,
+            PullRequestState::Open => match open_pull_request {
+                OpenPullRequest::Close => github.close_pull_request(url, note)?,
+                OpenPullRequest::Reject => {
+                    return Err(CommandError::rejected(format!(
+                        "pull request {url} is still open; concluding through MCP never closes a pull request, so the user concludes this task in the Toodo app, which closes it with the conclusion as a comment"
+                    )));
+                }
+            },
             PullRequestState::Closed => {}
             PullRequestState::Merged => {
                 return Err(CommandError::rejected(format!(
@@ -1345,6 +1372,7 @@ mod tests {
             &herdr,
             fixture.task.id,
             "  Twice as slow as the current cache\n",
+            OpenPullRequest::Close,
         )
         .unwrap();
 
@@ -1400,6 +1428,7 @@ mod tests {
             &closing_herdr().0,
             fixture.task.id,
             "Not worth it",
+            OpenPullRequest::Close,
         )
         .unwrap();
 
@@ -1419,6 +1448,7 @@ mod tests {
             &no_herdr(),
             fixture.task.id,
             "Again",
+            OpenPullRequest::Close,
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
@@ -1437,11 +1467,37 @@ mod tests {
             &closing_herdr().0,
             fixture.task.id,
             "Superseded",
+            OpenPullRequest::Close,
         )
         .unwrap();
 
         assert_eq!(concluded.status, TaskStatus::Done);
         assert_eq!(invocations(&gh_runner).len(), 1);
+    }
+
+    #[test]
+    fn concluding_without_closing_rejects_an_open_pull_request_and_changes_nothing() {
+        let fixture = in_review_fixture();
+        let before = stored(&fixture, &fixture.task);
+        let gh_runner = runner(vec![viewed("OPEN", "main")]);
+        let (git, github) = adapters(&runner(vec![log(&[SHA_A])]), &gh_runner);
+
+        let error = conclude(
+            &fixture.storage,
+            &git,
+            &github,
+            &no_herdr(),
+            fixture.task.id,
+            "Not adopted",
+            OpenPullRequest::Reject,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("is still open"), "{}", error.message);
+        assert_eq!(invocations(&gh_runner).len(), 1);
+        assert_eq!(stored(&fixture, &fixture.task), before);
+        assert!(recorded_shas(&fixture).is_empty());
     }
 
     #[test]
@@ -1456,6 +1512,7 @@ mod tests {
             &no_herdr(),
             fixture.task.id,
             " \n",
+            OpenPullRequest::Close,
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
@@ -1467,6 +1524,7 @@ mod tests {
             &no_herdr(),
             fixture.dependent.id,
             "Not needed",
+            OpenPullRequest::Close,
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
@@ -1485,6 +1543,7 @@ mod tests {
             &no_herdr(),
             fixture.task.id,
             "Not adopted",
+            OpenPullRequest::Close,
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);

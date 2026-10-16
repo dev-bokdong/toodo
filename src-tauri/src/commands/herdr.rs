@@ -87,7 +87,7 @@ pub fn restore_task_worktree(
     Ok((&restore(&storage, &git, &herdr, id.into())?).into())
 }
 
-fn start(
+pub(crate) fn start(
     storage: &StorageState,
     git: &Git,
     herdr: &Herdr,
