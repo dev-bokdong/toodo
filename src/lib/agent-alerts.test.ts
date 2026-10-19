@@ -1,82 +1,56 @@
 import { describe, expect, it } from "vitest";
-import { agentAlerts, pausedAlerts, pullRequestAlerts } from "@/lib/agent-alerts";
+import { pullRequestAlerts, taskStatusAlerts } from "@/lib/agent-alerts";
 import type { Task, TaskPullRequestStatus } from "@/lib/bindings";
 
 const tasks = [{ id: 1, title: "Add login" }, { id: 2, title: "Add logout" }] as Task[];
 
-describe("agentAlerts", () => {
-  it("alerts when an agent starts waiting for input", () => {
-    expect(agentAlerts([{ taskId: 1, status: "working" }], [{ taskId: 1, status: "blocked" }], tasks)).toEqual([
-      { title: "Agent needs input", body: "#1 Add login" },
-    ]);
-  });
+describe("taskStatusAlerts", () => {
+  const task = (id: number, title: string, status: Task["status"], extra: Partial<Task> = {}) =>
+    ({ id, title, status, dependsOn: [], herdrWorkspaceId: null, resolution: null, ...extra }) as unknown as Task;
+  const login = task(1, "Add login", "planned");
 
-  it("alerts when a working agent finishes", () => {
+  it("alerts once for each task whose status changed", () => {
+    const logout = task(2, "Add logout", "in_review");
     expect(
-      agentAlerts(
-        [
-          { taskId: 1, status: "working" },
-          { taskId: 2, status: "working" },
-        ],
-        [
-          { taskId: 1, status: "done" },
-          { taskId: 2, status: "idle" },
-        ],
-        tasks,
+      taskStatusAlerts(
+        [login, logout, task(3, "Add search", "planned")],
+        [{ ...login, status: "in_progress" }, { ...logout, status: "done", resolution: "merged" }, task(3, "Add search", "planned")],
       ),
     ).toEqual([
-      { title: "Agent finished", body: "#1 Add login" },
-      { title: "Agent finished", body: "#2 Add logout" },
+      { title: "Task started", body: "#1 Add login: Planned -> In progress" },
+      { title: "Task done", body: "#2 Add logout: In review -> Done" },
     ]);
   });
 
-  it("stays quiet for unchanged, new, resumed, or idle-to-done agents", () => {
-    expect(
-      agentAlerts(
-        [
-          { taskId: 1, status: "blocked" },
-          { taskId: 2, status: "idle" },
-        ],
-        [
-          { taskId: 1, status: "working" },
-          { taskId: 2, status: "done" },
-          { taskId: 3, status: "blocked" },
-        ],
-        tasks,
-      ),
-    ).toEqual([]);
-    expect(agentAlerts([{ taskId: 1, status: "blocked" }], [{ taskId: 1, status: "blocked" }], tasks)).toEqual([]);
-  });
-
-  it("falls back to the task ID when the task is not loaded", () => {
-    expect(agentAlerts([{ taskId: 9, status: "working" }], [{ taskId: 9, status: "blocked" }], tasks)).toEqual([
-      { title: "Agent needs input", body: "#9" },
+  it("words the review, not adopted, and pause transitions", () => {
+    const started = { ...login, status: "in_progress" } as Task;
+    expect(taskStatusAlerts([started], [{ ...started, status: "in_review" }])).toEqual([
+      { title: "Task in review", body: "#1 Add login: In progress -> In review" },
+    ]);
+    expect(taskStatusAlerts([started], [{ ...started, status: "done", resolution: "not_adopted" }])).toEqual([
+      { title: "Task concluded without merging", body: "#1 Add login: In progress -> Not adopted" },
+    ]);
+    expect(taskStatusAlerts([started], [login])).toEqual([
+      { title: "Task paused", body: "#1 Add login: In progress -> Planned" },
     ]);
   });
-});
 
-describe("pausedAlerts", () => {
-  const fix = { id: 1, title: "Fix login", status: "planned", dependsOn: [], herdrWorkspaceId: null } as unknown as Task;
-  const started = {
-    id: 2,
-    title: "Verify login",
-    status: "in_progress",
-    dependsOn: [],
-    herdrWorkspaceId: "w27",
-  } as unknown as Task;
-  const paused = { ...started, status: "planned", dependsOn: [1] } as Task;
-
-  it("alerts when a started task is paused on a prerequisite with its workspace open", () => {
-    expect(pausedAlerts([fix, started], [fix, paused])).toEqual([
+  it("asks about the open workspace when a prerequisite pauses a started task", () => {
+    const fix = task(1, "Fix login", "planned");
+    const started = task(2, "Verify login", "in_progress", { herdrWorkspaceId: "w27" });
+    const paused = { ...started, status: "planned", dependsOn: [1] } as Task;
+    expect(taskStatusAlerts([fix, started], [fix, paused])).toEqual([
       { title: "Task paused by a new prerequisite", body: "#2 Verify login: close its herdr workspace?" },
     ]);
+    expect(taskStatusAlerts([fix, started], [fix, { ...paused, herdrWorkspaceId: null }])).toEqual([
+      { title: "Task paused", body: "#2 Verify login: In progress -> Planned" },
+    ]);
   });
 
-  it("stays quiet for closed workspaces, done prerequisites, hand pauses, and unchanged tasks", () => {
-    expect(pausedAlerts([fix, started], [fix, { ...paused, herdrWorkspaceId: null }])).toEqual([]);
-    expect(pausedAlerts([fix, started], [{ ...fix, status: "done" }, paused])).toEqual([]);
-    expect(pausedAlerts([fix, started], [fix, { ...started, status: "planned" }])).toEqual([]);
-    expect(pausedAlerts([fix, paused], [fix, paused])).toEqual([]);
+  it("stays quiet for unchanged, new, and removed tasks", () => {
+    expect(taskStatusAlerts([login], [login])).toEqual([]);
+    expect(taskStatusAlerts([], [login])).toEqual([]);
+    expect(taskStatusAlerts([login], [])).toEqual([]);
   });
 });
 
