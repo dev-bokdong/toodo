@@ -19,7 +19,8 @@ Deleting tasks happens in the Toodo app only.
 ## 1. Start
 
 1. Call `current_task` with your absolute working directory. Note the task's `id`,
-   `workspaceId`, `branch`, and `baseBranch`.
+   `workspaceId`, `branch`, `baseBranch`, and `agentMerge` (whether you merge your pull
+   request, see step 4 of "Otherwise: finish with a pull request").
 2. If no task matches, you are not in a Toodo task worktree: tell the user and ask which
    task you are working on instead of guessing.
 3. Read the description. `## Done when` is your finish line; `## Purpose` decides
@@ -83,7 +84,18 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
    a body that summarizes the change and lists the `## Done when` items. If a pull request
    for the branch already exists, push to it instead of opening another. A pull request
    into any other base is ignored by Toodo.
-4. Stop there. Do not merge the pull request; the merge completes the task.
+4. Merge it only if the workspace allows it. `current_task` returns `agentMerge`:
+   - `never` (the default): stop there. Do not merge the pull request; the user merges
+     it, and the merge completes the task.
+   - `afterChecks`: wait until every check on the pull request has finished and passed
+     (`gh pr checks <number> --watch`). When one fails, fix it, push, and wait again.
+     Then merge the pull request into `baseBranch` (`gh pr merge <number> --merge`, or
+     the merge method the repository allows); the merge completes the task.
+
+   Even with `afterChecks`, never merge while a check is failing or pending or when the
+   pull request has no checks, never bypass branch protection (no `--admin`), never
+   merge a pull request into any branch other than `baseBranch`, and never release, tag,
+   or merge `baseBranch` onward (e.g. into `main`).
 
 # Writing task descriptions
 

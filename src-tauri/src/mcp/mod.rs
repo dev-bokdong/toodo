@@ -113,7 +113,15 @@ it in the app.
 
 Deleting tasks happens in the Toodo app only, not through these tools. A pull request \
 from the task branch into baseBranch moves the task to in_review, and its merge \
-completes the task; never merge it yourself.";
+completes the task. Whether you merge it yourself is set per workspace by agentMerge, \
+which current_task returns: with never (the default), stop once the pull request is \
+open and never merge it. With afterChecks, wait until every check on the pull request \
+has finished and passed (`gh pr checks <number> --watch`), fixing and pushing when one \
+fails, then merge it into baseBranch (`gh pr merge <number> --merge`, or the merge \
+method the repository allows). Even then, never merge while a check is failing or \
+pending or when the pull request has no checks, never bypass branch protection (no \
+--admin), never merge a pull request into any other branch, and never release, tag, or \
+merge baseBranch onward (e.g. into main).";
 
 /// What the app needs to serve the tools: the database, the adapters the app's commands
 /// run, and a way to announce changes.

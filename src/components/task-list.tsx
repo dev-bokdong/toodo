@@ -28,6 +28,7 @@ import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type {
+  AgentMerge,
   Estimate,
   EstimateUnit,
   NoteKind,
@@ -237,7 +238,10 @@ export function TaskList({
           {workspace?.name ?? "All workspaces"}
         </h2>
         {workspace ? (
-          <BaseBranchForm workspace={workspace} />
+          <>
+            <BaseBranchForm workspace={workspace} />
+            <AgentMergeSetting workspace={workspace} />
+          </>
         ) : (
           <p className="text-sm text-muted-foreground">Tasks of every workspace and the dependencies between them.</p>
         )}
@@ -1548,6 +1552,38 @@ export function EmptyState({ title, hint, icon }: { title: string; hint?: string
       </span>
       <p className="text-sm font-medium">{title}</p>
       {hint && <p className="max-w-sm text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * Whether agents merge their own task pull request into the base branch once its checks
+ * pass, which agents read through the MCP server; saved as soon as it changes.
+ */
+function AgentMergeSetting({ workspace }: { workspace: Workspace }) {
+  const updateWorkspace = useUpdateWorkspace();
+  const value = updateWorkspace.isPending ? updateWorkspace.variables.agentMerge : workspace.agentMerge;
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+      <label htmlFor="agent-merge" className="shrink-0">
+        Agent merge
+      </label>
+      <select
+        id="agent-merge"
+        className={cn(compactSelectClass, "max-w-72")}
+        value={value}
+        disabled={updateWorkspace.isPending}
+        onChange={(e) => updateWorkspace.mutate({ ...workspace, agentMerge: e.target.value as AgentMerge })}
+      >
+        <option value="never">Never, stop at the pull request</option>
+        <option value="afterChecks">Into {workspace.defaultBaseBranch} after checks pass</option>
+      </select>
+      {updateWorkspace.isError && (
+        <span role="alert" className="truncate text-xs text-destructive">
+          {updateWorkspace.error.message}
+        </span>
+      )}
     </div>
   );
 }

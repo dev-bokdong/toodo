@@ -198,6 +198,8 @@ pub struct Workspace {
     pub name: String,
     pub location: WorkspaceLocation,
     pub default_base_branch: String,
+    /// Whether agents merge their own task pull request into the base branch.
+    pub agent_merge: AgentMerge,
 }
 
 impl From<&model::Workspace> for Workspace {
@@ -207,6 +209,36 @@ impl From<&model::Workspace> for Workspace {
             name: workspace.name.clone(),
             location: (&workspace.location).into(),
             default_base_branch: workspace.default_base_branch.clone(),
+            agent_merge: workspace.agent_merge.into(),
+        }
+    }
+}
+
+/// Whether agents merge the pull request of their own task. Toodo itself never merges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentMerge {
+    /// Agents stop once the pull request is open; the user merges it.
+    Never,
+    /// Agents merge their pull request into the workspace base branch once every check
+    /// on it passed.
+    AfterChecks,
+}
+
+impl From<model::AgentMerge> for AgentMerge {
+    fn from(agent_merge: model::AgentMerge) -> Self {
+        match agent_merge {
+            model::AgentMerge::Never => Self::Never,
+            model::AgentMerge::AfterChecks => Self::AfterChecks,
+        }
+    }
+}
+
+impl From<AgentMerge> for model::AgentMerge {
+    fn from(agent_merge: AgentMerge) -> Self {
+        match agent_merge {
+            AgentMerge::Never => Self::Never,
+            AgentMerge::AfterChecks => Self::AfterChecks,
         }
     }
 }
@@ -220,6 +252,7 @@ impl TryFrom<Workspace> for model::Workspace {
             name: required("workspace name", workspace.name)?,
             location: workspace.location.try_into()?,
             default_base_branch: required("default base branch", workspace.default_base_branch)?,
+            agent_merge: workspace.agent_merge.into(),
         })
     }
 }

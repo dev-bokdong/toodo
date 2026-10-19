@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, LinkedIssue, Machine, MachineLabel, MachineSettings, NoteKind,
-    PullRequestSnapshot, Task, TaskType, Workspace, WorkspaceLocation,
+    AgentMerge, CommitRecord, HostPath, LinkedIssue, Machine, MachineLabel, MachineSettings,
+    NoteKind, PullRequestSnapshot, Task, TaskType, Workspace, WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
@@ -208,6 +208,9 @@ fn workspace_updates_and_cascading_deletes() {
     workspace.name = "Renamed".to_owned();
     workspace.location = ssh_location("devbox", "/home/me/toodo");
     workspace.default_base_branch = "develop".to_owned();
+    // Agents never merge unless the workspace allows it.
+    assert_eq!(workspace.agent_merge, AgentMerge::Never);
+    workspace.agent_merge = AgentMerge::AfterChecks;
     storage.update_workspace(&workspace).unwrap();
     assert_eq!(
         storage.get_workspace(workspace.id).unwrap(),

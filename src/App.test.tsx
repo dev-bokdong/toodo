@@ -94,6 +94,7 @@ const toodo: Workspace = {
   name: "toodo",
   location: { kind: "local", path: "C:\\dev\\toodo" },
   defaultBaseBranch: "main",
+  agentMerge: "never",
 };
 
 const herdr: Workspace = {
@@ -101,6 +102,7 @@ const herdr: Workspace = {
   name: "herdr",
   location: { kind: "ssh", machine: "devbox", path: "/srv/herdr" },
   defaultBaseBranch: "develop",
+  agentMerge: "never",
 };
 
 function task(id: number, workspaceId: number, title: string, overrides: Partial<Task> = {}): Task {
@@ -1241,6 +1243,33 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.getByText("dev")).toBeInTheDocument();
     expect(mocked.updateWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets agents of the workspace merge their pull requests after checks pass", async () => {
+    let saved = toodo;
+    mocked.listWorkspaces.mockImplementation(async () => ({ status: "ok", data: [saved] }));
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.updateWorkspace
+      .mockResolvedValueOnce({ status: "error", error: { kind: "invalidInput", message: "database is locked" } })
+      .mockImplementation(async (workspace) => {
+        saved = workspace;
+        return { status: "ok", data: saved };
+      });
+    await renderWorkspace();
+
+    const setting = await screen.findByRole("combobox", { name: "Agent merge" });
+    expect(setting).toHaveValue("never");
+    expect(within(setting).getByRole("option", { name: "Into main after checks pass" })).toBeInTheDocument();
+
+    fireEvent.change(setting, { target: { value: "afterChecks" } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
+    // A failed save shows the saved policy again.
+    expect(setting).toHaveValue("never");
+
+    fireEvent.change(setting, { target: { value: "afterChecks" } });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Agent merge" })).toHaveValue("afterChecks"));
+    expect(mocked.updateWorkspace).toHaveBeenLastCalledWith({ ...toodo, agentMerge: "afterChecks" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("creates a new base branch from an existing one", async () => {
