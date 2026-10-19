@@ -4,6 +4,7 @@ import { Download, FolderOpen, Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
+import { runsOnServer } from "@/lib/platform";
 import {
   useAddHerdrMachine,
   useAddSshHost,
@@ -43,6 +44,7 @@ function herdrProblem(host: string, machines: HerdrMachine[]): string | null {
 }
 
 function joinLocal(base: string, name: string): string {
+  if (runsOnServer) return joinPosix(base, name);
   return /[\\/]$/.test(base) ? `${base}${name}` : `${base}\\${name}`;
 }
 
@@ -456,15 +458,18 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
       <div className="flex gap-1">
         <input
           className={inputClass}
-          placeholder={machine === null ? "C:\\dev" : "/home/me/dev"}
+          placeholder={machine === null && !runsOnServer ? "C:\\dev" : "/home/me/dev"}
           aria-label={folderLabel}
           value={folder}
           onChange={(e) => setFolder(e.target.value)}
           required
         />
-        <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={machine === null ? undefined : browsing}>
-          Browse...
-        </Button>
+        {/* The browser cannot show the server's folders; the path is typed instead. */}
+        {!(machine === null && runsOnServer) && (
+          <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={machine === null ? undefined : browsing}>
+            Browse...
+          </Button>
+        )}
       </div>
       {browsing && machine !== null && (
         <RemoteFolderBrowser

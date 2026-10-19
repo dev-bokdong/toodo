@@ -363,6 +363,7 @@ impl Herdr {
     /// Runs `herdr machine add <host>` in a terminal window and waits for the user to
     /// finish it. herdr asks there before installing or replacing the remote herdr, and
     /// saves nothing when the user cancels.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn add_machine(&self, host: &MachineLabel) -> Result<(), HerdrError> {
         if !is_plain_word(host.as_str()) || host.as_str().starts_with('-') {
             return Err(HerdrError::InvalidHost {

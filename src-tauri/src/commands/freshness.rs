@@ -2,7 +2,7 @@
 //! branch. In a task DAG this happens often: a prerequisite is merged into the base while
 //! its dependent is still built on the older base.
 
-use tauri::State;
+use super::State;
 
 use super::completion::checkout;
 use super::types::{BranchFreshness, TaskId};
@@ -15,8 +15,8 @@ use crate::domain::model;
 /// branch lacks, and asks GitHub whether its pull request, if any, merges without
 /// conflicts. A failing fetch or pull request lookup is reported in the result rather
 /// than failing the whole check.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn branch_freshness(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -77,7 +77,7 @@ mod tests {
             .create_workspace(&NewWorkspace {
                 name: "toodo".to_owned(),
                 location: WorkspaceLocation::Local {
-                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap(),
+                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
             })

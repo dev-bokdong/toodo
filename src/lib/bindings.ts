@@ -36,7 +36,8 @@ export const commands = {
 	/**
 	 *  Runs `herdr machine add <host>` in a terminal window, where herdr asks before it
 	 *  installs or replaces the remote herdr, and returns the saved machines once the window
-	 *  closes. Fails when herdr saved no machine for the host.
+	 *  closes. Fails when herdr saved no machine for the host. The server has no terminal
+	 *  window to run it in and refuses it instead.
 	 */
 	addHerdrMachine: (host: string) => typedError<HerdrMachine[], CommandError>(__TAURI_INVOKE("add_herdr_machine", { host })),
 	/**  Host aliases from `~/.ssh/config`, re-read on every call. */
@@ -598,7 +599,10 @@ export type Workspace = {
 export type WorkspaceId = number;
 
 export type WorkspaceLocation = 
-/**  Windows path of a repository on this machine. */
+/**
+ *  Path of a repository on the machine Toodo runs on: a Windows path in the desktop
+ *  app, a POSIX path on the server.
+ */
 { kind: "local"; path: string } | 
 /**  POSIX path of a repository on a saved herdr SSH machine. */
 { kind: "ssh"; machine: string; path: string };

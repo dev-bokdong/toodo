@@ -4,9 +4,10 @@ use rusqlite::{OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::model::{
-    Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId, WorkspaceLocation,
+    HostPath, Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId,
+    WorkspaceLocation,
 };
-use crate::domain::path::{PosixPath, WindowsPath};
+use crate::domain::path::PosixPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewWorkspace {
@@ -57,7 +58,7 @@ impl WorkspaceRow {
     fn into_workspace(self) -> Result<Workspace> {
         let location = match (self.kind.as_str(), self.herdr_machine) {
             ("local", None) => WorkspaceLocation::Local {
-                path: WindowsPath::parse(&self.path).map_err(invalid_data)?,
+                path: HostPath::parse_stored(&self.path).map_err(invalid_data)?,
             },
             ("ssh", Some(machine)) => WorkspaceLocation::Ssh {
                 machine: MachineLabel::parse(&machine).map_err(invalid_data)?,
@@ -210,7 +211,7 @@ impl Storage {
         Ok(match machine {
             Machine::Local => MachineSettings::Local {
                 worktree_root: worktree_root
-                    .map(|root| WindowsPath::parse(&root))
+                    .map(|root| HostPath::parse_stored(&root))
                     .transpose()
                     .map_err(invalid_data)?,
             },

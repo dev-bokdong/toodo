@@ -11,7 +11,7 @@ use crate::domain::model::{
     TaskResolution, TaskType, WorkspaceId,
 };
 use crate::domain::naming::TaskCheckout;
-use crate::domain::path::{PosixPath, WindowsPath};
+use crate::domain::path::PosixPath;
 use crate::domain::plan::{DueDate, Estimate, EstimateUnit};
 use crate::domain::status::TaskStatus;
 use crate::domain::timeline::TaskEvent;
@@ -188,9 +188,7 @@ impl TaskRow {
     ) -> Result<Task> {
         let worktree_path = match (self.worktree_path, self.workspace_kind.as_str()) {
             (None, _) => None,
-            (Some(raw), "local") => Some(HostPath::Windows(
-                WindowsPath::parse(&raw).map_err(invalid_data)?,
-            )),
+            (Some(raw), "local") => Some(HostPath::parse_stored(&raw).map_err(invalid_data)?),
             (Some(raw), _) => Some(HostPath::Posix(
                 PosixPath::parse(&raw).map_err(invalid_data)?,
             )),
@@ -335,17 +333,22 @@ fn task_workspace(conn: &Connection, id: TaskId) -> Result<Option<WorkspaceId>> 
         .optional()?)
 }
 
-/// The stored form of a worktree path, which must belong to the machine kind of the
-/// task's workspace.
+/// The kind of paths on the machine of workspace `w`: `posix` for SSH workspaces and
+/// local ones on the server, `windows` for local ones in the desktop app.
+const WORKSPACE_PATH_STYLE: &str =
+    "CASE WHEN w.kind = 'ssh' OR substr(w.path, 1, 1) = '/' THEN 'posix' ELSE 'windows' END";
+
+/// The stored form of a worktree path, which must be of the path kind of the machine of
+/// the task's workspace (see [`WORKSPACE_PATH_STYLE`]).
 fn stored_worktree_path<'a>(
     task: TaskId,
-    workspace_kind: &str,
+    path_style: &str,
     path: Option<&'a HostPath>,
 ) -> Result<Option<&'a str>> {
-    match (path, workspace_kind) {
+    match (path, path_style) {
         (None, _) => Ok(None),
-        (Some(HostPath::Windows(path)), "local") => Ok(Some(path.as_str())),
-        (Some(HostPath::Posix(path)), "ssh") => Ok(Some(path.as_str())),
+        (Some(HostPath::Windows(path)), "windows") => Ok(Some(path.as_str())),
+        (Some(HostPath::Posix(path)), "posix") => Ok(Some(path.as_str())),
         (Some(_), _) => Err(StorageError::WorktreePathMismatch(task)),
     }
 }
@@ -431,17 +434,19 @@ impl Storage {
     /// are changed through their own methods and are ignored here.
     pub fn update_task(&mut self, task: &Task) -> Result<()> {
         let tx = self.conn.transaction()?;
-        let workspace_kind: String = tx
+        let path_style: String = tx
             .query_row(
-                "SELECT w.kind FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
-                 WHERE t.id = ?1",
+                &format!(
+                    "SELECT {WORKSPACE_PATH_STYLE} FROM tasks t
+                     JOIN workspaces w ON w.id = t.workspace_id WHERE t.id = ?1"
+                ),
                 [task.id.0],
                 |row| row.get(0),
             )
             .optional()?
             .ok_or(StorageError::TaskNotFound(task.id))?;
         let worktree_path =
-            stored_worktree_path(task.id, &workspace_kind, task.worktree_path.as_ref())?;
+            stored_worktree_path(task.id, &path_style, task.worktree_path.as_ref())?;
         let (estimate_unit, estimate_amount) = estimate_columns(task.estimate);
         tx.execute(
             "UPDATE tasks
@@ -487,12 +492,12 @@ impl Storage {
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         let status = task.status.transition_to(TaskStatus::InProgress)?;
         ensure_ready(&tx, id)?;
-        let workspace_kind: String = tx.query_row(
-            "SELECT kind FROM workspaces WHERE id = ?1",
+        let path_style: String = tx.query_row(
+            &format!("SELECT {WORKSPACE_PATH_STYLE} FROM workspaces w WHERE w.id = ?1"),
             [task.workspace_id.0],
             |row| row.get(0),
         )?;
-        let worktree_path = stored_worktree_path(id, &workspace_kind, Some(&checkout.path))?;
+        let worktree_path = stored_worktree_path(id, &path_style, Some(&checkout.path))?;
         tx.execute(
             "UPDATE tasks
              SET status = ?2, branch = ?3, worktree_path = ?4, herdr_workspace_id = ?5
@@ -686,16 +691,18 @@ impl Storage {
         herdr_workspace_id: &str,
     ) -> Result<Task> {
         let tx = self.conn.transaction()?;
-        let workspace_kind: String = tx
+        let path_style: String = tx
             .query_row(
-                "SELECT w.kind FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
-                 WHERE t.id = ?1",
+                &format!(
+                    "SELECT {WORKSPACE_PATH_STYLE} FROM tasks t
+                     JOIN workspaces w ON w.id = t.workspace_id WHERE t.id = ?1"
+                ),
                 [id.0],
                 |row| row.get(0),
             )
             .optional()?
             .ok_or(StorageError::TaskNotFound(id))?;
-        let worktree_path = stored_worktree_path(id, &workspace_kind, Some(path))?;
+        let worktree_path = stored_worktree_path(id, &path_style, Some(path))?;
         tx.execute(
             "UPDATE tasks SET worktree_path = ?2, herdr_workspace_id = ?3 WHERE id = ?1",
             params![id.0, worktree_path, herdr_workspace_id],

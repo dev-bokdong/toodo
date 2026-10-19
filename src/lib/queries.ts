@@ -11,16 +11,16 @@ import {
   type NewTask,
   type NewWorkspace,
   type Task,
-  type TaskAgentStatus,
   type TaskEdit,
   type TaskId,
+  type TaskAgentStatus,
   type TaskPullRequestStatus,
   type Timestamp,
   type Workspace,
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
-import { agentAlerts, notify, pausedAlerts, pullRequestAlerts, type AgentAlert } from "@/lib/agent-alerts";
+import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
 
@@ -333,8 +333,8 @@ export function useHerdrEvents() {
           return;
         }
         const next = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
-        notify(pausedAlerts(previous, next)).catch((error: unknown) =>
-          console.error("toodo: failed to show pause notifications", error),
+        notify(taskStatusAlerts(previous, next)).catch((error: unknown) =>
+          console.error("toodo: failed to show status notifications", error),
         );
       }),
       events.agentStatusesChanged.listen(({ payload }) =>

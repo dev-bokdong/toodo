@@ -1,8 +1,8 @@
 //! How agents connect to Toodo's MCP server.
 
+use super::State;
 use serde::Serialize;
 use specta::Type;
-use tauri::State;
 
 use crate::mcp::ServerStatus;
 use crate::mcp::tunnels::{TunnelState, TunnelStatus, TunnelsState};
@@ -27,10 +27,10 @@ impl From<&ServerStatus> for McpServerInfo {
     }
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn mcp_server_info(status: State<'_, ServerStatus>) -> McpServerInfo {
-    status.inner().into()
+    McpServerInfo::from(&*status)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -65,8 +65,8 @@ impl From<TunnelStatus> for McpTunnel {
     }
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_mcp_tunnels(tunnels: State<'_, TunnelsState>) -> Vec<McpTunnel> {
     let tunnels = tunnels
         .lock()

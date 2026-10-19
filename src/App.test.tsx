@@ -998,7 +998,7 @@ describe("App", () => {
     await waitFor(() => expect(mocked.listTasks.mock.calls.length).toBeGreaterThan(loads));
   });
 
-  it("notifies the desktop when an agent needs input while the app is in the background", async () => {
+  it("notifies the desktop once when an agent needs input while the app is in the background", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
@@ -1025,10 +1025,9 @@ describe("App", () => {
       onAgentStatuses({ event: "agent-statuses-changed", id: 3, payload: { statuses: [{ taskId: 1, status: "blocked" }] } });
     });
 
-    await waitFor(() =>
-      expect(sendNotification).toHaveBeenCalledWith({ title: "Agent needs input", body: "#1 Add login" }),
-    );
+    await waitFor(() => expect(within(tasks).getByLabelText("Agent of #1")).toHaveTextContent("Agent needs input"));
     expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(sendNotification).toHaveBeenCalledWith({ title: "Agent needs input", body: "#1 Add login" });
     focus.mockRestore();
   });
 

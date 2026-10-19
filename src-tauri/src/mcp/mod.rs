@@ -15,7 +15,7 @@ pub mod tunnels;
 
 use std::fs;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -30,19 +30,18 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
 
 use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::events::Notifier;
 use crate::commands::types::Task;
-use crate::commands::{CommandResult, GitHubState, GitState, HerdrState, StorageState, lock};
+use crate::commands::{CommandResult, StorageState, lock};
 use crate::domain::model;
 
 pub const PORT: u16 = 47615;
 
-const TOKEN_FILE: &str = "mcp-token";
+pub(crate) const TOKEN_FILE: &str = "mcp-token";
 
 const SKILL: &str = include_str!("toodo-skill.md");
 
@@ -117,24 +116,6 @@ pub trait Backend: Notifier + Send + Sync + 'static {
     fn herdr(&self) -> &Herdr;
 }
 
-impl Backend for AppHandle {
-    fn storage(&self) -> &StorageState {
-        self.state::<StorageState>().inner()
-    }
-
-    fn git(&self) -> &Git {
-        self.state::<GitState>().inner()
-    }
-
-    fn github(&self) -> &GitHub {
-        self.state::<GitHubState>().inner()
-    }
-
-    fn herdr(&self) -> &Herdr {
-        self.state::<HerdrState>().inner()
-    }
-}
-
 /// How agents reach the server, shown in the app; `error` tells why it is not running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerStatus {
@@ -143,71 +124,96 @@ pub struct ServerStatus {
     pub error: Option<String>,
 }
 
-/// Starts the server in the background. Failures, e.g. the port being taken, are
-/// reported in the status rather than stopping the app.
-pub fn start(backend: Arc<dyn Backend>, data_dir: &Path) -> ServerStatus {
-    let url = format!("http://127.0.0.1:{PORT}/mcp");
+/// The URL agents on this machine reach the server at when it listens on `port`.
+pub fn url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/mcp")
+}
+
+/// Prepares the server on its fixed loopback port: the access token and the listener to
+/// serve [`router`] on. Failures, e.g. the port being taken, are reported in the status
+/// rather than stopping the app.
+#[cfg(feature = "desktop")]
+pub fn open(data_dir: &Path) -> (ServerStatus, Option<(TcpListener, String)>) {
+    let url = url(PORT);
     let token = match load_token(&data_dir.join(TOKEN_FILE)) {
         Ok(token) => token,
         Err(error) => {
-            return ServerStatus {
+            let status = ServerStatus {
                 url,
                 token: None,
                 error: Some(format!(
                     "could not read or create the access token: {error}"
                 )),
             };
+            return (status, None);
         }
     };
-    let listener = match bind(SocketAddr::from((Ipv4Addr::LOCALHOST, PORT))) {
-        Ok(listener) => listener,
+    match bind(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, PORT))) {
+        Ok(listener) => {
+            let status = ServerStatus {
+                url,
+                token: Some(token.clone()),
+                error: None,
+            };
+            (status, Some((listener, token)))
+        }
         Err(error) => {
-            return ServerStatus {
+            let status = ServerStatus {
                 url,
                 token: Some(token),
                 error: Some(format!("could not listen on port {PORT}: {error}")),
             };
+            (status, None)
         }
-    };
-    let app = router(backend, token.clone());
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = serve(listener, app).await {
-            eprintln!("toodo: MCP server stopped: {error}");
-        }
-    });
-    ServerStatus {
-        url,
-        token: Some(token),
-        error: None,
     }
 }
 
-fn bind(address: SocketAddr) -> io::Result<TcpListener> {
+pub(crate) fn bind(address: SocketAddr) -> io::Result<TcpListener> {
     let listener = TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;
     Ok(listener)
 }
 
-async fn serve(listener: TcpListener, app: axum::Router) -> io::Result<()> {
+pub(crate) async fn serve(listener: TcpListener, app: axum::Router) -> io::Result<()> {
     axum::serve(tokio::net::TcpListener::from_std(listener)?, app).await
 }
 
-/// The token in `path`, created with 32 random bytes on first use.
-fn load_token(path: &Path) -> io::Result<String> {
+/// The token in `path`, created with 32 random bytes on first use. On Unix only the owner
+/// may read it: a new file is created that way and an existing one is tightened.
+pub(crate) fn load_token(path: &Path) -> io::Result<String> {
     match fs::read_to_string(path) {
-        Ok(token) if !token.trim().is_empty() => return Ok(token.trim().to_owned()),
-        Ok(_) => {}
+        Ok(token) if !token.trim().is_empty() => {
+            make_private(path)?;
+            return Ok(token.trim().to_owned());
+        }
+        Ok(_) => fs::remove_file(path)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    fs::write(path, &token)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    io::Write::write_all(&mut options.open(path)?, token.as_bytes())?;
     Ok(token)
 }
 
-fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
+#[cfg(unix)]
+fn make_private(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn make_private(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// The MCP endpoint at `/mcp`, open only to requests that bear `token`.
+pub(crate) fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
     let service = StreamableHttpService::new(
         move || Ok(ToodoMcp::new(backend.clone())),
         LocalSessionManager::default().into(),
@@ -217,13 +223,17 @@ fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
     );
     axum::Router::new()
         .nest_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(
+        .route_layer(middleware::from_fn_with_state(
             Arc::new(token),
             require_token,
         ))
 }
 
-async fn require_token(State(token): State<Arc<String>>, request: Request, next: Next) -> Response {
+pub(crate) async fn require_token(
+    State(token): State<Arc<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let presented = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -235,7 +245,7 @@ async fn require_token(State(token): State<Arc<String>>, request: Request, next:
         (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
-            "missing or wrong Toodo MCP access token",
+            "missing or wrong Toodo access token",
         )
             .into_response()
     }
@@ -282,7 +292,7 @@ impl ToodoMcp {
         apply: impl FnOnce(&dyn Backend) -> CommandResult<Task> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
         let backend = self.backend.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || apply(backend.as_ref()))
+        let result = tokio::task::spawn_blocking(move || apply(backend.as_ref()))
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         self.announce(result)
@@ -464,6 +474,8 @@ fn reply<T: Serialize>(result: CommandResult<T>) -> Result<CallToolResult, Error
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
 
     #[test]
@@ -474,6 +486,29 @@ mod tests {
         assert_eq!(token.len(), 64);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(load_token(&path).unwrap(), token);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_the_owner_can_read_the_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().unwrap();
+        let created = dir.path().join(TOKEN_FILE);
+        load_token(&created).unwrap();
+        assert_eq!(mode(&created), 0o600);
+
+        let existing = dir.path().join("existing");
+        fs::write(&existing, "abc").unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o664)).unwrap();
+        assert_eq!(load_token(&existing).unwrap(), "abc");
+        assert_eq!(mode(&existing), 0o600);
+
+        let blank = dir.path().join("blank");
+        fs::write(&blank, "\n").unwrap();
+        fs::set_permissions(&blank, fs::Permissions::from_mode(0o664)).unwrap();
+        assert_eq!(load_token(&blank).unwrap().len(), 64);
+        assert_eq!(mode(&blank), 0o600);
     }
 
     struct TestBackend {
@@ -545,14 +580,14 @@ mod tests {
             .create_workspace(&crate::storage::NewWorkspace {
                 name: "toodo".to_owned(),
                 location: WorkspaceLocation::Local {
-                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap(),
+                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
             })
             .unwrap();
         storage
             .save_machine_settings(&MachineSettings::Local {
-                worktree_root: root.map(|root| WindowsPath::parse(root).unwrap()),
+                worktree_root: root.map(|root| WindowsPath::parse(root).unwrap().into()),
             })
             .unwrap();
         let task = storage
@@ -570,8 +605,9 @@ mod tests {
 
     fn start(server: &ToodoMcp, id: model::TaskId) -> serde_json::Value {
         let request = tools::TaskRef { id: id.into() };
-        let result =
-            tauri::async_runtime::block_on(server.start_task(Parameters(request))).unwrap();
+        let result = runtime()
+            .block_on(server.start_task(Parameters(request)))
+            .unwrap();
         serde_json::to_value(result).unwrap()
     }
 
@@ -629,6 +665,13 @@ mod tests {
         assert_eq!(stored, task);
     }
 
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
     fn post_initialize(address: SocketAddr, authorization: &str) -> String {
         use std::io::{Read, Write};
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
@@ -652,7 +695,8 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let storage = crate::storage::Storage::open_in_memory().unwrap();
         let backend = Arc::new(TestBackend::new(storage));
-        tauri::async_runtime::spawn(serve(listener, router(backend, "secret".to_owned())));
+        let app = router(backend, "secret".to_owned());
+        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
 
         assert!(post_initialize(address, "").starts_with("HTTP/1.1 401"));
         let wrong = post_initialize(address, "Authorization: Bearer secreT\r\n");

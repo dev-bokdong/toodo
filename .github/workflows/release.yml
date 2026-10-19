@@ -4,6 +4,11 @@ name: Release
 # next one (caches saved under a tag ref are invisible to every other tag). A push to main
 # releases the version in src-tauri/tauri.conf.json unless that version is already
 # published; run the workflow by hand on main to retry a failed release.
+#
+# One version, one release: the Windows app (installers + latest.json for the updater) and
+# the Linux toodo-server (a tarball + its sha256) go into the same release vX.Y.Z. Each
+# part is skipped when its assets are already there, so a re-run completes a half-done
+# release.
 on:
   push:
     branches:
@@ -18,59 +23,125 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      windows-done: ${{ steps.check.outputs.windows-done }}
+      server-done: ${{ steps.check.outputs.server-done }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that every version file has the same version
+        run: node scripts/bump-version.mjs --check
+
+      - name: Check which parts of the release are already published
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          tag="v$version"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null || true)
+          has() { grep -qxF "$1" <<<"$assets"; }
+          # The Windows part counts as published once latest.json is uploaded, which
+          # tauri-action does last; a release left half-uploaded is completed instead.
+          if has latest.json; then
+            echo "windows-done=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "windows-done=false" >>"$GITHUB_OUTPUT"
+          fi
+          server="toodo-server-$tag-linux-x86_64.tar.gz"
+          if has "$server" && has "$server.sha256"; then
+            echo "server-done=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "server-done=false" >>"$GITHUB_OUTPUT"
+          fi
+          echo "$tag assets: ${assets:-none}"
+
+  windows:
+    needs: version
+    if: needs.version.outputs.windows-done == 'false'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check whether the app version is already released
-        id: version
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          $tag = "v$version"
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-          # A release counts as published once latest.json is uploaded, which tauri-action
-          # does last; a release left half-uploaded by a failed run is completed instead.
-          $assets = gh release view $tag --json assets --jq '.assets[].name' 2>$null
-          if ($LASTEXITCODE -eq 0 -and ($assets -split "`n") -contains 'latest.json') {
-            "skip=true" >> $env:GITHUB_OUTPUT
-            Write-Output "$tag is already released; nothing to do."
-          } else {
-            "skip=false" >> $env:GITHUB_OUTPUT
-            Write-Output "Releasing $tag."
-          }
-          exit 0
-
-      - if: steps.version.outputs.skip == 'false'
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: npm
 
-      - if: steps.version.outputs.skip == 'false'
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - if: steps.version.outputs.skip == 'false'
-        uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
-      - if: steps.version.outputs.skip == 'false'
-        run: npm ci
+      - run: npm ci
 
-      - if: steps.version.outputs.skip == 'false'
-        uses: tauri-apps/tauri-action@v1
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ steps.version.outputs.tag }}
-          releaseName: Toodo ${{ steps.version.outputs.tag }}
+          tagName: ${{ needs.version.outputs.tag }}
+          releaseName: Toodo ${{ needs.version.outputs.tag }}
           releaseDraft: false
           updaterJsonPreferNsis: true
           retryAttempts: 2
           args: --config src-tauri/tauri.release.conf.json
+
+  server:
+    # Runs after the Windows part, so tauri-action has created the release and tag; the two
+    # jobs never race to create them. It only adds assets when the Windows part is done
+    # (now or earlier), so a release never carries a server for a failed app build.
+    needs: [version, windows]
+    if: >-
+      always() && needs.version.result == 'success'
+      && needs.version.outputs.server-done == 'false'
+      && (needs.windows.result == 'success' || needs.windows.result == 'skipped')
+    # The oldest supported runner, so the binary links against an old glibc and runs on
+    # current Debian and Ubuntu LTS releases too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build toodo-server
+        working-directory: src-tauri
+        run: >-
+          cargo build --release --locked --no-default-features --features server
+          --bin toodo-server --target x86_64-unknown-linux-gnu
+
+      - name: Package toodo-server
+        id: package
+        run: |
+          tarball=$(scripts/package-server.sh \
+            src-tauri/target/x86_64-unknown-linux-gnu/release/toodo-server dist-server)
+          expected="dist-server/toodo-server-${{ needs.version.outputs.tag }}-linux-x86_64.tar.gz"
+          [ "$tarball" = "$expected" ] || { echo "::error::built $tarball, expected $expected"; exit 1; }
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+
+      - name: Upload toodo-server to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          TARBALL: ${{ steps.package.outputs.tarball }}
+        run: |
+          # The Windows part created the release; create it like tauri-action would only if
+          # it is missing anyway.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Toodo $TAG" --target "$GITHUB_SHA" --notes ""
+          fi
+          # The checksum goes last: a release with both assets is complete.
+          gh release upload "$TAG" "$TARBALL" --clobber
+          gh release upload "$TAG" "$TARBALL.sha256" --clobber

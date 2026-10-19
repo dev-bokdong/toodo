@@ -1,6 +1,6 @@
 //! Commands for tasks, their dependency DAG, and their commit records.
 
-use tauri::State;
+use super::State;
 
 use super::types::{self, CommitRecord, NewTask, Task, TaskEdit, TaskId};
 use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
@@ -10,14 +10,14 @@ use crate::storage::{Storage, StorageError};
 
 /// Tasks of every workspace ordered by ID, each with its dependencies, which may belong
 /// to another workspace.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_tasks(storage: State<'_, StorageState>) -> CommandResult<Vec<Task>> {
     Ok(types::map_all(&lock(&storage).list_all_tasks()?))
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
     let task = lock(&storage)
         .get_task(id.into())?
@@ -26,15 +26,15 @@ pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<T
 }
 
 /// Creates a `planned` task without dependencies.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn create_task(storage: State<'_, StorageState>, task: NewTask) -> CommandResult<Task> {
     let new = task.try_into()?;
     Ok((&lock(&storage).create_task(&new)?).into())
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn update_task(storage: State<'_, StorageState>, task: TaskEdit) -> CommandResult<Task> {
     edit_task(&mut lock(&storage), task)
 }
@@ -59,8 +59,8 @@ pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<
 /// Pauses an `in_progress` or `in_review` task: it becomes `planned` again and keeps
 /// its branch, worktree, herdr workspace, commit records, and pull request, so starting
 /// it again resumes the work.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn pause_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
     pause(&mut lock(&storage), id)
 }
@@ -81,8 +81,8 @@ fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
 /// Stores what the user wrote about the outcome of a `done` task, for reviews. The note
 /// is trimmed; an empty one clears it, except for a task that was not adopted, whose note
 /// is its required conclusion.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn set_completion_note(
     storage: State<'_, StorageState>,
     id: TaskId,
@@ -114,8 +114,8 @@ fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResu
 /// first removes it through herdr, which also closes its herdr workspace; the branch is
 /// kept. Without `force`, a worktree with modified or untracked files is rejected and the
 /// task is kept.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn delete_task(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -128,8 +128,8 @@ pub fn delete_task(
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
 /// self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
 /// paused and its herdr workspace closed.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn add_dependency(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -140,8 +140,8 @@ pub fn add_dependency(
     Ok(())
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn remove_dependency(
     storage: State<'_, StorageState>,
     task_id: TaskId,
@@ -150,8 +150,8 @@ pub fn remove_dependency(
     Ok(lock(&storage).remove_dependency(task_id.into(), depends_on.into())?)
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_commit_records(
     storage: State<'_, StorageState>,
     task_id: TaskId,
@@ -175,7 +175,7 @@ mod tests {
             .create_workspace(&NewWorkspace {
                 name: "toodo".to_owned(),
                 location: WorkspaceLocation::Local {
-                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap(),
+                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
             })

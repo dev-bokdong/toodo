@@ -19,13 +19,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-use specta::Type;
-use tauri::{AppHandle, Manager, State};
-use tauri_specta::Event;
-
 use super::types::{AgentStatus, TaskAgentStatus, TaskPullRequestStatus, WorkspaceId};
-use super::{HerdrState, StorageState, lock};
+use super::{Runtime, State, StorageState, lock};
 use crate::adapters::herdr::{self, Herdr, HerdrError};
 use crate::adapters::herdr_events::{
     Connector, EventStreamError, Flow, HerdrEvent, LocalSocket, Message, SshSocket, subscribe,
@@ -33,32 +28,45 @@ use crate::adapters::herdr_events::{
 use crate::domain::model::{self, HostPath, Machine};
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::storage::{Storage, StorageError};
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
 /// Agent statuses of the tasks of each watched machine.
 pub type AgentStatusState = Mutex<HashMap<Machine, Vec<TaskAgentStatus>>>;
 
 /// Tasks of the workspace changed outside a command, e.g. herdr removed a worktree.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 #[serde(rename_all = "camelCase")]
 pub struct TasksChanged {
     pub workspace_id: WorkspaceId,
 }
 
 /// The agent statuses of tasks changed; carries all of them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 pub struct AgentStatusesChanged {
     pub statuses: Vec<TaskAgentStatus>,
 }
 
 /// The CI or review state of the pull request of an `in_review` task changed; carries
 /// all of them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 pub struct PullRequestStatusesChanged {
     pub statuses: Vec<TaskPullRequestStatus>,
 }
 
-#[tauri::command]
-#[specta::specta]
+/// The names the frontend listens to these events by, the ones tauri-specta derives in
+/// the desktop app; the server sends them under the same names.
+pub mod names {
+    pub const TASKS_CHANGED: &str = "tasks-changed";
+    pub const AGENT_STATUSES_CHANGED: &str = "agent-statuses-changed";
+    pub const PULL_REQUEST_STATUSES_CHANGED: &str = "pull-request-statuses-changed";
+}
+
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_agent_statuses(statuses: State<'_, AgentStatusState>) -> Vec<TaskAgentStatus> {
     all_statuses(&lock_statuses(&statuses))
 }
@@ -81,41 +89,6 @@ pub trait Notifier {
     fn tasks_changed(&self, workspace: model::WorkspaceId);
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]);
     fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]);
-}
-
-impl Notifier for AppHandle {
-    fn tasks_changed(&self, workspace: model::WorkspaceId) {
-        let event = TasksChanged {
-            workspace_id: workspace.into(),
-        };
-        if let Err(error) = event.emit(self) {
-            eprintln!("toodo: failed to emit {}: {error}", TasksChanged::NAME);
-        }
-    }
-
-    fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
-        let event = AgentStatusesChanged {
-            statuses: statuses.to_vec(),
-        };
-        if let Err(error) = event.emit(self) {
-            eprintln!(
-                "toodo: failed to emit {}: {error}",
-                AgentStatusesChanged::NAME
-            );
-        }
-    }
-
-    fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]) {
-        let event = PullRequestStatusesChanged {
-            statuses: statuses.to_vec(),
-        };
-        if let Err(error) = event.emit(self) {
-            eprintln!(
-                "toodo: failed to emit {}: {error}",
-                PullRequestStatusesChanged::NAME
-            );
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -319,11 +292,11 @@ const MACHINE_SCAN: Duration = Duration::from_secs(5);
 
 /// Starts the background threads that keep the subscriptions to the local herdr server
 /// and to the herdr server of every machine with an SSH workspace.
-pub fn spawn(app: AppHandle) -> std::io::Result<()> {
+pub fn spawn(app: Arc<dyn Runtime>) -> std::io::Result<()> {
     let local = app.clone();
     thread::Builder::new()
         .name("herdr-events-local".to_owned())
-        .spawn(move || watch(&local, &Machine::Local))?;
+        .spawn(move || watch(local.as_ref(), &Machine::Local))?;
     thread::Builder::new()
         .name("herdr-events-machines".to_owned())
         .spawn(move || watch_machines(&app))?;
@@ -332,12 +305,11 @@ pub fn spawn(app: AppHandle) -> std::io::Result<()> {
 
 /// Starts a watching thread for each machine that gets an SSH workspace. A thread ends
 /// once its machine has no workspace left, and starts again if one is added later.
-fn watch_machines(app: &AppHandle) {
+fn watch_machines(app: &Arc<dyn Runtime>) {
     let watched: Arc<Mutex<HashSet<Machine>>> = Arc::default();
     let mut last_error = String::new();
     loop {
-        let storage = app.state::<StorageState>();
-        let machines = ssh_machines(&lock(&storage));
+        let machines = ssh_machines(&lock(app.storage()));
         match machines {
             Ok(machines) => {
                 last_error.clear();
@@ -351,7 +323,7 @@ fn watch_machines(app: &AppHandle) {
                     let spawned = thread::Builder::new()
                         .name(format!("herdr-events-{machine}"))
                         .spawn(move || {
-                            watch(&app, &thread_machine);
+                            watch(app.as_ref(), &thread_machine);
                             watched
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner)
@@ -392,22 +364,21 @@ fn connector(herdr: &Herdr, machine: &Machine) -> Result<Option<Box<dyn Connecto
 
 /// Keeps the subscription to the herdr server of `machine`. Returns once an SSH machine
 /// has no workspace left; the local server is watched for as long as the app runs.
-fn watch(app: &AppHandle, machine: &Machine) {
-    let storage = app.state::<StorageState>();
-    let herdr = app.state::<HerdrState>();
-    let statuses = app.state::<AgentStatusState>();
+fn watch(app: &dyn Runtime, machine: &Machine) {
+    let storage = app.storage();
+    let herdr = app.herdr();
     let sync = EventSync {
         machine: machine.clone(),
-        storage: &storage,
-        herdr: &herdr,
-        statuses: &statuses,
+        storage,
+        herdr,
+        statuses: app.agent_statuses(),
         notifier: app,
     };
     let mut delay = FIRST_RETRY;
     let mut last_error = String::new();
     loop {
         if *machine != Machine::Local {
-            match ssh_machines(&lock(&storage)) {
+            match ssh_machines(&lock(storage)) {
                 Ok(machines) if !machines.contains(machine) => {
                     sync.clear_agents();
                     return;
@@ -418,7 +389,7 @@ fn watch(app: &AppHandle, machine: &Machine) {
                 }
             }
         }
-        let end = match connector(&herdr, machine) {
+        let end = match connector(herdr, machine) {
             Ok(Some(connector)) => sync.run_once(connector.as_ref()),
             Ok(None) => SessionEnd {
                 started: false,
@@ -519,7 +490,7 @@ mod tests {
         };
         let local = started(
             WorkspaceLocation::Local {
-                path: WindowsPath::parse(r"C:\dev\toodo").unwrap(),
+                path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
             },
             HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap()),
         );

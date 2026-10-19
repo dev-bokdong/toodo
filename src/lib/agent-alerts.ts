@@ -1,18 +1,63 @@
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import type { AgentStatus, Task, TaskAgentStatus, TaskPullRequestStatus } from "@/lib/bindings";
+import type { Task, TaskAgentStatus, TaskPullRequestStatus, TaskStatus } from "@/lib/bindings";
 
 export type AgentAlert = { title: string; body: string };
 
-const alertTitles: Partial<Record<AgentStatus, string>> = {
-  blocked: "Agent needs input",
-  done: "Agent finished",
-  idle: "Agent finished",
+const statusNames: Record<TaskStatus, string> = {
+  planned: "Planned",
+  in_progress: "In progress",
+  in_review: "In review",
+  done: "Done",
 };
 
+function statusName(task: Task): string {
+  return task.status === "done" && task.resolution === "not_adopted" ? "Not adopted" : statusNames[task.status];
+}
+
+function statusTitle(was: TaskStatus, task: Task): string {
+  switch (task.status) {
+    case "in_progress":
+      return "Task started";
+    case "in_review":
+      return "Task in review";
+    case "done":
+      return task.resolution === "not_adopted" ? "Task concluded without merging" : "Task done";
+    case "planned":
+      return was === "in_progress" ? "Task paused" : "Task status changed";
+  }
+}
+
 /**
- * Alerts for the agents whose status changed in a way the user should act on: one that
- * started waiting for input, or one that stopped working. A task that only now got an
- * agent, or one whose agent went away, raises no alert.
+ * One alert per task whose status changed between two snapshots. A task that is new in
+ * `next` or gone from it raises none, so loading the list or creating a task is silent.
+ * A task paused by a prerequisite that is not done while its herdr workspace is still open
+ * gets the prompt to close that workspace instead: an agent added the prerequisite through
+ * MCP, and the user decides in the app.
+ */
+export function taskStatusAlerts(previous: readonly Task[], next: readonly Task[]): AgentAlert[] {
+  const before = new Map(previous.map((task) => [task.id, task.status]));
+  const byId = new Map(next.map((task) => [task.id, task]));
+  return next.flatMap((task) => {
+    const was = before.get(task.id);
+    if (was === undefined || was === task.status) {
+      return [];
+    }
+    const blocked = task.dependsOn.some((id) => byId.get(id)?.status !== "done");
+    if (was === "in_progress" && task.status === "planned" && blocked && task.herdrWorkspaceId !== null) {
+      return [{ title: "Task paused by a new prerequisite", body: `#${task.id} ${task.title}: close its herdr workspace?` }];
+    }
+    return [
+      {
+        title: statusTitle(was, task),
+        body: `#${task.id} ${task.title}: ${statusNames[was]} -> ${statusName(task)}`,
+      },
+    ];
+  });
+}
+
+/**
+ * Alerts for the agents that started waiting for input. A task that only now got an agent,
+ * or one whose agent went away, raises none; finishing is covered by the task status alerts.
  */
 export function agentAlerts(
   previous: readonly TaskAgentStatus[],
@@ -22,41 +67,18 @@ export function agentAlerts(
   const before = new Map(previous.map((entry) => [entry.taskId, entry.status]));
   return next.flatMap(({ taskId, status }) => {
     const was = before.get(taskId);
-    if (was === undefined || was === status) {
-      return [];
-    }
-    const finished = was === "working" && (status === "done" || status === "idle");
-    if (status !== "blocked" && !finished) {
+    if (was === undefined || was === status || status !== "blocked") {
       return [];
     }
     const task = tasks.find((candidate) => candidate.id === taskId);
-    const title = alertTitles[status] ?? "Agent status changed";
-    return [{ title, body: task ? `#${taskId} ${task.title}` : `#${taskId}` }];
-  });
-}
-
-/**
- * Alerts for tasks that were in progress and are now paused on a prerequisite that is not
- * done, with their herdr workspace still open: an agent added the prerequisite through MCP,
- * and the user decides in the app whether to close the workspace.
- */
-export function pausedAlerts(previous: readonly Task[], next: readonly Task[]): AgentAlert[] {
-  const before = new Map(previous.map((task) => [task.id, task.status]));
-  const byId = new Map(next.map((task) => [task.id, task]));
-  return next.flatMap((task) => {
-    const blocked = task.dependsOn.some((id) => byId.get(id)?.status !== "done");
-    const pausedNow = before.get(task.id) === "in_progress" && task.status === "planned";
-    if (!pausedNow || task.herdrWorkspaceId === null || !blocked) {
-      return [];
-    }
-    return [{ title: "Task paused by a new prerequisite", body: `#${task.id} ${task.title}: close its herdr workspace?` }];
+    return [{ title: "Agent needs input", body: task ? `#${taskId} ${task.title}` : `#${taskId}` }];
   });
 }
 
 /**
  * Alerts for the pull requests that started needing the user: CI that started failing,
  * or a reviewer who requested changes. A pull request seen for the first time raises no
- * alert, as with agents, so nothing fires for every failing pull request at startup.
+ * alert, so nothing fires for every failing pull request at startup.
  */
 export function pullRequestAlerts(
   previous: readonly TaskPullRequestStatus[],
