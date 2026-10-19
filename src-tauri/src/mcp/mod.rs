@@ -121,7 +121,12 @@ root that is set unless the user asks.
 
 Deleting tasks happens in the Toodo app only, not through these tools. A pull request \
 from the task branch into baseBranch moves the task to in_review, and its merge \
-completes the task. Whether you merge it yourself is set per workspace by agentMerge, \
+completes the task. Toodo notices both at its next pull request check, which runs every \
+minute, so right after a merge the task can still read in_review for up to about a \
+minute; that is expected, not a miss. Read it again with get_task after a minute instead \
+of calling complete_task. Only a task still in_review after that needs a look: for \
+another task, complete_task says what blocks it; for your own, call report_blocker. \
+Whether you merge it yourself is set per workspace by agentMerge, \
 which current_task returns: with never (the default), stop once the pull request is \
 open and never merge it. With afterChecks, wait until every check on the pull request \
 has finished and passed (`gh pr checks <number> --watch`), fixing and pushing when one \

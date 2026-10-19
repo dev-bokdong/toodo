@@ -246,7 +246,10 @@ left alone; an open one only gets the closing reference to the task's issue if i
 lacks it, so a pull request an agent opened in herdr closes the issue too. Linking an
 issue to a task whose pull request is open adds the reference right away. A failed check (e.g. `gh` is not signed in, or a herdr failure)
 keeps the task `in_review` and is logged once until it changes; the next check tries
-again. The task list refreshes when a task is completed this way.
+again. The task list refreshes when a task is completed this way. The next check starts a
+minute after the previous one finished, so a task whose pull request was just merged can
+still read `in_review` for up to about a minute; the MCP instructions and the toodo skill
+tell agents to read the task again after a minute instead of completing it by hand.
 
 In the same check, Toodo also looks up the pull request of the branch of every
 `in_progress` task that has a branch and a worktree (steps 2 and 3 of opening a pull

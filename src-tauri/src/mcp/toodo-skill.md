@@ -92,6 +92,12 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
      Then merge the pull request into `baseBranch` (`gh pr merge <number> --merge`, or
      the merge method the repository allows); the merge completes the task.
 
+   Toodo checks pull requests every minute, so it moves the task to `in_review` and,
+   after the merge, to `done` within about a minute. Right after you merge, the task can
+   still read `in_review`; that is expected. Do not call `complete_task` on it; read it
+   again with `get_task` after a minute, and only if it is still `in_review` then, call
+   `report_blocker` with what you see.
+
    Even with `afterChecks`, never merge while a check is failing or pending or when the
    pull request has no checks, never bypass branch protection (no `--admin`), never
    merge a pull request into any branch other than `baseBranch`, and never release, tag,
