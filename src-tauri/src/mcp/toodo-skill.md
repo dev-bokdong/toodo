@@ -124,3 +124,17 @@ tasks and what they decided, links, and constraints the implementer has to respe
   no raw HTML.
 - Pick `task_type` by the kind of change (feat, fix, modify, refactor, docs, test, chore,
   rnd) and write a short imperative title.
+
+# Adding a workspace
+
+Every task belongs to a workspace, one repository on a machine. To plan tasks for a
+repository Toodo does not have yet:
+
+1. Call `list_workspaces` and reuse the workspace whose `location` already is the
+   repository; never add a second workspace for the same path.
+2. Only when it is missing and the user asked for it, call `create_workspace` with a
+   `name` and the absolute `path` on the machine Toodo runs on. Pass `clone_url` to clone
+   the repository into a new or empty directory, or leave it out to open a repository
+   already cloned there. Set `default_base_branch` when pull requests go into a branch
+   other than the repository's default one, e.g. `dev`.
+3. Use the `id` it returns as `workspace_id` for `create_task`.

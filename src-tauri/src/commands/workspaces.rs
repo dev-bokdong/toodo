@@ -42,22 +42,94 @@ pub async fn create_workspace(
     herdr: State<'_, HerdrState>,
     workspace: NewWorkspace,
 ) -> CommandResult<Workspace> {
-    let setup = workspace.try_into()?;
+    let setup: WorkspaceSetup = workspace.try_into()?;
+    let existing = lock(&storage).list_workspaces()?;
     let git = GitState::clone(&git);
     let herdr = HerdrState::clone(&herdr);
-    let new = tokio::task::spawn_blocking(move || prepare_workspace(&git, &herdr, setup))
-        .await
-        .map_err(|error| CommandError::internal(format!("workspace setup panicked: {error}")))??;
-    Ok((&lock(&storage).create_workspace(&new)?).into())
+    let new =
+        tokio::task::spawn_blocking(move || prepare_workspace(&git, &herdr, setup, &existing))
+            .await
+            .map_err(|error| {
+                CommandError::internal(format!("workspace setup panicked: {error}"))
+            })??;
+    Ok((&save_workspace(&mut lock(&storage), &new)?).into())
+}
+
+/// Creates a workspace as [`create_workspace`] does, running git and herdr on the calling
+/// thread; for callers already off the async runtime, such as the MCP tools.
+pub(crate) fn create(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    setup: WorkspaceSetup,
+) -> CommandResult<model::Workspace> {
+    let existing = lock(storage).list_workspaces()?;
+    let new = prepare_workspace(git, herdr, setup, &existing)?;
+    save_workspace(&mut lock(storage), &new)
+}
+
+/// Saves a prepared workspace unless one added meanwhile already uses its location.
+fn save_workspace(
+    storage: &mut storage::Storage,
+    new: &storage::NewWorkspace,
+) -> CommandResult<model::Workspace> {
+    ensure_unused(&storage.list_workspaces()?, &new.location)?;
+    Ok(storage.create_workspace(new)?)
+}
+
+/// Rejects a location that one of `workspaces` already uses.
+fn ensure_unused(
+    workspaces: &[model::Workspace],
+    location: &model::WorkspaceLocation,
+) -> CommandResult<()> {
+    match workspaces
+        .iter()
+        .find(|workspace| same_location(&workspace.location, location))
+    {
+        Some(workspace) => Err(CommandError::rejected(format!(
+            "workspace {} ({}) already uses {}",
+            workspace.name,
+            workspace.id.0,
+            location_path(&workspace.location)
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn location_path(location: &model::WorkspaceLocation) -> &str {
+    match location {
+        model::WorkspaceLocation::Local { path } => path.as_str(),
+        model::WorkspaceLocation::Ssh { path, .. } => path.as_str(),
+    }
+}
+
+/// Whether two locations name the same directory; Windows paths are case-insensitive.
+fn same_location(a: &model::WorkspaceLocation, b: &model::WorkspaceLocation) -> bool {
+    use model::{HostPath, WorkspaceLocation};
+    match (a, b) {
+        (WorkspaceLocation::Local { path: a }, WorkspaceLocation::Local { path: b }) => {
+            match (a, b) {
+                (HostPath::Windows(a), HostPath::Windows(b)) => {
+                    a.as_str().to_lowercase() == b.as_str().to_lowercase()
+                }
+                _ => a == b,
+            }
+        }
+        _ => a == b,
+    }
 }
 
 /// Brings the repository to the workspace location, resolves the base branch, and opens
-/// the repository in herdr unless a herdr workspace already has it open.
+/// the repository in herdr unless a herdr workspace already has it open. A location one
+/// of the `existing` workspaces uses is rejected before git clones into it and, for an
+/// opened repository, again once git found its root, before herdr runs.
 fn prepare_workspace(
     git: &Git,
     herdr: &Herdr,
     setup: WorkspaceSetup,
+    existing: &[model::Workspace],
 ) -> CommandResult<storage::NewWorkspace> {
+    ensure_unused(existing, &setup.location)?;
     let location = match setup.source {
         WorkspaceSource::Clone { url } => {
             git.clone_repository(&url, &setup.location)?;
@@ -65,6 +137,7 @@ fn prepare_workspace(
         }
         WorkspaceSource::Open => git.repository_root(&setup.location)?,
     };
+    ensure_unused(existing, &location)?;
     let default_base_branch = match setup.default_base_branch {
         Some(branch) => branch,
         None => git.default_branch(&location)?.ok_or_else(|| {
@@ -73,11 +146,7 @@ fn prepare_workspace(
             )
         })?,
     };
-    let repository = match &location {
-        model::WorkspaceLocation::Local { path } => path.as_str(),
-        model::WorkspaceLocation::Ssh { path, .. } => path.as_str(),
-    };
-    herdr.open_workspace(&location.machine(), repository, &setup.name)?;
+    herdr.open_workspace(&location.machine(), location_path(&location), &setup.name)?;
     Ok(storage::NewWorkspace {
         name: setup.name,
         location,
@@ -261,6 +330,7 @@ mod tests {
             &Git::new(Box::new(runner.clone())),
             &Herdr::new(Box::new(herdr_runner.clone())),
             setup,
+            &[],
         );
         Prepared {
             result,
@@ -428,6 +498,34 @@ mod tests {
         let (result, invocations) = create(&storage, id, "release", Vec::new());
         assert_eq!(result.unwrap_err().kind, CommandErrorKind::Rejected);
         assert!(invocations.is_empty());
+    }
+
+    #[test]
+    fn a_location_another_workspace_uses_is_rejected_regardless_of_windows_case() {
+        let existing = [model::Workspace {
+            id: model::WorkspaceId(3),
+            name: "toodo".to_owned(),
+            location: local(r"C:\dev\toodo"),
+            default_base_branch: "main".to_owned(),
+            agent_merge: model::AgentMerge::Never,
+        }];
+        let error = ensure_unused(&existing, &local(r"c:\DEV\Toodo")).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert_eq!(
+            error.message,
+            r"workspace toodo (3) already uses C:\dev\toodo"
+        );
+        assert!(ensure_unused(&existing, &local(r"C:\dev\toodo2")).is_ok());
+
+        let posix = |path: &str| model::WorkspaceLocation::Local {
+            path: crate::domain::path::PosixPath::parse(path).unwrap().into(),
+        };
+        let existing = [model::Workspace {
+            location: posix("/srv/toodo"),
+            ..existing[0].clone()
+        }];
+        assert!(ensure_unused(&existing, &posix("/srv/toodo")).is_err());
+        assert!(ensure_unused(&existing, &posix("/srv/Toodo")).is_ok());
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::events::{
     AgentStatusState, AgentStatusesChanged, Notifier, PullRequestStatusesChanged, TasksChanged,
-    names,
+    WorkspacesChanged, names,
 };
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
@@ -79,6 +79,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         ])
         .events(collect_events![
             commands::events::TasksChanged,
+            commands::events::WorkspacesChanged,
             commands::events::AgentStatusesChanged,
             commands::events::PullRequestStatusesChanged,
             UpdateCheckRequested,
@@ -249,6 +250,15 @@ impl Notifier for AppHandle {
         }
     }
 
+    fn workspaces_changed(&self) {
+        if let Err(error) = WorkspacesChanged.emit(self) {
+            eprintln!(
+                "toodo: failed to emit {}: {error}",
+                names::WORKSPACES_CHANGED
+            );
+        }
+    }
+
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
         let event = AgentStatusesChanged {
             statuses: statuses.to_vec(),
@@ -321,6 +331,7 @@ mod tests {
     #[test]
     fn event_names_match_the_server_ones() {
         assert_eq!(TasksChanged::NAME, names::TASKS_CHANGED);
+        assert_eq!(WorkspacesChanged::NAME, names::WORKSPACES_CHANGED);
         assert_eq!(AgentStatusesChanged::NAME, names::AGENT_STATUSES_CHANGED);
         assert_eq!(
             PullRequestStatusesChanged::NAME,

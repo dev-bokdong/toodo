@@ -2,7 +2,7 @@
 //! tells the frontend about changes like any command.
 //!
 //! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
-//! in the app data directory. Agents can read workspaces and tasks, search earlier tasks
+//! in the app data directory. Agents can read and add workspaces, read tasks, search earlier tasks
 //! and read their history, create and edit tasks, connect dependencies and related
 //! links, leave progress and blocker notes in a task's history, and
 //! start, complete, or conclude tasks through the app's own commands; deleting tasks stays
@@ -57,7 +57,9 @@ and the format of task descriptions.
 How to use these tools:
 1. Call current_task with your absolute working directory first. Use its workspaceId \
 for new tasks in the same repository and its baseBranch as the base of your pull \
-request. If it finds no task, use list_workspaces to pick the workspace.
+request. If it finds no task, use list_workspaces to pick the workspace. Add a \
+workspace with create_workspace only when the user asks for a repository that \
+list_workspaces does not have yet.
 2. Before you plan work or call create_task, call search_tasks with a few distinctive \
 words of the work (all workspaces unless the work clearly belongs to one) to find \
 earlier tasks about it, and get_task on the relevant ones to read what was decided \
@@ -307,11 +309,19 @@ impl ToodoMcp {
         &self,
         apply: impl FnOnce(&dyn Backend) -> CommandResult<Task> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
-        let backend = self.backend.clone();
-        let result = tokio::task::spawn_blocking(move || apply(backend.as_ref()))
-            .await
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let result = self.blocking(apply).await?;
         self.announce(result)
+    }
+
+    /// Runs `apply` on a blocking thread.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        apply: impl FnOnce(&dyn Backend) -> CommandResult<T> + Send + 'static,
+    ) -> Result<CommandResult<T>, ErrorData> {
+        let backend = self.backend.clone();
+        tokio::task::spawn_blocking(move || apply(backend.as_ref()))
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
 
     fn announce(&self, result: CommandResult<Task>) -> Result<CallToolResult, ErrorData> {
@@ -332,6 +342,24 @@ impl ToodoMcp {
     #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
     fn list_workspaces(&self) -> Result<CallToolResult, ErrorData> {
         reply(tools::list_workspaces(&lock(self.backend.storage())))
+    }
+
+    #[tool(
+        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
+    )]
+    async fn create_workspace(
+        &self,
+        Parameters(request): Parameters<tools::CreateWorkspace>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::create_workspace(backend.storage(), backend.git(), backend.herdr(), request)
+            })
+            .await?;
+        if result.is_ok() {
+            self.backend.workspaces_changed();
+        }
+        reply(result)
     }
 
     #[tool(
@@ -579,6 +607,7 @@ mod tests {
         github: GitHub,
         herdr: Herdr,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
+        workspaces_changed: std::sync::Mutex<usize>,
     }
 
     type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
@@ -598,6 +627,7 @@ mod tests {
                 github: GitHub::new(runner(Vec::new())),
                 herdr: Herdr::new(runner(herdr)),
                 changed: std::sync::Mutex::default(),
+                workspaces_changed: std::sync::Mutex::default(),
             }
         }
     }
@@ -605,6 +635,9 @@ mod tests {
     impl Notifier for TestBackend {
         fn tasks_changed(&self, workspace: model::WorkspaceId) {
             self.changed.lock().unwrap().push(workspace);
+        }
+        fn workspaces_changed(&self) {
+            *self.workspaces_changed.lock().unwrap() += 1;
         }
         fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
         fn pull_request_statuses_changed(
@@ -725,6 +758,229 @@ mod tests {
         assert!(backend.changed.lock().unwrap().is_empty());
         let stored = lock(&backend.storage).get_task(task.id).unwrap().unwrap();
         assert_eq!(stored, task);
+    }
+
+    fn create_workspace(server: &ToodoMcp, arguments: serde_json::Value) -> serde_json::Value {
+        let request = serde_json::from_value(arguments).unwrap();
+        let result = runtime()
+            .block_on(server.create_workspace(Parameters(request)))
+            .unwrap();
+        serde_json::to_value(result).unwrap()
+    }
+
+    /// The local path for POSIX `posix` in this build: itself on the server, the same path
+    /// on drive C: in the desktop app.
+    fn host(posix: &str) -> String {
+        if cfg!(feature = "server") {
+            posix.to_owned()
+        } else {
+            format!("C:{}", posix.replace('/', "\\"))
+        }
+    }
+
+    /// What `git rev-parse --show-toplevel` prints for `posix` in this build.
+    fn toplevel(posix: &str) -> Result<String, crate::adapters::git::GitError> {
+        Ok(if cfg!(feature = "server") {
+            format!("{posix}\n")
+        } else {
+            format!("C:{posix}\n")
+        })
+    }
+
+    /// `herdr workspace list` without the repository, then `herdr workspace create`.
+    fn herdr_opens_a_new_workspace() -> Scripted {
+        vec![
+            Ok(r#"{"id":"cli:workspace:list","result":{"workspaces":[]}}"#.to_owned()),
+            Ok(
+                r#"{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"w9"}}}"#
+                    .to_owned(),
+            ),
+        ]
+    }
+
+    fn created_workspace(result: &serde_json::Value) -> serde_json::Value {
+        assert_ne!(result["isError"], true, "{result}");
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn error_text(result: &serde_json::Value) -> &str {
+        assert_eq!(result["isError"], true, "{result}");
+        result["content"][0]["text"].as_str().unwrap()
+    }
+
+    /// A server whose database has the workspace "site" at /dev/site, opened through the
+    /// tool; git and herdr then return `git` and `herdr`.
+    fn server_with_site(git: Scripted, herdr: Scripted) -> (Arc<TestBackend>, ToodoMcp) {
+        let (storage, _) = storage_with_task(None);
+        let mut git_results = vec![toplevel("/dev/site")];
+        git_results.extend(git);
+        let mut herdr_results = herdr_opens_a_new_workspace();
+        herdr_results.extend(herdr);
+        let backend = Arc::new(TestBackend::scripted(storage, git_results, herdr_results));
+        let server = ToodoMcp::new(backend.clone());
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site/src"),
+                "default_base_branch": "dev",
+            }),
+        );
+        created_workspace(&result);
+        (backend, server)
+    }
+
+    fn workspace_count(backend: &TestBackend) -> usize {
+        lock(&backend.storage).list_workspaces().unwrap().len()
+    }
+
+    #[test]
+    fn creating_a_workspace_opens_an_existing_clone_at_its_root() {
+        let (storage, _) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![toplevel("/dev/site")],
+            herdr_opens_a_new_workspace(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site/src"),
+                "default_base_branch": "dev",
+            }),
+        );
+
+        let workspace = created_workspace(&result);
+        assert_eq!(workspace["name"], "site");
+        assert_eq!(
+            workspace["location"],
+            serde_json::json!({"kind": "local", "path": host("/dev/site")})
+        );
+        assert_eq!(workspace["defaultBaseBranch"], "dev");
+        let id = model::WorkspaceId(workspace["id"].as_i64().unwrap());
+        let stored = lock(&backend.storage).get_workspace(id).unwrap().unwrap();
+        assert_eq!(stored.name, "site");
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn creating_a_workspace_clones_the_url_and_detects_the_base_branch() {
+        let (storage, _) = storage_with_task(None);
+        let git_runner = Arc::new(crate::adapters::git::fake::FakeRunner::new(vec![
+            Ok(String::new()),
+            Ok("origin/main\n".to_owned()),
+        ]));
+        let mut backend = TestBackend::scripted(storage, Vec::new(), herdr_opens_a_new_workspace());
+        backend.git = Git::new(Box::new(git_runner.clone()));
+        let backend = Arc::new(backend);
+        let server = ToodoMcp::new(backend.clone());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site"),
+                "clone_url": "git@github.com:me/site.git",
+            }),
+        );
+
+        let workspace = created_workspace(&result);
+        assert_eq!(workspace["location"]["path"], host("/dev/site"));
+        assert_eq!(workspace["defaultBaseBranch"], "main");
+        let invocations = git_runner.invocations.lock().unwrap();
+        assert_eq!(invocations[0].args[0], "clone");
+        assert!(
+            invocations[0]
+                .args
+                .contains(&"git@github.com:me/site.git".to_owned())
+        );
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_path_another_workspace_uses_is_rejected_before_anything_runs() {
+        // Neither git nor herdr may run again: their scripts end after the first workspace.
+        let (backend, server) = server_with_site(Vec::new(), Vec::new());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "again",
+                "path": host("/dev/site"),
+                "clone_url": "git@github.com:me/site.git",
+            }),
+        );
+
+        assert_eq!(
+            error_text(&result),
+            format!(
+                "Rejected: workspace site (2) already uses {}",
+                host("/dev/site")
+            )
+        );
+        assert_eq!(workspace_count(&backend), 2);
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn opening_another_folder_of_a_workspace_repository_is_rejected_before_herdr_runs() {
+        let (backend, server) = server_with_site(vec![toplevel("/dev/site")], Vec::new());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "again",
+                "path": host("/dev/site/docs"),
+                "default_base_branch": "main",
+            }),
+        );
+
+        assert_eq!(
+            error_text(&result),
+            format!(
+                "Rejected: workspace site (2) already uses {}",
+                host("/dev/site")
+            )
+        );
+        assert_eq!(workspace_count(&backend), 2);
+    }
+
+    #[test]
+    fn an_invalid_path_or_a_folder_outside_a_repository_creates_no_workspace() {
+        let (storage, _) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![Err(crate::adapters::git::GitError::Failed {
+                command: format!("git -C {} rev-parse --show-toplevel", host("/dev/notes")),
+                stderr: "fatal: not a git repository (or any of the parent directories): .git"
+                    .to_owned(),
+            })],
+            Vec::new(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        let relative = create_workspace(
+            &server,
+            serde_json::json!({"name": "notes", "path": "notes"}),
+        );
+        assert_eq!(
+            error_text(&relative),
+            r#"InvalidInput: path is not absolute: "notes""#
+        );
+
+        let outside = create_workspace(
+            &server,
+            serde_json::json!({"name": "notes", "path": host("/dev/notes")}),
+        );
+        let message = error_text(&outside);
+        assert!(message.starts_with("External: "), "{message}");
+        assert!(message.contains("not a git repository"), "{message}");
+
+        assert_eq!(workspace_count(&backend), 1);
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 0);
     }
 
     fn runtime() -> tokio::runtime::Runtime {
