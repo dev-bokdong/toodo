@@ -1,27 +1,53 @@
 #!/usr/bin/env bash
-# Builds toodo-server from this checkout and installs it for the current user:
+# Installs toodo-server for the current user, from a GitHub release (--release) or built
+# from this checkout (the default, for development):
 #   ~/.local/bin/toodo-server                     the headless server (MCP + background work)
 #   ~/.config/systemd/user/toodo-server.service   a systemd user service (unless --no-service)
 #   ~/.local/share/toodo-server-web               the web build, only with --with-web
-# Safe to run again: an update is `git pull` followed by this script.
-# See docs/server.md.
+# Safe to run again: an update is this script with --release latest (or `git pull` and
+# this script for a checkout build). See docs/server.md.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-server.sh [--listen ADDR] [--no-service] [--with-web]
+Usage: scripts/install-server.sh [--release latest|vX.Y.Z] [--listen ADDR] [--no-service]
+       scripts/install-server.sh [--listen ADDR] [--no-service] [--with-web]
 
+  --release VER   download toodo-server from the GitHub release VER (latest or vX.Y.Z),
+                  check its sha256, and install it; needs no Rust toolchain
   --listen ADDR   address the service listens on (default 127.0.0.1:47616)
-  --no-service    build and install only; do not write or restart the systemd service
-  --with-web      also build and serve the web app (needs Node.js and npm)
+  --no-service    install only; do not write or restart the systemd service
+  --with-web      build from this checkout and also serve the web app (needs Node.js and
+                  npm); releases carry no web app
+
+Without --release, toodo-server is built from this checkout (needs cargo).
 EOF
 }
 
+release_repo=dev-bokdong/toodo
+release=
+# --from-file TARBALL installs a packaged release asset (with TARBALL.sha256 next to it)
+# instead of downloading one; for testing scripts/package-server.sh output.
+from_file=
 listen=127.0.0.1:47616
 service=1
 web=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --release)
+      [ $# -ge 2 ] || { usage >&2; exit 2; }
+      release=$2
+      shift 2
+      ;;
+    --release=*)
+      release=${1#--release=}
+      shift
+      ;;
+    --from-file)
+      [ $# -ge 2 ] || { usage >&2; exit 2; }
+      from_file=$2
+      shift 2
+      ;;
     --listen)
       [ $# -ge 2 ] || { usage >&2; exit 2; }
       listen=$2
@@ -54,6 +80,18 @@ done
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+if [ -n "$release" ] && [ -n "$from_file" ]; then
+  die "use either --release or --from-file"
+fi
+if [ -n "$release" ] && [ "$release" != latest ] && ! [[ $release =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  die "--release takes latest or vX.Y.Z, got '$release'"
+fi
+from_release=0
+{ [ -n "$release" ] || [ -n "$from_file" ]; } && from_release=1
+if [ "$from_release" = 1 ] && [ "$web" = 1 ]; then
+  die "--with-web builds from a checkout; releases carry no web app"
+fi
+
 if ! [[ $listen =~ ^(.+):([0-9]+)$ ]]; then
   die "--listen must be HOST:PORT, got '$listen'"
 fi
@@ -71,12 +109,20 @@ esac
 base_url="http://$check_host:$listen_port"
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-[ -f "$repo/src-tauri/Cargo.toml" ] || die "run this script from a Toodo checkout ($repo is not one)"
+if [ "$from_release" = 0 ] && ! [ -f "$repo/src-tauri/Cargo.toml" ]; then
+  die "run this script from a Toodo checkout ($repo is not one), or pass --release latest"
+fi
 
 [ "$(uname -s)" = Linux ] || die "toodo-server is installed on Linux only"
 
 log "Checking prerequisites"
-required=(cargo git gh herdr ssh curl)
+required=(git gh herdr ssh curl)
+if [ "$from_release" = 1 ]; then
+  [ "$(uname -m)" = x86_64 ] || die "releases carry an x86_64 toodo-server only; build from a checkout instead"
+  required+=(tar sha256sum)
+else
+  required+=(cargo)
+fi
 [ "$web" = 1 ] && required+=(node npm)
 missing=()
 for tool in "${required[@]}"; do
@@ -105,13 +151,46 @@ if [ "$web" = 1 ]; then
   (cd "$repo" && npm ci && npm run build:web)
 fi
 
-log "Building toodo-server"
-(cd "$repo/src-tauri" && cargo build --release --no-default-features --features server --bin toodo-server)
+if [ "$from_release" = 1 ]; then
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  if [ -n "$from_file" ]; then
+    asset=$(basename "$from_file")
+    [[ $asset =~ ^toodo-server-(v[0-9]+\.[0-9]+\.[0-9]+)-linux-x86_64\.tar\.gz$ ]] \
+      || die "--from-file expects toodo-server-vX.Y.Z-linux-x86_64.tar.gz, got $asset"
+    tag=${BASH_REMATCH[1]}
+    log "Using $from_file"
+    cp "$from_file" "$from_file.sha256" "$work/" || die "need $from_file and $from_file.sha256"
+  else
+    tag=$release
+    if [ "$tag" = latest ]; then
+      tag=$(gh release view --repo "$release_repo" --json tagName --jq .tagName) \
+        || die "could not look up the latest release of $release_repo (is gh logged in?)"
+    fi
+    asset=toodo-server-$tag-linux-x86_64.tar.gz
+    log "Downloading $asset from $release_repo release $tag"
+    gh release download "$tag" --repo "$release_repo" --dir "$work" \
+      --pattern "$asset" --pattern "$asset.sha256" \
+      || die "could not download $asset from release $tag (releases before the server was published have none)"
+  fi
+  log "Checking the sha256 of $asset"
+  (cd "$work" && sha256sum --check --strict "$asset.sha256") || die "sha256 mismatch for $asset"
+  mkdir "$work/unpacked"
+  tar -xzf "$work/$asset" -C "$work/unpacked" toodo-server
+  new_bin=$work/unpacked/toodo-server
+  version=$("$new_bin" --version) || die "the downloaded toodo-server does not run on this machine"
+  [ "$version" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
+else
+  log "Building toodo-server"
+  (cd "$repo/src-tauri" && cargo build --release --no-default-features --features server --bin toodo-server)
+  new_bin=$repo/src-tauri/target/release/toodo-server
+  version=$("$new_bin" --version)
+fi
 
-log "Installing $bin_dir/toodo-server"
+log "Installing $bin_dir/toodo-server: $version"
 mkdir -p "$bin_dir"
 tmp_bin=$(mktemp "$bin_dir/.toodo-server.XXXXXX")
-cp "$repo/src-tauri/target/release/toodo-server" "$tmp_bin"
+cp "$new_bin" "$tmp_bin"
 chmod 755 "$tmp_bin"
 mv -f "$tmp_bin" "$bin_dir/toodo-server"
 
@@ -231,7 +310,7 @@ fi
 
 cat <<EOF
 
-toodo-server is running on $base_url
+$version is running on $base_url
   MCP for agents: $base_url/mcp, token in $data_dir/mcp-token
 EOF
 if [ "$web" = 1 ]; then

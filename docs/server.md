@@ -30,34 +30,58 @@ a terminal, so run it on the server yourself.
 
 The server is not a backend for the desktop app: each keeps its own database.
 
+## Versions and Releases
+
+`toodo-server` and the Windows app share one version and one release: every GitHub
+release `vX.Y.Z` carries the Windows installers and
+`toodo-server-vX.Y.Z-linux-x86_64.tar.gz` (the `toodo-server` binary for x86_64 Linux)
+with its `.sha256`, built from the same commit. `toodo-server --version` prints the
+version, so an installed server compares directly with a release and with the Windows
+app's version. See "Releases and Updates" in the README for how a release is made.
+
 ## Install and Update
 
-On the server, as the user who runs herdr, from a checkout of this repository (Rust, git,
-gh, ssh, curl, and a running herdr installed):
+On a server, install and update from releases. As the user who runs herdr (git, gh
+logged in, ssh, curl, and a running herdr installed; no Rust toolchain needed):
 
 ```sh
-scripts/install-server.sh
+scripts/install-server.sh --release latest
 ```
 
-The script builds `toodo-server`, installs it to `~/.local/bin/toodo-server`, writes the
-systemd user service `toodo-server.service` (see [systemd](#systemd)), restarts it, and
-checks that it answers (`/api` without a token is `401`). It prints where the MCP token
-is, never the token.
+The script needs no checkout in this mode; fetch it alone with
+`gh api repos/dev-bokdong/toodo/contents/scripts/install-server.sh --jq .content | base64 -d`
+if there is none. It downloads the server asset of the release with `gh`, checks its
+sha256 and that the binary reports the release's version, installs it to
+`~/.local/bin/toodo-server`, writes the systemd user service `toodo-server.service` (see
+[systemd](#systemd)), restarts it, and checks that it answers (`/api` without a token is
+`401`). It prints where the MCP token is, never the token.
 
+- `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version, for example
+  the Windows app's.
 - `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`; 47615 is
   refused, see above).
-- `--no-service`: build and install only; leave the service alone.
-- `--with-web`: also build the web app (needs Node.js and npm), install it to
-  `~/.local/share/toodo-server-web`, and serve it (see [Web App](#web-app)).
+- `--no-service`: install only; leave the service alone.
 
-To update, pull and run it again with the same options:
+To update, run it again with the same options; the database and tokens in the data
+directory are kept.
+
+Releases before the server was published (0.9.3 and older) have no server asset; build
+those from a checkout.
+
+### From a Checkout
+
+For development, run the script without `--release` from a checkout of this repository
+(Rust needed as well). It builds `toodo-server` from the checkout and installs it the same
+way:
 
 ```sh
 git pull
 scripts/install-server.sh
 ```
 
-The database and tokens in the data directory are kept.
+- `--with-web`: also build the web app (needs Node.js and npm), install it to
+  `~/.local/share/toodo-server-web`, and serve it (see [Web App](#web-app)). Releases carry
+  no web app, so this works from a checkout only.
 
 ## Build
 
