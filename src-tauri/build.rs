@@ -1,4 +1,11 @@
 fn main() {
+    // Only the desktop app is a Tauri app; the server build has no Tauri context.
+    #[cfg(feature = "desktop")]
+    desktop();
+}
+
+#[cfg(feature = "desktop")]
+fn desktop() {
     // tauri-build embeds the Common Controls v6 manifest in the app binary only, so test
     // binaries fail to start on Windows (STATUS_ENTRYPOINT_NOT_FOUND). Link it into every
     // target instead.
@@ -11,6 +18,7 @@ fn main() {
         .expect("failed to run tauri-build");
 }
 
+#[cfg(feature = "desktop")]
 fn embed_windows_manifest() {
     let manifest = std::env::current_dir()
         .expect("build script has a current directory")

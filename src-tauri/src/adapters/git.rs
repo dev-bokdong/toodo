@@ -6,7 +6,7 @@ use std::fmt;
 use std::process::{Command, Stdio};
 
 use crate::domain::model::{MachineLabel, WorkspaceLocation};
-use crate::domain::path::{PosixPath, WindowsPath};
+use crate::domain::path::PosixPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
@@ -43,11 +43,14 @@ pub trait Runner: Send + Sync {
     fn run(&self, invocation: &Invocation) -> Result<String, GitError>;
 
     /// Runs an invocation in a terminal window the user can see and answer, and waits for
-    /// it to exit. Every argument must be a [plain word](is_plain_word).
+    /// it to exit. Every argument must be a [plain word](is_plain_word). Only the desktop
+    /// app has a user at a terminal to run it for.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     fn run_in_terminal(&self, invocation: &Invocation) -> Result<(), GitError>;
 }
 
 /// Whether `word` means the same to `cmd.exe` and every shell without quoting.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 pub fn is_plain_word(word: &str) -> bool {
     !word.is_empty()
         && word.chars().all(|c| {
@@ -182,8 +185,8 @@ impl Git {
             output: root.to_owned(),
         };
         Ok(match location {
-            WorkspaceLocation::Local { .. } => WorkspaceLocation::Local {
-                path: WindowsPath::parse(root).map_err(|_| unexpected())?,
+            WorkspaceLocation::Local { path } => WorkspaceLocation::Local {
+                path: path.parse_like(root).map_err(|_| unexpected())?,
             },
             WorkspaceLocation::Ssh { machine, .. } => WorkspaceLocation::Ssh {
                 machine: machine.clone(),
@@ -741,6 +744,7 @@ mod tests {
 
     use super::fake::{FakeRunner, failed};
     use super::*;
+    use crate::domain::path::WindowsPath;
 
     fn git(results: Vec<Result<String, GitError>>) -> (Git, Arc<FakeRunner>) {
         let runner = Arc::new(FakeRunner::new(results));
@@ -749,7 +753,7 @@ mod tests {
 
     fn local(path: &str) -> WorkspaceLocation {
         WorkspaceLocation::Local {
-            path: WindowsPath::parse(path).unwrap(),
+            path: WindowsPath::parse(path).unwrap().into(),
         }
     }
 

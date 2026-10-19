@@ -165,7 +165,9 @@ mod tests {
             .create_workspace(&NewWorkspace {
                 name: name.to_owned(),
                 location: WorkspaceLocation::Local {
-                    path: WindowsPath::parse(&format!("C:\\dev\\{name}")).unwrap(),
+                    path: WindowsPath::parse(&format!("C:\\dev\\{name}"))
+                        .unwrap()
+                        .into(),
                 },
                 default_base_branch: "main".to_owned(),
             })

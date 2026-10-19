@@ -9,11 +9,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager};
-
 use crate::adapters::ssh_tunnel::{Forward, ForwardState, Forwarder};
 use crate::commands::events::ssh_machines;
-use crate::commands::{StorageState, lock};
+use crate::commands::{Runtime, lock};
 use crate::domain::model::{Machine, MachineLabel};
 
 pub type TunnelsState = Arc<Mutex<Tunnels>>;
@@ -131,13 +129,13 @@ impl Entry {
 }
 
 /// Starts the background thread that keeps the forwards in line with the workspaces.
-pub fn spawn(app: AppHandle, tunnels: TunnelsState) -> std::io::Result<()> {
+pub fn spawn(app: Arc<dyn Runtime>, tunnels: TunnelsState) -> std::io::Result<()> {
     thread::Builder::new()
         .name("mcp-tunnels".to_owned())
         .spawn(move || {
             let mut last_error = String::new();
             loop {
-                let machines = ssh_machines(&lock(&app.state::<StorageState>()));
+                let machines = ssh_machines(&lock(app.storage()));
                 match machines {
                     Ok(machines) => {
                         last_error.clear();

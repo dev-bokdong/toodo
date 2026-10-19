@@ -5,7 +5,7 @@
 //! They run on the async runtime instead of the main thread because herdr calls can take
 //! seconds. The database lock is not held while herdr runs.
 
-use tauri::State;
+use super::State;
 
 use super::types::{HerdrStatus, Task, TaskId};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
@@ -16,8 +16,8 @@ use crate::domain::naming;
 use crate::domain::status::TaskStatus;
 use crate::storage::StorageError;
 
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> {
     Ok((&herdr.server_status()?).into())
 }
@@ -28,8 +28,8 @@ pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> 
 /// base branch. A new task branch starts from the freshly fetched `origin/<base>` without an
 /// upstream; without `origin`, or when the fetch fails (noted on the task), from the local
 /// base. A paused task resumes on its branch, in its worktree if it still has one.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn start_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -39,8 +39,8 @@ pub fn start_task(
     Ok((&start(&storage, &git, &herdr, id.into())?).into())
 }
 
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn open_task_in_herdr(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -52,8 +52,8 @@ pub fn open_task_in_herdr(
 /// Focuses the pane of the agent working on a started task, the one that needs the user
 /// most when its herdr workspace has several. Without a recognized agent it focuses the
 /// workspace like [`open_task_in_herdr`].
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn focus_agent_pane(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -65,8 +65,8 @@ pub fn focus_agent_pane(
 /// Closes the herdr workspace of a paused task, e.g. one that an agent paused through
 /// MCP by adding a prerequisite, which leaves the workspace open for the user to decide.
 /// The worktree is kept. Tasks that are worked on are rejected.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn close_task_workspace(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -78,8 +78,8 @@ pub fn close_task_workspace(
 /// Checks out the branch of an `in_progress` or `in_review` task that lost its worktree,
 /// e.g. because it was removed in herdr, into a new worktree opened in herdr. The branch
 /// is taken from `origin` when the repository no longer has it.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn restore_task_worktree(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -522,10 +522,10 @@ mod tests {
     fn local_fixture(root: Option<&str>) -> Fixture {
         fixture(
             WorkspaceLocation::Local {
-                path: WindowsPath::parse(r"C:\dev\toodo").unwrap(),
+                path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
             },
             Some(MachineSettings::Local {
-                worktree_root: root.map(|root| WindowsPath::parse(root).unwrap()),
+                worktree_root: root.map(|root| WindowsPath::parse(root).unwrap().into()),
             }),
         )
     }

@@ -4,7 +4,7 @@
 //! pull requests it opens and adds it to open ones that lack a closing reference,
 //! including those opened outside Toodo (see [`super::completion`]).
 
-use tauri::State;
+use super::State;
 
 use super::completion::ensure_closing_reference;
 use super::types::{Task, TaskId};
@@ -19,8 +19,8 @@ use crate::storage::StorageError;
 /// Links issue `number` of the workspace repository to a task that is not done, after
 /// checking that the issue exists; `null` unlinks the current issue. An open pull
 /// request of the task gets a closing reference to the issue.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn link_issue(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -34,8 +34,8 @@ pub fn link_issue(
 /// Opens an issue in the workspace repository with the title and description of a task
 /// that is not done and has no issue yet, and links it to the task. An open pull request
 /// of the task gets a closing reference to the issue.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn create_issue(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -163,7 +163,7 @@ mod tests {
             .create_workspace(&NewWorkspace {
                 name: "toodo".to_owned(),
                 location: WorkspaceLocation::Local {
-                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap(),
+                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
             })

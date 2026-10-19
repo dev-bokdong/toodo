@@ -1,6 +1,6 @@
 //! Commands for workspaces and per-machine settings.
 
-use tauri::State;
+use super::State;
 
 use super::types::{
     self, BranchList, MachineSettings, NewWorkspace, Workspace, WorkspaceId, WorkspaceSetup,
@@ -13,14 +13,14 @@ use crate::domain::model;
 use crate::domain::status::TaskStatus;
 use crate::storage::{self, StorageError};
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_workspaces(storage: State<'_, StorageState>) -> CommandResult<Vec<Workspace>> {
     Ok(types::map_all(&lock(&storage).list_workspaces()?))
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn get_workspace(
     storage: State<'_, StorageState>,
     id: WorkspaceId,
@@ -34,8 +34,8 @@ pub fn get_workspace(
 /// Clones the repository or checks the existing one, opens it as a herdr workspace, then
 /// saves the workspace. Git and herdr run on a blocking thread because a clone can take
 /// minutes.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub async fn create_workspace(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -45,7 +45,7 @@ pub async fn create_workspace(
     let setup = workspace.try_into()?;
     let git = GitState::clone(&git);
     let herdr = HerdrState::clone(&herdr);
-    let new = tauri::async_runtime::spawn_blocking(move || prepare_workspace(&git, &herdr, setup))
+    let new = tokio::task::spawn_blocking(move || prepare_workspace(&git, &herdr, setup))
         .await
         .map_err(|error| CommandError::internal(format!("workspace setup panicked: {error}")))??;
     Ok((&lock(&storage).create_workspace(&new)?).into())
@@ -86,8 +86,8 @@ fn prepare_workspace(
 }
 
 /// Saves the name, location, and default base branch of an existing workspace.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn update_workspace(
     storage: State<'_, StorageState>,
     workspace: Workspace,
@@ -100,8 +100,8 @@ pub fn update_workspace(
 /// Branches of the workspace repository to pick a base branch from: local and `origin`
 /// branches after fetching `origin`. Git may run over `ssh`, so this runs off the main
 /// thread.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_workspace_branches(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -117,8 +117,8 @@ pub fn list_workspace_branches(
 
 /// Creates branch `name` from the existing branch `from` in the workspace repository,
 /// pushes it to `origin`, and makes it the default base branch of the workspace.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn create_workspace_base_branch(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -181,14 +181,14 @@ fn create_base_branch(
 }
 
 /// Deletes a workspace together with its tasks, dependencies, and commit records.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn delete_workspace(storage: State<'_, StorageState>, id: WorkspaceId) -> CommandResult<()> {
     Ok(lock(&storage).delete_workspace(id.into())?)
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn get_machine_settings(
     storage: State<'_, StorageState>,
     machine: types::Machine,
@@ -197,8 +197,8 @@ pub fn get_machine_settings(
     Ok((&lock(&storage).get_machine_settings(&machine)?).into())
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn save_machine_settings(
     storage: State<'_, StorageState>,
     settings: MachineSettings,
@@ -220,7 +220,7 @@ mod tests {
 
     fn local(path: &str) -> model::WorkspaceLocation {
         model::WorkspaceLocation::Local {
-            path: WindowsPath::parse(path).unwrap(),
+            path: WindowsPath::parse(path).unwrap().into(),
         }
     }
 

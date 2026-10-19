@@ -10,7 +10,7 @@ use TaskStatus::*;
 
 fn local_location(path: &str) -> WorkspaceLocation {
     WorkspaceLocation::Local {
-        path: WindowsPath::parse(path).unwrap(),
+        path: WindowsPath::parse(path).unwrap().into(),
     }
 }
 
@@ -84,7 +84,7 @@ fn entities_survive_reopening_the_database_file() {
         ssh_location("devbox", "/home/me/server"),
     );
     let local_settings = MachineSettings::Local {
-        worktree_root: Some(WindowsPath::parse(r"D:\worktrees").unwrap()),
+        worktree_root: Some(WindowsPath::parse(r"D:\worktrees").unwrap().into()),
     };
     let ssh_settings = MachineSettings::Ssh {
         machine: MachineLabel::parse("devbox").unwrap(),
@@ -636,7 +636,7 @@ fn corrupt_stored_values_are_reported_as_errors() {
     storage
         .conn
         .execute(
-            "UPDATE workspaces SET path = '/not/windows' WHERE id = ?1",
+            "UPDATE workspaces SET path = 'not/absolute' WHERE id = ?1",
             [workspace.id.0],
         )
         .unwrap();
