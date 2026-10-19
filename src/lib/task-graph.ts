@@ -486,7 +486,7 @@ export function timelineAxis(
 
 /**
  * Lays tasks out as a Gantt chart: one row per task, prerequisites before their dependents.
- * A task that has not started waits at `now`, pushed right past the bars of its
+ * A task that has not started waits at `now`, pushed right past the bars of its unfinished
  * prerequisites; a started task is fixed at `startedAt` and grows with `now`; a closed
  * task is fixed at both ends. With a `period`, only tasks overlapping it are drawn, clipped
  * to it; otherwise the axis has no ends, and `start` and `end` only span the days with a
@@ -533,6 +533,11 @@ export function layoutTimeline(
     let pauses: TimelineSpan[] = [];
     if (pending) {
       const after = task.dependsOn.flatMap((id) => {
+        // A finished prerequisite no longer holds the task back, so it stays at `now`.
+        const dependency = byId.get(id);
+        if (dependency?.status === "done" && !isNotAdopted(dependency)) {
+          return [];
+        }
         const edge = rightEdges.get(id);
         return edge === undefined ? [] : [edge + timelineBarGap];
       });
