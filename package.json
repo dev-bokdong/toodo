@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run typecheck && vite build",
+    "dev:web": "vite --mode web",
+    "build:web": "npm run typecheck && vite build --mode web --outDir dist-web",
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",

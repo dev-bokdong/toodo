@@ -4,6 +4,7 @@ import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
 import type { ReviewEntry, ReviewOutcome, Workspace } from "@/lib/bindings";
+import { runsOnServer } from "@/lib/platform";
 import { useReview, useSaveReport, useWorkspaces } from "@/lib/queries";
 import {
   commitSubject,
@@ -56,6 +57,15 @@ const periodKinds: { kind: PeriodKind; label: string }[] = [
   { kind: "custom", label: "Custom" },
 ];
 
+function download(name: string, contents: string, type: string) {
+  const url = URL.createObjectURL(new Blob([contents], { type: `${type};charset=utf-8` }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function Review() {
   const [period, setPeriod] = useState<ReviewPeriod>(() => periodContaining("week", formatDate(Date.now() / 1000)));
   const [notice, setNotice] = useState<string | null>(null);
@@ -92,6 +102,13 @@ export function Review() {
       extension === "csv"
         ? reviewCsv(entries, workspaceList, Date.now() / 1000)
         : reviewMarkdown(period, entries, workspaceList, Date.now() / 1000);
+    if (runsOnServer) {
+      // The report is for the user, not the server: the browser downloads it.
+      const name = reviewFileName(period, extension);
+      download(name, contents, extension === "csv" ? "text/csv" : "text/markdown");
+      setNotice(`Downloaded ${name}`);
+      return;
+    }
     try {
       const path = await saveDialog({
         title: extension === "csv" ? "Save review as CSV" : "Save review as Markdown",

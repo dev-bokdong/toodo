@@ -7,12 +7,37 @@ import { defineConfig } from "vite";
 
 const host = process.env.TAURI_DEV_HOST;
 
-export default defineConfig(() => ({
+const src = path.resolve(import.meta.dirname, "./src");
+
+/**
+ * The web build (`--mode web`), served by `toodo-server`, swaps the Tauri APIs for the
+ * modules in `src/web`, which talk to the server over HTTP.
+ */
+const webModules = {
+  "@tauri-apps/api/core": "core",
+  "@tauri-apps/api/event": "event",
+  "@tauri-apps/plugin-dialog": "dialog",
+  "@tauri-apps/plugin-notification": "notification",
+  "@tauri-apps/plugin-opener": "opener",
+  "@tauri-apps/plugin-process": "process",
+  "@tauri-apps/plugin-updater": "updater",
+};
+
+/** Where `npm run dev:web` forwards API and MCP requests: a running `toodo-server`. */
+const server = process.env.TOODO_SERVER ?? "http://127.0.0.1:47615";
+
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: {
-      "@": path.resolve(import.meta.dirname, "./src"),
-    },
+    alias: [
+      ...(mode === "web"
+        ? Object.entries(webModules).map(([module, file]) => ({
+            find: new RegExp(`^${module}$`),
+            replacement: path.join(src, "web", `${file}.ts`),
+          }))
+        : []),
+      { find: "@", replacement: src },
+    ],
   },
 
   // Keep Rust compiler errors visible in `tauri dev`.
@@ -32,6 +57,7 @@ export default defineConfig(() => ({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
+    proxy: mode === "web" ? { "/api": server, "/mcp": server } : undefined,
   },
 
   test: {

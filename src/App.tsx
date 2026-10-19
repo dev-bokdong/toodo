@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
+import { runsOnServer } from "@/lib/platform";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 
@@ -92,7 +93,7 @@ export default function App() {
           <p className="text-xs text-muted-foreground">
             {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
           </p>
-          <UpdateCheck />
+          {!runsOnServer && <UpdateCheck />}
           <div className="ml-auto">
             <ThemeToggle />
           </div>
@@ -100,7 +101,7 @@ export default function App() {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-8 py-6">
-          <UpdateBanner />
+          {!runsOnServer && <UpdateBanner />}
           <HerdrBanner />
           {reviewing ? (
             <Review />
