@@ -289,6 +289,10 @@ Toodo is a Tauri 2 Windows desktop app that runs next to an already installed an
 herdr. herdr owns terminals, agents, worktree checkouts, and SSH machine connections;
 Toodo owns planning, task state, commit records, and pull requests.
 
+The same core also runs headless as `toodo-server` on a Linux machine with herdr, serving
+the commands over HTTP to the web build of the frontend, with the server as the "Local"
+machine; see [server.md](server.md).
+
 ## Components
 
 ```
