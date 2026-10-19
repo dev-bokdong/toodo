@@ -17,6 +17,7 @@ use crate::commands::types::{
     self, CommitRecord, Estimate, Task, TaskEdit, TaskId, TaskResolution, TaskStatus, TaskType,
     Workspace, WorkspaceId,
 };
+use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandResult, StorageState};
 use crate::domain::model::{self, NoteKind};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
@@ -26,6 +27,24 @@ use crate::storage::{self, Storage, StorageError, TaskSearch};
 pub struct ListTasks {
     /// Only tasks of this workspace; all workspaces when omitted.
     pub workspace_id: Option<WorkspaceId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct CreateWorkspace {
+    /// Name shown in Toodo, e.g. the repository name.
+    pub name: String,
+    /// Absolute path of the repository on the machine Toodo runs on: a Windows path such
+    /// as `C:\dev\toodo` in the desktop app, a POSIX path such as `/home/me/toodo` on
+    /// toodo-server. With `clone_url` it must not exist yet or be an empty directory;
+    /// without it, it must be inside an existing clone, whose root becomes the workspace.
+    pub path: String,
+    /// Clone this repository URL into `path`; omit it to open the repository already
+    /// cloned there.
+    pub clone_url: Option<String>,
+    /// The branch task pull requests go into, e.g. `dev`; detected from the repository's
+    /// `origin` default branch when omitted.
+    pub default_base_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -162,6 +181,27 @@ pub struct ConcludeTask {
 
 pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
     Ok(types::map_all(&storage.list_workspaces()?))
+}
+
+/// Creates a local workspace through the app's own setup: clone or check the repository,
+/// open it in herdr, and save it unless a workspace already uses its location.
+pub fn create_workspace(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: CreateWorkspace,
+) -> CommandResult<Workspace> {
+    let setup = types::NewWorkspace {
+        name: request.name,
+        location: types::WorkspaceLocation::Local { path: request.path },
+        source: match request.clone_url {
+            Some(url) => types::WorkspaceSource::Clone { url },
+            None => types::WorkspaceSource::Open,
+        },
+        default_base_branch: request.default_base_branch,
+    }
+    .try_into()?;
+    Ok((&workspaces::create(storage, git, herdr, setup)?).into())
 }
 
 pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<Task>> {

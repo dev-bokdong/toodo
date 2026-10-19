@@ -77,6 +77,7 @@ vi.mock("@/lib/bindings", () => ({
   },
   events: {
     tasksChanged: { listen: vi.fn() },
+    workspacesChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
     updateCheckRequested: { listen: vi.fn() },
@@ -191,6 +192,7 @@ describe("App", () => {
     mocked.listMcpTunnels.mockResolvedValue([]);
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.workspacesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
@@ -998,6 +1000,24 @@ describe("App", () => {
       onTasksChanged({ event: "tasks-changed", id: 2, payload: { workspaceId: 1 } });
     });
     await waitFor(() => expect(mocked.listTasks.mock.calls.length).toBeGreaterThan(loads));
+  });
+
+  it("shows a workspace an agent added once the app hears of it", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    renderApp();
+    await screen.findByRole("button", { name: /^toodo/ });
+    await waitFor(() => expect(mockedEvents.workspacesChanged.listen).toHaveBeenCalled());
+
+    mocked.listWorkspaces.mockResolvedValue({
+      status: "ok",
+      data: [toodo, { ...toodo, id: 2, name: "site" }],
+    });
+    const [[onWorkspacesChanged]] = mockedEvents.workspacesChanged.listen.mock.calls;
+    act(() => {
+      onWorkspacesChanged({ event: "workspaces-changed", id: 3, payload: null });
+    });
+
+    expect(await screen.findByRole("button", { name: /^site/ })).toBeInTheDocument();
   });
 
   it("notifies the desktop once when an agent needs input while the app is in the background", async () => {

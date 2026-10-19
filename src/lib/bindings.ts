@@ -199,6 +199,7 @@ export const events = {
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	updateCheckRequested: makeEvent<UpdateCheckRequested>("update-check-requested"),
+	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
 };
 
 /* Types */
@@ -625,6 +626,9 @@ export type WorkspaceSource =
 { kind: "open" } | 
 /**  Clone `url` into the location, which must not exist or be empty. */
 { kind: "clone"; url: string };
+
+/**  Workspaces were added outside the app's own forms, e.g. by an agent through MCP. */
+export type WorkspacesChanged = null;
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

@@ -42,6 +42,11 @@ pub struct TasksChanged {
     pub workspace_id: WorkspaceId,
 }
 
+/// Workspaces were added outside the app's own forms, e.g. by an agent through MCP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
+pub struct WorkspacesChanged;
+
 /// The agent statuses of tasks changed; carries all of them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
@@ -61,6 +66,7 @@ pub struct PullRequestStatusesChanged {
 /// the desktop app; the server sends them under the same names.
 pub mod names {
     pub const TASKS_CHANGED: &str = "tasks-changed";
+    pub const WORKSPACES_CHANGED: &str = "workspaces-changed";
     pub const AGENT_STATUSES_CHANGED: &str = "agent-statuses-changed";
     pub const PULL_REQUEST_STATUSES_CHANGED: &str = "pull-request-statuses-changed";
 }
@@ -87,6 +93,7 @@ fn all_statuses(by_machine: &HashMap<Machine, Vec<TaskAgentStatus>>) -> Vec<Task
 /// Where changes are announced; the app emits them to the frontend.
 pub trait Notifier {
     fn tasks_changed(&self, workspace: model::WorkspaceId);
+    fn workspaces_changed(&self);
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]);
     fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]);
 }
@@ -444,6 +451,8 @@ mod tests {
         fn tasks_changed(&self, workspace: model::WorkspaceId) {
             self.tasks_changed.lock().unwrap().push(workspace);
         }
+
+        fn workspaces_changed(&self) {}
 
         fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
             self.statuses.lock().unwrap().push(statuses.to_vec());
