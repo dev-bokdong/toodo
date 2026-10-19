@@ -1768,7 +1768,7 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         <input
           id="worktree-root"
           className={cn(inputClass, "font-mono")}
-          placeholder={machine.kind === "local" ? "D:\\worktrees" : "/srv/worktrees"}
+          placeholder={machine.kind === "local" && !runsOnServer ? "D:\\worktrees" : "/srv/worktrees"}
           value={draft ?? saved}
           onChange={(e) => setDraft(e.target.value)}
           disabled={!settings.isSuccess}
