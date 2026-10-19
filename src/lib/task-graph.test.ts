@@ -299,6 +299,21 @@ describe("layoutTimeline", () => {
     expect(axis.majorTicks[0]).toEqual({ at: jan(1), x: 0, right: 960, label: "2026-01-01" });
   });
 
+  it("keeps a ready bar at now right after its prerequisite is done", () => {
+    const finished = task(1, {
+      status: "done",
+      milestones: milestones({ plannedAt: jan(9), startedAt: jan(10), completedAt: jan(11) }),
+    });
+    const ready = task(2, { dependsOn: [1], milestones: milestones({ plannedAt: jan(9) }) });
+    const at = (time: number) => layoutTimeline([finished, ready], { now: time, scale: "day", period: null });
+
+    const before = at(jan(11, 2));
+    const after = at(jan(11, 4));
+
+    expect(before.bars[1].x).toBe(before.nowX);
+    expect(after.bars[1].x).toBe(after.nowX);
+  });
+
   it("draws ticks anywhere on an axis without a period", () => {
     const layout = layoutTimeline([done], { now, scale: "day", period: null });
     const dec = (day: number) => new Date(2025, 11, day).getTime() / 1000;
