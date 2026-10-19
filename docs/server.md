@@ -30,9 +30,36 @@ a terminal, so run it on the server yourself; Toodo lists the machine afterwards
 
 The server is not a backend for the desktop app: each keeps its own database.
 
+## Install and Update
+
+On the server, as the user who runs herdr, from a checkout of this repository (Node.js,
+npm, Rust, git, gh, ssh, curl, and a running herdr installed):
+
+```sh
+scripts/install-server.sh
+```
+
+The script builds the web app and `toodo-server`, installs the binary to
+`~/.local/bin/toodo-server` and the web build to `~/.local/share/toodo-server-web`, writes
+the systemd user service `toodo-server.service` (see [systemd](#systemd)), restarts it, and
+checks that it answers. It prints where the access tokens are, never the tokens.
+
+- `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`; 47615 is
+  refused, see above).
+- `--no-service`: build and install only; leave the service alone.
+
+To update, pull and run it again:
+
+```sh
+git pull
+scripts/install-server.sh
+```
+
+The database and tokens in the data directory are kept.
+
 ## Build
 
-On the server (Rust, Node.js, and npm installed):
+To build by hand instead, on the server (Rust, Node.js, and npm installed):
 
 ```sh
 npm ci
@@ -95,24 +122,33 @@ web app reconnects and refetches everything.
 ### systemd
 
 Run it as the user who runs herdr, so it finds herdr's socket, `~/.ssh/config`, and the
-`gh` login. `~/.config/systemd/user/toodo-server.service`:
+`gh` login. `scripts/install-server.sh` writes
+`~/.config/systemd/user/toodo-server.service` like this, with `PATH` taken from where it
+found `herdr`, `gh`, `git`, and `ssh`:
 
 ```ini
 [Unit]
 Description=Toodo server
+After=network.target herdr-server.service
+Wants=herdr-server.service
 
 [Service]
-ExecStart=%h/.local/bin/toodo-server
-Environment=TOODO_WEB_DIR=%h/.local/share/toodo-server-web
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/me/.local/bin/toodo-server
+Environment=TOODO_LISTEN=127.0.0.1:47616
+Environment=TOODO_WEB_DIR=/home/me/.local/share/toodo-server-web
+Environment=TOODO_DATA_DIR=/home/me/.local/share/toodo-server
+Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=default.target
 ```
 
-Then `systemctl --user enable --now toodo-server` (and `loginctl enable-linger $USER` to
-keep it running without a login session).
+`herdr-server.service` is the unit of a headless herdr server, if there is one; without it
+the `Wants=` is ignored. To set the service up by hand, run
+`systemctl --user enable --now toodo-server`. Either way, run
+`loginctl enable-linger $USER` to keep it running without a login session.
 
 ## Development
 
