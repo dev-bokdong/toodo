@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, LinkedIssue, Machine, MachineLabel, MachineSettings, Task, TaskType,
-    Workspace, WorkspaceLocation,
+    CommitRecord, HostPath, LinkedIssue, Machine, MachineLabel, MachineSettings, NoteKind,
+    PullRequestSnapshot, Task, TaskType, Workspace, WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
@@ -1142,4 +1142,198 @@ fn notes_are_kept_in_order_with_their_time_and_deleted_with_their_task() {
 
     storage.delete_task(task.id).unwrap();
     assert_eq!(row_count(&storage, "task_notes"), 0);
+}
+
+fn search(storage: &Storage, query: &str) -> Vec<TaskId> {
+    storage
+        .search_tasks(&TaskSearch {
+            query,
+            workspace: None,
+            status: None,
+            limit: 20,
+        })
+        .unwrap()
+}
+
+fn add_described(storage: &mut Storage, workspace: &Workspace, title: &str, text: &str) -> Task {
+    let mut task = add_task(storage, workspace, title);
+    task.description = text.to_owned();
+    storage.update_task(&task).unwrap();
+    task
+}
+
+#[test]
+fn search_ranks_title_matches_first_and_filters_by_workspace_status_and_limit() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let toodo = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let other = add_workspace(&mut storage, "Other", local_location(r"C:\src\other"));
+    let titled = add_described(&mut storage, &toodo, "Deploy the server", "Use systemd");
+    let described = add_described(&mut storage, &other, "Write docs", "How to deploy it");
+    add_described(&mut storage, &toodo, "Unrelated", "Nothing here");
+
+    assert_eq!(search(&storage, "deploy"), [titled.id, described.id]);
+    assert_eq!(search(&storage, "DEPLOY server"), [titled.id]);
+    assert!(search(&storage, "deploy nothing").is_empty());
+    assert!(search(&storage, "   ").is_empty());
+
+    storage.set_task_status(described.id, InProgress).unwrap();
+    let filtered = |workspace: Option<WorkspaceId>, status: Option<TaskStatus>, limit| {
+        storage
+            .search_tasks(&TaskSearch {
+                query: "deploy",
+                workspace,
+                status,
+                limit,
+            })
+            .unwrap()
+    };
+    assert_eq!(filtered(Some(other.id), None, 20), [described.id]);
+    assert_eq!(filtered(None, Some(Planned), 20), [titled.id]);
+    assert_eq!(filtered(None, None, 1), [titled.id]);
+}
+
+#[test]
+fn search_matches_words_shorter_than_three_characters_with_like() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    // "Server deploy" in Korean, and "dry the laundry".
+    let deploy = add_described(
+        &mut storage,
+        &workspace,
+        "\u{c11c}\u{bc84} \u{bc30}\u{d3ec}",
+        "",
+    );
+    let dry = add_described(
+        &mut storage,
+        &workspace,
+        "Other",
+        "\u{bc8c}\u{b798} \u{b9d0}\u{b9ac}\u{ae30}",
+    );
+    let ci = add_described(&mut storage, &workspace, "Speed up CI", "100% cached_build");
+
+    assert_eq!(search(&storage, "\u{bc30}\u{d3ec}"), [deploy.id]);
+    assert_eq!(search(&storage, "\u{b9d0}\u{b9ac}"), [dry.id]);
+    assert_eq!(
+        search(&storage, "\u{bc30}\u{d3ec} \u{c11c}\u{bc84}"),
+        [deploy.id]
+    );
+    assert_eq!(search(&storage, "ci"), [ci.id]);
+    assert_eq!(search(&storage, "CI speed"), [ci.id]);
+    // Three characters or more use the trigram index, also in Korean.
+    assert_eq!(search(&storage, "\u{b9d0}\u{b9ac}\u{ae30}"), [dry.id]);
+    // LIKE wildcards are literal.
+    assert_eq!(search(&storage, "%"), [ci.id]);
+    assert_eq!(search(&storage, "d_"), [ci.id]);
+    assert!(search(&storage, "_x").is_empty());
+}
+
+#[test]
+fn search_takes_operators_quotes_and_wildcards_literally() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let quoted = add_described(
+        &mut storage,
+        &workspace,
+        r#"Parse "quoted" (NOT* ready)"#,
+        "",
+    );
+    let plain = add_described(&mut storage, &workspace, "Ready to go", "");
+
+    for (query, found) in [
+        (r#""quoted""#, vec![quoted.id]),
+        ("(NOT*", vec![quoted.id]),
+        ("ready)", vec![quoted.id]),
+        (r#""quoted" NOT*"#, vec![quoted.id]),
+        ("NOT", vec![quoted.id]),
+        ("\"", vec![quoted.id]),
+        ("*", vec![quoted.id]),
+        ("AND", vec![]),
+        ("OR", vec![]),
+        ("NEAR(a b)", vec![]),
+        ("title:ready", vec![]),
+        ("^re", vec![]),
+    ] {
+        assert_eq!(search(&storage, query), found, "{query}");
+    }
+    let mut ready = search(&storage, "ready");
+    ready.sort();
+    assert_eq!(ready, [quoted.id, plain.id]);
+}
+
+#[test]
+fn the_search_index_follows_edits_notes_pull_requests_and_deletes() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let mut task = add_task(&mut storage, &workspace, "Add login");
+    assert_eq!(search(&storage, "login"), [task.id]);
+
+    task.title = "Add sign-in".to_owned();
+    task.description = "Replace passwords".to_owned();
+    task.branch = Some("feat/sign-in-1".to_owned());
+    storage.update_task(&task).unwrap();
+    assert!(search(&storage, "login").is_empty());
+    assert_eq!(search(&storage, "feat/sign-in"), [task.id]);
+
+    storage
+        .add_task_note(task.id, NoteKind::Progress, "Chose OAuth over passwords")
+        .unwrap();
+    assert_eq!(search(&storage, "oauth"), [task.id]);
+
+    storage.set_task_status(task.id, InProgress).unwrap();
+    storage
+        .open_pull_request(task.id, &[], "https://github.com/acme/toodo/pull/42", None)
+        .unwrap();
+    assert_eq!(search(&storage, "pull/42"), [task.id]);
+    let snapshot = PullRequestSnapshot {
+        number: 42,
+        title: "Support single sign-on".to_owned(),
+        additions: 1,
+        deletions: 0,
+        changed_files: 1,
+        merge_commit_sha: None,
+        review_count: 0,
+        reviewer_count: 0,
+        first_reviewed_at: None,
+    };
+    storage
+        .complete_task(task.id, Some(50), Some(&snapshot), &[])
+        .unwrap();
+    assert_eq!(search(&storage, "single"), [task.id]);
+    assert_eq!(search(&storage, "oauth"), [task.id]);
+
+    storage.delete_task(task.id).unwrap();
+    assert!(search(&storage, "sign").is_empty());
+    assert_eq!(row_count(&storage, "task_search"), 0);
+}
+
+#[test]
+fn related_links_go_both_ways_across_workspaces_and_never_block() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let toodo = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let other = add_workspace(&mut storage, "Other", local_location(r"C:\src\other"));
+    let earlier = add_task(&mut storage, &toodo, "Research search");
+    let later = add_task(&mut storage, &other, "Add search");
+
+    storage.add_related(later.id, earlier.id).unwrap();
+    storage.add_related(earlier.id, later.id).unwrap();
+    assert_eq!(storage.list_relations().unwrap(), [(earlier.id, later.id)]);
+    // Unlike a dependency, the link does not wait for the planned task.
+    assert!(ready(&storage, &later));
+    storage.ensure_ready(later.id).unwrap();
+    storage.set_task_status(later.id, InProgress).unwrap();
+
+    assert!(matches!(
+        storage.add_related(later.id, later.id),
+        Err(StorageError::SelfRelation(id)) if id == later.id
+    ));
+    assert!(matches!(
+        storage.add_related(later.id, TaskId(99)),
+        Err(StorageError::TaskNotFound(TaskId(99)))
+    ));
+
+    storage.remove_related(later.id, earlier.id).unwrap();
+    assert!(storage.list_relations().unwrap().is_empty());
+    storage.add_related(later.id, earlier.id).unwrap();
+    storage.delete_task(earlier.id).unwrap();
+    assert!(storage.list_relations().unwrap().is_empty());
 }

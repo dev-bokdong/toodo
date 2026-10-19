@@ -2,6 +2,8 @@
 //! the rules the UI follows: the dependency DAG stays acyclic and readiness stays in sync.
 //! Starting, completing, and concluding tasks run the app's own commands.
 
+use std::collections::{BTreeSet, HashMap};
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -12,11 +14,12 @@ use crate::commands::completion::{self, OpenPullRequest};
 use crate::commands::herdr as herdr_commands;
 use crate::commands::tasks::edit_task;
 use crate::commands::types::{
-    self, Estimate, Task, TaskEdit, TaskId, TaskType, Workspace, WorkspaceId,
+    self, CommitRecord, Estimate, Task, TaskEdit, TaskId, TaskResolution, TaskStatus, TaskType,
+    Workspace, WorkspaceId,
 };
 use crate::commands::{CommandError, CommandResult, StorageState};
-use crate::domain::model::NoteKind;
-use crate::storage::{self, Storage, StorageError};
+use crate::domain::model::{self, NoteKind};
+use crate::storage::{self, Storage, StorageError, TaskSearch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +115,39 @@ pub struct AddNote {
 pub struct TaskRef {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SearchTasks {
+    /// Words to look for in any language, e.g. `deploy server`; short words such as
+    /// two-character Korean ones work too. Every word must appear in the
+    /// task's title, description, notes, completion note, branch, or pull request, as a
+    /// case-insensitive substring; words are taken literally, not as operators. Use a few
+    /// distinctive words and search again with others to widen the search.
+    pub query: String,
+    /// Only tasks of this workspace; all workspaces when omitted.
+    pub workspace_id: Option<WorkspaceId>,
+    /// Only tasks with this status; any status when omitted.
+    pub status: Option<TaskStatus>,
+    /// At most this many results, best match first: 20 when omitted, at most 100.
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct GetTask {
+    /// The task, e.g. one that search_tasks found.
+    pub id: TaskId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct Related {
+    /// One task of the link, e.g. your current task.
+    pub task_id: TaskId,
+    /// The other task, from any workspace. The link goes both ways.
+    pub related_id: TaskId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -313,6 +349,209 @@ pub fn conclude_task(
         OpenPullRequest::Reject,
     )?)
         .into())
+}
+
+const DEFAULT_SEARCH_LIMIT: u32 = 20;
+const MAX_SEARCH_LIMIT: u32 = 100;
+
+/// A task that search_tasks found, with its links to other tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub id: TaskId,
+    pub workspace_id: WorkspaceId,
+    /// The name of the task's workspace.
+    pub workspace: String,
+    pub task_type: TaskType,
+    pub title: String,
+    pub status: TaskStatus,
+    pub resolution: Option<TaskResolution>,
+    pub pull_request_url: Option<String>,
+    /// Tasks this task waits on.
+    pub depends_on: Vec<TaskId>,
+    /// Tasks that wait on this task.
+    pub dependents: Vec<TaskId>,
+    /// Related tasks, which neither wait on this task nor block it.
+    pub related: Vec<TaskId>,
+}
+
+/// Another task linked to a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskLink {
+    pub id: TaskId,
+    pub workspace_id: WorkspaceId,
+    pub title: String,
+    pub status: TaskStatus,
+    pub resolution: Option<TaskResolution>,
+}
+
+/// A task with its whole history and its links, as get_task returns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDetails {
+    /// The task: description, status timeline, notes, completion note (the conclusion
+    /// of a task done as not_adopted), and pull request.
+    pub task: Task,
+    /// The name of the task's workspace.
+    pub workspace: String,
+    /// The commits recorded for the task, from its branch or its merged pull request.
+    pub commits: Vec<CommitRecord>,
+    /// Tasks this task waits on.
+    pub depends_on: Vec<TaskLink>,
+    /// Tasks that wait on this task.
+    pub dependents: Vec<TaskLink>,
+    /// Related tasks, which neither wait on this task nor block it.
+    pub related: Vec<TaskLink>,
+}
+
+/// The links between all tasks: what each task waits on, what waits on it, and what
+/// is related to it.
+struct Links {
+    tasks: HashMap<model::TaskId, model::Task>,
+    workspaces: HashMap<model::WorkspaceId, String>,
+    dependents: HashMap<model::TaskId, BTreeSet<model::TaskId>>,
+    related: HashMap<model::TaskId, BTreeSet<model::TaskId>>,
+}
+
+impl Links {
+    fn load(storage: &Storage) -> CommandResult<Self> {
+        let tasks: HashMap<_, _> = storage
+            .list_all_tasks()?
+            .into_iter()
+            .map(|task| (task.id, task))
+            .collect();
+        let mut dependents: HashMap<_, BTreeSet<_>> = HashMap::new();
+        for task in tasks.values() {
+            for &prerequisite in &task.depends_on {
+                dependents.entry(prerequisite).or_default().insert(task.id);
+            }
+        }
+        let mut related: HashMap<_, BTreeSet<_>> = HashMap::new();
+        for (a, b) in storage.list_relations()? {
+            related.entry(a).or_default().insert(b);
+            related.entry(b).or_default().insert(a);
+        }
+        let workspaces = storage
+            .list_workspaces()?
+            .into_iter()
+            .map(|workspace| (workspace.id, workspace.name))
+            .collect();
+        Ok(Self {
+            tasks,
+            workspaces,
+            dependents,
+            related,
+        })
+    }
+
+    fn task(&self, id: model::TaskId) -> CommandResult<&model::Task> {
+        Ok(self.tasks.get(&id).ok_or(StorageError::TaskNotFound(id))?)
+    }
+
+    fn workspace(&self, task: &model::Task) -> String {
+        self.workspaces
+            .get(&task.workspace_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn dependents(&self, id: model::TaskId) -> impl Iterator<Item = model::TaskId> + '_ {
+        self.dependents.get(&id).into_iter().flatten().copied()
+    }
+
+    fn related(&self, id: model::TaskId) -> impl Iterator<Item = model::TaskId> + '_ {
+        self.related.get(&id).into_iter().flatten().copied()
+    }
+
+    fn hit(&self, id: model::TaskId) -> CommandResult<SearchHit> {
+        let task = self.task(id)?;
+        Ok(SearchHit {
+            id: id.into(),
+            workspace_id: task.workspace_id.into(),
+            workspace: self.workspace(task),
+            task_type: task.task_type.into(),
+            title: task.title.clone(),
+            status: task.status.into(),
+            resolution: task.resolution.map(TaskResolution::from),
+            pull_request_url: task.pull_request_url.clone(),
+            depends_on: task.depends_on.iter().copied().map(TaskId::from).collect(),
+            dependents: self.dependents(id).map(TaskId::from).collect(),
+            related: self.related(id).map(TaskId::from).collect(),
+        })
+    }
+
+    fn links(&self, ids: impl Iterator<Item = model::TaskId>) -> Vec<TaskLink> {
+        ids.filter_map(|id| self.tasks.get(&id))
+            .map(|task| TaskLink {
+                id: task.id.into(),
+                workspace_id: task.workspace_id.into(),
+                title: task.title.clone(),
+                status: task.status.into(),
+                resolution: task.resolution.map(TaskResolution::from),
+            })
+            .collect()
+    }
+}
+
+/// Tasks matching the query, best match first, each with its links.
+pub fn search_tasks(storage: &Storage, request: SearchTasks) -> CommandResult<Vec<SearchHit>> {
+    if request.query.trim().is_empty() {
+        return Err(CommandError::invalid_input("query must contain a word"));
+    }
+    if let Some(workspace) = request.workspace_id {
+        storage
+            .get_workspace(workspace.into())?
+            .ok_or(StorageError::WorkspaceNotFound(workspace.into()))?;
+    }
+    let ids = storage.search_tasks(&TaskSearch {
+        query: &request.query,
+        workspace: request.workspace_id.map(Into::into),
+        status: request.status.map(Into::into),
+        limit: request
+            .limit
+            .unwrap_or(DEFAULT_SEARCH_LIMIT)
+            .clamp(1, MAX_SEARCH_LIMIT),
+    })?;
+    let links = Links::load(storage)?;
+    ids.into_iter().map(|id| links.hit(id)).collect()
+}
+
+/// A task with its history, commits, and the tasks it is linked to.
+pub fn task_details(storage: &Storage, request: GetTask) -> CommandResult<TaskDetails> {
+    let links = Links::load(storage)?;
+    let id = request.id.into();
+    let task = links.task(id)?;
+    Ok(TaskDetails {
+        task: task.into(),
+        workspace: links.workspace(task),
+        commits: types::map_all(&storage.list_commit_records(id)?),
+        depends_on: links.links(task.depends_on.iter().copied()),
+        dependents: links.links(links.dependents(id)),
+        related: links.links(links.related(id)),
+    })
+}
+
+/// Links two tasks as related and returns the first with its links.
+pub fn add_related(storage: &mut Storage, request: Related) -> CommandResult<TaskDetails> {
+    storage.add_related(request.task_id.into(), request.related_id.into())?;
+    task_details(
+        storage,
+        GetTask {
+            id: request.task_id,
+        },
+    )
+}
+
+/// Removes the related link between two tasks and returns the first with its links.
+pub fn remove_related(storage: &mut Storage, request: Related) -> CommandResult<TaskDetails> {
+    storage.remove_related(request.task_id.into(), request.related_id.into())?;
+    task_details(
+        storage,
+        GetTask {
+            id: request.task_id,
+        },
+    )
 }
 
 fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
@@ -596,6 +835,131 @@ mod tests {
         let error = add_note(&mut storage, NoteKind::Progress, note(TaskId(99), "x")).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
         assert_eq!(get_task(&storage, task.id).unwrap().notes.len(), 2);
+    }
+
+    fn search(storage: &Storage, query: &str) -> CommandResult<Vec<SearchHit>> {
+        search_tasks(
+            storage,
+            SearchTasks {
+                query: query.to_owned(),
+                workspace_id: None,
+                status: None,
+                limit: None,
+            },
+        )
+    }
+
+    #[test]
+    fn search_hits_and_task_details_carry_history_and_links() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let research = create(&mut storage, workspace, "Research search engines", vec![]).unwrap();
+        let schema = create(&mut storage, workspace, "Search schema", vec![]).unwrap();
+        let tool = create(&mut storage, workspace, "Search tool", vec![schema.id]).unwrap();
+        add_related(
+            &mut storage,
+            Related {
+                task_id: tool.id,
+                related_id: research.id,
+            },
+        )
+        .unwrap();
+        add_note(
+            &mut storage,
+            NoteKind::Progress,
+            AddNote {
+                task_id: research.id,
+                note: "Chose FTS5 over tantivy".to_owned(),
+            },
+        )
+        .unwrap();
+        storage
+            .set_task_status(
+                research.id.into(),
+                crate::domain::status::TaskStatus::InProgress,
+            )
+            .unwrap();
+        storage
+            .conclude_task(research.id.into(), "Too heavy for a desktop app", &[], None)
+            .unwrap();
+
+        let hits = search(&storage, "search").unwrap();
+        let ids: Vec<_> = hits.iter().map(|hit| hit.id).collect();
+        assert_eq!(ids.len(), 3);
+        let hit = hits.iter().find(|hit| hit.id == schema.id).unwrap();
+        assert_eq!(
+            (hit.workspace.as_str(), &hit.dependents, &hit.related),
+            ("toodo", &vec![tool.id], &vec![])
+        );
+        let hit = &search(&storage, "tantivy").unwrap()[0];
+        assert_eq!(hit.id, research.id);
+        assert_eq!(hit.related, [tool.id]);
+        assert_eq!(hit.resolution, Some(TaskResolution::NotAdopted));
+        assert_eq!(
+            search(&storage, " ").unwrap_err().kind,
+            CommandErrorKind::InvalidInput
+        );
+
+        let details = task_details(&storage, GetTask { id: research.id }).unwrap();
+        assert_eq!(
+            details.task.completion_note.as_deref(),
+            Some("Too heavy for a desktop app")
+        );
+        assert_eq!(details.task.notes[0].body, "Chose FTS5 over tantivy");
+        let statuses: Vec<_> = details
+            .task
+            .timeline
+            .iter()
+            .map(|event| event.status)
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                TaskStatus::Planned,
+                TaskStatus::InProgress,
+                TaskStatus::Done
+            ]
+        );
+        assert_eq!(
+            details.related,
+            [TaskLink {
+                id: tool.id,
+                workspace_id: workspace,
+                title: "Search tool".to_owned(),
+                status: TaskStatus::Planned,
+                resolution: None,
+            }]
+        );
+        let details = task_details(&storage, GetTask { id: tool.id }).unwrap();
+        let titles = |links: &[TaskLink]| -> Vec<String> {
+            links.iter().map(|link| link.title.clone()).collect()
+        };
+        assert_eq!(titles(&details.depends_on), ["Search schema"]);
+        assert!(details.dependents.is_empty());
+        assert_eq!(titles(&details.related), ["Research search engines"]);
+        let json = serde_json::to_value(&details).unwrap();
+        assert_eq!(json["dependsOn"][0]["status"], "planned");
+        assert_eq!(json["task"]["id"], serde_json::json!(tool.id));
+
+        let unlinked = remove_related(
+            &mut storage,
+            Related {
+                task_id: research.id,
+                related_id: tool.id,
+            },
+        )
+        .unwrap();
+        assert!(unlinked.related.is_empty());
+        let error = task_details(&storage, GetTask { id: TaskId(99) }).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+        let error = add_related(
+            &mut storage,
+            Related {
+                task_id: tool.id,
+                related_id: tool.id,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
     }
 
     #[test]
