@@ -133,8 +133,18 @@ fn machine_label(raw: &str) -> CommandResult<model::MachineLabel> {
     model::MachineLabel::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
 }
 
-fn windows_path(raw: &str) -> CommandResult<path::WindowsPath> {
-    path::WindowsPath::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
+/// A path on the machine Toodo runs on: a Windows path in the desktop app.
+#[cfg(not(feature = "server"))]
+fn local_path(raw: &str) -> CommandResult<model::HostPath> {
+    path::WindowsPath::parse(raw)
+        .map(model::HostPath::Windows)
+        .map_err(|error| CommandError::invalid_input(error.to_string()))
+}
+
+/// A path on the machine Toodo runs on: a POSIX path on the server.
+#[cfg(feature = "server")]
+fn local_path(raw: &str) -> CommandResult<model::HostPath> {
+    posix_path(raw).map(model::HostPath::Posix)
 }
 
 fn posix_path(raw: &str) -> CommandResult<path::PosixPath> {
@@ -144,7 +154,8 @@ fn posix_path(raw: &str) -> CommandResult<path::PosixPath> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WorkspaceLocation {
-    /// Windows path of a repository on this machine.
+    /// Path of a repository on the machine Toodo runs on: a Windows path in the desktop
+    /// app, a POSIX path on the server.
     Local { path: String },
     /// POSIX path of a repository on a saved herdr SSH machine.
     Ssh { machine: String, path: String },
@@ -170,7 +181,7 @@ impl TryFrom<WorkspaceLocation> for model::WorkspaceLocation {
     fn try_from(location: WorkspaceLocation) -> CommandResult<Self> {
         Ok(match location {
             WorkspaceLocation::Local { path } => Self::Local {
-                path: windows_path(&path)?,
+                path: local_path(&path)?,
             },
             WorkspaceLocation::Ssh { machine, path } => Self::Ssh {
                 machine: machine_label(&machine)?,
@@ -317,7 +328,7 @@ impl TryFrom<MachineSettings> for model::MachineSettings {
         let root = settings.worktree_root.as_deref();
         Ok(match settings.machine.try_into()? {
             model::Machine::Local => Self::Local {
-                worktree_root: root.map(windows_path).transpose()?,
+                worktree_root: root.map(local_path).transpose()?,
             },
             model::Machine::Ssh(machine) => Self::Ssh {
                 machine,
@@ -1035,16 +1046,24 @@ mod tests {
     use super::*;
     use crate::commands::CommandErrorKind;
 
+    /// A local path as entered, its normalized form, and a path of the other kind: Windows
+    /// paths are local in the desktop app, POSIX paths on the server.
+    #[cfg(not(feature = "server"))]
+    const LOCAL: (&str, &str, &str) = ("C:/dev/toodo/", r"C:\dev\toodo", "/home/me/toodo");
+    #[cfg(feature = "server")]
+    const LOCAL: (&str, &str, &str) = ("/home/me/toodo/", "/home/me/toodo", r"C:\dev\toodo");
+
     #[test]
     fn local_location_is_normalized() {
+        let (entered, normalized, _) = LOCAL;
         let location = model::WorkspaceLocation::try_from(WorkspaceLocation::Local {
-            path: "C:/dev/toodo/".to_owned(),
+            path: entered.to_owned(),
         })
         .unwrap();
         assert_eq!(
             WorkspaceLocation::from(&location),
             WorkspaceLocation::Local {
-                path: r"C:\dev\toodo".to_owned()
+                path: normalized.to_owned()
             }
         );
     }
@@ -1053,7 +1072,7 @@ mod tests {
     fn location_paths_must_match_the_machine() {
         let cases = [
             WorkspaceLocation::Local {
-                path: "/home/me/toodo".to_owned(),
+                path: LOCAL.2.to_owned(),
             },
             WorkspaceLocation::Ssh {
                 machine: "devbox".to_owned(),
@@ -1075,7 +1094,7 @@ mod tests {
         let new = |name: &str, source: WorkspaceSource, branch: Option<&str>| NewWorkspace {
             name: name.to_owned(),
             location: WorkspaceLocation::Local {
-                path: r"C:\dev\toodo".to_owned(),
+                path: LOCAL.1.to_owned(),
             },
             source,
             default_base_branch: branch.map(str::to_owned),
@@ -1121,7 +1140,7 @@ mod tests {
         );
         let error = model::MachineSettings::try_from(MachineSettings {
             machine: Machine::Local,
-            worktree_root: Some("/srv/worktrees".to_owned()),
+            worktree_root: Some(LOCAL.2.to_owned()),
         })
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);

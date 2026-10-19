@@ -1,7 +1,7 @@
 //! Commands for the machines that host workspaces: machines saved in herdr, SSH hosts from
 //! the user's SSH config, and the remote folder browser.
 
-use tauri::State;
+use super::State;
 
 use super::types::{self, HerdrMachine, NewSshHost, RemoteDirectory};
 use super::{CommandError, CommandResult, HerdrState, SshConfigState, SshState};
@@ -18,8 +18,8 @@ fn config_file(config: &SshConfigState) -> CommandResult<&SshConfigFile> {
 }
 
 /// Machines saved in herdr; remote workspaces can only live on these.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_herdr_machines(herdr: State<'_, HerdrState>) -> CommandResult<Vec<HerdrMachine>> {
     Ok(herdr
         .list_machines()?
@@ -30,9 +30,11 @@ pub fn list_herdr_machines(herdr: State<'_, HerdrState>) -> CommandResult<Vec<He
 
 /// Runs `herdr machine add <host>` in a terminal window, where herdr asks before it
 /// installs or replaces the remote herdr, and returns the saved machines once the window
-/// closes. Fails when herdr saved no machine for the host.
-#[tauri::command]
-#[specta::specta]
+/// closes. Fails when herdr saved no machine for the host. The server has no terminal
+/// window to run it in and refuses it instead.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub async fn add_herdr_machine(
     herdr: State<'_, HerdrState>,
     host: String,
@@ -40,11 +42,12 @@ pub async fn add_herdr_machine(
     let host = MachineLabel::parse(&host)
         .map_err(|error| CommandError::invalid_input(error.to_string()))?;
     let herdr = HerdrState::clone(&herdr);
-    tauri::async_runtime::spawn_blocking(move || add_machine(&herdr, &host))
+    tokio::task::spawn_blocking(move || add_machine(&herdr, &host))
         .await
         .map_err(|error| CommandError::internal(format!("herdr machine add panicked: {error}")))?
 }
 
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 fn add_machine(herdr: &Herdr, host: &MachineLabel) -> CommandResult<Vec<HerdrMachine>> {
     herdr.add_machine(host)?;
     let machines = herdr.list_machines()?;
@@ -61,15 +64,15 @@ fn add_machine(herdr: &Herdr, host: &MachineLabel) -> CommandResult<Vec<HerdrMac
 }
 
 /// Host aliases from `~/.ssh/config`, re-read on every call.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_ssh_hosts(config: State<'_, SshConfigState>) -> CommandResult<Vec<String>> {
     Ok(config_file(&config)?.host_aliases()?)
 }
 
 /// Appends a `Host` block to `~/.ssh/config` and returns the updated host aliases.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn add_ssh_host(
     config: State<'_, SshConfigState>,
     host: NewSshHost,
@@ -82,8 +85,8 @@ pub fn add_ssh_host(
 
 /// Subdirectories of `path` on `machine`, or of the login directory when `path` is
 /// absent. ssh runs on a blocking thread because connecting can take seconds.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub async fn list_remote_directories(
     ssh: State<'_, SshState>,
     machine: String,
@@ -98,7 +101,7 @@ pub async fn list_remote_directories(
         .map_err(|error| CommandError::invalid_input(error.to_string()))?;
     let ssh = SshState::clone(&ssh);
     let listing =
-        tauri::async_runtime::spawn_blocking(move || ssh.list_directories(&machine, path.as_ref()))
+        tokio::task::spawn_blocking(move || ssh.list_directories(&machine, path.as_ref()))
             .await
             .map_err(|error| {
                 CommandError::internal(format!("directory listing panicked: {error}"))

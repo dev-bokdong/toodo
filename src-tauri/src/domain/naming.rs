@@ -61,7 +61,7 @@ pub fn task_checkout(
             let root = worktree_root
                 .as_ref()
                 .ok_or(NamingError::WorktreeRootNotSet(Machine::Local))?;
-            HostPath::Windows(root.join(&workspace_dir).join(&task_dir))
+            root.join(&workspace_dir).join(&task_dir)
         }
         (
             WorkspaceLocation::Ssh { machine, .. },
@@ -124,7 +124,7 @@ mod tests {
             id: WorkspaceId(1),
             name: name.to_owned(),
             location: WorkspaceLocation::Local {
-                path: WindowsPath::parse(r"C:\src\toodo").unwrap(),
+                path: WindowsPath::parse(r"C:\src\toodo").unwrap().into(),
             },
             default_base_branch: "main".to_owned(),
         }
@@ -144,7 +144,7 @@ mod tests {
 
     fn local_settings(root: Option<&str>) -> MachineSettings {
         MachineSettings::Local {
-            worktree_root: root.map(|r| WindowsPath::parse(r).unwrap()),
+            worktree_root: root.map(|r| WindowsPath::parse(r).unwrap().into()),
         }
     }
 

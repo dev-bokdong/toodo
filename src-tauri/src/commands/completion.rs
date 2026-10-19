@@ -20,11 +20,11 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, State};
+use super::{Runtime, State};
 
 use super::events::Notifier;
 use super::herdr::{WORKSPACE_NOT_FOUND, has_code};
@@ -43,8 +43,8 @@ use crate::storage::{Storage, StorageError};
 
 /// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 /// the base branch and stores them as its commit records.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn refresh_commit_records(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -58,8 +58,8 @@ pub fn refresh_commit_records(
 /// of the branch opened elsewhere (e.g. from herdr) is adopted instead: an open one gets
 /// the push, a merged one is recorded without pushing. Run it again after more commits
 /// to push them to the pull request.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn open_pull_request(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -72,8 +72,8 @@ pub fn open_pull_request(
 /// Moves an `in_review` task to `done` once its pull request is merged, which may make
 /// its dependents `ready`. The size, reviews, and commits of the pull request are
 /// recorded for reviews. Its herdr workspace is closed; the worktree stays on disk.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn complete_task(
     storage: State<'_, StorageState>,
     github: State<'_, GitHubState>,
@@ -89,8 +89,8 @@ pub fn complete_task(
 /// pull request of its branch, recorded or not, is closed with the conclusion as a
 /// comment and recorded, and its herdr workspace is closed. The branch and worktree stay,
 /// and its dependents keep waiting.
-#[tauri::command(async)]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn conclude_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -569,8 +569,8 @@ fn adopt_pull_request(
 /// check.
 pub type PullRequestStatusState = Mutex<HashMap<model::TaskId, PullRequestStatus>>;
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_pull_request_statuses(
     statuses: State<'_, PullRequestStatusState>,
 ) -> Vec<types::TaskPullRequestStatus> {
@@ -600,20 +600,20 @@ const PULL_REQUEST_CHECK_PERIOD: Duration = Duration::from_secs(60);
 
 /// Starts the background thread that moves `in_progress` tasks whose branch has a pull
 /// request to `in_review` and completes `in_review` tasks whose pull request was merged.
-pub fn spawn(app: AppHandle) -> io::Result<()> {
+pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
     thread::Builder::new()
         .name("pull-request-checks".to_owned())
         .spawn(move || {
             let mut failures = HashMap::new();
             loop {
                 check_pull_requests(
-                    &app.state::<StorageState>(),
-                    &app.state::<GitState>(),
-                    &app.state::<GitHubState>(),
-                    &app.state::<HerdrState>(),
-                    &app,
+                    app.storage(),
+                    app.git(),
+                    app.github(),
+                    app.herdr(),
+                    app.as_ref(),
                     &mut failures,
-                    &app.state::<PullRequestStatusState>(),
+                    app.pull_request_statuses(),
                 );
                 thread::sleep(PULL_REQUEST_CHECK_PERIOD);
             }
@@ -802,7 +802,7 @@ mod tests {
     fn local_fixture() -> Fixture {
         fixture(
             WorkspaceLocation::Local {
-                path: WindowsPath::parse(r"C:\dev\toodo").unwrap(),
+                path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
             },
             HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap()),
         )

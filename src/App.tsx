@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChartColumn, FolderPlus, Layers, ListTodo } from "lucide-react";
+import { ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
@@ -12,8 +12,10 @@ import { Button } from "@/components/ui/button";
 import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type WorkspaceId } from "@/lib/bindings";
+import { runsOnServer } from "@/lib/platform";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
+import { cn } from "@/lib/utils";
 
 export default function App() {
   const appInfo = useQuery({
@@ -24,6 +26,8 @@ export default function App() {
   useHerdrEvents();
   const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
   const [reviewing, setReviewing] = useState(false);
+  // On narrow screens the sidebar is a drawer over the content.
+  const [menuOpen, setMenuOpen] = useState(false);
   // Kept here so switching workspaces or views does not reset them.
   const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
   const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
@@ -36,21 +40,42 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-background text-foreground">
-      <aside className="flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground">
-        <h1 className="flex items-center gap-2 px-1 text-lg font-semibold tracking-tight">
-          <span
-            aria-hidden
-            className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground"
+      {menuOpen && (
+        <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
+      )}
+      <aside
+        className={cn(
+          "flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground",
+          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-lg",
+          !menuOpen && "max-md:hidden",
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <h1 className="flex items-center gap-2 px-1 text-lg font-semibold tracking-tight">
+            <span
+              aria-hidden
+              className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground"
+            >
+              <ListTodo className="size-4" />
+            </span>
+            Toodo
+          </h1>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="ml-auto md:hidden"
+            aria-label="Close menu"
+            onClick={() => setMenuOpen(false)}
           >
-            <ListTodo className="size-4" />
-          </span>
-          Toodo
-        </h1>
+            <X />
+          </Button>
+        </div>
         <NeedsAttention
           onShow={(id) => {
             setSelectedId("all");
             setReviewing(false);
             setShownTask({ id });
+            setMenuOpen(false);
           }}
         />
         <nav className="flex flex-col gap-0.5">
@@ -58,7 +83,10 @@ export default function App() {
             variant={reviewing ? "secondary" : "ghost"}
             className="justify-start"
             aria-pressed={reviewing}
-            onClick={() => setReviewing(true)}
+            onClick={() => {
+              setReviewing(true);
+              setMenuOpen(false);
+            }}
           >
             <ChartColumn />
             Review
@@ -71,6 +99,7 @@ export default function App() {
             onClick={() => {
               setSelectedId("all");
               setReviewing(false);
+              setMenuOpen(false);
             }}
           >
             <Layers />
@@ -82,6 +111,7 @@ export default function App() {
           onSelect={(id) => {
             setSelectedId(id);
             setReviewing(false);
+            setMenuOpen(false);
           }}
         />
         <div className="mt-auto flex flex-col gap-2">
@@ -92,15 +122,21 @@ export default function App() {
           <p className="text-xs text-muted-foreground">
             {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
           </p>
-          <UpdateCheck />
+          {!runsOnServer && <UpdateCheck />}
           <div className="ml-auto">
             <ThemeToggle />
           </div>
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-8 py-6">
-          <UpdateBanner />
+        <header className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden">
+          <Button variant="ghost" size="icon-sm" aria-label="Open menu" onClick={() => setMenuOpen(true)}>
+            <Menu />
+          </Button>
+          <span className="font-semibold tracking-tight">Toodo</span>
+        </header>
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
+          {!runsOnServer && <UpdateBanner />}
           <HerdrBanner />
           {reviewing ? (
             <Review />
@@ -127,7 +163,7 @@ export default function App() {
               <EmptyState
                 icon={<FolderPlus />}
                 title="Create a workspace to start planning tasks."
-                hint="Clone a repository or open one already cloned, on this computer or a saved herdr machine."
+                hint={`Clone a repository or open one already cloned, on ${runsOnServer ? "the server" : "this computer"} or a saved herdr machine.`}
               />
             )
           )}

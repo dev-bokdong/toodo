@@ -4,11 +4,11 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, State};
+use super::{Runtime, State};
 
 use super::types::{self, BackupEntry, BackupSettings};
 use super::{CommandError, CommandResult, StorageState, lock};
@@ -87,16 +87,16 @@ fn absolute_path(path: &str) -> CommandResult<&Path> {
     }
 }
 
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn get_backup_settings(backups: State<'_, Backups>) -> BackupSettings {
     backups.settings().into()
 }
 
 /// Saves the automatic backup settings, then writes an automatic backup if one is now
 /// due.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn save_backup_settings(
     storage: State<'_, StorageState>,
     backups: State<'_, Backups>,
@@ -111,23 +111,23 @@ pub fn save_backup_settings(
 }
 
 /// Backups in Toodo's backup directory, newest first.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn list_backups(backups: State<'_, Backups>) -> CommandResult<Vec<BackupEntry>> {
     Ok(types::map_all(&storage::list_backups(&backups.dir)?))
 }
 
 /// Writes a snapshot of the database to `path`, replacing any file there.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn export_database(storage: State<'_, StorageState>, path: String) -> CommandResult<()> {
     Ok(lock(&storage).export_to(absolute_path(&path)?)?)
 }
 
 /// Replaces all data with the backup at `path`. The current data is first saved as a
 /// pre-restore backup, which is returned.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn restore_database(
     storage: State<'_, StorageState>,
     backups: State<'_, Backups>,
@@ -170,12 +170,12 @@ fn run_due_backup(
 }
 
 /// Starts the thread that writes automatic backups while the app runs.
-pub fn spawn(app: AppHandle) -> io::Result<()> {
+pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
     thread::Builder::new()
         .name("auto-backup".to_owned())
         .spawn(move || {
             loop {
-                if let Err(error) = run_due_backup(&app.state::<StorageState>(), &app.state()) {
+                if let Err(error) = run_due_backup(app.storage(), app.backups()) {
                     eprintln!("toodo: automatic backup failed: {error}");
                 }
                 thread::sleep(CHECK_PERIOD);
@@ -227,7 +227,9 @@ mod tests {
                 .create_workspace(&NewWorkspace {
                     name: name.to_owned(),
                     location: WorkspaceLocation::Local {
-                        path: WindowsPath::parse(&format!("C:\\dev\\{name}")).unwrap(),
+                        path: WindowsPath::parse(&format!("C:\\dev\\{name}"))
+                            .unwrap()
+                            .into(),
                     },
                     default_base_branch: "main".to_owned(),
                 })

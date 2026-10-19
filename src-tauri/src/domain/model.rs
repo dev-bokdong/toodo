@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use super::path::{PosixPath, WindowsPath};
+use super::path::{PathError, PosixPath, WindowsPath};
 use super::plan::{DueDate, Estimate};
 use super::status::TaskStatus;
 use super::timeline::TaskEvent;
@@ -71,12 +71,13 @@ impl fmt::Display for Machine {
     }
 }
 
-/// Where a workspace repository lives. Local workspaces use Windows paths, SSH
+/// Where a workspace repository lives. Local workspaces use the paths of the machine
+/// Toodo runs on (Windows paths for the desktop app, POSIX paths for the server), SSH
 /// workspaces use POSIX paths on the remote machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceLocation {
     Local {
-        path: WindowsPath,
+        path: HostPath,
     },
     Ssh {
         machine: MachineLabel,
@@ -106,7 +107,7 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineSettings {
     Local {
-        worktree_root: Option<WindowsPath>,
+        worktree_root: Option<HostPath>,
     },
     Ssh {
         machine: MachineLabel,
@@ -127,6 +128,53 @@ impl MachineSettings {
 pub enum HostPath {
     Windows(WindowsPath),
     Posix(PosixPath),
+}
+
+impl HostPath {
+    /// Reads a path stored by Toodo, which kept its kind: only POSIX paths start with `/`.
+    pub fn parse_stored(raw: &str) -> Result<Self, PathError> {
+        if raw.starts_with('/') {
+            PosixPath::parse(raw).map(Self::Posix)
+        } else {
+            WindowsPath::parse(raw).map(Self::Windows)
+        }
+    }
+
+    /// Parses `raw` as a path of the same kind as this one, e.g. a path a tool reported
+    /// for the machine this path is on.
+    pub fn parse_like(&self, raw: &str) -> Result<Self, PathError> {
+        match self {
+            Self::Windows(_) => WindowsPath::parse(raw).map(Self::Windows),
+            Self::Posix(_) => PosixPath::parse(raw).map(Self::Posix),
+        }
+    }
+
+    /// Appends one path segment. `segment` must not contain separators.
+    pub fn join(&self, segment: &str) -> Self {
+        match self {
+            Self::Windows(path) => Self::Windows(path.join(segment)),
+            Self::Posix(path) => Self::Posix(path.join(segment)),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Windows(path) => path.as_str(),
+            Self::Posix(path) => path.as_str(),
+        }
+    }
+}
+
+impl From<WindowsPath> for HostPath {
+    fn from(path: WindowsPath) -> Self {
+        Self::Windows(path)
+    }
+}
+
+impl From<PosixPath> for HostPath {
+    fn from(path: PosixPath) -> Self {
+        Self::Posix(path)
+    }
 }
 
 impl fmt::Display for HostPath {

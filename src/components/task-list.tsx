@@ -96,6 +96,7 @@ import {
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
+import { runsOnServer } from "@/lib/platform";
 import { toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
@@ -1720,7 +1721,7 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [changing, setChanging] = useState(false);
   const saved = settings.data?.worktreeRoot ?? "";
-  const machineName = machine.kind === "local" ? "this computer" : machine.label;
+  const machineName = machine.kind === "local" ? (runsOnServer ? "the server" : "this computer") : machine.label;
   const error = settings.error ?? saveSettings.error;
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -1767,7 +1768,7 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         <input
           id="worktree-root"
           className={cn(inputClass, "font-mono")}
-          placeholder={machine.kind === "local" ? "D:\\worktrees" : "/srv/worktrees"}
+          placeholder={machine.kind === "local" && !runsOnServer ? "D:\\worktrees" : "/srv/worktrees"}
           value={draft ?? saved}
           onChange={(e) => setDraft(e.target.value)}
           disabled={!settings.isSuccess}

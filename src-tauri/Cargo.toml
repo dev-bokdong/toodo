@@ -14,25 +14,60 @@ edition = "2024"
 name = "toodo_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "toodo"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "toodo-server"
+path = "src/bin/toodo-server.rs"
+required-features = ["server"]
+
+[features]
+default = ["desktop"]
+# The Windows desktop app: the Tauri shell around the commands.
+desktop = [
+  "dep:tauri",
+  "dep:tauri-build",
+  "dep:tauri-specta",
+  "dep:tauri-plugin-dialog",
+  "dep:tauri-plugin-updater",
+  "dep:tauri-plugin-process",
+  "dep:tauri-plugin-notification",
+  "dep:tauri-plugin-opener",
+]
+# The headless server (`toodo-server`): the same commands over HTTP for the web build of
+# the frontend. Build it without the default features.
+server = [
+  "tokio/rt-multi-thread",
+  "tokio/signal",
+  "tokio/sync",
+  "dep:tower-http",
+  "dep:futures-util",
+]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-specta = "=2.0.0-rc.25"
-tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"], optional = true }
 specta-typescript = "0.0.12"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
-tauri-plugin-dialog = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
-tauri-plugin-notification = "2"
-tauri-plugin-opener = "2"
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+tauri-plugin-notification = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 tokio = { version = "1.53.3", features = ["net", "rt", "macros"] }
-getrandom = "0.3"
+getrandom = { version = "0.3", features = ["std"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 schemars = "1"
 

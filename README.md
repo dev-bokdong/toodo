@@ -30,12 +30,17 @@ into a performance report.
 - [AGENTS.md](AGENTS.md): contributor and AI-agent guidelines, including the language policy.
 - [docs/architecture.md](docs/architecture.md): domain model and system components.
 - [docs/workflow.md](docs/workflow.md): task lifecycle from planning to pull request.
+- [docs/server.md](docs/server.md): running Toodo headless on a Linux server, used from a
+  browser.
 
 ## Requirements
 
 - Windows 10/11
 - [herdr](https://herdr.dev), installed and running (Toodo controls it; it is not bundled)
 - Git for Windows, Windows OpenSSH, and the GitHub CLI (`gh`) on `PATH`
+
+Toodo can also run as a server on a Linux machine with herdr, used from a browser; see
+[docs/server.md](docs/server.md).
 
 ## Tech Stack
 

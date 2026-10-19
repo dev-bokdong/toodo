@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use tauri::State;
+use super::State;
 
 use super::types::{ReviewEntry, Task, Timestamp};
 use super::{CommandError, CommandResult, StorageState, lock};
@@ -12,8 +12,8 @@ use crate::storage::Storage;
 /// Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 /// ordered by outcome, then by time. The caller picks the period, such as a week, a
 /// month, or a year in the local time zone.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn review_period(
     storage: State<'_, StorageState>,
     start: Timestamp,
@@ -24,8 +24,8 @@ pub fn review_period(
 
 /// Writes a report built by the frontend to `path`, replacing any file there. Only
 /// Markdown (`.md`) and CSV (`.csv`) files are written.
-#[tauri::command]
-#[specta::specta]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
 pub fn save_report(path: String, contents: String) -> CommandResult<()> {
     write_report(Path::new(&path), &contents)
 }
@@ -103,7 +103,9 @@ mod tests {
                 .create_workspace(&NewWorkspace {
                     name: name.to_owned(),
                     location: WorkspaceLocation::Local {
-                        path: WindowsPath::parse(&format!(r"C:\dev\{name}")).unwrap(),
+                        path: WindowsPath::parse(&format!(r"C:\dev\{name}"))
+                            .unwrap()
+                            .into(),
                     },
                     default_base_branch: "main".to_owned(),
                 })
