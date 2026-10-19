@@ -20,9 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Router;
+use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use futures_util::Stream;
 use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
@@ -305,10 +306,13 @@ fn router(
     mcp_token: String,
     web_dir: Option<&Path>,
 ) -> Router {
+    // `route_layer` guards the routes only: other paths stay 404 (or the web app) rather
+    // than 401, and unknown API paths are 404 behind the token instead of the web app.
     let api = Router::new()
         .route("/api/rpc/{command}", post(rpc::handle))
         .route("/api/events", get(event_stream))
-        .layer(middleware::from_fn_with_state(
+        .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
+        .route_layer(middleware::from_fn_with_state(
             Arc::new(web_token),
             mcp::require_token,
         ))
@@ -390,6 +394,93 @@ mod tests {
             config.data_dir,
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
+    }
+
+    fn services(data_dir: &Path) -> Arc<Services> {
+        Arc::new(Services {
+            storage: Mutex::new(Storage::open_in_memory().unwrap()),
+            git: Arc::new(Git::new(Box::new(ProcessRunner))),
+            github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
+            ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
+            ssh_config: SshConfigFile::in_home(),
+            herdr: Arc::new(Herdr::new(Box::new(ProcessRunner))),
+            agent_statuses: Mutex::default(),
+            pull_request_statuses: Mutex::default(),
+            backups: Backups::load(data_dir),
+            mcp: ServerStatus {
+                url: mcp::url(0),
+                token: None,
+                error: None,
+            },
+            tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
+            events: broadcast::channel(EVENT_BUFFER).0,
+        })
+    }
+
+    /// The status line of a request to `address`.
+    fn status(address: SocketAddr, method: &str, path: &str, token: Option<&str>) -> String {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        let authorization = token
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{authorization}\
+             Content-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response.lines().next().unwrap_or_default().to_owned()
+    }
+
+    fn serve_router(web_dir: Option<&Path>) -> (SocketAddr, tempfile::TempDir) {
+        let temp = tempfile::tempdir().unwrap();
+        let app = router(
+            services(temp.path()),
+            "web".to_owned(),
+            "agent".to_owned(),
+            web_dir,
+        );
+        let listener = mcp::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(mcp::serve(listener, app))
+        });
+        (address, temp)
+    }
+
+    #[test]
+    fn only_api_routes_need_the_web_token() {
+        let (address, _temp) = serve_router(None);
+        let rpc = "/api/rpc/list_workspaces";
+        assert!(status(address, "POST", rpc, None).contains(" 401 "));
+        assert!(status(address, "POST", rpc, Some("agent")).contains(" 401 "));
+        assert!(status(address, "POST", rpc, Some("web")).contains(" 200 "));
+        assert!(status(address, "GET", "/api/events", None).contains(" 401 "));
+        assert!(status(address, "GET", "/api/nothing", None).contains(" 401 "));
+        assert!(status(address, "GET", "/api/nothing", Some("web")).contains(" 404 "));
+        assert!(status(address, "POST", "/mcp", None).contains(" 401 "));
+        assert!(status(address, "POST", "/mcp", Some("web")).contains(" 401 "));
+        // Without a web build, other paths are simply not there.
+        assert!(status(address, "GET", "/", None).contains(" 404 "));
+        assert!(status(address, "GET", "/tasks", None).contains(" 404 "));
+    }
+
+    #[test]
+    fn the_web_app_is_served_without_a_token_but_not_for_api_paths() {
+        let web = tempfile::tempdir().unwrap();
+        std::fs::write(web.path().join("index.html"), "<html></html>").unwrap();
+        let (address, _temp) = serve_router(Some(web.path()));
+        assert!(status(address, "GET", "/", None).contains(" 200 "));
+        assert!(status(address, "GET", "/tasks/1", None).contains(" 200 "));
+        assert!(status(address, "GET", "/api/nothing", None).contains(" 401 "));
+        assert!(status(address, "GET", "/api/nothing", Some("web")).contains(" 404 "));
     }
 
     #[test]

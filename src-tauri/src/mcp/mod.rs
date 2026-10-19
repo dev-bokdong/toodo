@@ -223,7 +223,7 @@ pub(crate) fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
     );
     axum::Router::new()
         .nest_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(
+        .route_layer(middleware::from_fn_with_state(
             Arc::new(token),
             require_token,
         ))
