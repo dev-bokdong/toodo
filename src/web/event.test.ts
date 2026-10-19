@@ -1,5 +1,74 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseServerSentEvents } from "@/web/event";
+
+const TOKEN_KEY = "toodo-server-token";
+
+/** A stream that stays open until the test ends, or one that ends at once. */
+function eventStream(open: boolean): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (!open) controller.close();
+      },
+    }),
+    { status: 200 },
+  );
+}
+
+/** A fresh copy of the module, since it keeps one connection for the whole page. */
+async function freshEventModule() {
+  vi.resetModules();
+  return import("@/web/event");
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  localStorage.clear();
+});
+
+describe("event stream connection", () => {
+  it("tells reconnect listeners only once the server answers again", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(TOKEN_KEY, "secret");
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(eventStream(false))
+      .mockRejectedValueOnce(new TypeError("connection refused"))
+      .mockRejectedValueOnce(new TypeError("connection refused"))
+      .mockResolvedValueOnce(eventStream(true));
+    vi.stubGlobal("fetch", fetch);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { listen, onReconnect } = await freshEventModule();
+    const reconnected = vi.fn();
+    onReconnect(reconnected);
+    const unlisten = await listen("tasks-changed", () => {});
+
+    await vi.advanceTimersByTimeAsync(1000 + 2000);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(reconnected).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    unlisten();
+  });
+
+  it("forgets a token the server rejects and stops retrying", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(TOKEN_KEY, "revoked");
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("no", { status: 401 }));
+    vi.stubGlobal("fetch", fetch);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { listen } = await freshEventModule();
+    const unlisten = await listen("tasks-changed", () => {});
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    unlisten();
+  });
+});
 
 describe("parseServerSentEvents", () => {
   it("returns complete events and keeps the incomplete rest", () => {

@@ -1,10 +1,11 @@
 /**
  * Stands in for `@tauri-apps/api/event` in the web build: listeners get the events of
  * `toodo-server`'s event stream (`GET /api/events`), which one connection reads for all
- * of them. When the stream drops, it reconnects after a growing delay and tells
- * `onReconnect` subscribers, since events may have been missed meanwhile.
+ * of them. When the stream drops, it reconnects after a growing delay and, once the server
+ * answers again, tells `onReconnect` subscribers, since events may have been missed
+ * meanwhile. A rejected token is forgotten, so the app asks for it again.
  */
-import { authorization, getToken, subscribeToken } from "@/web/session";
+import { authorization, forgetToken, getToken, subscribeToken } from "@/web/session";
 
 export type Event<T> = { event: string; id: number; payload: T };
 export type EventCallback<T> = (event: Event<T>) => void;
@@ -55,12 +56,20 @@ function deliver({ event, data }: ServerSentEvent) {
   }
 }
 
-async function read(token: string, signal: AbortSignal): Promise<void> {
+/** Opens the event stream; resolves once the server accepted it. */
+async function open(token: string, signal: AbortSignal): Promise<ReadableStreamDefaultReader<string>> {
   const response = await fetch("/api/events", { headers: authorization(token), signal });
+  if (response.status === 401) {
+    // Stops this connection: forgetting the token disconnects.
+    forgetToken();
+  }
   if (!response.ok || response.body === null) {
     throw new Error(`event stream failed: ${response.status}`);
   }
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  return response.body.pipeThrough(new TextDecoderStream()).getReader();
+}
+
+async function read(reader: ReadableStreamDefaultReader<string>): Promise<void> {
   let buffer = "";
   for (;;) {
     const { value, done } = await reader.read();
@@ -81,13 +90,13 @@ function connect() {
     let connected = false;
     while (!controller.signal.aborted) {
       try {
-        const reading = read(token, controller.signal);
+        const reader = await open(token, controller.signal);
         if (connected) {
           reconnectListeners.forEach((listener) => listener());
         }
         connected = true;
-        await reading;
         delay = FIRST_RETRY_MS;
+        await read(reader);
       } catch (error) {
         if (controller.signal.aborted) return;
         console.warn("toodo: event stream dropped, reconnecting", error);
