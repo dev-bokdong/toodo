@@ -1,5 +1,5 @@
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import type { Task, TaskPullRequestStatus, TaskStatus } from "@/lib/bindings";
+import type { Task, TaskAgentStatus, TaskPullRequestStatus, TaskStatus } from "@/lib/bindings";
 
 export type AgentAlert = { title: string; body: string };
 
@@ -52,6 +52,26 @@ export function taskStatusAlerts(previous: readonly Task[], next: readonly Task[
         body: `#${task.id} ${task.title}: ${statusNames[was]} -> ${statusName(task)}`,
       },
     ];
+  });
+}
+
+/**
+ * Alerts for the agents that started waiting for input. A task that only now got an agent,
+ * or one whose agent went away, raises none; finishing is covered by the task status alerts.
+ */
+export function agentAlerts(
+  previous: readonly TaskAgentStatus[],
+  next: readonly TaskAgentStatus[],
+  tasks: readonly Task[],
+): AgentAlert[] {
+  const before = new Map(previous.map((entry) => [entry.taskId, entry.status]));
+  return next.flatMap(({ taskId, status }) => {
+    const was = before.get(taskId);
+    if (was === undefined || was === status || status !== "blocked") {
+      return [];
+    }
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    return [{ title: "Agent needs input", body: task ? `#${taskId} ${task.title}` : `#${taskId}` }];
   });
 }
 
