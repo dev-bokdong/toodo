@@ -11,8 +11,15 @@ the `server` feature instead of the Tauri shell:
   automatic backups, and MCP reverse tunnels to SSH machines,
 - SQLite storage in the server's data directory.
 
-Everything is served on one port, `127.0.0.1:47615` by default, the MCP port of the desktop
-app, so agents on the server reach MCP at `http://127.0.0.1:47615/mcp` as usual.
+Everything is served on one port, `127.0.0.1:47616` by default, so agents on the server
+reach MCP at `http://127.0.0.1:47616/mcp` (the "Agent access" panel shows the URL and token).
+
+The default is not the desktop app's MCP port, 47615, on purpose: the desktop app keeps
+`ssh -R 127.0.0.1:47615:127.0.0.1:47615` open to every SSH machine with a workspace, and the
+server forwards its own port to its SSH machines the same way. If the server's machine is
+also an SSH machine of the desktop app, or both reach the same SSH machine, the two would
+fight over the same port: the loser either fails to listen or keeps retrying its tunnel,
+and agents would get whichever token won. Keep `TOODO_LISTEN` off 47615 for that reason.
 
 ## Machines and Paths
 
@@ -45,7 +52,7 @@ TOODO_WEB_DIR=/path/to/dist-web toodo-server
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TOODO_LISTEN` | `127.0.0.1:47615` | Address to listen on |
+| `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on; avoid port 47615 (see above) |
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 
@@ -55,9 +62,35 @@ On first start the data directory gets two access tokens:
   `/api` request bears it.
 - `mcp-token`: agents send it to `/mcp`, as shown in the app's "Agent access" panel.
 
-The server speaks plain HTTP. Keep the default loopback address and reach it through an SSH
-tunnel (`ssh -L 47615:127.0.0.1:47615 <server>`) or a VPN such as Tailscale, or put a
-reverse proxy with TLS in front of it; do not expose it unencrypted.
+The data directory is created readable by its owner only (`0700`) and the token files
+`0600`; the server tightens an existing directory and token files on start. To replace a
+token, delete its file and restart the server; browsers then ask for the new one.
+
+**Treat `web-token` like a password to the server account.** It opens every command of
+the app, including ones that write `~/.ssh/config` (which can run commands through
+`ProxyCommand`), save reports, and export or restore the database at any path the server's
+user can reach. Whoever holds it can run code as that user. `mcp-token` gives the MCP
+tools only, but still lets an agent start, complete, and conclude tasks.
+
+### Access
+
+The server speaks plain HTTP. Keep the default loopback address and put something in front
+of it; never expose the port itself.
+
+- **SSH tunnel**: `ssh -L 47616:127.0.0.1:47616 <server>`, then open
+  `http://127.0.0.1:47616`.
+- **Cloudflare Tunnel**: with `cloudflared` on the server, add a public hostname (e.g.
+  `toodo.example.com`) whose service is `http://127.0.0.1:47616`. Put a Cloudflare Access
+  application (e.g. email one-time PIN for your address only) in front of that hostname, so
+  the web token is not the only thing between the internet and the server account.
+- **VPN** (e.g. Tailscale or WireGuard) to the loopback port, or a **TLS reverse proxy** on
+  the server.
+
+The event stream (`/api/events`) is a long-lived server-sent event response with a
+keep-alive comment every 15 seconds, which stays under Cloudflare's 100-second idle limit.
+A proxy must not buffer it: for nginx, set `proxy_buffering off;` (and a
+`proxy_read_timeout` above 15 seconds) on that location. When the stream drops anyway, the
+web app reconnects and refetches everything.
 
 ### systemd
 
@@ -85,7 +118,7 @@ keep it running without a login session).
 
 `npm run dev:web` starts the Vite dev server with the web build's modules and forwards
 `/api` and `/mcp` to a running `toodo-server` (`TOODO_SERVER`, default
-`http://127.0.0.1:47615`).
+`http://127.0.0.1:47616`).
 
 ## API
 
