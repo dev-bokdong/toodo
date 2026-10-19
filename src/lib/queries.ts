@@ -13,13 +13,14 @@ import {
   type Task,
   type TaskEdit,
   type TaskId,
+  type TaskAgentStatus,
   type TaskPullRequestStatus,
   type Timestamp,
   type Workspace,
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
-import { notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
+import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
 
@@ -337,7 +338,7 @@ export function useHerdrEvents() {
         );
       }),
       events.agentStatusesChanged.listen(({ payload }) =>
-        queryClient.setQueryData(queryKeys.agentStatuses, payload.statuses),
+        update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),
       events.pullRequestStatusesChanged.listen(({ payload }) =>
         update<TaskPullRequestStatus>(queryKeys.pullRequestStatuses, payload.statuses, pullRequestAlerts),

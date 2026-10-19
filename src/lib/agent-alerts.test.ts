@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { pullRequestAlerts, taskStatusAlerts } from "@/lib/agent-alerts";
-import type { Task, TaskPullRequestStatus } from "@/lib/bindings";
+import { agentAlerts, pullRequestAlerts, taskStatusAlerts } from "@/lib/agent-alerts";
+import type { AgentStatus, Task, TaskAgentStatus, TaskPullRequestStatus } from "@/lib/bindings";
 
 const tasks = [{ id: 1, title: "Add login" }, { id: 2, title: "Add logout" }] as Task[];
 
@@ -87,5 +87,28 @@ describe("pullRequestAlerts", () => {
         tasks,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("agentAlerts", () => {
+  const agent = (taskId: number, status: AgentStatus): TaskAgentStatus => ({ taskId, status });
+
+  it("alerts once when an agent starts waiting for input", () => {
+    expect(agentAlerts([agent(1, "working"), agent(2, "idle")], [agent(1, "blocked"), agent(2, "idle")], tasks)).toEqual([
+      { title: "Agent needs input", body: "#1 Add login" },
+    ]);
+  });
+
+  it("stays quiet when an agent finishes", () => {
+    expect(agentAlerts([agent(1, "working"), agent(2, "working")], [agent(1, "idle"), agent(2, "done")], tasks)).toEqual([]);
+  });
+
+  it("stays quiet for a newly seen or vanished agent", () => {
+    expect(agentAlerts([], [agent(1, "blocked")], tasks)).toEqual([]);
+    expect(agentAlerts([agent(1, "blocked")], [], tasks)).toEqual([]);
+  });
+
+  it("stays quiet when an agent remains blocked", () => {
+    expect(agentAlerts([agent(1, "blocked")], [agent(1, "blocked")], tasks)).toEqual([]);
   });
 });
