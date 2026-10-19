@@ -145,15 +145,13 @@ pub(crate) fn start(
         None => {
             let base = &workspace.default_base_branch;
             git.create_initial_commit(&workspace.location, base)?;
-            if resumed {
-                base.clone()
-            } else {
-                let start = git.task_branch_start(&workspace.location, base)?;
-                created_branch =
-                    git.create_task_branch(&workspace.location, &checkout.branch, &start.start)?;
-                fetch_failure = start.fetch_failure;
-                start.start
-            }
+            // A branch missing everywhere starts from the base like a new task; the bare
+            // base may not exist locally (a clone with only origin/<base>).
+            let start = git.task_branch_start(&workspace.location, base)?;
+            created_branch =
+                git.create_task_branch(&workspace.location, &checkout.branch, &start.start)?;
+            fetch_failure = start.fetch_failure;
+            start.start
         }
     };
     let path = checkout.path.to_string();
@@ -1190,6 +1188,56 @@ mod tests {
             "main"
         );
         assert_eq!(git(&workspace, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn a_clone_without_a_local_base_branch_starts_and_reads_commits_from_origin() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let origin = root.join("origin.git");
+        let origin_url = origin.to_str().unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| real_git(dir, args).unwrap();
+        git(
+            root,
+            &["init", "--bare", "--initial-branch=main", origin_url],
+        );
+        let seed = root.join("seed");
+        git(root, &["clone", "--quiet", origin_url, "seed"]);
+        git(&seed, &["commit", "--allow-empty", "-m", "First"]);
+        git(&seed, &["push", "--quiet", "origin", "HEAD:main"]);
+        git(root, &["clone", "--quiet", origin_url, "workspace"]);
+        let workspace = root.join("workspace");
+        // Leave only origin/main, as in a clone whose local base branch was never created.
+        git(&workspace, &["checkout", "--quiet", "--detach"]);
+        git(&workspace, &["branch", "-D", "main"]);
+        assert!(real_git(&workspace, &["rev-parse", "--verify", "refs/heads/main"]).is_err());
+
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let git_adapter = Git::new(Box::new(MappedRunner {
+            placeholder: r"C:\dev\toodo",
+            dir: workspace.to_str().unwrap().to_owned(),
+        }));
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        start(&fixture.storage, &git_adapter, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(herdr_base(&runner), "origin/main");
+        let branch = "feat/add-login-1";
+        git(&workspace, &["checkout", "--quiet", branch]);
+        git(&workspace, &["commit", "--allow-empty", "-m", "Work"]);
+        let location = WorkspaceLocation::Local {
+            path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
+        };
+        let commits = git_adapter
+            .commits_between(&location, r"C:\dev\toodo", "main", branch)
+            .unwrap();
+        assert_eq!(
+            commits
+                .iter()
+                .map(|c| c.message.as_str())
+                .collect::<Vec<_>>(),
+            ["Work"]
+        );
     }
 
     const REMOVED: &str = r#"{"id":"cli:worktree:remove","result":{"type":"worktree_removed"}}"#;

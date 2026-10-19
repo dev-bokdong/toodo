@@ -399,9 +399,17 @@ impl Git {
         base: &str,
         branch: &str,
     ) -> Result<Vec<LoggedCommit>, GitError> {
-        let range = format!("{base}..{branch}");
+        // A repository cloned without a local `base` only has `origin/<base>`.
+        let mut range = format!("origin/{base}..{branch}");
         let args = ["log", "--reverse", LOG_FORMAT, &range, "--"];
-        let output = self.run(location, Some(dir), &args)?;
+        let output = match self.run(location, Some(dir), &args) {
+            Err(GitError::Failed { .. }) => {
+                range = format!("{base}..{branch}");
+                let args = ["log", "--reverse", LOG_FORMAT, &range, "--"];
+                self.run(location, Some(dir), &args)?
+            }
+            other => other?,
+        };
         output
             .split(RECORD_SEPARATOR)
             .map(|record| record.trim_start_matches(['\r', '\n']))
@@ -413,6 +421,26 @@ impl Git {
                 })
             })
             .collect()
+    }
+
+    /// `origin/<base>` when that remote-tracking branch exists in `dir`, else `<base>`, so a
+    /// repository without a local base branch (e.g. a fresh clone) still resolves it.
+    fn remote_tracking_or_local(
+        &self,
+        location: &WorkspaceLocation,
+        dir: &str,
+        base: &str,
+    ) -> Result<String, GitError> {
+        let remote_base = format!("refs/remotes/origin/{base}");
+        match self.run(
+            location,
+            Some(dir),
+            &["rev-parse", "--verify", "--quiet", &remote_base],
+        ) {
+            Ok(_) => Ok(format!("origin/{base}")),
+            Err(GitError::Failed { .. }) => Ok(base.to_owned()),
+            Err(error) => Err(error),
+        }
     }
 
     /// How many commits of the base branch `branch` lacks, read in the repository or
@@ -438,16 +466,7 @@ impl Git {
                 Err(error @ GitError::Failed { .. }) => fetch_error = Some(error.to_string()),
                 Err(error) => return Err(error),
             }
-            let remote_base = format!("refs/remotes/origin/{base}");
-            match self.run(
-                location,
-                Some(dir),
-                &["rev-parse", "--verify", "--quiet", &remote_base],
-            ) {
-                Ok(_) => base_ref = format!("origin/{base}"),
-                Err(GitError::Failed { .. }) => {}
-                Err(error) => return Err(error),
-            }
+            base_ref = self.remote_tracking_or_local(location, dir, base)?;
         }
         let range = format!("{branch}..{base_ref}");
         let output = self.run(location, Some(dir), &["rev-list", "--count", &range, "--"])?;
@@ -1115,9 +1134,29 @@ mod tests {
                 "log",
                 "--reverse",
                 "--format=%H%x1f%an <%ae>%x1f%ct%x1f%B%x1e",
-                "main..feat/x-1",
+                "origin/main..feat/x-1",
                 "--",
             ])
+        );
+    }
+
+    #[test]
+    fn commits_between_falls_back_to_the_local_base_without_origin_tracking_branch() {
+        let (git, runner) = git(vec![Err(failed()), Ok(String::new())]);
+        git.commits_between(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1")
+            .unwrap();
+        assert_eq!(
+            git_commands(&runner),
+            [
+                args(&[
+                    "log",
+                    "--reverse",
+                    LOG_FORMAT,
+                    "origin/main..feat/x-1",
+                    "--"
+                ]),
+                args(&["log", "--reverse", LOG_FORMAT, "main..feat/x-1", "--"]),
+            ]
         );
     }
 
