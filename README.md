@@ -58,16 +58,21 @@ To publish a release:
 1. On `dev`, run `npm run bump <major|minor|patch|X.Y.Z>`. It sets the same version in
    `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`,
    `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`. Commit it as `Release X.Y.Z`.
+   `npm run check-version` checks that the five files agree; the workflow runs it first.
 2. Open a pull request from `dev` to `main` and merge it.
 3. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
    releases the version in `src-tauri/tauri.conf.json` unless it is already published:
    it builds the MSI and NSIS installers on Windows, signs the updater artifacts, tags the
    `main` commit `vX.Y.Z`, and publishes a GitHub release with `latest.json` (pointing at
-   the NSIS installer). A push to `main` without a version bump does nothing.
+   the NSIS installer). Once that is done, it builds the Linux `toodo-server` on Ubuntu
+   and adds `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` and its `.sha256` to the same
+   release, so the server and the Windows app always share a version (see
+   `docs/server.md`). A push to `main` without a version bump does nothing.
 
 Releases run from `main` rather than from tags so the Rust build cache of one release is
 reused by the next. If a release fails, run the `Release` workflow by hand on `main`; it
-completes a release whose `latest.json` was not uploaded yet.
+completes a release whose `latest.json` or server assets were not uploaded yet, skipping
+the parts that are already there.
 
 Updater artifacts are signed with a minisign key; the public key is in
 `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`). The workflow reads the private key

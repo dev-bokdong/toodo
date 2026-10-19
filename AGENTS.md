@@ -108,7 +108,9 @@ Run from the repository root unless noted. Package manager is npm.
 - Build installers (MSI/NSIS, on Windows): `npm run tauri build`
 - Release (signed auto-update): `npm run bump <major|minor|patch|X.Y.Z>` on `dev`, commit
   `Release X.Y.Z`, merge `dev` into `main`; see the "Releases and Updates" section of
-  `README.md`
+  `README.md`. `npm run check-version` checks that the version files agree. A release
+  carries both the Windows app and `toodo-server` (packaged by
+  `scripts/package-server.sh`)
 - Test (frontend): `npm test`
 - Test (Rust, also regenerates `src/lib/bindings.ts`): `cargo test` in `src-tauri/`
 - Typecheck (frontend): `npm run typecheck`
