@@ -226,7 +226,7 @@ pub(crate) async fn require_token(
         (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
-            "missing or wrong Toodo MCP access token",
+            "missing or wrong Toodo access token",
         )
             .into_response()
     }
