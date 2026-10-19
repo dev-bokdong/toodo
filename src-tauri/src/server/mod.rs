@@ -324,19 +324,27 @@ fn router(
 async fn event_stream(
     axum::extract::State(services): axum::extract::State<Arc<Services>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let events = futures_util::stream::unfold(services.events.subscribe(), |mut events| async {
-        loop {
-            match events.recv().await {
-                Ok(event) => {
-                    let sent = Event::default().event(event.name).data(event.data);
-                    return Some((Ok(sent), events));
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return None,
+    Sse::new(sent_events(services.events.subscribe())).keep_alive(KeepAlive::default())
+}
+
+/// The events of `events` as server-sent events. A subscriber that fell behind and missed
+/// some gets its stream ended instead, so the client reconnects and refetches everything.
+fn sent_events(
+    events: broadcast::Receiver<ServerEvent>,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    futures_util::stream::unfold(events, |mut events| async {
+        match events.recv().await {
+            Ok(event) => {
+                let sent = Event::default().event(event.name).data(event.data);
+                Some((Ok(sent), events))
             }
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                eprintln!("toodo-server: an event stream missed {missed} events; ending it");
+                None
+            }
+            Err(broadcast::error::RecvError::Closed) => None,
         }
-    });
-    Sse::new(events).keep_alive(KeepAlive::default())
+    })
 }
 
 async fn interrupted() {
@@ -382,6 +390,26 @@ mod tests {
             config.data_dir,
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
+    }
+
+    #[test]
+    fn an_event_stream_that_fell_behind_ends() {
+        use futures_util::StreamExt;
+        let (sender, receiver) = broadcast::channel(2);
+        let event = |data: &str| ServerEvent {
+            name: names::TASKS_CHANGED,
+            data: data.to_owned(),
+        };
+        drop(sender.send(event("1")));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut stream = Box::pin(sent_events(receiver));
+        assert!(runtime.block_on(stream.next()).is_some());
+        for data in ["2", "3", "4"] {
+            drop(sender.send(event(data)));
+        }
+        assert!(runtime.block_on(stream.next()).is_none());
     }
 
     #[cfg(unix)]
