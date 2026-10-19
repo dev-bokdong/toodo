@@ -62,9 +62,10 @@ pub const DEFAULT_PORT: u16 = mcp::PORT + 1;
 /// further behind skips the oldest.
 const EVENT_BUFFER: usize = 64;
 
-const USAGE: &str = "Usage: toodo-server
+const USAGE: &str = "Usage: toodo-server [--version]
 
 Serves Toodo on one port: the web app, its API, and the MCP server for agents.
+--version prints the version, which is the version of the Toodo release it came from.
 
 Environment:
   TOODO_LISTEN    address to listen on (default 127.0.0.1:47616)
@@ -201,6 +202,13 @@ pub fn main() {
         .any(|arg| arg == "-h" || arg == "--help")
     {
         println!("{USAGE}");
+        return;
+    }
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "-V" || arg == "--version")
+    {
+        println!("toodo-server {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     let config = match Config::from_env(|name| std::env::var(name).ok()) {
