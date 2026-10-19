@@ -18,7 +18,7 @@ use crate::commands::types::{
     Workspace, WorkspaceId,
 };
 use crate::commands::workspaces;
-use crate::commands::{CommandError, CommandResult, StorageState};
+use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
 use crate::domain::model::{self, NoteKind};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
@@ -177,6 +177,81 @@ pub struct ConcludeTask {
     /// The conclusion in GitHub-flavored Markdown: what was tried or found and why the
     /// work ends without a merge. Kept as the task's completion note.
     pub note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SetWorktreeRoot {
+    /// SSH host of a remote machine, as in `machine.label` of list_machine_settings or a
+    /// workspace's `location.machine`; omit it for the machine Toodo runs on.
+    pub ssh_host: Option<String>,
+    /// Absolute directory on that machine that holds the task worktrees, e.g.
+    /// `/home/me/worktrees`: a Windows path such as `D:\worktrees` for the machine of the
+    /// desktop app, a POSIX path on toodo-server and on SSH machines. Null or omitted
+    /// clears it, so tasks on the machine cannot start until it is set again.
+    pub worktree_root: Option<String>,
+}
+
+/// Settings of the machine Toodo runs on and of every known SSH machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineSettingsList {
+    pub machines: Vec<types::MachineSettings>,
+    /// Why the machines saved in herdr could not be read; the list then lacks those
+    /// without a workspace or saved settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub herdr_error: Option<String>,
+}
+
+/// The local machine first, then the SSH machines saved in herdr, hosting a workspace, or
+/// with saved settings, by label.
+pub fn list_machine_settings(
+    storage: &StorageState,
+    herdr: &Herdr,
+) -> CommandResult<MachineSettingsList> {
+    let (saved, herdr_error) = match herdr.list_machines() {
+        Ok(saved) => (saved, None),
+        Err(error) => (Vec::new(), Some(CommandError::from(error).message)),
+    };
+    let storage = lock(storage);
+    let mut hosts: BTreeSet<String> = saved
+        .into_iter()
+        .map(|machine| machine.target.trim().to_owned())
+        .collect();
+    for workspace in storage.list_workspaces()? {
+        if let model::Machine::Ssh(label) = workspace.location.machine() {
+            hosts.insert(label.as_str().to_owned());
+        }
+    }
+    for label in storage.ssh_machines_with_settings()? {
+        hosts.insert(label.as_str().to_owned());
+    }
+    let machines = std::iter::once(types::Machine::Local)
+        .chain(hosts.into_iter().map(|label| types::Machine::Ssh { label }))
+        .map(|machine| workspaces::machine_settings(&storage, machine))
+        .collect::<CommandResult<_>>()?;
+    Ok(MachineSettingsList {
+        machines,
+        herdr_error,
+    })
+}
+
+/// Saves the worktree root of one machine through the app's own validation.
+pub fn set_worktree_root(
+    storage: &mut Storage,
+    request: SetWorktreeRoot,
+) -> CommandResult<types::MachineSettings> {
+    let machine = match request.ssh_host {
+        Some(label) => types::Machine::Ssh { label },
+        None => types::Machine::Local,
+    };
+    workspaces::save_settings(
+        storage,
+        types::MachineSettings {
+            machine,
+            worktree_root: request.worktree_root,
+        },
+    )
 }
 
 pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
@@ -361,7 +436,47 @@ pub fn start_task(
     herdr: &Herdr,
     request: TaskRef,
 ) -> CommandResult<Task> {
-    Ok((&herdr_commands::start(storage, git, herdr, request.id.into())?).into())
+    let id = request.id.into();
+    match herdr_commands::start(storage, git, herdr, id) {
+        Ok(task) => Ok((&task).into()),
+        Err(error) => Err(with_worktree_root_hint(&lock(storage), id, error)),
+    }
+}
+
+/// Tells the agent how to fix a start rejected because the task's machine has no worktree
+/// root; any other error is returned as it is.
+fn with_worktree_root_hint(
+    storage: &Storage,
+    id: model::TaskId,
+    mut error: CommandError,
+) -> CommandError {
+    if error.kind != CommandErrorKind::InvalidInput {
+        return error;
+    }
+    let Ok(Some(task)) = storage.get_task(id) else {
+        return error;
+    };
+    let Ok(Some(workspace)) = storage.get_workspace(task.workspace_id) else {
+        return error;
+    };
+    let machine = workspace.location.machine();
+    let root_missing = match storage.get_machine_settings(&machine) {
+        Ok(model::MachineSettings::Local { worktree_root }) => worktree_root.is_none(),
+        Ok(model::MachineSettings::Ssh { worktree_root, .. }) => worktree_root.is_none(),
+        Err(_) => false,
+    };
+    if !root_missing {
+        return error;
+    }
+    let host = match &machine {
+        model::Machine::Local => String::new(),
+        model::Machine::Ssh(label) => format!("ssh_host \"{label}\" and "),
+    };
+    error.message.push_str(&format!(
+        "; ask the user where task worktrees go on that machine, call set_worktree_root \
+         with {host}worktree_root set to that absolute directory, then start the task again"
+    ));
+    error
 }
 
 /// Completes an `in_review` task whose pull request is merged, as the app does.

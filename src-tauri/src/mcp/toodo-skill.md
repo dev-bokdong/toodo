@@ -138,3 +138,19 @@ repository Toodo does not have yet:
    already cloned there. Set `default_base_branch` when pull requests go into a branch
    other than the repository's default one, e.g. `dev`.
 3. Use the `id` it returns as `workspace_id` for `create_task`.
+
+# Setting a machine's worktree root
+
+Toodo creates each started task's worktree under the worktree root of the machine its
+workspace is on, as `<root>/<workspace>/<type>-<title>-<id>`. `start_task` is rejected
+for a task on a machine without one, e.g. on a freshly installed toodo-server.
+
+1. Call `list_machine_settings`. It returns the machine Toodo runs on (`kind` `local`)
+   and every known SSH machine (`kind` `ssh`, `label` = SSH host), each with its
+   `worktreeRoot` (null when not set).
+2. Set a missing root with `set_worktree_root`: `worktree_root` = an absolute directory
+   on that machine, and `ssh_host` = the machine's label for an SSH machine (omit it for
+   the local one). Use the directory the user named; when they named none, ask them
+   instead of picking one.
+3. Never change or clear a root that is already set unless the user asks; tasks started
+   earlier keep their worktrees where they are.
