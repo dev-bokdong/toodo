@@ -689,6 +689,42 @@ mod tests {
         );
     }
 
+    /// The server's "Local" machine has POSIX paths: the worktree goes under a POSIX root
+    /// and is stored and read back as one.
+    #[test]
+    fn a_task_of_a_posix_local_workspace_starts_under_the_posix_worktree_root() {
+        let fixture = fixture(
+            WorkspaceLocation::Local {
+                path: PosixPath::parse("/home/me/dev/toodo").unwrap().into(),
+            },
+            Some(MachineSettings::Local {
+                worktree_root: Some(PosixPath::parse("/home/me/wt").unwrap().into()),
+            }),
+        );
+        let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
+
+        let started = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(started.status, TaskStatus::InProgress);
+        assert_eq!(
+            started.worktree_path,
+            Some(HostPath::Posix(
+                PosixPath::parse("/home/me/wt/toodo/feat-add-login-1").unwrap()
+            ))
+        );
+        assert_eq!(stored(&fixture), started);
+        assert_eq!(
+            invocations(&runner)[0].args[2..6],
+            [
+                "--cwd",
+                "/home/me/dev/toodo",
+                "--path",
+                "/home/me/wt/toodo/feat-add-login-1",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
     #[test]
     fn an_empty_repository_gets_an_initial_commit_before_the_worktree() {
         let fixture = local_fixture(Some(r"D:\wt"));
