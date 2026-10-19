@@ -51,6 +51,12 @@ const DATABASE_FILE: &str = "toodo.sqlite3";
 
 const WEB_TOKEN_FILE: &str = "web-token";
 
+/// The default port, next to the desktop app's MCP port ([`mcp::PORT`]) rather than on it:
+/// the desktop app forwards that port to its SSH machines, which may include this server,
+/// and the server forwards its own port to its SSH machines the same way, so the two must
+/// differ to share a machine.
+pub const DEFAULT_PORT: u16 = mcp::PORT + 1;
+
 /// Events kept for subscribers that read slower than they arrive; a subscriber that falls
 /// further behind skips the oldest.
 const EVENT_BUFFER: usize = 64;
@@ -60,7 +66,7 @@ const USAGE: &str = "Usage: toodo-server
 Serves Toodo on one port: the web app, its API, and the MCP server for agents.
 
 Environment:
-  TOODO_LISTEN    address to listen on (default 127.0.0.1:47615)
+  TOODO_LISTEN    address to listen on (default 127.0.0.1:47616)
   TOODO_DATA_DIR  database, backups, and access tokens
                   (default $XDG_DATA_HOME/toodo-server or ~/.local/share/toodo-server)
   TOODO_WEB_DIR   web build of the frontend (`npm run build:web` writes dist-web);
@@ -80,7 +86,7 @@ impl Config {
             Some(listen) => listen
                 .parse()
                 .map_err(|error| format!("TOODO_LISTEN {listen:?} is not an address: {error}"))?,
-            None => SocketAddr::from((Ipv4Addr::LOCALHOST, mcp::PORT)),
+            None => SocketAddr::from((Ipv4Addr::LOCALHOST, DEFAULT_PORT)),
         };
         let data_dir = match var("TOODO_DATA_DIR") {
             Some(dir) => PathBuf::from(dir),
@@ -362,6 +368,21 @@ async fn interrupted() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_port_is_not_the_desktop_apps_mcp_port() {
+        let config =
+            Config::from_env(|name| (name == "HOME").then(|| "/home/me".to_owned())).unwrap();
+        assert_eq!(
+            config.listen,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 47616))
+        );
+        assert_ne!(config.listen.port(), mcp::PORT);
+        assert_eq!(
+            config.data_dir,
+            PathBuf::from("/home/me/.local/share/toodo-server")
+        );
+    }
 
     #[cfg(unix)]
     #[test]

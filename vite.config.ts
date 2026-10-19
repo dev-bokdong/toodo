@@ -24,7 +24,7 @@ const webModules = {
 };
 
 /** Where `npm run dev:web` forwards API and MCP requests: a running `toodo-server`. */
-const server = process.env.TOODO_SERVER ?? "http://127.0.0.1:47615";
+const server = process.env.TOODO_SERVER ?? "http://127.0.0.1:47616";
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
