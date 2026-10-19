@@ -10,6 +10,7 @@
 mod backup;
 mod commits;
 mod migrations;
+mod search;
 mod tasks;
 mod workspaces;
 
@@ -27,6 +28,7 @@ use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
+pub use search::TaskSearch;
 pub use tasks::{AddedDependencies, NewTask};
 pub use workspaces::NewWorkspace;
 
@@ -107,6 +109,8 @@ pub enum StorageError {
     Transition(TransitionError),
     /// A task cannot start while one of its dependencies is not done.
     DependenciesNotDone(TaskId),
+    /// A task cannot be related to itself.
+    SelfRelation(TaskId),
     /// The worktree path is a Windows path for an SSH workspace or a POSIX path for a
     /// local one.
     WorktreePathMismatch(TaskId),
@@ -153,6 +157,7 @@ impl fmt::Display for StorageError {
                     "task {id} cannot start before all its dependencies are done"
                 )
             }
+            Self::SelfRelation(id) => write!(f, "task {id} cannot be related to itself"),
             Self::WorktreePathMismatch(id) => write!(
                 f,
                 "worktree path of task {id} does not match the machine of its workspace"

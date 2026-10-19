@@ -2,8 +2,9 @@
 //! tells the frontend about changes like any command.
 //!
 //! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
-//! in the app data directory. Agents can read workspaces and tasks, create and edit
-//! tasks, connect dependencies, leave progress and blocker notes in a task's history, and
+//! in the app data directory. Agents can read workspaces and tasks, search earlier tasks
+//! and read their history, create and edit tasks, connect dependencies and related
+//! links, leave progress and blocker notes in a task's history, and
 //! start, complete, or conclude tasks through the app's own commands; deleting tasks stays
 //! in the app. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
@@ -57,8 +58,15 @@ How to use these tools:
 1. Call current_task with your absolute working directory first. Use its workspaceId \
 for new tasks in the same repository and its baseBranch as the base of your pull \
 request. If it finds no task, use list_workspaces to pick the workspace.
-2. Before create_task, call list_tasks for that workspace and reuse a matching task \
-instead of creating a duplicate.
+2. Before you plan work or call create_task, call search_tasks with a few distinctive \
+words of the work (all workspaces unless the work clearly belongs to one) to find \
+earlier tasks about it, and get_task on the relevant ones to read what was decided \
+then: description, notes, completion note (why research was not adopted), pull \
+request, and commits. Follow their depends_on, dependents, and related links with \
+get_task to understand the history. Reuse a matching open task instead of creating a \
+duplicate. When a new task builds on earlier context but does not have to wait for it, \
+link them with add_related; use add_dependency only for a real prerequisite (rule 3). \
+Related links never block starting a task; remove_related drops one.
 3. A dependency points from a task to the tasks that must be done before it: task_id is \
 the dependent task and depends_on its prerequisites; self and cyclic dependencies are \
 rejected. Decide the direction by what has to finish first:
@@ -326,6 +334,52 @@ impl ToodoMcp {
         Parameters(request): Parameters<tools::ListTasks>,
     ) -> Result<CallToolResult, ErrorData> {
         reply(tools::list_tasks(&lock(self.backend.storage()), request))
+    }
+
+    #[tool(
+        description = "Search tasks of all workspaces (or one) by words in their title, description, notes, completion note, branch, and pull request, best match first. Every word must appear, as a substring in any language; words are literal, not operators. Use it before planning or create_task to find earlier tasks on the same subject, then get_task to read what was decided. Each result lists its depends_on, dependents, and related task IDs."
+    )]
+    fn search_tasks(
+        &self,
+        Parameters(request): Parameters<tools::SearchTasks>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::search_tasks(&lock(self.backend.storage()), request))
+    }
+
+    #[tool(
+        description = "Read one task with its whole history: description, status timeline, progress and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). Use it to learn what an earlier task decided, and follow its links with further get_task calls."
+    )]
+    fn get_task(
+        &self,
+        Parameters(request): Parameters<tools::GetTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::task_details(&lock(self.backend.storage()), request))
+    }
+
+    #[tool(
+        description = "Link two tasks, from any workspaces, as related: context worth reading together, e.g. an earlier task whose decisions a new one builds on. The link goes both ways and never blocks either task; for work that must be done first, use add_dependency instead. Returns task_id's details."
+    )]
+    fn add_related(
+        &self,
+        Parameters(request): Parameters<tools::Related>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::add_related(
+            &mut lock(self.backend.storage()),
+            request,
+        ))
+    }
+
+    #[tool(
+        description = "Remove the related link between two tasks, given in either order. Returns task_id's details."
+    )]
+    fn remove_related(
+        &self,
+        Parameters(request): Parameters<tools::Related>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::remove_related(
+            &mut lock(self.backend.storage()),
+            request,
+        ))
     }
 
     #[tool(description = "Find the Toodo task whose worktree contains the given directory.")]
@@ -711,7 +765,15 @@ mod tests {
         let storage = crate::storage::Storage::open_in_memory().unwrap();
         let server = ToodoMcp::new(Arc::new(TestBackend::new(storage)));
         assert!(server.tool_router.has_route("read_toodo_skill"));
-        for tool in ["start_task", "complete_task", "conclude_task"] {
+        for tool in [
+            "start_task",
+            "complete_task",
+            "conclude_task",
+            "search_tasks",
+            "get_task",
+            "add_related",
+            "remove_related",
+        ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
         }
         assert!(!server.tool_router.has_route("delete_task"));

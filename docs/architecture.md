@@ -160,6 +160,16 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   `close_task_workspace` (see [workflow.md](workflow.md#task-states)).
 - A topological order of the DAG is the suggested execution order.
 
+### Related Tasks
+
+- Tasks can also be **related**: context worth reading together, e.g. an earlier task
+  whose decisions a new one builds on, or a follow-up of research that was not adopted.
+- A related link is symmetric, may cross workspaces, and never affects readiness or
+  starting a task; only dependencies do. Table `task_relations` stores each link once,
+  from the lower task ID to the higher one, and deleting a task drops its links.
+- Related links are set through MCP only (`add_related` / `remove_related`); the app
+  does not show them yet.
+
 ### CommitRecord
 
 A commit produced while implementing a task.
@@ -404,6 +414,23 @@ machine; see [server.md](server.md).
     work; Toodo never prompts agents itself. Notes show in the task list (latest) and the
     task details (all), and period reviews list the notes left during the period. Tool
     failures come back as tool errors whose text the agent sees.
+  - `search_tasks` finds earlier tasks of all workspaces (or one, or one status) by words
+    in their title, description, completion note and notes, branch, and pull request
+    title and URL; every word must appear, and results come best match first with
+    their `depends_on`, `dependents`, and `related` IDs. `get_task` returns one task
+    with its whole history (timeline, notes, completion note, pull request, commits)
+    and its linked tasks (id, title, status). `add_related` / `remove_related` set
+    [related links](#related-tasks). The instructions and the `toodo` skill tell agents
+    to search before planning or creating tasks, to read what earlier tasks decided,
+    and to use `add_dependency` only for real prerequisites and `add_related`
+    otherwise.
+  - Search runs on `task_search`, an FTS5 table with the trigram tokenizer (bundled
+    SQLite), so any substring of three or more characters matches in any language,
+    ranked by bm25 with the title weighted highest. Words shorter than three
+    characters, such as two-character Korean words, are matched with `LIKE` instead.
+    Every word is quoted (FTS5) or escaped (`LIKE`), so operators, `*`, quotes, and
+    parentheses are plain text. Triggers on `tasks`, `task_notes`, and
+    `pull_request_snapshots` keep the index in sync with every write.
   - `start_task`, `complete_task`, and `conclude_task` run the app's own commands
     (`commands::herdr::start`, `commands::completion::complete` and `conclude`) on a
     blocking thread, with the same adapters, checks, and status history, and emit
