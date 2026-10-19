@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
 # Builds toodo-server from this checkout and installs it for the current user:
-#   ~/.local/bin/toodo-server                     the server binary
-#   ~/.local/share/toodo-server-web               the web build it serves
+#   ~/.local/bin/toodo-server                     the headless server (MCP + background work)
 #   ~/.config/systemd/user/toodo-server.service   a systemd user service (unless --no-service)
+#   ~/.local/share/toodo-server-web               the web build, only with --with-web
 # Safe to run again: an update is `git pull` followed by this script.
 # See docs/server.md.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-server.sh [--listen ADDR] [--no-service]
+Usage: scripts/install-server.sh [--listen ADDR] [--no-service] [--with-web]
 
   --listen ADDR   address the service listens on (default 127.0.0.1:47616)
   --no-service    build and install only; do not write or restart the systemd service
+  --with-web      also build and serve the web app (needs Node.js and npm)
 EOF
 }
 
 listen=127.0.0.1:47616
 service=1
+web=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --listen)
@@ -31,6 +33,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-service)
       service=0
+      shift
+      ;;
+    --with-web)
+      web=1
       shift
       ;;
     -h | --help)
@@ -65,19 +71,20 @@ esac
 base_url="http://$check_host:$listen_port"
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-[ -f "$repo/package.json" ] && [ -f "$repo/src-tauri/Cargo.toml" ] \
-  || die "run this script from a Toodo checkout ($repo is not one)"
+[ -f "$repo/src-tauri/Cargo.toml" ] || die "run this script from a Toodo checkout ($repo is not one)"
 
 [ "$(uname -s)" = Linux ] || die "toodo-server is installed on Linux only"
 
 log "Checking prerequisites"
+required=(cargo git gh herdr ssh curl)
+[ "$web" = 1 ] && required+=(node npm)
 missing=()
-for tool in node npm cargo git gh herdr ssh curl; do
+for tool in "${required[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
   die "missing on PATH: ${missing[*]}
-  node/npm: https://nodejs.org   cargo: https://rustup.rs   gh: https://cli.github.com
+  cargo: https://rustup.rs   gh: https://cli.github.com   node/npm (--with-web only): https://nodejs.org
   herdr must be installed and running; Toodo never installs it"
 fi
 if [ "$service" = 1 ]; then
@@ -93,11 +100,10 @@ data_dir=$share_dir/toodo-server
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 unit=$unit_dir/toodo-server.service
 
-log "Installing npm dependencies"
-(cd "$repo" && npm ci)
-
-log "Building the web app"
-(cd "$repo" && npm run build:web)
+if [ "$web" = 1 ]; then
+  log "Building the web app"
+  (cd "$repo" && npm ci && npm run build:web)
+fi
 
 log "Building toodo-server"
 (cd "$repo/src-tauri" && cargo build --release --no-default-features --features server --bin toodo-server)
@@ -109,23 +115,29 @@ cp "$repo/src-tauri/target/release/toodo-server" "$tmp_bin"
 chmod 755 "$tmp_bin"
 mv -f "$tmp_bin" "$bin_dir/toodo-server"
 
-log "Installing $web_dir"
-mkdir -p "$share_dir"
-tmp_web=$(mktemp -d "$share_dir/.toodo-server-web.XXXXXX")
-cp -R "$repo/dist-web/." "$tmp_web/"
-chmod 755 "$tmp_web"
-if [ -e "$web_dir" ]; then
-  old_web=$(mktemp -d "$share_dir/.toodo-server-web.old.XXXXXX")
-  mv "$web_dir" "$old_web/web"
-  mv "$tmp_web" "$web_dir"
-  rm -rf "$old_web"
-else
-  mv "$tmp_web" "$web_dir"
+if [ "$web" = 1 ]; then
+  log "Installing $web_dir"
+  mkdir -p "$share_dir"
+  tmp_web=$(mktemp -d "$share_dir/.toodo-server-web.XXXXXX")
+  cp -R "$repo/dist-web/." "$tmp_web/"
+  chmod 755 "$tmp_web"
+  if [ -e "$web_dir" ]; then
+    old_web=$(mktemp -d "$share_dir/.toodo-server-web.old.XXXXXX")
+    mv "$web_dir" "$old_web/web"
+    mv "$tmp_web" "$web_dir"
+    rm -rf "$old_web"
+  else
+    mv "$tmp_web" "$web_dir"
+  fi
 fi
 
 if [ "$service" = 0 ]; then
   log "Installed without a service (--no-service). Run it with:"
-  echo "    TOODO_LISTEN=$listen TOODO_WEB_DIR=$web_dir $bin_dir/toodo-server"
+  if [ "$web" = 1 ]; then
+    echo "    TOODO_LISTEN=$listen TOODO_WEB_DIR=$web_dir $bin_dir/toodo-server"
+  else
+    echo "    TOODO_LISTEN=$listen $bin_dir/toodo-server"
+  fi
   exit 0
 fi
 
@@ -146,11 +158,14 @@ for dir in /usr/local/bin /usr/bin /bin; do
   add_path_dir "$dir"
 done
 service_path=$(IFS=:; echo "${path_dirs[*]}")
+web_env=
+[ "$web" = 1 ] && web_env="Environment=TOODO_WEB_DIR=$web_dir"
 
 log "Writing $unit"
 mkdir -p "$unit_dir"
 tmp_unit=$(mktemp "$unit_dir/.toodo-server.service.XXXXXX")
-cat >"$tmp_unit" <<EOF
+{
+  cat <<EOF
 # Written by scripts/install-server.sh; rerun it instead of editing this file.
 [Unit]
 Description=Toodo server
@@ -160,8 +175,10 @@ Wants=herdr-server.service
 [Service]
 ExecStart=$bin_dir/toodo-server
 Environment=TOODO_LISTEN=$listen
-Environment=TOODO_WEB_DIR=$web_dir
 Environment=TOODO_DATA_DIR=$data_dir
+EOF
+  [ -n "$web_env" ] && echo "$web_env"
+  cat <<EOF
 Environment=PATH=$service_path
 Restart=on-failure
 RestartSec=5
@@ -169,6 +186,7 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
+} >"$tmp_unit"
 chmod 644 "$tmp_unit"
 mv -f "$tmp_unit" "$unit"
 
@@ -176,6 +194,11 @@ log "Restarting toodo-server.service"
 systemctl --user daemon-reload
 systemctl --user enable toodo-server.service >/dev/null
 systemctl --user restart toodo-server.service
+
+status_of() { curl -s -o /dev/null --max-time 5 -w '%{http_code}' "$@"; }
+api_status() {
+  status_of -X POST -H 'Content-Type: application/json' -d '{}' "$base_url/api/rpc/list_tasks"
+}
 
 log "Waiting for $base_url"
 up=0
@@ -192,12 +215,15 @@ if [ "$up" = 0 ]; then
   die "toodo-server did not answer on $base_url; see journalctl --user -u toodo-server"
 fi
 
-status_of() { curl -s -o /dev/null --max-time 5 -w '%{http_code}' "$@"; }
-web_status=$(status_of "$base_url/")
-[ "$web_status" = 200 ] || die "GET $base_url/ returned $web_status, expected 200"
-api_status=$(status_of -X POST -H 'Content-Type: application/json' -d '{}' "$base_url/api/rpc/list_tasks")
-[ "$api_status" = 401 ] || die "POST $base_url/api/rpc/list_tasks without a token returned $api_status, expected 401"
-log "Health check passed: GET / -> 200, /api without a token -> 401"
+api=$(api_status)
+[ "$api" = 401 ] || die "POST $base_url/api/rpc/list_tasks without a token returned $api, expected 401"
+if [ "$web" = 1 ]; then
+  root=$(status_of "$base_url/")
+  [ "$root" = 200 ] || die "GET $base_url/ returned $root, expected 200 (web app)"
+  log "Health check passed: /api without a token -> 401, GET / -> 200"
+else
+  log "Health check passed: /api without a token -> 401"
+fi
 
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then
   echo "note: lingering is off, so the service stops when you log out; run: loginctl enable-linger $USER"
@@ -206,8 +232,9 @@ fi
 cat <<EOF
 
 toodo-server is running on $base_url
-  Web token (the browser asks for it once): $data_dir/web-token
-  MCP token (for agents, /mcp):             $data_dir/mcp-token
-  Logs: journalctl --user -u toodo-server
-Keep it on loopback; reach it with e.g. ssh -L $listen_port:127.0.0.1:$listen_port <this host>.
+  MCP for agents: $base_url/mcp, token in $data_dir/mcp-token
 EOF
+if [ "$web" = 1 ]; then
+  echo "  Web app: $base_url/, token in $data_dir/web-token"
+fi
+echo "  Logs: journalctl --user -u toodo-server"
