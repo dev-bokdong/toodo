@@ -307,6 +307,12 @@ pub(super) const MIGRATIONS: &[&str] = &[
             SELECT * FROM task_search_source WHERE id = OLD.task_id;
     END;
     ",
+    // Version 12: whether agents may merge their own pull request into the base branch.
+    // Existing workspaces keep today's behavior: agents never merge.
+    "
+    ALTER TABLE workspaces ADD COLUMN agent_merge TEXT NOT NULL DEFAULT 'never'
+        CHECK (agent_merge IN ('never', 'after_checks'));
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -918,5 +924,41 @@ mod tests {
             .map(count),
             [0, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn version_12_lets_agents_of_existing_workspaces_never_merge() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..11] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 11).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let agent_merge = |conn: &Connection| -> String {
+            conn.query_row(
+                "SELECT agent_merge FROM workspaces WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(agent_merge(&conn), "never");
+        assert!(
+            conn.execute("UPDATE workspaces SET agent_merge = 'always'", [])
+                .is_err()
+        );
+        conn.execute("UPDATE workspaces SET agent_merge = 'after_checks'", [])
+            .unwrap();
+        assert_eq!(agent_merge(&conn), "after_checks");
     }
 }

@@ -337,6 +337,9 @@ export function useHerdrEvents() {
           console.error("toodo: failed to show status notifications", error),
         );
       }),
+      events.workspacesChanged.listen(() =>
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+      ),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),

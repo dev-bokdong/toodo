@@ -77,6 +77,7 @@ vi.mock("@/lib/bindings", () => ({
   },
   events: {
     tasksChanged: { listen: vi.fn() },
+    workspacesChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
     updateCheckRequested: { listen: vi.fn() },
@@ -94,6 +95,7 @@ const toodo: Workspace = {
   name: "toodo",
   location: { kind: "local", path: "C:\\dev\\toodo" },
   defaultBaseBranch: "main",
+  agentMerge: "never",
 };
 
 const herdr: Workspace = {
@@ -101,6 +103,7 @@ const herdr: Workspace = {
   name: "herdr",
   location: { kind: "ssh", machine: "devbox", path: "/srv/herdr" },
   defaultBaseBranch: "develop",
+  agentMerge: "never",
 };
 
 function task(id: number, workspaceId: number, title: string, overrides: Partial<Task> = {}): Task {
@@ -189,6 +192,7 @@ describe("App", () => {
     mocked.listMcpTunnels.mockResolvedValue([]);
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.workspacesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
@@ -998,6 +1002,24 @@ describe("App", () => {
     await waitFor(() => expect(mocked.listTasks.mock.calls.length).toBeGreaterThan(loads));
   });
 
+  it("shows a workspace an agent added once the app hears of it", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    renderApp();
+    await screen.findByRole("button", { name: /^toodo/ });
+    await waitFor(() => expect(mockedEvents.workspacesChanged.listen).toHaveBeenCalled());
+
+    mocked.listWorkspaces.mockResolvedValue({
+      status: "ok",
+      data: [toodo, { ...toodo, id: 2, name: "site" }],
+    });
+    const [[onWorkspacesChanged]] = mockedEvents.workspacesChanged.listen.mock.calls;
+    act(() => {
+      onWorkspacesChanged({ event: "workspaces-changed", id: 3, payload: null });
+    });
+
+    expect(await screen.findByRole("button", { name: /^site/ })).toBeInTheDocument();
+  });
+
   it("notifies the desktop once when an agent needs input while the app is in the background", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
@@ -1241,6 +1263,33 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.getByText("dev")).toBeInTheDocument();
     expect(mocked.updateWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets agents of the workspace merge their pull requests after checks pass", async () => {
+    let saved = toodo;
+    mocked.listWorkspaces.mockImplementation(async () => ({ status: "ok", data: [saved] }));
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.updateWorkspace
+      .mockResolvedValueOnce({ status: "error", error: { kind: "invalidInput", message: "database is locked" } })
+      .mockImplementation(async (workspace) => {
+        saved = workspace;
+        return { status: "ok", data: saved };
+      });
+    await renderWorkspace();
+
+    const setting = await screen.findByRole("combobox", { name: "Agent merge" });
+    expect(setting).toHaveValue("never");
+    expect(within(setting).getByRole("option", { name: "Into main after checks pass" })).toBeInTheDocument();
+
+    fireEvent.change(setting, { target: { value: "afterChecks" } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
+    // A failed save shows the saved policy again.
+    expect(setting).toHaveValue("never");
+
+    fireEvent.change(setting, { target: { value: "afterChecks" } });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Agent merge" })).toHaveValue("afterChecks"));
+    expect(mocked.updateWorkspace).toHaveBeenLastCalledWith({ ...toodo, agentMerge: "afterChecks" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("creates a new base branch from an existing one", async () => {

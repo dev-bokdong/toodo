@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::model::{
-    HostPath, Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId,
+    AgentMerge, HostPath, Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId,
     WorkspaceLocation,
 };
 use crate::domain::path::PosixPath;
@@ -16,7 +16,15 @@ pub struct NewWorkspace {
     pub default_base_branch: String,
 }
 
-const WORKSPACE_COLUMNS: &str = "id, name, kind, path, herdr_machine, default_base_branch";
+const WORKSPACE_COLUMNS: &str =
+    "id, name, kind, path, herdr_machine, default_base_branch, agent_merge";
+
+fn agent_merge_column(agent_merge: AgentMerge) -> &'static str {
+    match agent_merge {
+        AgentMerge::Never => "never",
+        AgentMerge::AfterChecks => "after_checks",
+    }
+}
 
 /// `(kind, path, herdr_machine)` columns of a workspace location.
 fn location_columns(location: &WorkspaceLocation) -> (&'static str, &str, Option<&str>) {
@@ -41,6 +49,7 @@ struct WorkspaceRow {
     path: String,
     herdr_machine: Option<String>,
     default_base_branch: String,
+    agent_merge: String,
 }
 
 impl WorkspaceRow {
@@ -52,6 +61,7 @@ impl WorkspaceRow {
             path: row.get(3)?,
             herdr_machine: row.get(4)?,
             default_base_branch: row.get(5)?,
+            agent_merge: row.get(6)?,
         })
     }
 
@@ -71,11 +81,22 @@ impl WorkspaceRow {
                 )));
             }
         };
+        let agent_merge = match self.agent_merge.as_str() {
+            "never" => AgentMerge::Never,
+            "after_checks" => AgentMerge::AfterChecks,
+            other => {
+                return Err(StorageError::InvalidData(format!(
+                    "workspace {} has an unknown agent merge policy {other:?}",
+                    self.id
+                )));
+            }
+        };
         Ok(Workspace {
             id: WorkspaceId(self.id),
             name: self.name,
             location,
             default_base_branch: self.default_base_branch,
+            agent_merge,
         })
     }
 }
@@ -93,6 +114,7 @@ impl Storage {
             name: new.name.clone(),
             location: new.location.clone(),
             default_base_branch: new.default_base_branch.clone(),
+            agent_merge: AgentMerge::default(),
         })
     }
 
@@ -143,7 +165,8 @@ impl Storage {
         }
         let changed = tx.execute(
             "UPDATE workspaces
-             SET name = ?2, kind = ?3, path = ?4, herdr_machine = ?5, default_base_branch = ?6
+             SET name = ?2, kind = ?3, path = ?4, herdr_machine = ?5, default_base_branch = ?6,
+                 agent_merge = ?7
              WHERE id = ?1",
             params![
                 workspace.id.0,
@@ -151,7 +174,8 @@ impl Storage {
                 kind,
                 path,
                 herdr_machine,
-                workspace.default_base_branch
+                workspace.default_base_branch,
+                agent_merge_column(workspace.agent_merge)
             ],
         )?;
         if changed == 0 {
@@ -223,6 +247,20 @@ impl Storage {
                     .map_err(invalid_data)?,
             },
         })
+    }
+
+    /// SSH machines that have a row in `machine_settings`, by label.
+    pub fn ssh_machines_with_settings(&self) -> Result<Vec<MachineLabel>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT label FROM machine_settings WHERE kind = 'ssh' ORDER BY label")?;
+        let labels = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        labels
+            .iter()
+            .map(|label| MachineLabel::parse(label).map_err(invalid_data))
+            .collect()
     }
 
     pub fn save_machine_settings(&mut self, settings: &MachineSettings) -> Result<()> {

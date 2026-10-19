@@ -19,7 +19,8 @@ Deleting tasks happens in the Toodo app only.
 ## 1. Start
 
 1. Call `current_task` with your absolute working directory. Note the task's `id`,
-   `workspaceId`, `branch`, and `baseBranch`.
+   `workspaceId`, `branch`, `baseBranch`, and `agentMerge` (whether you merge your pull
+   request, see step 4 of "Otherwise: finish with a pull request").
 2. If no task matches, you are not in a Toodo task worktree: tell the user and ask which
    task you are working on instead of guessing.
 3. Read the description. `## Done when` is your finish line; `## Purpose` decides
@@ -83,7 +84,18 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
    a body that summarizes the change and lists the `## Done when` items. If a pull request
    for the branch already exists, push to it instead of opening another. A pull request
    into any other base is ignored by Toodo.
-4. Stop there. Do not merge the pull request; the merge completes the task.
+4. Merge it only if the workspace allows it. `current_task` returns `agentMerge`:
+   - `never` (the default): stop there. Do not merge the pull request; the user merges
+     it, and the merge completes the task.
+   - `afterChecks`: wait until every check on the pull request has finished and passed
+     (`gh pr checks <number> --watch`). When one fails, fix it, push, and wait again.
+     Then merge the pull request into `baseBranch` (`gh pr merge <number> --merge`, or
+     the merge method the repository allows); the merge completes the task.
+
+   Even with `afterChecks`, never merge while a check is failing or pending or when the
+   pull request has no checks, never bypass branch protection (no `--admin`), never
+   merge a pull request into any branch other than `baseBranch`, and never release, tag,
+   or merge `baseBranch` onward (e.g. into `main`).
 
 # Writing task descriptions
 
@@ -112,3 +124,33 @@ tasks and what they decided, links, and constraints the implementer has to respe
   no raw HTML.
 - Pick `task_type` by the kind of change (feat, fix, modify, refactor, docs, test, chore,
   rnd) and write a short imperative title.
+
+# Adding a workspace
+
+Every task belongs to a workspace, one repository on a machine. To plan tasks for a
+repository Toodo does not have yet:
+
+1. Call `list_workspaces` and reuse the workspace whose `location` already is the
+   repository; never add a second workspace for the same path.
+2. Only when it is missing and the user asked for it, call `create_workspace` with a
+   `name` and the absolute `path` on the machine Toodo runs on. Pass `clone_url` to clone
+   the repository into a new or empty directory, or leave it out to open a repository
+   already cloned there. Set `default_base_branch` when pull requests go into a branch
+   other than the repository's default one, e.g. `dev`.
+3. Use the `id` it returns as `workspace_id` for `create_task`.
+
+# Setting a machine's worktree root
+
+Toodo creates each started task's worktree under the worktree root of the machine its
+workspace is on, as `<root>/<workspace>/<type>-<title>-<id>`. `start_task` is rejected
+for a task on a machine without one, e.g. on a freshly installed toodo-server.
+
+1. Call `list_machine_settings`. It returns the machine Toodo runs on (`kind` `local`)
+   and every known SSH machine (`kind` `ssh`, `label` = SSH host), each with its
+   `worktreeRoot` (null when not set).
+2. Set a missing root with `set_worktree_root`: `worktree_root` = an absolute directory
+   on that machine, and `ssh_host` = the machine's label for an SSH machine (omit it for
+   the local one). Use the directory the user named; when they named none, ask them
+   instead of picking one.
+3. Never change or clear a root that is already set unless the user asks; tasks started
+   earlier keep their worktrees where they are.

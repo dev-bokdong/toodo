@@ -2,7 +2,8 @@
 //! tells the frontend about changes like any command.
 //!
 //! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
-//! in the app data directory. Agents can read workspaces and tasks, search earlier tasks
+//! in the app data directory. Agents can read and add workspaces, read and set the
+//! worktree root of each machine, read tasks, search earlier tasks
 //! and read their history, create and edit tasks, connect dependencies and related
 //! links, leave progress and blocker notes in a task's history, and
 //! start, complete, or conclude tasks through the app's own commands; deleting tasks stays
@@ -57,7 +58,9 @@ and the format of task descriptions.
 How to use these tools:
 1. Call current_task with your absolute working directory first. Use its workspaceId \
 for new tasks in the same repository and its baseBranch as the base of your pull \
-request. If it finds no task, use list_workspaces to pick the workspace.
+request. If it finds no task, use list_workspaces to pick the workspace. Add a \
+workspace with create_workspace only when the user asks for a repository that \
+list_workspaces does not have yet.
 2. Before you plan work or call create_task, call search_tasks with a few distinctive \
 words of the work (all workspaces unless the work clearly belongs to one) to find \
 earlier tasks about it, and get_task on the relevant ones to read what was decided \
@@ -110,10 +113,23 @@ reason. Never start, complete, or conclude your own task, the one current_task f
 it was started for you, and the merge of its pull request completes it. conclude_task \
 never closes a pull request, so a task with an open one is rejected; the user concludes \
 it in the app.
+8. start_task needs a worktree root, the directory that holds task worktrees, on the \
+machine of the task's workspace. list_machine_settings shows it for every machine. Set \
+a missing one with set_worktree_root to a directory the user named, or when start_task \
+reports it missing and the user tells you where worktrees go. Never change or clear a \
+root that is set unless the user asks.
 
 Deleting tasks happens in the Toodo app only, not through these tools. A pull request \
 from the task branch into baseBranch moves the task to in_review, and its merge \
-completes the task; never merge it yourself.";
+completes the task. Whether you merge it yourself is set per workspace by agentMerge, \
+which current_task returns: with never (the default), stop once the pull request is \
+open and never merge it. With afterChecks, wait until every check on the pull request \
+has finished and passed (`gh pr checks <number> --watch`), fixing and pushing when one \
+fails, then merge it into baseBranch (`gh pr merge <number> --merge`, or the merge \
+method the repository allows). Even then, never merge while a check is failing or \
+pending or when the pull request has no checks, never bypass branch protection (no \
+--admin), never merge a pull request into any other branch, and never release, tag, or \
+merge baseBranch onward (e.g. into main).";
 
 /// What the app needs to serve the tools: the database, the adapters the app's commands
 /// run, and a way to announce changes.
@@ -299,11 +315,19 @@ impl ToodoMcp {
         &self,
         apply: impl FnOnce(&dyn Backend) -> CommandResult<Task> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
-        let backend = self.backend.clone();
-        let result = tokio::task::spawn_blocking(move || apply(backend.as_ref()))
-            .await
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let result = self.blocking(apply).await?;
         self.announce(result)
+    }
+
+    /// Runs `apply` on a blocking thread.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        apply: impl FnOnce(&dyn Backend) -> CommandResult<T> + Send + 'static,
+    ) -> Result<CommandResult<T>, ErrorData> {
+        let backend = self.backend.clone();
+        tokio::task::spawn_blocking(move || apply(backend.as_ref()))
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
 
     fn announce(&self, result: CommandResult<Task>) -> Result<CallToolResult, ErrorData> {
@@ -324,6 +348,47 @@ impl ToodoMcp {
     #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
     fn list_workspaces(&self) -> Result<CallToolResult, ErrorData> {
         reply(tools::list_workspaces(&lock(self.backend.storage())))
+    }
+
+    #[tool(
+        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
+    )]
+    async fn create_workspace(
+        &self,
+        Parameters(request): Parameters<tools::CreateWorkspace>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::create_workspace(backend.storage(), backend.git(), backend.herdr(), request)
+            })
+            .await?;
+        if result.is_ok() {
+            self.backend.workspaces_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "List the settings of the machine Toodo runs on (machine kind local) and of every known SSH machine (kind ssh with its label, the SSH host): saved in herdr, hosting a workspace, or with saved settings. worktreeRoot is the directory that holds task worktrees there; start_task is rejected for tasks on a machine whose worktreeRoot is null. herdrError tells why herdr's saved machines could not be read."
+    )]
+    async fn list_machine_settings(&self) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(|backend| tools::list_machine_settings(backend.storage(), backend.herdr()))
+            .await?;
+        reply(result)
+    }
+
+    #[tool(
+        description = "Set or clear the worktree root of one machine, as the worktree root setting in the Toodo app does: the absolute directory in which Toodo creates the worktrees of tasks on that machine, as <root>/<workspace>/<type>-<title>-<id>. Omit ssh_host for the machine Toodo runs on. Set it when start_task reports a missing worktree root or the user asks; use the directory the user named, and never change or clear a root that is already set unless the user asks. Only later starts use the new root. Returns the machine's settings."
+    )]
+    fn set_worktree_root(
+        &self,
+        Parameters(request): Parameters<tools::SetWorktreeRoot>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::set_worktree_root(
+            &mut lock(self.backend.storage()),
+            request,
+        ))
     }
 
     #[tool(
@@ -441,7 +506,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root."
+        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
     )]
     async fn start_task(
         &self,
@@ -571,6 +636,7 @@ mod tests {
         github: GitHub,
         herdr: Herdr,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
+        workspaces_changed: std::sync::Mutex<usize>,
     }
 
     type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
@@ -590,6 +656,7 @@ mod tests {
                 github: GitHub::new(runner(Vec::new())),
                 herdr: Herdr::new(runner(herdr)),
                 changed: std::sync::Mutex::default(),
+                workspaces_changed: std::sync::Mutex::default(),
             }
         }
     }
@@ -597,6 +664,9 @@ mod tests {
     impl Notifier for TestBackend {
         fn tasks_changed(&self, workspace: model::WorkspaceId) {
             self.changed.lock().unwrap().push(workspace);
+        }
+        fn workspaces_changed(&self) {
+            *self.workspaces_changed.lock().unwrap() += 1;
         }
         fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
         fn pull_request_statuses_changed(
@@ -712,11 +782,407 @@ mod tests {
         assert_eq!(result["isError"], true);
         assert_eq!(
             result["content"][0]["text"],
-            "InvalidInput: worktree root is not set for machine local"
+            "InvalidInput: worktree root is not set for machine local; ask the user where task \
+             worktrees go on that machine, call set_worktree_root with worktree_root set to \
+             that absolute directory, then start the task again"
         );
         assert!(backend.changed.lock().unwrap().is_empty());
         let stored = lock(&backend.storage).get_task(task.id).unwrap().unwrap();
         assert_eq!(stored, task);
+    }
+
+    fn create_workspace(server: &ToodoMcp, arguments: serde_json::Value) -> serde_json::Value {
+        let request = serde_json::from_value(arguments).unwrap();
+        let result = runtime()
+            .block_on(server.create_workspace(Parameters(request)))
+            .unwrap();
+        serde_json::to_value(result).unwrap()
+    }
+
+    /// The local path for POSIX `posix` in this build: itself on the server, the same path
+    /// on drive C: in the desktop app.
+    fn host(posix: &str) -> String {
+        if cfg!(feature = "server") {
+            posix.to_owned()
+        } else {
+            format!("C:{}", posix.replace('/', "\\"))
+        }
+    }
+
+    /// What `git rev-parse --show-toplevel` prints for `posix` in this build.
+    fn toplevel(posix: &str) -> Result<String, crate::adapters::git::GitError> {
+        Ok(if cfg!(feature = "server") {
+            format!("{posix}\n")
+        } else {
+            format!("C:{posix}\n")
+        })
+    }
+
+    /// `herdr workspace list` without the repository, then `herdr workspace create`.
+    fn herdr_opens_a_new_workspace() -> Scripted {
+        vec![
+            Ok(r#"{"id":"cli:workspace:list","result":{"workspaces":[]}}"#.to_owned()),
+            Ok(
+                r#"{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"w9"}}}"#
+                    .to_owned(),
+            ),
+        ]
+    }
+
+    fn created_workspace(result: &serde_json::Value) -> serde_json::Value {
+        assert_ne!(result["isError"], true, "{result}");
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn error_text(result: &serde_json::Value) -> &str {
+        assert_eq!(result["isError"], true, "{result}");
+        result["content"][0]["text"].as_str().unwrap()
+    }
+
+    /// A server whose database has the workspace "site" at /dev/site, opened through the
+    /// tool; git and herdr then return `git` and `herdr`.
+    fn server_with_site(git: Scripted, herdr: Scripted) -> (Arc<TestBackend>, ToodoMcp) {
+        let (storage, _) = storage_with_task(None);
+        let mut git_results = vec![toplevel("/dev/site")];
+        git_results.extend(git);
+        let mut herdr_results = herdr_opens_a_new_workspace();
+        herdr_results.extend(herdr);
+        let backend = Arc::new(TestBackend::scripted(storage, git_results, herdr_results));
+        let server = ToodoMcp::new(backend.clone());
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site/src"),
+                "default_base_branch": "dev",
+            }),
+        );
+        created_workspace(&result);
+        (backend, server)
+    }
+
+    fn workspace_count(backend: &TestBackend) -> usize {
+        lock(&backend.storage).list_workspaces().unwrap().len()
+    }
+
+    #[test]
+    fn creating_a_workspace_opens_an_existing_clone_at_its_root() {
+        let (storage, _) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![toplevel("/dev/site")],
+            herdr_opens_a_new_workspace(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site/src"),
+                "default_base_branch": "dev",
+            }),
+        );
+
+        let workspace = created_workspace(&result);
+        assert_eq!(workspace["name"], "site");
+        assert_eq!(
+            workspace["location"],
+            serde_json::json!({"kind": "local", "path": host("/dev/site")})
+        );
+        assert_eq!(workspace["defaultBaseBranch"], "dev");
+        let id = model::WorkspaceId(workspace["id"].as_i64().unwrap());
+        let stored = lock(&backend.storage).get_workspace(id).unwrap().unwrap();
+        assert_eq!(stored.name, "site");
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn creating_a_workspace_clones_the_url_and_detects_the_base_branch() {
+        let (storage, _) = storage_with_task(None);
+        let git_runner = Arc::new(crate::adapters::git::fake::FakeRunner::new(vec![
+            Ok(String::new()),
+            Ok("origin/main\n".to_owned()),
+        ]));
+        let mut backend = TestBackend::scripted(storage, Vec::new(), herdr_opens_a_new_workspace());
+        backend.git = Git::new(Box::new(git_runner.clone()));
+        let backend = Arc::new(backend);
+        let server = ToodoMcp::new(backend.clone());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site"),
+                "clone_url": "git@github.com:me/site.git",
+            }),
+        );
+
+        let workspace = created_workspace(&result);
+        assert_eq!(workspace["location"]["path"], host("/dev/site"));
+        assert_eq!(workspace["defaultBaseBranch"], "main");
+        let invocations = git_runner.invocations.lock().unwrap();
+        assert_eq!(invocations[0].args[0], "clone");
+        assert!(
+            invocations[0]
+                .args
+                .contains(&"git@github.com:me/site.git".to_owned())
+        );
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_path_another_workspace_uses_is_rejected_before_anything_runs() {
+        // Neither git nor herdr may run again: their scripts end after the first workspace.
+        let (backend, server) = server_with_site(Vec::new(), Vec::new());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "again",
+                "path": host("/dev/site"),
+                "clone_url": "git@github.com:me/site.git",
+            }),
+        );
+
+        assert_eq!(
+            error_text(&result),
+            format!(
+                "Rejected: workspace site (2) already uses {}",
+                host("/dev/site")
+            )
+        );
+        assert_eq!(workspace_count(&backend), 2);
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn opening_another_folder_of_a_workspace_repository_is_rejected_before_herdr_runs() {
+        let (backend, server) = server_with_site(vec![toplevel("/dev/site")], Vec::new());
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "again",
+                "path": host("/dev/site/docs"),
+                "default_base_branch": "main",
+            }),
+        );
+
+        assert_eq!(
+            error_text(&result),
+            format!(
+                "Rejected: workspace site (2) already uses {}",
+                host("/dev/site")
+            )
+        );
+        assert_eq!(workspace_count(&backend), 2);
+    }
+
+    #[test]
+    fn an_invalid_path_or_a_folder_outside_a_repository_creates_no_workspace() {
+        let (storage, _) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![Err(crate::adapters::git::GitError::Failed {
+                command: format!("git -C {} rev-parse --show-toplevel", host("/dev/notes")),
+                stderr: "fatal: not a git repository (or any of the parent directories): .git"
+                    .to_owned(),
+            })],
+            Vec::new(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        let relative = create_workspace(
+            &server,
+            serde_json::json!({"name": "notes", "path": "notes"}),
+        );
+        assert_eq!(
+            error_text(&relative),
+            r#"InvalidInput: path is not absolute: "notes""#
+        );
+
+        let outside = create_workspace(
+            &server,
+            serde_json::json!({"name": "notes", "path": host("/dev/notes")}),
+        );
+        let message = error_text(&outside);
+        assert!(message.starts_with("External: "), "{message}");
+        assert!(message.contains("not a git repository"), "{message}");
+
+        assert_eq!(workspace_count(&backend), 1);
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 0);
+    }
+
+    /// Adds the workspace "site" on the SSH machine devbox with one planned task.
+    fn add_devbox_task(storage: &mut crate::storage::Storage) -> model::Task {
+        use crate::domain::model::{MachineLabel, TaskType, WorkspaceLocation};
+        use crate::domain::path::PosixPath;
+        let workspace = storage
+            .create_workspace(&crate::storage::NewWorkspace {
+                name: "site".to_owned(),
+                location: WorkspaceLocation::Ssh {
+                    machine: MachineLabel::parse("devbox").unwrap(),
+                    path: PosixPath::parse("/srv/site").unwrap(),
+                },
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        storage
+            .create_task(&crate::storage::NewTask {
+                workspace_id: workspace.id,
+                task_type: TaskType::Fix,
+                title: "Fix footer".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+            })
+            .unwrap()
+    }
+
+    /// `herdr machine list --json` with the given SSH targets.
+    fn saved_machines(targets: &[&str]) -> Result<String, crate::adapters::git::GitError> {
+        let rows: Vec<_> = targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                serde_json::json!({"id": format!("m{index}"), "label": target, "target": target,
+                    "session": "default", "enabled": true, "selected": false})
+            })
+            .collect();
+        Ok(serde_json::Value::Array(rows).to_string())
+    }
+
+    fn list_machine_settings(server: &ToodoMcp) -> serde_json::Value {
+        let result = runtime().block_on(server.list_machine_settings()).unwrap();
+        created_workspace(&serde_json::to_value(result).unwrap())
+    }
+
+    fn set_worktree_root(server: &ToodoMcp, arguments: serde_json::Value) -> serde_json::Value {
+        let request = serde_json::from_value(arguments).unwrap();
+        serde_json::to_value(server.set_worktree_root(Parameters(request)).unwrap()).unwrap()
+    }
+
+    fn local(root: Option<&str>) -> serde_json::Value {
+        serde_json::json!({"machine": {"kind": "local"}, "worktreeRoot": root.map(host)})
+    }
+
+    fn ssh(label: &str, root: Option<&str>) -> serde_json::Value {
+        serde_json::json!({"machine": {"kind": "ssh", "label": label}, "worktreeRoot": root})
+    }
+
+    #[test]
+    fn worktree_roots_of_local_and_ssh_machines_are_listed_set_and_cleared() {
+        let (mut storage, _) = storage_with_task(None);
+        add_devbox_task(&mut storage);
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            Vec::new(),
+            vec![
+                saved_machines(&["gpu", "devbox"]),
+                saved_machines(&["gpu"]),
+                Err(crate::adapters::git::fake::failed()),
+            ],
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        assert_eq!(
+            list_machine_settings(&server),
+            serde_json::json!({"machines": [local(None), ssh("devbox", None), ssh("gpu", None)]})
+        );
+
+        let saved = set_worktree_root(&server, serde_json::json!({"worktree_root": host("/wt")}));
+        assert_eq!(created_workspace(&saved), local(Some("/wt")));
+        let saved = set_worktree_root(
+            &server,
+            serde_json::json!({"ssh_host": "devbox", "worktree_root": "/srv/wt/"}),
+        );
+        assert_eq!(created_workspace(&saved), ssh("devbox", Some("/srv/wt")));
+        // A machine known only by its saved settings is listed too.
+        set_worktree_root(
+            &server,
+            serde_json::json!({"ssh_host": "lab", "worktree_root": "/lab"}),
+        );
+        assert_eq!(
+            list_machine_settings(&server),
+            serde_json::json!({"machines": [
+                local(Some("/wt")),
+                ssh("devbox", Some("/srv/wt")),
+                ssh("gpu", None),
+                ssh("lab", Some("/lab")),
+            ]})
+        );
+
+        let cleared = set_worktree_root(&server, serde_json::json!({}));
+        assert_eq!(created_workspace(&cleared), local(None));
+        let cleared = set_worktree_root(
+            &server,
+            serde_json::json!({"ssh_host": "devbox", "worktree_root": null}),
+        );
+        assert_eq!(created_workspace(&cleared), ssh("devbox", None));
+        // Without herdr's saved machines, the others are still listed.
+        let listed = list_machine_settings(&server);
+        assert!(listed["herdrError"].is_string(), "{listed}");
+        assert_eq!(
+            listed["machines"],
+            serde_json::json!([local(None), ssh("devbox", None), ssh("lab", Some("/lab"))])
+        );
+    }
+
+    #[test]
+    fn invalid_worktree_roots_and_hosts_are_rejected_and_save_nothing() {
+        let (mut storage, _) = storage_with_task(None);
+        add_devbox_task(&mut storage);
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            Vec::new(),
+            vec![saved_machines(&[])],
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        for arguments in [
+            serde_json::json!({"worktree_root": "worktrees"}),
+            serde_json::json!({"worktree_root": ""}),
+            serde_json::json!({"ssh_host": "devbox", "worktree_root": r"D:\wt"}),
+            serde_json::json!({"ssh_host": "devbox", "worktree_root": "srv/wt"}),
+            serde_json::json!({"ssh_host": " ", "worktree_root": "/wt"}),
+        ] {
+            let result = set_worktree_root(&server, arguments.clone());
+            let message = error_text(&result);
+            assert!(
+                message.starts_with("InvalidInput: "),
+                "{arguments}: {message}"
+            );
+        }
+
+        assert_eq!(
+            list_machine_settings(&server),
+            serde_json::json!({"machines": [local(None), ssh("devbox", None)]})
+        );
+        assert!(
+            lock(&backend.storage)
+                .ssh_machines_with_settings()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_start_without_the_worktree_root_of_an_ssh_machine_names_the_host_to_set() {
+        let (mut storage, _) = storage_with_task(Some(r"D:\wt"));
+        let task = add_devbox_task(&mut storage);
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+
+        let result = start(&server, task.id);
+
+        assert_eq!(
+            error_text(&result),
+            "InvalidInput: worktree root is not set for machine devbox; ask the user where \
+             task worktrees go on that machine, call set_worktree_root with ssh_host \
+             \"devbox\" and worktree_root set to that absolute directory, then start the task \
+             again"
+        );
     }
 
     fn runtime() -> tokio::runtime::Runtime {

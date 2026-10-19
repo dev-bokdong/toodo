@@ -37,7 +37,7 @@ use crate::commands::backup::{self, Backups};
 use crate::commands::completion::{self, PullRequestStatusState};
 use crate::commands::events::{
     self, AgentStatusState, AgentStatusesChanged, Notifier, PullRequestStatusesChanged,
-    TasksChanged, names,
+    TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{
@@ -146,6 +146,10 @@ impl Notifier for Services {
             workspace_id: workspace.into(),
         };
         self.emit(names::TASKS_CHANGED, &event);
+    }
+
+    fn workspaces_changed(&self) {
+        self.emit(names::WORKSPACES_CHANGED, &WorkspacesChanged);
     }
 
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {

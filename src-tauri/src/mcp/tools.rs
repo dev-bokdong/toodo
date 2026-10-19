@@ -17,7 +17,8 @@ use crate::commands::types::{
     self, CommitRecord, Estimate, Task, TaskEdit, TaskId, TaskResolution, TaskStatus, TaskType,
     Workspace, WorkspaceId,
 };
-use crate::commands::{CommandError, CommandResult, StorageState};
+use crate::commands::workspaces;
+use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
 use crate::domain::model::{self, NoteKind};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
@@ -26,6 +27,24 @@ use crate::storage::{self, Storage, StorageError, TaskSearch};
 pub struct ListTasks {
     /// Only tasks of this workspace; all workspaces when omitted.
     pub workspace_id: Option<WorkspaceId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct CreateWorkspace {
+    /// Name shown in Toodo, e.g. the repository name.
+    pub name: String,
+    /// Absolute path of the repository on the machine Toodo runs on: a Windows path such
+    /// as `C:\dev\toodo` in the desktop app, a POSIX path such as `/home/me/toodo` on
+    /// toodo-server. With `clone_url` it must not exist yet or be an empty directory;
+    /// without it, it must be inside an existing clone, whose root becomes the workspace.
+    pub path: String,
+    /// Clone this repository URL into `path`; omit it to open the repository already
+    /// cloned there.
+    pub clone_url: Option<String>,
+    /// The branch task pull requests go into, e.g. `dev`; detected from the repository's
+    /// `origin` default branch when omitted.
+    pub default_base_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -160,8 +179,104 @@ pub struct ConcludeTask {
     pub note: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SetWorktreeRoot {
+    /// SSH host of a remote machine, as in `machine.label` of list_machine_settings or a
+    /// workspace's `location.machine`; omit it for the machine Toodo runs on.
+    pub ssh_host: Option<String>,
+    /// Absolute directory on that machine that holds the task worktrees, e.g.
+    /// `/home/me/worktrees`: a Windows path such as `D:\worktrees` for the machine of the
+    /// desktop app, a POSIX path on toodo-server and on SSH machines. Null or omitted
+    /// clears it, so tasks on the machine cannot start until it is set again.
+    pub worktree_root: Option<String>,
+}
+
+/// Settings of the machine Toodo runs on and of every known SSH machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineSettingsList {
+    pub machines: Vec<types::MachineSettings>,
+    /// Why the machines saved in herdr could not be read; the list then lacks those
+    /// without a workspace or saved settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub herdr_error: Option<String>,
+}
+
+/// The local machine first, then the SSH machines saved in herdr, hosting a workspace, or
+/// with saved settings, by label.
+pub fn list_machine_settings(
+    storage: &StorageState,
+    herdr: &Herdr,
+) -> CommandResult<MachineSettingsList> {
+    let (saved, herdr_error) = match herdr.list_machines() {
+        Ok(saved) => (saved, None),
+        Err(error) => (Vec::new(), Some(CommandError::from(error).message)),
+    };
+    let storage = lock(storage);
+    let mut hosts: BTreeSet<String> = saved
+        .into_iter()
+        .map(|machine| machine.target.trim().to_owned())
+        .collect();
+    for workspace in storage.list_workspaces()? {
+        if let model::Machine::Ssh(label) = workspace.location.machine() {
+            hosts.insert(label.as_str().to_owned());
+        }
+    }
+    for label in storage.ssh_machines_with_settings()? {
+        hosts.insert(label.as_str().to_owned());
+    }
+    let machines = std::iter::once(types::Machine::Local)
+        .chain(hosts.into_iter().map(|label| types::Machine::Ssh { label }))
+        .map(|machine| workspaces::machine_settings(&storage, machine))
+        .collect::<CommandResult<_>>()?;
+    Ok(MachineSettingsList {
+        machines,
+        herdr_error,
+    })
+}
+
+/// Saves the worktree root of one machine through the app's own validation.
+pub fn set_worktree_root(
+    storage: &mut Storage,
+    request: SetWorktreeRoot,
+) -> CommandResult<types::MachineSettings> {
+    let machine = match request.ssh_host {
+        Some(label) => types::Machine::Ssh { label },
+        None => types::Machine::Local,
+    };
+    workspaces::save_settings(
+        storage,
+        types::MachineSettings {
+            machine,
+            worktree_root: request.worktree_root,
+        },
+    )
+}
+
 pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
     Ok(types::map_all(&storage.list_workspaces()?))
+}
+
+/// Creates a local workspace through the app's own setup: clone or check the repository,
+/// open it in herdr, and save it unless a workspace already uses its location.
+pub fn create_workspace(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: CreateWorkspace,
+) -> CommandResult<Workspace> {
+    let setup = types::NewWorkspace {
+        name: request.name,
+        location: types::WorkspaceLocation::Local { path: request.path },
+        source: match request.clone_url {
+            Some(url) => types::WorkspaceSource::Clone { url },
+            None => types::WorkspaceSource::Open,
+        },
+        default_base_branch: request.default_base_branch,
+    }
+    .try_into()?;
+    Ok((&workspaces::create(storage, git, herdr, setup)?).into())
 }
 
 pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<Task>> {
@@ -185,6 +300,9 @@ pub struct CurrentTaskReply {
     pub task: Task,
     /// The default base branch of the task's workspace.
     pub base_branch: String,
+    /// Whether you merge the task's pull request yourself: `never`, or `afterChecks`
+    /// (into `base_branch` only, once every check on it passed).
+    pub agent_merge: types::AgentMerge,
 }
 
 /// The task whose worktree contains `cwd`; the innermost one if worktrees are nested.
@@ -215,6 +333,7 @@ pub fn current_task(storage: &Storage, request: CurrentTask) -> CommandResult<Cu
     Ok(CurrentTaskReply {
         task,
         base_branch: workspace.default_base_branch,
+        agent_merge: workspace.agent_merge.into(),
     })
 }
 
@@ -317,7 +436,47 @@ pub fn start_task(
     herdr: &Herdr,
     request: TaskRef,
 ) -> CommandResult<Task> {
-    Ok((&herdr_commands::start(storage, git, herdr, request.id.into())?).into())
+    let id = request.id.into();
+    match herdr_commands::start(storage, git, herdr, id) {
+        Ok(task) => Ok((&task).into()),
+        Err(error) => Err(with_worktree_root_hint(&lock(storage), id, error)),
+    }
+}
+
+/// Tells the agent how to fix a start rejected because the task's machine has no worktree
+/// root; any other error is returned as it is.
+fn with_worktree_root_hint(
+    storage: &Storage,
+    id: model::TaskId,
+    mut error: CommandError,
+) -> CommandError {
+    if error.kind != CommandErrorKind::InvalidInput {
+        return error;
+    }
+    let Ok(Some(task)) = storage.get_task(id) else {
+        return error;
+    };
+    let Ok(Some(workspace)) = storage.get_workspace(task.workspace_id) else {
+        return error;
+    };
+    let machine = workspace.location.machine();
+    let root_missing = match storage.get_machine_settings(&machine) {
+        Ok(model::MachineSettings::Local { worktree_root }) => worktree_root.is_none(),
+        Ok(model::MachineSettings::Ssh { worktree_root, .. }) => worktree_root.is_none(),
+        Err(_) => false,
+    };
+    if !root_missing {
+        return error;
+    }
+    let host = match &machine {
+        model::Machine::Local => String::new(),
+        model::Machine::Ssh(label) => format!("ssh_host \"{label}\" and "),
+    };
+    error.message.push_str(&format!(
+        "; ask the user where task worktrees go on that machine, call set_worktree_root \
+         with {host}worktree_root set to that absolute directory, then start the task again"
+    ));
+    error
 }
 
 /// Completes an `in_review` task whose pull request is merged, as the app does.
@@ -1010,6 +1169,33 @@ mod tests {
         let error = find(r"D:\wt\toodo\feat-schema-10").unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
         assert!(find(r"D:\wt\toodo").is_err());
+    }
+
+    #[test]
+    fn the_current_task_tells_whether_the_agent_merges_its_pull_request() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        set_worktree(
+            &mut storage,
+            task.id,
+            HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-schema-1").unwrap()),
+        );
+        let agent_merge = |storage: &Storage| {
+            let found = current_task(
+                storage,
+                CurrentTask {
+                    cwd: r"D:\wt\toodo\feat-schema-1".to_owned(),
+                },
+            )
+            .unwrap();
+            serde_json::to_value(&found).unwrap()["agentMerge"].clone()
+        };
+        assert_eq!(agent_merge(&storage), "never");
+
+        let mut saved = storage.get_workspace(workspace.into()).unwrap().unwrap();
+        saved.agent_merge = model::AgentMerge::AfterChecks;
+        storage.update_workspace(&saved).unwrap();
+        assert_eq!(agent_merge(&storage), "afterChecks");
     }
 
     #[test]

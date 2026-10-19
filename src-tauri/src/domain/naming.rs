@@ -90,7 +90,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::domain::model::{MachineLabel, TaskId, TaskType, WorkspaceId};
+    use crate::domain::model::{AgentMerge, MachineLabel, TaskId, TaskType, WorkspaceId};
     use crate::domain::path::{PosixPath, WindowsPath};
     use crate::domain::status::TaskStatus;
 
@@ -127,6 +127,7 @@ mod tests {
                 path: WindowsPath::parse(r"C:\src\toodo").unwrap().into(),
             },
             default_base_branch: "main".to_owned(),
+            agent_merge: AgentMerge::Never,
         }
     }
 
@@ -139,6 +140,7 @@ mod tests {
                 path: PosixPath::parse("/home/me/toodo").unwrap(),
             },
             default_base_branch: "main".to_owned(),
+            agent_merge: AgentMerge::Never,
         }
     }
 

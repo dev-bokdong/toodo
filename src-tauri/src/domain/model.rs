@@ -100,6 +100,19 @@ pub struct Workspace {
     pub name: String,
     pub location: WorkspaceLocation,
     pub default_base_branch: String,
+    pub agent_merge: AgentMerge,
+}
+
+/// Whether agents merge the pull request of their own task. Toodo never merges; this
+/// only tells agents (through the MCP server) what they may do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgentMerge {
+    /// Agents stop once the pull request is open; the user merges it.
+    #[default]
+    Never,
+    /// Agents merge their pull request into the workspace base branch once its checks
+    /// pass.
+    AfterChecks,
 }
 
 /// Per-machine configuration. `worktree_root` must be set before a task on that
