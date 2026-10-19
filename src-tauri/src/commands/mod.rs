@@ -203,6 +203,7 @@ impl From<StorageError> for CommandError {
             | StorageError::Transition(_)
             | StorageError::DependenciesNotDone(_) => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
+            | StorageError::SelfRelation(_)
             | StorageError::CommitTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
             StorageError::Io(_) => CommandErrorKind::External,

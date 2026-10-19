@@ -232,6 +232,81 @@ pub(super) const MIGRATIONS: &[&str] = &[
     ALTER TABLE tasks DROP COLUMN old_estimate_amount;
     ALTER TABLE tasks DROP COLUMN old_estimate_unit;
     ",
+    // Version 11: finding earlier tasks. `task_relations` links tasks that are related
+    // without one waiting on the other, in any workspace; a link is stored once, from the
+    // lower task ID to the higher one. `task_search` is a full-text index (FTS5 with the
+    // trigram tokenizer, so any substring of three or more characters matches, in any
+    // language) of what `task_search_source` says about each task: title, description,
+    // completion note and agent notes, branch, and pull request title and URL. Its rowid
+    // is the task ID, and the triggers below keep it in sync with every write. A later
+    // migration that rebuilds one of these tables has to recreate the view and triggers.
+    r"
+    CREATE TABLE task_relations (
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        related_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        PRIMARY KEY (task_id, related_id),
+        CHECK (task_id < related_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX task_relations_related_id ON task_relations (related_id);
+
+    CREATE VIRTUAL TABLE task_search USING fts5 (
+        title, description, notes, branch, pull_request, tokenize = 'trigram'
+    );
+    CREATE VIEW task_search_source (id, title, description, notes, branch, pull_request) AS
+    SELECT t.id, t.title, t.description,
+        trim(coalesce(t.completion_note, '') || char(10) || coalesce(
+            (SELECT group_concat(n.body, char(10)) FROM task_notes n WHERE n.task_id = t.id),
+            ''), char(10)),
+        coalesce(t.branch, ''),
+        trim(coalesce((SELECT s.title FROM pull_request_snapshots s WHERE s.task_id = t.id), '')
+            || ' ' || coalesce(t.pull_request_url, ''))
+    FROM tasks t;
+    INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+        SELECT * FROM task_search_source;
+
+    CREATE TRIGGER task_search_task_inserted AFTER INSERT ON tasks BEGIN
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER task_search_task_updated
+        AFTER UPDATE OF title, description, completion_note, branch, pull_request_url ON tasks
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER task_search_task_deleted AFTER DELETE ON tasks BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.id;
+    END;
+    CREATE TRIGGER task_search_note_inserted AFTER INSERT ON task_notes BEGIN
+        DELETE FROM task_search WHERE rowid = NEW.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.task_id;
+    END;
+    CREATE TRIGGER task_search_note_deleted AFTER DELETE ON task_notes BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_inserted AFTER INSERT ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = NEW.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_updated AFTER UPDATE ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_deleted AFTER DELETE ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -672,6 +747,70 @@ mod tests {
             "UPDATE tasks SET estimate_unit = NULL WHERE id = 1",
             "UPDATE tasks SET estimate_amount = 0 WHERE id = 1",
             "UPDATE tasks SET estimate_unit = 'days' WHERE id = 2",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn version_11_indexes_existing_tasks_for_search_and_relates_none() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..10] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, description, status, resolution,
+                    branch, pull_request_url, completion_note)
+                VALUES (1, 'feat', 'Ship the server', 'Deploy to the home box', 'done',
+                        'merged', 'feat/ship-server-1',
+                        'https://github.com/acme/toodo/pull/7', 'Chose systemd'),
+                       (1, 'fix', 'Other', '', 'planned', NULL, NULL, NULL, NULL);
+            INSERT INTO task_notes (task_id, kind, body, at)
+                VALUES (2, 'progress', 'Picked rusqlite over sqlx', 5);
+            INSERT INTO pull_request_snapshots (task_id, number, title, additions, deletions,
+                    changed_files, review_count, reviewer_count)
+                VALUES (1, 7, 'Add toodo-server', 1, 0, 1, 0, 0);
+            ",
+        )
+        .unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let matches = |query: &str| -> Vec<i64> {
+            conn.prepare("SELECT rowid FROM task_search WHERE task_search MATCH ?1 ORDER BY rowid")
+                .unwrap()
+                .query_map([query], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        for (query, found) in [
+            ("\"home box\"", vec![1]),
+            ("systemd", vec![1]),
+            ("\"toodo-server\"", vec![1]),
+            ("\"pull/7\"", vec![1]),
+            ("\"ship-server\"", vec![1]),
+            ("rusqlite", vec![2]),
+            // A substring of any word: "Ship the server" and "Other".
+            ("\"the\"", vec![1, 2]),
+        ] {
+            assert_eq!(matches(query), found, "{query}");
+        }
+        let relations: i64 = conn
+            .query_row("SELECT count(*) FROM task_relations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(relations, 0);
+        for invalid in [
+            "INSERT INTO task_relations (task_id, related_id) VALUES (2, 1)",
+            "INSERT INTO task_relations (task_id, related_id) VALUES (1, 1)",
+            "INSERT INTO task_relations (task_id, related_id) VALUES (1, 9)",
         ] {
             assert!(conn.execute(invalid, []).is_err(), "{invalid}");
         }

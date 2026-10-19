@@ -25,6 +25,31 @@ Deleting tasks happens in the Toodo app only.
 3. Read the description. `## Done when` is your finish line; `## Purpose` decides
    questions the criteria leave open. If the description is unclear or contradicts the
    code, call `report_blocker` with what you need and ask the user.
+4. Before you plan, look up the history of the subject (see "Finding earlier work"
+   below): earlier tasks may already have decided an approach, rejected one, or left
+   work you build on.
+
+## Finding earlier work
+
+- `search_tasks` finds tasks of every workspace by words in their title, description,
+  notes, completion note, branch, and pull request, best match first. Every word must
+  appear (as a substring, in any language, short Korean words included); words are
+  literal, never operators. Use two or three distinctive words, e.g. a component name
+  and a verb, and search again with other words or synonyms before concluding there is
+  nothing. Narrow with `workspace_id` or `status` when there are too many results.
+- `get_task` returns one task with its whole history: description, status timeline,
+  progress and blocker notes, completion note (for a task done as `not_adopted`, the
+  conclusion of why it was not adopted), pull request, and commits, plus the tasks it
+  `depends_on`, its `dependents`, and its `related` tasks. Read what was decided there
+  before deciding again, and follow the links with more `get_task` calls when the
+  history matters.
+- Link tasks only by what they mean:
+  - `add_dependency` only for a real prerequisite: work that has to be done before the
+    other task can be finished (see step 3). It blocks the dependent task.
+  - `add_related` for everything else worth reading together: an earlier task whose
+    decisions this one builds on, a follow-up of a not adopted experiment, the same area
+    in another workspace. Related links go both ways, cross workspaces, and never block
+    starting a task. `remove_related` drops a wrong link.
 
 ## 2. Work
 
@@ -37,10 +62,11 @@ Deleting tasks happens in the Toodo app only.
 When you find work that has to land before this task can be finished and that is outside
 its scope (a bug in the base branch, a missing API, a refactor the change depends on):
 
-1. Call `list_tasks` for the workspace and reuse a matching task instead of creating a
-   duplicate.
+1. Call `search_tasks` for the work and reuse a matching open task instead of creating
+   a duplicate; read relevant done tasks with `get_task` before planning the new ones.
 2. Create each missing task with `create_task`, with a description in the format below.
-   Do not make it depend on your task: your task could then never finish.
+   Do not make it depend on your task: your task could then never finish. Link it with
+   `add_related` to earlier tasks it builds on that it does not have to wait for.
 3. Tell the user which tasks you created and why this task needs them.
 4. Call `add_dependency` once, with `task_id` = your task and `depends_on` = every
    prerequisite. This pauses your task.
@@ -72,7 +98,7 @@ The outcome the task delivers and why it matters, in one to three sentences.
 ## Background
 
 What exists today, what prompted the task (e.g. found while working on #12), related
-tasks, links, and constraints the implementer has to respect.
+tasks and what they decided, links, and constraints the implementer has to respect.
 
 ## Done when
 
