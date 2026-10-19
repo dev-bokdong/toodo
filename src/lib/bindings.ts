@@ -202,6 +202,16 @@ export const events = {
 };
 
 /* Types */
+/**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
+export type AgentMerge = 
+/**  Agents stop once the pull request is open; the user merges it. */
+"never" | 
+/**
+ *  Agents merge their pull request into the workspace base branch once every check
+ *  on it passed.
+ */
+"afterChecks";
+
 /**  What the agent working on a task in herdr is doing. */
 export type AgentStatus = "idle" | "working" | "blocked" | "done";
 
@@ -594,6 +604,8 @@ export type Workspace = {
 	name: string,
 	location: WorkspaceLocation,
 	defaultBaseBranch: string,
+	/**  Whether agents merge their own task pull request into the base branch. */
+	agentMerge: AgentMerge,
 };
 
 export type WorkspaceId = number;

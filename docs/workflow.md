@@ -215,7 +215,10 @@ shown; opening it again is safe, because pushing is repeatable and an open pull 
 is reused instead of created twice. The same action on an `in_review` task ("Push to
 PR") pushes commits added after review feedback and refreshes the commit records.
 
-Review and merging happen on GitHub; Toodo never merges a pull request itself.
+Review and merging happen on GitHub; Toodo never merges a pull request itself. Agents
+stop at the open pull request too, unless the workspace's agent merge setting is "after
+checks pass": then the agent merges its own pull request into the base branch once every
+check on it passed.
 
 ### 7. Complete the task
 

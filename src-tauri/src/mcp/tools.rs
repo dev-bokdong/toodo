@@ -185,6 +185,9 @@ pub struct CurrentTaskReply {
     pub task: Task,
     /// The default base branch of the task's workspace.
     pub base_branch: String,
+    /// Whether you merge the task's pull request yourself: `never`, or `afterChecks`
+    /// (into `base_branch` only, once every check on it passed).
+    pub agent_merge: types::AgentMerge,
 }
 
 /// The task whose worktree contains `cwd`; the innermost one if worktrees are nested.
@@ -215,6 +218,7 @@ pub fn current_task(storage: &Storage, request: CurrentTask) -> CommandResult<Cu
     Ok(CurrentTaskReply {
         task,
         base_branch: workspace.default_base_branch,
+        agent_merge: workspace.agent_merge.into(),
     })
 }
 
@@ -1010,6 +1014,33 @@ mod tests {
         let error = find(r"D:\wt\toodo\feat-schema-10").unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
         assert!(find(r"D:\wt\toodo").is_err());
+    }
+
+    #[test]
+    fn the_current_task_tells_whether_the_agent_merges_its_pull_request() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        set_worktree(
+            &mut storage,
+            task.id,
+            HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-schema-1").unwrap()),
+        );
+        let agent_merge = |storage: &Storage| {
+            let found = current_task(
+                storage,
+                CurrentTask {
+                    cwd: r"D:\wt\toodo\feat-schema-1".to_owned(),
+                },
+            )
+            .unwrap();
+            serde_json::to_value(&found).unwrap()["agentMerge"].clone()
+        };
+        assert_eq!(agent_merge(&storage), "never");
+
+        let mut saved = storage.get_workspace(workspace.into()).unwrap().unwrap();
+        saved.agent_merge = model::AgentMerge::AfterChecks;
+        storage.update_workspace(&saved).unwrap();
+        assert_eq!(agent_merge(&storage), "afterChecks");
     }
 
     #[test]
