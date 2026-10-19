@@ -210,7 +210,7 @@ pub fn main() {
 }
 
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(&config.data_dir)?;
+    create_private_dir(&config.data_dir)?;
     let storage = Storage::open(&config.data_dir.join(DATABASE_FILE))?;
     let mcp_token = mcp::load_token(&config.data_dir.join(mcp::TOKEN_FILE))?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
@@ -271,6 +271,25 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(PoisonError::into_inner)
         .shut_down();
     Ok(served?)
+}
+
+/// Creates the data directory, which holds the access tokens, so that on Unix only the
+/// owner can enter it; an existing one is tightened.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => return Err(error),
+            _ => {}
+        }
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)
 }
 
 /// The routes: the API behind the web token, MCP behind its own token, and the web app.
@@ -338,4 +357,26 @@ async fn interrupted() {
         () = terminate => {}
     }
     println!("toodo-server: stopping");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn only_the_owner_can_enter_the_data_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let temp = tempfile::tempdir().unwrap();
+        let created = temp.path().join("share/toodo-server");
+        create_private_dir(&created).unwrap();
+        assert_eq!(mode(&created), 0o700);
+
+        let existing = temp.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o775)).unwrap();
+        create_private_dir(&existing).unwrap();
+        assert_eq!(mode(&existing), 0o700);
+    }
 }

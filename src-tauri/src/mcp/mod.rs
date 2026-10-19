@@ -178,19 +178,38 @@ pub(crate) async fn serve(listener: TcpListener, app: axum::Router) -> io::Resul
     axum::serve(tokio::net::TcpListener::from_std(listener)?, app).await
 }
 
-/// The token in `path`, created with 32 random bytes on first use.
+/// The token in `path`, created with 32 random bytes on first use. On Unix only the owner
+/// may read it: a new file is created that way and an existing one is tightened.
 pub(crate) fn load_token(path: &Path) -> io::Result<String> {
     match fs::read_to_string(path) {
-        Ok(token) if !token.trim().is_empty() => return Ok(token.trim().to_owned()),
-        Ok(_) => {}
+        Ok(token) if !token.trim().is_empty() => {
+            make_private(path)?;
+            return Ok(token.trim().to_owned());
+        }
+        Ok(_) => fs::remove_file(path)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    fs::write(path, &token)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    io::Write::write_all(&mut options.open(path)?, token.as_bytes())?;
     Ok(token)
+}
+
+#[cfg(unix)]
+fn make_private(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn make_private(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// The MCP endpoint at `/mcp`, open only to requests that bear `token`.
@@ -467,6 +486,29 @@ mod tests {
         assert_eq!(token.len(), 64);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(load_token(&path).unwrap(), token);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_the_owner_can_read_the_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().unwrap();
+        let created = dir.path().join(TOKEN_FILE);
+        load_token(&created).unwrap();
+        assert_eq!(mode(&created), 0o600);
+
+        let existing = dir.path().join("existing");
+        fs::write(&existing, "abc").unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o664)).unwrap();
+        assert_eq!(load_token(&existing).unwrap(), "abc");
+        assert_eq!(mode(&existing), 0o600);
+
+        let blank = dir.path().join("blank");
+        fs::write(&blank, "\n").unwrap();
+        fs::set_permissions(&blank, fs::Permissions::from_mode(0o664)).unwrap();
+        assert_eq!(load_token(&blank).unwrap().len(), 64);
+        assert_eq!(mode(&blank), 0o600);
     }
 
     struct TestBackend {
