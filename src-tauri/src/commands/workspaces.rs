@@ -262,8 +262,16 @@ pub fn get_machine_settings(
     storage: State<'_, StorageState>,
     machine: types::Machine,
 ) -> CommandResult<MachineSettings> {
+    machine_settings(&lock(&storage), machine)
+}
+
+/// The settings of `machine`, shared by the app command and the MCP tools.
+pub(crate) fn machine_settings(
+    storage: &storage::Storage,
+    machine: types::Machine,
+) -> CommandResult<MachineSettings> {
     let machine = machine.try_into()?;
-    Ok((&lock(&storage).get_machine_settings(&machine)?).into())
+    Ok((&storage.get_machine_settings(&machine)?).into())
 }
 
 #[cfg_attr(feature = "desktop", tauri::command)]
@@ -272,8 +280,17 @@ pub fn save_machine_settings(
     storage: State<'_, StorageState>,
     settings: MachineSettings,
 ) -> CommandResult<MachineSettings> {
+    save_settings(&mut lock(&storage), settings)
+}
+
+/// Validates the worktree root for its machine (a local path of the build, or a POSIX
+/// path on an SSH machine) and saves it; shared by the app command and the MCP tools.
+pub(crate) fn save_settings(
+    storage: &mut storage::Storage,
+    settings: MachineSettings,
+) -> CommandResult<MachineSettings> {
     let settings: model::MachineSettings = settings.try_into()?;
-    lock(&storage).save_machine_settings(&settings)?;
+    storage.save_machine_settings(&settings)?;
     Ok((&settings).into())
 }
 

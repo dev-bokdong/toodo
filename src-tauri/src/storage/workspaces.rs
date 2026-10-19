@@ -249,6 +249,20 @@ impl Storage {
         })
     }
 
+    /// SSH machines that have a row in `machine_settings`, by label.
+    pub fn ssh_machines_with_settings(&self) -> Result<Vec<MachineLabel>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT label FROM machine_settings WHERE kind = 'ssh' ORDER BY label")?;
+        let labels = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        labels
+            .iter()
+            .map(|label| MachineLabel::parse(label).map_err(invalid_data))
+            .collect()
+    }
+
     pub fn save_machine_settings(&mut self, settings: &MachineSettings) -> Result<()> {
         let machine = settings.machine();
         let (kind, label) = machine_key(&machine);
