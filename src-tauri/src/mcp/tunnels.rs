@@ -41,7 +41,7 @@ struct Entry {
 }
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
-const MAX_RETRY: Duration = Duration::from_secs(60);
+const MAX_RETRY: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_secs(2);
 
 pub struct Tunnels {

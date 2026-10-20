@@ -7,3 +7,5 @@ pub mod herdr;
 pub mod herdr_events;
 pub mod ssh;
 pub mod ssh_tunnel;
+#[cfg(windows)]
+pub mod windows_process;
