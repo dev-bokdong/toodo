@@ -1167,6 +1167,7 @@ describe("App", () => {
     const gpu = within(panel).getByRole("listitem", { name: "Tunnel to gpu", hidden: true });
     expect(gpu).toHaveTextContent("Retrying");
     expect(gpu).toHaveTextContent("remote port forwarding failed");
+    expect(panel.closest("details")?.querySelector("summary")).toHaveTextContent("1 tunnel retrying");
   });
 
   it("shows why the MCP server is not running", async () => {

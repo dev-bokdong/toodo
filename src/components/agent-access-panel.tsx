@@ -57,10 +57,18 @@ export function AgentAccessPanel() {
   }
 
   const data = info.data;
+  const retrying = (tunnels.data ?? []).filter((tunnel) => tunnel.state === "retrying").length;
 
   return (
     <details className="group rounded-lg border p-2">
-      <summary className="cursor-pointer text-xs font-medium uppercase text-muted-foreground">Agent access</summary>
+      <summary className="cursor-pointer text-xs font-medium uppercase text-muted-foreground">
+        Agent access
+        {retrying > 0 && (
+          <span className="ml-1.5 normal-case text-destructive">
+            {retrying === 1 ? "1 tunnel retrying" : `${retrying} tunnels retrying`}
+          </span>
+        )}
+      </summary>
       <section aria-label="Agent access" className="mt-2 flex flex-col gap-2 text-xs">
         <p className="text-muted-foreground">
           {runsOnServer
