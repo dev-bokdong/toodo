@@ -4826,7 +4826,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "toodo"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "axum",
  "futures-util",
@@ -4849,6 +4849,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower-http",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

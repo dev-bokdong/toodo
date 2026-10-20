@@ -456,10 +456,17 @@ machine; see [server.md](server.md).
     connection). Agents there use the same URL and token as local ones.
   - A tunnel counts as open once ssh logs `remote forward success`. One that ends,
     e.g. because the remote port is taken by another Toodo, is opened again after
-    1 s, doubling up to 60 s; the delay resets once a tunnel opens. Tunnels of
+    1 s, doubling up to 30 s; the delay resets once a tunnel opens. Tunnels of
     machines without workspaces are stopped, and all of them when the app exits. The
     Agent access panel lists each machine's tunnel state and last error
-    (`list_mcp_tunnels`).
+    (`list_mcp_tunnels`), and its collapsed summary counts retrying tunnels.
+  - On Windows a child process outlives its parent, so each ssh joins one job object
+    with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` that the app holds until it exits
+    (`src-tauri/src/adapters/windows_process.rs`): the system ends the tunnels however
+    the app ends. Before opening a forward, Toodo also ends leftover `ssh.exe`
+    processes whose command line is exactly that forward to that host and whose
+    parent is gone, another program, or a later process with a reused id
+    (`stale_forwards` in `src-tauri/src/adapters/ssh_tunnel.rs`).
   - The forwarded port listens on the remote loopback only, so other users of that
     machine can reach it; the bearer token keeps them out.
 - **Storage**: SQLite database `toodo.sqlite3` in the app data directory (`%APPDATA%`)

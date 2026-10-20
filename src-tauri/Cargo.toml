@@ -1,6 +1,6 @@
 [package]
 name = "toodo"
-version = "0.10.3"
+version = "0.10.4"
 description = "Turn a task plan into implemented, reviewed code with herdr"
 authors = []
 edition = "2024"
@@ -71,6 +71,16 @@ getrandom = { version = "0.3", features = ["std"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 schemars = "1"
 
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Wdk_System_Threading",
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
