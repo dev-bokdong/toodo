@@ -112,7 +112,11 @@ without a merge (research not adopted, a duplicate, work no longer needed) with 
 reason. Never start, complete, or conclude your own task, the one current_task finds: \
 it was started for you, and the merge of its pull request completes it. conclude_task \
 never closes a pull request, so a task with an open one is rejected; the user concludes \
-it in the app.
+it in the app. When one pull request ships the work of several tasks, complete each \
+extra task with complete_task and merged_with set to the task that owns the pull \
+request (or the pull request URL) once it is merged, never with conclude_task: \
+not_adopted means the work did not ship. A task already concluded that way can be \
+completed with merged_with too.
 8. start_task needs a worktree root, the directory that holds task worktrees, on the \
 machine of the task's workspace. list_machine_settings shows it for every machine. Set \
 a missing one with set_worktree_root to a directory the user named, or when start_task \
@@ -524,15 +528,16 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Complete an in_review task whose pull request is merged, as the Toodo app does: the task becomes done (merged), its herdr workspace is closed, and its dependents can start. Rejected while the pull request is not merged. Toodo also completes merged tasks on its own within a minute. Never complete your own task, the one current_task finds: the merge of its pull request completes it."
+        description = "Complete an in_review task whose pull request is merged, as the Toodo app does: the task becomes done (merged), its herdr workspace is closed, and its dependents can start. Rejected while the pull request is not merged. Toodo also completes merged tasks on its own within a minute. With merged_with, complete a task whose work shipped with the merged pull request of another task instead, e.g. the extra tasks one pull request fixed: an in_progress or in_review task, or one already done as not_adopted, becomes done (merged) through that pull request, which the app shows on the task. Rejected while that pull request or task is not merged yet, and while the task's own branch has an open or merged pull request. Never complete your own task, the one current_task finds: the merge of its pull request completes it."
     )]
     async fn complete_task(
         &self,
-        Parameters(request): Parameters<tools::TaskRef>,
+        Parameters(request): Parameters<tools::CompleteTask>,
     ) -> Result<CallToolResult, ErrorData> {
         self.change_blocking(move |backend| {
             tools::complete_task(
                 backend.storage(),
+                backend.git(),
                 backend.github(),
                 backend.herdr(),
                 request,

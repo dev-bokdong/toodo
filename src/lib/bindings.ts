@@ -382,6 +382,16 @@ export type McpTunnelState = "connecting" | "open" | "retrying";
  */
 export type MergeState = "mergeable" | "conflicting" | "unknown";
 
+/**  The merged pull request of another task that shipped the work of a task. */
+export type MergedWith = {
+	/**
+	 *  The task whose pull request it is; `null` once that task is deleted or for a pull
+	 *  request no task records.
+	 */
+	taskId: TaskId | null,
+	pullRequestUrl: string,
+};
+
 /**  A remote machine to append to the user's SSH config. */
 export type NewSshHost = {
 	/**  Name used by `ssh <alias>` and shown as the machine label. */
@@ -494,6 +504,11 @@ export type Task = {
 	 *  for tasks completed before Toodo recorded it.
 	 */
 	pullRequest: PullRequestSnapshot | null,
+	/**
+	 *  The merged pull request of another task that shipped this task's work, for a task
+	 *  `done` as merged without a pull request of its own.
+	 */
+	mergedWith: MergedWith | null,
 	/**
 	 *  What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
 	 *  why it was not adopted.

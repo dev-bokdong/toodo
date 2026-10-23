@@ -201,6 +201,7 @@ mod tests {
             pull_request_merged_at: None,
             pull_request: None,
             resolution: None,
+            merged_with: None,
             completion_note: None,
             estimate: None,
             due_date: None,

@@ -14,6 +14,10 @@ Never start, complete, or conclude your own task (the one `current_task` finds) 
 of its pull request completes it. Those tools are for other tasks, e.g. starting a ready
 task for another agent session or concluding a duplicate. `conclude_task` never closes a
 pull request; a task with an open one is concluded by the user in the Toodo app.
+When your pull request also fixed other tasks, never conclude them: once it is merged and
+your task is done, complete each of them with `complete_task` and `merged_with` set to
+your task ID (or the pull request URL). A task already concluded as `not_adopted` that way
+can be completed with `merged_with` too.
 Deleting tasks happens in the Toodo app only.
 
 ## 1. Start
