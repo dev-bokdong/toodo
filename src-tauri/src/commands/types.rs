@@ -620,6 +620,9 @@ pub struct Task {
     /// The pull request as GitHub reported it when its merge completed the task; `null`
     /// for tasks completed before Toodo recorded it.
     pub pull_request: Option<PullRequestSnapshot>,
+    /// The merged pull request of another task that shipped this task's work, for a task
+    /// `done` as merged without a pull request of its own.
+    pub merged_with: Option<MergedWith>,
     /// What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
     /// why it was not adopted.
     pub completion_note: Option<String>,
@@ -629,6 +632,16 @@ pub struct Task {
     pub milestones: TaskMilestones,
     /// Notes agents left on the task through the MCP server, oldest first.
     pub notes: Vec<TaskNote>,
+}
+
+/// The merged pull request of another task that shipped the work of a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MergedWith {
+    /// The task whose pull request it is; `null` once that task is deleted or for a pull
+    /// request no task records.
+    pub task_id: Option<TaskId>,
+    pub pull_request_url: String,
 }
 
 /// What a note left on a task records.
@@ -780,6 +793,10 @@ impl From<&model::Task> for Task {
             due_date: task.due_date.map(|due| due.to_string()),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
             pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
+            merged_with: task.merged_with.as_ref().map(|merged| MergedWith {
+                task_id: merged.task_id.map(TaskId::from),
+                pull_request_url: merged.pull_request_url.clone(),
+            }),
             completion_note: task.completion_note.clone(),
             timeline: task
                 .timeline

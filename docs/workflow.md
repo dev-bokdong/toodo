@@ -304,6 +304,32 @@ user removes the dependency or changes the plan before starting them. The conclu
 be edited later but not cleared. Reviews count concluded tasks as completed and also
 report how many were not adopted, with their conclusions.
 
+### 7c. Complete through another task's pull request
+
+One pull request sometimes ships the work of several tasks, e.g. an agent that fixed a
+batch of small tasks on one branch. Only the task whose branch it is completes with its
+merge (step 7); the others did ship, so concluding them as `not_adopted` would be wrong.
+Agents complete each extra task through MCP with `complete_task` and `merged_with`: the
+ID of the task that owns the pull request, which must be `done` as merged, or the URL
+of the pull request, which must be merged into the workspace base branch (read with
+`gh pr view`). A task done that way in turn passes on the pull request it shipped with.
+Toodo:
+
+1. Accepts an `in_progress` or `in_review` task, or one already `done` as
+   `not_adopted`, which is how such tasks were closed before; it rejects the task itself
+   or its own pull request as `merged_with`.
+2. For a task being worked on, records the commits of its branch and looks up the pull
+   requests of its branch as in step 7b: a merged one rejects it (it completes with its
+   own merge), and so does an open one, which the user closes first. It then closes the
+   task's herdr workspace.
+3. Moves the task to `done` with the resolution `merged`, records that pull request and
+   its task (`mergedWith`) and the merge time, and clears `herdrWorkspaceId`. A
+   `not_adopted` task keeps its status history and conclusion and only changes its
+   resolution.
+
+Dependents are released as after any merge, reviews count the task as merged, and the
+task list shows which pull request shipped it ("Shipped with").
+
 ### 8. Delete the task and its worktree
 
 When the user deletes a task that is not `in_progress` or `in_review` and still has a
