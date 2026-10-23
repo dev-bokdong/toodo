@@ -253,6 +253,17 @@ impl TaskResolution {
     }
 }
 
+/// The merged pull request of another task that shipped the work of a task, e.g. one
+/// pull request that fixed several tasks: the task is `done` as merged without a pull
+/// request of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedWith {
+    /// The task whose pull request it is, if Toodo knows one; `None` once that task is
+    /// deleted or for a pull request no task records.
+    pub task_id: Option<TaskId>,
+    pub pull_request_url: String,
+}
+
 /// What a note left on a task records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NoteKind {
@@ -310,6 +321,9 @@ pub struct Task {
     pub pull_request_merged_at: Option<i64>,
     /// What the pull request looked like when its merge completed the task.
     pub pull_request: Option<PullRequestSnapshot>,
+    /// The pull request of another task that shipped this task's work; set only for a
+    /// task `done` as merged that way.
+    pub merged_with: Option<MergedWith>,
     /// What the user wrote about the outcome of a `done` task, for later reviews.
     pub completion_note: Option<String>,
     /// Status history, oldest event first.

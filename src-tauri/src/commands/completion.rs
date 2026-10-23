@@ -338,8 +338,13 @@ fn complete_if_merged(
             let resolution = task
                 .resolution
                 .map_or("done", model::TaskResolution::as_str);
+            let hint = if task.resolution == Some(model::TaskResolution::NotAdopted) {
+                "; if the merged pull request of another task shipped its work, complete it with merged_with set to that task or pull request"
+            } else {
+                ""
+            };
             return Err(CommandError::rejected(format!(
-                "task {id} is already done as {resolution}; there is nothing left to complete"
+                "task {id} is already done as {resolution}; there is nothing left to complete{hint}"
             )));
         }
         (status, Some(_)) => {
@@ -487,6 +492,190 @@ pub(crate) fn conclude(
         }
     }
     Ok(lock(storage).conclude_task(id, note, &records, closed)?)
+}
+
+/// The merged pull request that shipped the work of a task without a pull request of its
+/// own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MergedWithTarget {
+    /// The pull request of this task, which is `done` as merged.
+    Task(model::TaskId),
+    /// A pull request into the workspace base branch, by URL.
+    PullRequest(String),
+}
+
+/// Completes a task whose work shipped with the merged pull request of another task,
+/// e.g. one pull request that fixed several tasks: an `in_progress` or `in_review` task,
+/// or one already `done` as `not_adopted`, becomes `done` as merged through `target`. For
+/// a task being worked on, the commits of its branch are recorded and its herdr workspace
+/// is closed; a merged or open pull request of its own branch rejects it, as it completes
+/// with its own pull request or is still under review.
+pub(crate) fn complete_merged_with(
+    storage: &StorageState,
+    git: &Git,
+    github: &GitHub,
+    herdr: &Herdr,
+    id: model::TaskId,
+    target: MergedWithTarget,
+) -> CommandResult<model::Task> {
+    let (task, workspace) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        (task, workspace)
+    };
+    let not_adopted = task.resolution == Some(model::TaskResolution::NotAdopted);
+    match task.status {
+        TaskStatus::InProgress | TaskStatus::InReview => {}
+        TaskStatus::Done if not_adopted => {}
+        TaskStatus::Done => {
+            return Err(CommandError::rejected(format!(
+                "task {id} is already done as merged; there is nothing left to complete"
+            )));
+        }
+        status => {
+            return Err(CommandError::rejected(format!(
+                "task {id} is {status}; only an in_progress, in_review, or not_adopted task can be completed through another task's pull request"
+            )));
+        }
+    }
+    let (merged_with, merged_at) = match target {
+        MergedWithTarget::Task(other) => {
+            if other == id {
+                return Err(CommandError::invalid_input(format!(
+                    "task {id} cannot be merged with itself; complete_task without merged_with completes a task with its own pull request"
+                )));
+            }
+            let other = lock(storage)
+                .get_task(other)?
+                .ok_or(StorageError::TaskNotFound(other))?;
+            shipped_by(&other)?
+        }
+        MergedWithTarget::PullRequest(url) => {
+            let url = url.trim();
+            if task.pull_request_url.as_deref() == Some(url) {
+                return Err(CommandError::rejected(format!(
+                    "pull request {url} is the task's own; complete_task without merged_with completes a task with its own pull request"
+                )));
+            }
+            let pull_request = github.pull_request(url)?.pull_request;
+            check_base(&pull_request, &workspace.default_base_branch)?;
+            match pull_request.state {
+                PullRequestState::Merged => {}
+                PullRequestState::Open => {
+                    return Err(CommandError::rejected(format!(
+                        "pull request {} is not merged yet; complete the task through it once it is merged",
+                        pull_request.url
+                    )));
+                }
+                PullRequestState::Closed => {
+                    return Err(CommandError::rejected(format!(
+                        "pull request {} was closed without merging, so it shipped nothing",
+                        pull_request.url
+                    )));
+                }
+            }
+            let task_id = lock(storage)
+                .list_tasks(task.workspace_id)?
+                .into_iter()
+                .find(|other| {
+                    other.id != id
+                        && other
+                            .pull_request_url
+                            .as_deref()
+                            .is_some_and(|own| own == url || own == pull_request.url)
+                })
+                .map(|other| other.id);
+            let merged = model::MergedWith {
+                task_id,
+                pull_request_url: pull_request.url,
+            };
+            (merged, pull_request.merged_at)
+        }
+    };
+    if not_adopted {
+        // Concluding already recorded its commits and closed its workspace.
+        return Ok(lock(storage).complete_task_merged_with(id, &merged_with, merged_at, &[])?);
+    }
+    // A branch whose log is empty, or a task without a worktree, keeps the commits
+    // recorded before.
+    let records = match (&task.branch, &task.worktree_path) {
+        (Some(branch), Some(worktree)) => commit_records(
+            git,
+            &Checkout {
+                task: task.clone(),
+                location: workspace.location.clone(),
+                base: workspace.default_base_branch.clone(),
+                branch: branch.clone(),
+                worktree: worktree.to_string(),
+            },
+        )?,
+        _ => Vec::new(),
+    };
+    if let Some(branch) = &task.branch {
+        for pull_request in branch_pull_requests(git, github, &workspace, branch)? {
+            match pull_request.state {
+                PullRequestState::Merged => {
+                    return Err(CommandError::rejected(format!(
+                        "pull request {} of the task's own branch was merged; complete_task without merged_with completes the task with it",
+                        pull_request.url
+                    )));
+                }
+                PullRequestState::Open => {
+                    return Err(CommandError::rejected(format!(
+                        "pull request {} of the task's own branch is still open; close it first, since the task ships through {} instead",
+                        pull_request.url, merged_with.pull_request_url
+                    )));
+                }
+                PullRequestState::Closed => {}
+            }
+        }
+    }
+    // A workspace herdr no longer has was already closed, e.g. by the user.
+    if let Some(workspace_id) = &task.herdr_workspace_id {
+        match herdr.close_workspace(&workspace.location.machine(), workspace_id) {
+            Ok(()) => {}
+            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(lock(storage).complete_task_merged_with(id, &merged_with, merged_at, &records)?)
+}
+
+/// The merged pull request that shipped the work of `other` and its merge time: its own,
+/// or the one it was merged with in turn.
+fn shipped_by(other: &model::Task) -> CommandResult<(model::MergedWith, Option<i64>)> {
+    let id = other.id;
+    match (other.status, other.resolution) {
+        (TaskStatus::Done, Some(model::TaskResolution::Merged)) => {
+            let merged = match (&other.merged_with, &other.pull_request_url) {
+                (Some(merged), _) => merged.clone(),
+                (None, Some(url)) => model::MergedWith {
+                    task_id: Some(id),
+                    pull_request_url: url.clone(),
+                },
+                (None, None) => {
+                    return Err(CommandError::rejected(format!(
+                        "task {id} is done without a recorded pull request; pass the URL of the pull request that shipped the work instead"
+                    )));
+                }
+            };
+            Ok((merged, other.pull_request_merged_at))
+        }
+        (TaskStatus::Done, _) => Err(CommandError::rejected(format!(
+            "task {id} was not adopted, so its work did not ship"
+        ))),
+        (TaskStatus::InReview, _) => Err(CommandError::rejected(format!(
+            "task {id} is in_review: its pull request is not merged, or its merge is not recorded yet (Toodo completes merged tasks within a minute); try again once task {id} is done, or pass the pull request URL"
+        ))),
+        (status, _) => Err(CommandError::rejected(format!(
+            "task {id} is {status}; only a task done as merged has shipped its pull request"
+        ))),
+    }
 }
 
 /// The pull requests from `branch` into the base branch of `workspace` on GitHub, newest

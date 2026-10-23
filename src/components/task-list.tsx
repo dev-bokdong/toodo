@@ -6,6 +6,7 @@ import {
   Crosshair,
   FolderGit2,
   GitBranch,
+  GitMerge,
   GitPullRequest,
   Inbox,
   Pause,
@@ -31,6 +32,7 @@ import type {
   AgentMerge,
   Estimate,
   EstimateUnit,
+  MergedWith,
   NoteKind,
   Task,
   TaskId,
@@ -745,6 +747,14 @@ function TaskRow({
           )}
         </p>
       )}
+      {task.mergedWith && (
+        <ShippedWith
+          task={task}
+          mergedWith={task.mergedWith}
+          through={task.mergedWith.taskId === null ? null : taskRef(task.mergedWith.taskId, task.workspaceId, context)}
+          detailed={detailed}
+        />
+      )}
       {(task.issue !== null || linkingIssue) && (
         <TaskIssue task={task} detailed={detailed} linking={linkingIssue} onDone={() => setLinkingIssue(false)} />
       )}
@@ -1445,6 +1455,41 @@ function OpenWorkspaceNote({
 }
 
 /** A labeled block of the task details sheet. */
+/** The pull request of another task that shipped a task done without one of its own. */
+function ShippedWith({
+  task,
+  mergedWith,
+  through,
+  detailed,
+}: {
+  task: Task;
+  mergedWith: MergedWith;
+  through: string | null;
+  detailed: boolean;
+}) {
+  const label = `Shipped with pull request of #${task.id}`;
+  if (detailed) {
+    return (
+      <DetailField label="Shipped with">
+        <span aria-label={label} className="break-all font-mono select-all">
+          {mergedWith.pullRequestUrl}
+        </span>
+        {through && <span className="text-muted-foreground">Pull request of {through}</span>}
+      </DetailField>
+    );
+  }
+  return (
+    <p className="flex min-w-0 items-center gap-1 text-xs">
+      <GitMerge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+      <span className="shrink-0 text-muted-foreground">Shipped with</span>
+      <span aria-label={label} className="truncate select-all font-mono">
+        {mergedWith.pullRequestUrl}
+      </span>
+      {through && <span className="shrink-0 text-muted-foreground">of {through}</span>}
+    </p>
+  );
+}
+
 function DetailField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <section aria-label={label} className="flex flex-col gap-0.5 text-xs">

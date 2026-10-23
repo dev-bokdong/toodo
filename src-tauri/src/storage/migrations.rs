@@ -313,6 +313,15 @@ pub(super) const MIGRATIONS: &[&str] = &[
     ALTER TABLE workspaces ADD COLUMN agent_merge TEXT NOT NULL DEFAULT 'never'
         CHECK (agent_merge IN ('never', 'after_checks'));
     ",
+    // Version 13: a task done as merged through the pull request of another task, e.g.
+    // one pull request that fixed several tasks, records that pull request and its task.
+    "
+    ALTER TABLE tasks ADD COLUMN merged_with_pull_request_url TEXT
+        CHECK (merged_with_pull_request_url IS NULL OR resolution = 'merged');
+    ALTER TABLE tasks ADD COLUMN merged_with_task_id INTEGER
+        REFERENCES tasks (id) ON DELETE SET NULL
+        CHECK (merged_with_task_id IS NULL OR merged_with_pull_request_url IS NOT NULL);
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -960,5 +969,67 @@ mod tests {
         conn.execute("UPDATE workspaces SET agent_merge = 'after_checks'", [])
             .unwrap();
         assert_eq!(agent_merge(&conn), "after_checks");
+    }
+
+    #[test]
+    fn version_13_keeps_tasks_and_links_only_merged_ones_to_another_pull_request() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..12] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 12).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, description, status, resolution,
+                    pull_request_url)
+                VALUES (1, 'fix', 'Batch', '', 'done', 'merged',
+                    'https://github.com/acme/toodo/pull/1'),
+                (1, 'fix', 'Extra', '', 'done', 'not_adopted', NULL);
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let merged_with = |conn: &Connection| -> (Option<String>, Option<i64>) {
+            conn.query_row(
+                "SELECT merged_with_pull_request_url, merged_with_task_id FROM tasks WHERE id = 2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(merged_with(&conn), (None, None));
+        for invalid in [
+            // Work that was not adopted did not ship with a pull request.
+            "UPDATE tasks SET merged_with_pull_request_url = 'https://github.com/acme/toodo/pull/1'
+             WHERE id = 2",
+            "UPDATE tasks SET resolution = 'merged', merged_with_task_id = 1 WHERE id = 2",
+            "UPDATE tasks SET resolution = 'merged', merged_with_pull_request_url = 'x',
+                merged_with_task_id = 9 WHERE id = 2",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
+        conn.execute(
+            "UPDATE tasks SET resolution = 'merged',
+                 merged_with_pull_request_url = 'https://github.com/acme/toodo/pull/1',
+                 merged_with_task_id = 1
+             WHERE id = 2",
+            [],
+        )
+        .unwrap();
+        // Deleting the task that owns the pull request keeps the link to the pull request.
+        conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+        assert_eq!(
+            merged_with(&conn),
+            (
+                Some("https://github.com/acme/toodo/pull/1".to_owned()),
+                None
+            )
+        );
     }
 }

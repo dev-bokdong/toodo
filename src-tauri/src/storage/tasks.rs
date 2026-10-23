@@ -7,8 +7,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, LinkedIssue, NoteKind, PullRequestSnapshot, Task, TaskId, TaskNote,
-    TaskResolution, TaskType, WorkspaceId,
+    CommitRecord, HostPath, LinkedIssue, MergedWith, NoteKind, PullRequestSnapshot, Task, TaskId,
+    TaskNote, TaskResolution, TaskType, WorkspaceId,
 };
 use crate::domain::naming::TaskCheckout;
 use crate::domain::path::PosixPath;
@@ -110,7 +110,7 @@ const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.descr
         t.pull_request_merged_at, w.kind, t.completion_note, s.number, s.title, s.additions,
         s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
         s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url, t.estimate_unit,
-        t.estimate_amount, t.due_date
+        t.estimate_amount, t.due_date, t.merged_with_pull_request_url, t.merged_with_task_id
     FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
         LEFT JOIN pull_request_snapshots s ON s.task_id = t.id";
 
@@ -134,6 +134,7 @@ struct TaskRow {
     estimate_unit: Option<String>,
     estimate_amount: Option<f64>,
     due_date: Option<String>,
+    merged_with: Option<MergedWith>,
 }
 
 impl TaskRow {
@@ -177,6 +178,13 @@ impl TaskRow {
             estimate_unit: row.get(25)?,
             estimate_amount: row.get(26)?,
             due_date: row.get(27)?,
+            merged_with: match row.get::<_, Option<String>>(28)? {
+                None => None,
+                Some(pull_request_url) => Some(MergedWith {
+                    task_id: row.get::<_, Option<i64>>(29)?.map(TaskId),
+                    pull_request_url,
+                }),
+            },
         })
     }
 
@@ -212,6 +220,7 @@ impl TaskRow {
             pull_request_url: self.pull_request_url,
             pull_request_merged_at: self.pull_request_merged_at,
             pull_request: self.pull_request,
+            merged_with: self.merged_with,
             completion_note: self.completion_note,
             issue: self.issue,
             estimate: parse_estimate(self.estimate_unit, self.estimate_amount)?,
@@ -406,6 +415,7 @@ impl Storage {
             pull_request_merged_at: None,
             pull_request: None,
             resolution: None,
+            merged_with: None,
             completion_note: None,
             issue: None,
             estimate: new.estimate,
@@ -610,6 +620,54 @@ impl Storage {
         let concluded = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(concluded)
+    }
+
+    /// Moves an `in_progress` or `in_review` task to `done` as merged through the pull
+    /// request of another task, `merged_with`, merged at `merged_at`, and forgets its herdr
+    /// workspace, which was closed. A task `done` as `not_adopted` keeps its status history
+    /// and only changes its resolution: the work did ship. Non-empty `commits` replace its
+    /// commit records. Its dependents can then start.
+    pub fn complete_task_merged_with(
+        &mut self,
+        id: TaskId,
+        merged_with: &MergedWith,
+        merged_at: Option<i64>,
+        commits: &[CommitRecord],
+    ) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let changes_status = match (task.status, task.resolution) {
+            (TaskStatus::Done, Some(TaskResolution::NotAdopted)) => false,
+            (status, _) => {
+                status.conclude()?;
+                true
+            }
+        };
+        tx.execute(
+            "UPDATE tasks
+             SET status = ?2, resolution = ?3, herdr_workspace_id = NULL,
+                 pull_request_merged_at = ?4, merged_with_pull_request_url = ?5,
+                 merged_with_task_id = ?6
+             WHERE id = ?1",
+            params![
+                id.0,
+                TaskStatus::Done.as_str(),
+                TaskResolution::Merged.as_str(),
+                merged_at,
+                merged_with.pull_request_url,
+                merged_with.task_id.map(|task| task.0)
+            ],
+        )?;
+        if !commits.is_empty() {
+            super::commits::write_commit_records(&tx, id, commits)?;
+        }
+        if changes_status {
+            record_event(&tx, id, TaskStatus::Done, at)?;
+        }
+        let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(done)
     }
 
     /// Stores what the user wrote about the outcome of a task; `None` clears it. Whether

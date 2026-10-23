@@ -138,6 +138,45 @@ pub struct TaskRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub struct CompleteTask {
+    /// The task. Never your own task, the one current_task finds.
+    pub id: TaskId,
+    /// Only for a task whose work shipped with the merged pull request of another task,
+    /// e.g. one pull request that fixed several tasks: that task's ID (`178` or `"#178"`),
+    /// which must be done as merged, or the pull request URL. Omit it to complete the
+    /// task with its own pull request.
+    pub merged_with: Option<MergedWithRef>,
+}
+
+/// A task ID or a pull request URL.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum MergedWithRef {
+    Task(i64),
+    Text(String),
+}
+
+impl MergedWithRef {
+    fn target(self) -> CommandResult<completion::MergedWithTarget> {
+        let text = match self {
+            Self::Task(id) => return Ok(completion::MergedWithTarget::Task(model::TaskId(id))),
+            Self::Text(text) => text,
+        };
+        let text = text.trim();
+        if let Ok(id) = text.strip_prefix('#').unwrap_or(text).parse::<i64>() {
+            return Ok(completion::MergedWithTarget::Task(model::TaskId(id)));
+        }
+        if text.starts_with("https://") {
+            return Ok(completion::MergedWithTarget::PullRequest(text.to_owned()));
+        }
+        Err(CommandError::invalid_input(format!(
+            "merged_with must be a task ID such as 178 or a pull request URL, not {text:?}"
+        )))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct SearchTasks {
     /// Words to look for in any language, e.g. `deploy server`; short words such as
     /// two-character Korean ones work too. Every word must appear in the
@@ -479,14 +518,28 @@ fn with_worktree_root_hint(
     error
 }
 
-/// Completes an `in_review` task whose pull request is merged, as the app does.
+/// Completes an `in_review` task whose pull request is merged, as the app does, or with
+/// `merged_with`, a task whose work shipped with another task's merged pull request.
 pub fn complete_task(
     storage: &StorageState,
+    git: &Git,
     github: &GitHub,
     herdr: &Herdr,
-    request: TaskRef,
+    request: CompleteTask,
 ) -> CommandResult<Task> {
-    Ok((&completion::complete(storage, github, herdr, request.id.into())?).into())
+    let id = request.id.into();
+    let task = match request.merged_with {
+        None => completion::complete(storage, github, herdr, id)?,
+        Some(merged_with) => completion::complete_merged_with(
+            storage,
+            git,
+            github,
+            herdr,
+            id,
+            merged_with.target()?,
+        )?,
+    };
+    Ok((&task).into())
 }
 
 /// Concludes a task without merging as the app does, except that a task whose pull
@@ -1332,10 +1385,11 @@ mod tests {
     #[test]
     fn complete_finishes_a_task_whose_pull_request_is_merged_and_only_that() {
         let (storage, task, _) = started(true);
+        let (no_git, _) = fake(Git::new, vec![]);
         let (open, _) = fake(GitHub::new, vec![viewed("OPEN")]);
         let (no_herdr, _) = fake(Herdr::new, vec![]);
 
-        let error = complete_task(&storage, &open, &no_herdr, TaskRef { id: task.id }).unwrap_err();
+        let error = complete_task(&storage, &no_git, &open, &no_herdr, own(task.id)).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
             error.message.contains("is not merged yet"),
@@ -1349,7 +1403,7 @@ mod tests {
             vec![viewed("MERGED"), Ok(MERGED_DETAILS.to_owned())],
         );
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
-        let done = complete_task(&storage, &merged, &herdr, TaskRef { id: task.id }).unwrap();
+        let done = complete_task(&storage, &no_git, &merged, &herdr, own(task.id)).unwrap();
         assert_eq!(done.status, types::TaskStatus::Done);
         assert_eq!(done.resolution, Some(types::TaskResolution::Merged));
         assert_eq!(last_status(&done), Some(types::TaskStatus::Done));
@@ -1364,10 +1418,11 @@ mod tests {
     #[test]
     fn complete_is_rejected_for_a_task_that_is_not_in_review() {
         let (storage, task, _) = started(false);
+        let (git, _) = fake(Git::new, vec![]);
         let (github, gh_runner) = fake(GitHub::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
 
-        let error = complete_task(&storage, &github, &herdr, TaskRef { id: task.id }).unwrap_err();
+        let error = complete_task(&storage, &git, &github, &herdr, own(task.id)).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
@@ -1377,6 +1432,282 @@ mod tests {
         );
         assert!(gh_runner.invocations.lock().unwrap().is_empty());
         assert_eq!(stored(&storage, task.id), task);
+    }
+
+    fn own(id: TaskId) -> CompleteTask {
+        CompleteTask {
+            id,
+            merged_with: None,
+        }
+    }
+
+    fn merged_with(id: TaskId, target: MergedWithRef) -> CompleteTask {
+        CompleteTask {
+            id,
+            merged_with: Some(target),
+        }
+    }
+
+    /// `started(true)` with its task completed by the merge of its pull request, and an
+    /// extra task of the same workspace started in herdr workspace `w28` whose work that
+    /// pull request shipped too.
+    fn shipped() -> (StorageState, Task, Task) {
+        let (storage, task, _) = started(true);
+        let extra = {
+            let mut storage = crate::commands::lock(&storage);
+            storage
+                .complete_task(task.id.into(), Some(1_760_021_265), None, &[])
+                .unwrap();
+            let extra = create(&mut storage, task.workspace_id, "Fix typo", vec![]).unwrap();
+            let checkout = crate::domain::naming::TaskCheckout {
+                path: HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\fix-typo-3").unwrap()),
+                branch: "fix/typo-3".to_owned(),
+            };
+            (&storage
+                .start_task(extra.id.into(), &checkout, "w28")
+                .unwrap())
+                .into()
+        };
+        let task = stored(&storage, task.id);
+        (storage, task, extra)
+    }
+
+    #[test]
+    fn complete_with_merged_with_ships_a_task_through_another_tasks_pull_request() {
+        let (storage, task, extra) = shipped();
+        let (git, _) = fake(Git::new, github_checkout());
+        let (github, gh_runner) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+        let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
+
+        let done = complete_task(
+            &storage,
+            &git,
+            &github,
+            &herdr,
+            merged_with(extra.id, MergedWithRef::Text(format!(" #{} ", task.id.0))),
+        )
+        .unwrap();
+
+        assert_eq!(done.status, types::TaskStatus::Done);
+        assert_eq!(done.resolution, Some(types::TaskResolution::Merged));
+        assert_eq!(
+            done.merged_with,
+            Some(types::MergedWith {
+                task_id: Some(task.id),
+                pull_request_url: PR.to_owned(),
+            })
+        );
+        assert_eq!(done.pull_request_merged_at, task.pull_request_merged_at);
+        assert_eq!(done.pull_request_url, None);
+        assert_eq!(last_status(&done), Some(types::TaskStatus::Done));
+        assert_eq!(done.herdr_workspace_id, None);
+        assert_eq!(stored(&storage, extra.id), done);
+        // Only the pull requests of its own branch were looked up.
+        assert_eq!(gh_runner.invocations.lock().unwrap().len(), 1);
+        assert_eq!(
+            herdr_runner.invocations.lock().unwrap()[0].args,
+            ["workspace", "close", "w28"]
+        );
+    }
+
+    #[test]
+    fn complete_with_merged_with_changes_a_task_concluded_as_not_adopted() {
+        let (storage, task, extra) = shipped();
+        let concluded: Task = (&crate::commands::lock(&storage)
+            .conclude_task(
+                extra.id.into(),
+                "Fixed by the login pull request",
+                &[],
+                None,
+            )
+            .unwrap())
+            .into();
+        let (no_git, git_runner) = fake(Git::new, vec![]);
+        let (github, _) = fake(GitHub::new, vec![viewed("MERGED")]);
+        let (no_herdr, herdr_runner) = fake(Herdr::new, vec![]);
+
+        let done = complete_task(
+            &storage,
+            &no_git,
+            &github,
+            &no_herdr,
+            merged_with(extra.id, MergedWithRef::Text(PR.to_owned())),
+        )
+        .unwrap();
+
+        assert_eq!(done.resolution, Some(types::TaskResolution::Merged));
+        // The pull request URL finds the task that owns it.
+        assert_eq!(
+            done.merged_with,
+            Some(types::MergedWith {
+                task_id: Some(task.id),
+                pull_request_url: PR.to_owned(),
+            })
+        );
+        assert_eq!(done.timeline, concluded.timeline);
+        assert_eq!(done.completion_note, concluded.completion_note);
+        assert_eq!(stored(&storage, extra.id), done);
+        assert!(git_runner.invocations.lock().unwrap().is_empty());
+        assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+
+        // Completing it again, either way, has nothing left to do.
+        let (no_github, _) = fake(GitHub::new, vec![]);
+        let error = complete_task(
+            &storage,
+            &no_git,
+            &no_github,
+            &no_herdr,
+            merged_with(extra.id, MergedWithRef::Task(task.id.0)),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("already done as merged"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn complete_of_a_not_adopted_task_without_merged_with_suggests_it() {
+        let (storage, _, extra) = shipped();
+        crate::commands::lock(&storage)
+            .conclude_task(extra.id.into(), "Fixed elsewhere", &[], None)
+            .unwrap();
+        let (git, _) = fake(Git::new, vec![]);
+        let (github, _) = fake(GitHub::new, vec![]);
+        let (herdr, _) = fake(Herdr::new, vec![]);
+
+        let error = complete_task(&storage, &git, &github, &herdr, own(extra.id)).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("merged_with"), "{}", error.message);
+    }
+
+    #[test]
+    fn complete_with_merged_with_is_rejected_until_the_work_shipped() {
+        let (storage, in_review, dependent) = started(true);
+        let (extra, not_adopted) = {
+            let mut storage = crate::commands::lock(&storage);
+            let workspace = in_review.workspace_id;
+            let extra = create(&mut storage, workspace, "Fix typo", vec![]).unwrap();
+            let other = create(&mut storage, workspace, "Try a cache", vec![]).unwrap();
+            let checkout = crate::domain::naming::TaskCheckout {
+                path: HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\rnd-cache-4").unwrap()),
+                branch: "rnd/cache-4".to_owned(),
+            };
+            storage
+                .start_task(other.id.into(), &checkout, "w29")
+                .unwrap();
+            storage
+                .conclude_task(other.id.into(), "Too slow", &[], None)
+                .unwrap();
+            let checkout = crate::domain::naming::TaskCheckout {
+                path: HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\fix-typo-3").unwrap()),
+                branch: "fix/typo-3".to_owned(),
+            };
+            let extra: Task = (&storage
+                .start_task(extra.id.into(), &checkout, "w28")
+                .unwrap())
+                .into();
+            (extra, other)
+        };
+        let (no_git, _) = fake(Git::new, vec![]);
+        let (no_herdr, herdr_runner) = fake(Herdr::new, vec![]);
+        let reject = |id: TaskId, target: MergedWithRef, github: Scripted, reason: &str| {
+            let (github, _) = fake(GitHub::new, github);
+            let error = complete_task(
+                &storage,
+                &no_git,
+                &github,
+                &no_herdr,
+                merged_with(id, target),
+            )
+            .unwrap_err();
+            assert!(
+                error.message.contains(reason),
+                "{reason}: {}",
+                error.message
+            );
+        };
+
+        reject(extra.id, MergedWithRef::Task(extra.id.0), vec![], "itself");
+        reject(
+            extra.id,
+            MergedWithRef::Task(in_review.id.0),
+            vec![],
+            "is in_review",
+        );
+        reject(
+            extra.id,
+            MergedWithRef::Task(not_adopted.id.0),
+            vec![],
+            "not adopted",
+        );
+        reject(
+            extra.id,
+            MergedWithRef::Task(dependent.id.0),
+            vec![],
+            "is planned",
+        );
+        reject(extra.id, MergedWithRef::Task(999), vec![], "999");
+        reject(
+            extra.id,
+            MergedWithRef::Text("soon".to_owned()),
+            vec![],
+            "task ID",
+        );
+        reject(
+            extra.id,
+            MergedWithRef::Text(PR.to_owned()),
+            vec![viewed("OPEN")],
+            "not merged yet",
+        );
+        reject(
+            extra.id,
+            MergedWithRef::Text(PR.to_owned()),
+            vec![viewed("CLOSED")],
+            "shipped nothing",
+        );
+        reject(
+            in_review.id,
+            MergedWithRef::Text(PR.to_owned()),
+            vec![],
+            "task's own",
+        );
+        reject(
+            dependent.id,
+            MergedWithRef::Task(in_review.id.0),
+            vec![],
+            "only an in_progress",
+        );
+
+        assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, extra.id), extra);
+        assert_eq!(stored(&storage, in_review.id), in_review);
+    }
+
+    #[test]
+    fn complete_with_merged_with_is_rejected_while_its_own_branch_has_a_pull_request() {
+        let (storage, task, extra) = shipped();
+        for (state, reason) in [("OPEN", "is still open"), ("MERGED", "was merged")] {
+            let (git, _) = fake(Git::new, github_checkout());
+            let (github, _) = fake(GitHub::new, vec![listed(state)]);
+            let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
+
+            let error = complete_task(
+                &storage,
+                &git,
+                &github,
+                &herdr,
+                merged_with(extra.id, MergedWithRef::Task(task.id.0)),
+            )
+            .unwrap_err();
+
+            assert_eq!(error.kind, CommandErrorKind::Rejected);
+            assert!(error.message.contains(reason), "{}", error.message);
+            assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+            assert_eq!(stored(&storage, extra.id), extra);
+        }
     }
 
     fn conclusion(id: TaskId, note: &str) -> ConcludeTask {

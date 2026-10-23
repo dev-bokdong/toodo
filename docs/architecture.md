@@ -105,6 +105,7 @@ A unit of work inside a workspace.
 | `issue` | GitHub issue of the workspace repository the task works on (number and URL), or `null`. Its pull request closes it on merge; see [workflow.md](workflow.md#2-plan-tasks). |
 | `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
 | `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
+| `mergedWith` | For a task `done` as merged through the pull request of another task (see [workflow.md](workflow.md#7c-complete-through-another-tasks-pull-request)): that pull request's URL and the task that owns it (`null` once that task is deleted); `null` otherwise. |
 | `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
 | `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
 

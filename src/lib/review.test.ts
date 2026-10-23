@@ -47,6 +47,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       dueDate: null,
       pullRequestMergedAt: null,
       pullRequest: null,
+      mergedWith: null,
       resolution: null,
       completionNote: null,
       notes: [],

@@ -124,6 +124,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     dueDate: null,
     pullRequestMergedAt: null,
     pullRequest: null,
+    mergedWith: null,
     resolution: null,
     completionNote: null,
     notes: [],
@@ -1525,6 +1526,25 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
     expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
+  });
+
+  it("shows which pull request of another task shipped a done task", async () => {
+    const url = "https://github.com/acme/toodo/pull/12";
+    const batch = task(1, 1, "Add login", { status: "done", resolution: "merged", pullRequestUrl: url });
+    const extra = task(2, 1, "Fix typo", {
+      status: "done",
+      resolution: "merged",
+      mergedWith: { taskId: 1, pullRequestUrl: url },
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [batch, extra] });
+    mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    const shipped = await screen.findByLabelText("Shipped with pull request of #2");
+    expect(shipped).toHaveTextContent(url);
+    expect(shipped.parentElement).toHaveTextContent(`Shipped with${url}of #1`);
+    expect(screen.queryByLabelText("Shipped with pull request of #1")).not.toBeInTheDocument();
   });
 
   it("asks for a completion note on a done task and saves it", async () => {
