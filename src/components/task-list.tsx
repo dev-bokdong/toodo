@@ -110,7 +110,7 @@ import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
 import { runsOnServer } from "@/lib/platform";
-import { toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
+import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
@@ -121,22 +121,13 @@ const PaneView = import.meta.env.MODE === "web" ? lazy(() => import("@/component
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
-const statusLabels: Record<ShownStatus, string> = {
-  planned: "Planned",
-  ready: "Ready",
-  paused: "Paused",
-  in_progress: "In progress",
-  in_review: "Awaiting completion",
-  done: "Done",
-  not_adopted: "Not adopted",
-};
-
 /**
- * The status of `task`, naming a planned task that can be started now "Ready", one that was
- * worked on before "Paused" and a task concluded without merging "Not adopted".
+ * The status of `task`, naming a planned task that can be started now "Ready", one still
+ * waiting on a prerequisite "Blocked", one that was worked on before "Paused" and a task
+ * concluded without merging "Not adopted".
  */
 function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
-  return statusLabels[shownStatus(task, byId)];
+  return statusNames[shownStatus(task, byId)];
 }
 
 const statusStyles: Record<TaskStatus, string> = {
@@ -394,7 +385,7 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
         <option value="all">All statuses</option>
         {shownStatuses.map((status) => (
           <option key={status} value={status}>
-            {statusLabels[status]}
+            {statusNames[status]}
           </option>
         ))}
       </select>
@@ -705,7 +696,7 @@ function TaskRow({
         <p
           role="note"
           aria-label={`Waiting prerequisites of #${task.id}`}
-          className={cn("text-xs", paused ? toneText.attention : toneText.neutral)}
+          className={cn("text-xs", toneText.neutral)}
         >
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>

@@ -1,8 +1,28 @@
+import type { ShownStatus } from "@/lib/task-filter";
+
+/**
+ * The one glossary for statuses: chips, the timeline legend, the status filter, history and
+ * Review all use these names, so one state never goes by two names.
+ */
+export const statusNames: Record<ShownStatus, string> = {
+  // A planned task that cannot start yet, because a prerequisite is not done.
+  planned: "Blocked",
+  ready: "Ready",
+  paused: "Paused",
+  in_progress: "In progress",
+  in_review: "Awaiting completion",
+  done: "Done",
+  not_adopted: "Not adopted",
+};
+
+/** The timeline mark at the time a task was planned; not a status. */
+export const plannedOnName = "Planned on";
+
 /**
  * The one colour map for states shown across the app: status chips, timeline bars, the
  * legend, banners, and notes. Each tone has a single meaning:
  *
- * - `neutral`: nothing to act on (planned, idle, not adopted).
+ * - `neutral`: nothing to act on (blocked or waiting, idle, not adopted).
  * - `info`: something running on its own (agent working, CI running, update available).
  * - `progress`: work in progress.
  * - `review`: waiting in review.
@@ -10,12 +30,15 @@
  * - `attention`: the user can or should act (ready, agent needs input, blocker,
  *   changes requested, a confirm step).
  * - `danger`: something went wrong or is late (past due, CI failed, merge conflicts).
+ *
+ * Task types are not states: they use `typeChip`, outlined and without any of these hues.
  */
 export type Tone = "neutral" | "info" | "progress" | "review" | "success" | "attention" | "danger";
 
 /** Filled chips and pills. */
 export const toneChip: Record<Tone, string> = {
-  neutral: "bg-muted text-muted-foreground",
+  // Muted foreground on muted is under 4.5:1 in the light theme.
+  neutral: "bg-muted text-foreground/70",
   info: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200",
   progress: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
   review: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
@@ -45,6 +68,9 @@ export const toneOutline: Record<Tone, string> = {
   attention: "border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300",
   danger: "border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300",
 };
+
+/** Task type chips: outlined and neutral, so a type never reads as a status. */
+export const typeChip = "border-input text-foreground/70";
 
 /** Banners and confirm steps. */
 export const tonePanel: Record<"info" | "attention", string> = {
@@ -82,7 +108,7 @@ export const barStyles = {
   /** Not started yet, with every prerequisite done: solid. */
   ready: "border-amber-500 shadow-none",
   /** Not started yet and still blocked: dashed. */
-  blocked: "border-dashed border-muted-foreground/60 shadow-none",
+  blocked: "border-dashed border-muted-foreground shadow-none",
   /** Paused by hand: a muted fill and a dashed edge, with text kept at full contrast. */
   paused: "border-dashed border-muted-foreground bg-muted shadow-none",
   /** Done after its due date, or still open after it. */
