@@ -379,7 +379,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     </span>
                   </div>
                   {task.completionNote && (
-                    <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line text-xs">
+                    <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
                       {task.completionNote}
                     </p>
                   )}
@@ -491,7 +491,7 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
                   </span>
                   <span className="ml-auto shrink-0 text-xs text-muted-foreground">{formatDate(at)}</span>
                 </div>
-                <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line text-xs">
+                <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
                   {task.completionNote ?? <span className="text-muted-foreground">No conclusion written.</span>}
                 </p>
               </li>

@@ -40,7 +40,7 @@ export function MarkdownEditor({
           className="min-h-16 rounded-lg border border-input px-2.5 py-1.5"
         >
           {value.trim() ? (
-            <Suspense fallback={<p className="whitespace-pre-line text-sm text-muted-foreground">{value}</p>}>
+            <Suspense fallback={<p className="whitespace-pre-line break-words-keep text-sm text-muted-foreground">{value}</p>}>
               <Markdown source={value} />
             </Suspense>
           ) : (

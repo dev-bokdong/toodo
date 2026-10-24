@@ -128,7 +128,7 @@ function MemoryItem({ entry }: { entry: MemoryEntry }) {
         <span className="rounded-full border px-2 py-0.5 text-xs font-medium" data-memory-kind={entry.kind}>
           {kindLabel(entry.kind)}
         </span>
-        <h3 className="min-w-0 flex-1 font-medium break-words">{entry.title}</h3>
+        <h3 className="min-w-0 flex-1 font-medium break-words-keep">{entry.title}</h3>
         {!superseded && mode === "view" && (
           <div className="flex gap-1">
             <Button
@@ -153,7 +153,7 @@ function MemoryItem({ entry }: { entry: MemoryEntry }) {
       </div>
       {mode === "view" ? (
         entry.body && (
-          <Suspense fallback={<p className="text-sm whitespace-pre-line">{entry.body}</p>}>
+          <Suspense fallback={<p className="text-sm whitespace-pre-line break-words-keep">{entry.body}</p>}>
             <Markdown source={entry.body} />
           </Suspense>
         )
