@@ -25,6 +25,7 @@ import {
   type WorkspaceLocation,
 } from "@/lib/bindings";
 import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 import { runsOnServer } from "@/lib/platform";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
@@ -277,6 +278,22 @@ export function useDirectories(machine: Machine, path: string | null) {
   return useQuery({
     queryKey: queryKeys.directories(machine, path),
     queryFn: () => unwrap(commands.listDirectories(machine, path)),
+    retry: false,
+  });
+}
+
+/**
+ * The home directory of `machine`: listed through the server or over SSH, and asked of
+ * Windows for the desktop app's own machine, whose folders are not listed in the app.
+ */
+export function useHomeDirectory(machine: Machine) {
+  return useQuery({
+    queryKey: ["home-directory", machine] as const,
+    queryFn: async () =>
+      machine.kind === "local" && !runsOnServer
+        ? homeDir()
+        : (await unwrap(commands.listDirectories(machine, null))).path,
+    staleTime: Infinity,
     retry: false,
   });
 }

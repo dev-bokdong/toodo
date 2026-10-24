@@ -70,8 +70,17 @@ describe("ServerAccess", () => {
   it("says when the server rejects the token and keeps nothing", async () => {
     signIn("wrong");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("The server did not accept this token.");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The server did not accept this token.");
+    const field = screen.getByLabelText("Access token");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveAccessibleDescription(expect.stringContaining("The server did not accept this token."));
+    expect(field).toHaveFocus();
     expect(getToken()).toBeNull();
+
+    fireEvent.change(field, { target: { value: "shared" } });
+    expect(field).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 
