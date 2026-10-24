@@ -95,7 +95,7 @@ pub struct UpdateTask {
 }
 
 /// Tells a field given as `null` (`Some(None)`) from an omitted one (`None`, the default).
-fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+pub(super) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
 ) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(deserializer).map(Some)

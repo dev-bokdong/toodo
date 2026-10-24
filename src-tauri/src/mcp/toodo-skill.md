@@ -30,9 +30,30 @@ Deleting tasks happens in the Toodo app only.
 3. Read the description. `## Done when` is your finish line; `## Purpose` decides
    questions the criteria leave open. If the description is unclear or contradicts the
    code, call `report_blocker` with what you need and ask the user.
-4. Before you plan, look up the history of the subject (see "Finding earlier work"
+4. Read the project memory: `list_memory` with the task's `workspaceId` and
+   `include_shared: true`. Follow its rules and decisions unless the task says to change
+   them (see "Project memory" below).
+5. Before you plan, look up the history of the subject (see "Finding earlier work"
    below): earlier tasks may already have decided an approach, rejected one, or left
    work you build on.
+
+## Project memory
+
+Project memory is what a restarted agent needs to continue from Toodo alone: entries of
+kind `decision` (a choice and why), `rule` (to follow), `note`, or `summary`, kept for
+one workspace (`workspace_id`) or shared by every workspace (no `workspace_id`: the
+user's standing preferences and cross-project rules).
+
+- Read: `list_memory` (current entries; `include_superseded` adds the history),
+  `search_memory` for a subject, `get_memory` for one entry and the entries it replaced.
+- Write when you learn something that stays true after your task: a decision taken, a
+  convention the user stated, how the project is laid out. `add_memory` with one point
+  per entry, a one-line title that states it, the why in the body, and `task_id` of
+  your task.
+- When an entry no longer holds, `supersede_memory` it with the new text instead of
+  adding a contradicting entry; the old one stays as history. `update_memory` only fixes
+  the wording of an entry that still holds.
+- Progress notes record the history of one task; memory is what stays true afterwards.
 
 ## Finding earlier work
 

@@ -33,7 +33,7 @@ fn fts_string(word: &str) -> String {
 }
 
 /// A `LIKE ... ESCAPE '\'` pattern matching `word` anywhere.
-fn like_pattern(word: &str) -> String {
+pub(super) fn like_pattern(word: &str) -> String {
     let mut pattern = String::from("%");
     for character in word.chars() {
         if matches!(character, '%' | '_' | '\\') {

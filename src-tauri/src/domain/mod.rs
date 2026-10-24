@@ -3,6 +3,7 @@
 pub mod backup;
 pub mod dag;
 pub mod issue;
+pub mod memory;
 pub mod model;
 pub mod naming;
 pub mod path;

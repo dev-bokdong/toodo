@@ -36,8 +36,8 @@ use crate::adapters::ssh_tunnel::SshForwarder;
 use crate::commands::backup::{self, Backups};
 use crate::commands::completion::{self, PullRequestStatusState};
 use crate::commands::events::{
-    self, AgentStatusState, AgentStatusesChanged, Notifier, PullRequestStatusesChanged,
-    TasksChanged, WorkspacesChanged, names,
+    self, AgentStatusState, AgentStatusesChanged, MemoryChanged, Notifier,
+    PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{
@@ -150,6 +150,10 @@ impl Notifier for Services {
 
     fn workspaces_changed(&self) {
         self.emit(names::WORKSPACES_CHANGED, &WorkspacesChanged);
+    }
+
+    fn memory_changed(&self) {
+        self.emit(names::MEMORY_CHANGED, &MemoryChanged);
     }
 
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
@@ -482,6 +486,53 @@ mod tests {
         // Without a web build, other paths are simply not there.
         assert!(status(address, "GET", "/", None).contains(" 404 "));
         assert!(status(address, "GET", "/tasks", None).contains(" 404 "));
+    }
+
+    #[test]
+    fn memory_commands_are_served_over_rpc() {
+        let temp = tempfile::tempdir().unwrap();
+        let services = services(temp.path());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let call = |command: &str, args: serde_json::Value| {
+            runtime.block_on(rpc::dispatch(services.clone(), command, args))
+        };
+        let done = |reply: rpc::Reply| match reply {
+            rpc::Reply::Done(value) => value,
+            other => panic!("{other:?}"),
+        };
+        let content = serde_json::json!({
+            "kind": "rule", "title": "Reply in English", "body": "", "taskId": null
+        });
+        let added = done(call(
+            "add_memory",
+            serde_json::json!({ "workspaceId": null, "content": content }),
+        ));
+        assert_eq!(added["title"], "Reply in English");
+        let replaced = done(call(
+            "supersede_memory",
+            serde_json::json!({
+                "id": added["id"],
+                "content": { "kind": "rule", "title": "Write in English", "body": "", "taskId": null }
+            }),
+        ));
+        let current = done(call(
+            "list_memory",
+            serde_json::json!({ "workspaceId": null, "includeSuperseded": false }),
+        ));
+        assert_eq!(current, serde_json::json!([replaced]));
+        assert!(matches!(
+            call("list_memory", serde_json::json!({ "workspaceId": null })),
+            rpc::Reply::BadArguments(_)
+        ));
+        assert!(matches!(
+            call(
+                "update_memory",
+                serde_json::json!({ "id": added["id"], "content": content })
+            ),
+            rpc::Reply::Failed(error) if error.kind == crate::commands::CommandErrorKind::Rejected
+        ));
     }
 
     #[test]

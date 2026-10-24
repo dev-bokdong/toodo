@@ -13,6 +13,7 @@ pub mod herdr;
 pub mod issues;
 pub mod machines;
 pub mod mcp;
+pub mod memory;
 pub mod review;
 pub mod tasks;
 pub mod types;
@@ -194,6 +195,7 @@ impl From<StorageError> for CommandError {
         let kind = match &error {
             StorageError::WorkspaceNotFound(_)
             | StorageError::TaskNotFound(_)
+            | StorageError::MemoryNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
                 CommandErrorKind::NotFound
             }
@@ -201,9 +203,11 @@ impl From<StorageError> for CommandError {
             | StorageError::WorkspaceHasDependents { .. }
             | StorageError::BaseBranchInReview { .. }
             | StorageError::Transition(_)
-            | StorageError::DependenciesNotDone(_) => CommandErrorKind::Rejected,
+            | StorageError::DependenciesNotDone(_)
+            | StorageError::MemorySuperseded { .. } => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)
+            | StorageError::MemoryTaskMismatch { .. }
             | StorageError::CommitTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
             StorageError::Io(_) => CommandErrorKind::External,

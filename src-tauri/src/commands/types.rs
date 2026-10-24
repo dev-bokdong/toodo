@@ -8,7 +8,7 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{git, github, herdr, ssh};
-use crate::domain::{backup, model, path, plan, review, ssh_config, status, timeline};
+use crate::domain::{backup, memory, model, path, plan, review, ssh_config, status, timeline};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -1089,6 +1089,118 @@ impl From<&storage::BackupFile> for BackupEntry {
 
 pub(crate) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
     items.iter().map(U::from).collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(transparent)]
+pub struct MemoryId(#[specta(type = Number)] pub i64);
+
+impl From<MemoryId> for memory::MemoryId {
+    fn from(id: MemoryId) -> Self {
+        Self(id.0)
+    }
+}
+
+impl From<memory::MemoryId> for MemoryId {
+    fn from(id: memory::MemoryId) -> Self {
+        Self(id.0)
+    }
+}
+
+/// What a memory entry records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    /// A choice that was made, and why.
+    Decision,
+    /// A standing rule to follow.
+    Rule,
+    /// Anything else worth knowing.
+    Note,
+    /// An overview, e.g. of the project's state or architecture.
+    Summary,
+}
+
+impl From<MemoryKind> for memory::MemoryKind {
+    fn from(kind: MemoryKind) -> Self {
+        match kind {
+            MemoryKind::Decision => Self::Decision,
+            MemoryKind::Rule => Self::Rule,
+            MemoryKind::Note => Self::Note,
+            MemoryKind::Summary => Self::Summary,
+        }
+    }
+}
+
+impl From<memory::MemoryKind> for MemoryKind {
+    fn from(kind: memory::MemoryKind) -> Self {
+        match kind {
+            memory::MemoryKind::Decision => Self::Decision,
+            memory::MemoryKind::Rule => Self::Rule,
+            memory::MemoryKind::Note => Self::Note,
+            memory::MemoryKind::Summary => Self::Summary,
+        }
+    }
+}
+
+/// A project memory entry: knowledge of one workspace, or shared by every workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntry {
+    pub id: MemoryId,
+    /// `null` for an entry shared by every workspace.
+    pub workspace_id: Option<WorkspaceId>,
+    pub kind: MemoryKind,
+    pub title: String,
+    /// Markdown.
+    pub body: String,
+    /// The task the entry came from.
+    pub task_id: Option<TaskId>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    /// The entry that replaced this one; `null` while it is current.
+    pub superseded_by: Option<MemoryId>,
+}
+
+impl From<&memory::MemoryEntry> for MemoryEntry {
+    fn from(entry: &memory::MemoryEntry) -> Self {
+        Self {
+            id: entry.id.into(),
+            workspace_id: entry.workspace.map(Into::into),
+            kind: entry.kind.into(),
+            title: entry.title.clone(),
+            body: entry.body.clone(),
+            task_id: entry.task.map(Into::into),
+            created_at: Timestamp(entry.created_at),
+            updated_at: Timestamp(entry.updated_at),
+            superseded_by: entry.superseded_by.map(Into::into),
+        }
+    }
+}
+
+/// What a memory entry says, when it is added, edited, or replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryContent {
+    pub kind: MemoryKind,
+    pub title: String,
+    /// Markdown.
+    pub body: String,
+    pub task_id: Option<TaskId>,
+}
+
+impl TryFrom<MemoryContent> for memory::MemoryContent {
+    type Error = CommandError;
+
+    fn try_from(content: MemoryContent) -> CommandResult<Self> {
+        Self::new(
+            content.kind.into(),
+            &content.title,
+            &content.body,
+            content.task_id.map(Into::into),
+        )
+        .map_err(|error| CommandError::invalid_input(error.to_string()))
+    }
 }
 
 #[cfg(test)]

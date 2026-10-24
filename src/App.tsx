@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
+import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
+import { MemoryPanel } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
 import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
@@ -26,6 +27,14 @@ export default function App() {
   useHerdrEvents();
   const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
   const [reviewing, setReviewing] = useState(false);
+  const [sharedMemory, setSharedMemory] = useState(false);
+  // Whether a workspace shows its tasks or its memory; kept across workspaces.
+  const [workspaceView, setWorkspaceView] = useState<"tasks" | "memory">("tasks");
+  const openPage = (page: "review" | "memory" | null) => {
+    setReviewing(page === "review");
+    setSharedMemory(page === "memory");
+    setMenuOpen(false);
+  };
   // On narrow screens the sidebar is a drawer over the content.
   const [menuOpen, setMenuOpen] = useState(false);
   // Kept here so switching workspaces or views does not reset them.
@@ -34,7 +43,8 @@ export default function App() {
   const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
-  const showingAll = selectedId === "all" && !reviewing;
+  const onPage = reviewing || sharedMemory;
+  const showingAll = selectedId === "all" && !onPage;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
 
@@ -73,9 +83,8 @@ export default function App() {
         <NeedsAttention
           onShow={(id) => {
             setSelectedId("all");
-            setReviewing(false);
+            openPage(null);
             setShownTask({ id });
-            setMenuOpen(false);
           }}
         />
         <nav className="flex flex-col gap-0.5">
@@ -83,13 +92,19 @@ export default function App() {
             variant={reviewing ? "secondary" : "ghost"}
             className="justify-start"
             aria-pressed={reviewing}
-            onClick={() => {
-              setReviewing(true);
-              setMenuOpen(false);
-            }}
+            onClick={() => openPage("review")}
           >
             <ChartColumn />
             Review
+          </Button>
+          <Button
+            variant={sharedMemory ? "secondary" : "ghost"}
+            className="justify-start"
+            aria-pressed={sharedMemory}
+            onClick={() => openPage("memory")}
+          >
+            <BookMarked />
+            Shared memory
           </Button>
           <Button
             variant={showingAll ? "secondary" : "ghost"}
@@ -98,8 +113,7 @@ export default function App() {
             disabled={!workspaces.data?.length}
             onClick={() => {
               setSelectedId("all");
-              setReviewing(false);
-              setMenuOpen(false);
+              openPage(null);
             }}
           >
             <Layers />
@@ -107,11 +121,10 @@ export default function App() {
           </Button>
         </nav>
         <WorkspaceList
-          selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
+          selectedId={onPage || showingAll ? null : (selected?.id ?? null)}
           onSelect={(id) => {
             setSelectedId(id);
-            setReviewing(false);
-            setMenuOpen(false);
+            openPage(null);
           }}
         />
         <div className="mt-auto flex flex-col gap-2">
@@ -140,6 +153,8 @@ export default function App() {
           <HerdrBanner />
           {reviewing ? (
             <Review />
+          ) : sharedMemory ? (
+            <MemoryPanel workspace={null} />
           ) : showingAll && workspaces.data?.length ? (
             <TaskList
               key="all"
@@ -150,14 +165,34 @@ export default function App() {
               onTaskShown={() => setShownTask(null)}
             />
           ) : selected ? (
-            <TaskList
-              key={selected.id}
-              workspace={selected}
-              timelineScale={timelineScale}
-              onTimelineScaleChange={setTimelineScale}
-              draft={drafts.get(selected.id)}
-              onDraftChange={(draft) => setDraft(selected.id, draft)}
-            />
+            <div className="flex flex-1 flex-col gap-4">
+              <div role="group" aria-label="Workspace view" className="flex gap-1">
+                {(["tasks", "memory"] as const).map((view) => (
+                  <Button
+                    key={view}
+                    size="sm"
+                    variant={workspaceView === view ? "secondary" : "ghost"}
+                    aria-pressed={workspaceView === view}
+                    onClick={() => setWorkspaceView(view)}
+                  >
+                    {view === "tasks" ? <ListTodo /> : <BookMarked />}
+                    {view === "tasks" ? "Tasks" : "Memory"}
+                  </Button>
+                ))}
+              </div>
+              {workspaceView === "memory" ? (
+                <MemoryPanel key={selected.id} workspace={selected} />
+              ) : (
+                <TaskList
+                  key={selected.id}
+                  workspace={selected}
+                  timelineScale={timelineScale}
+                  onTimelineScaleChange={setTimelineScale}
+                  draft={drafts.get(selected.id)}
+                  onDraftChange={(draft) => setDraft(selected.id, draft)}
+                />
+              )}
+            </div>
           ) : (
             !workspaces.isPending && (
               <EmptyState
