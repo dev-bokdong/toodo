@@ -962,7 +962,7 @@ function TaskRow({
           {detailed && <h3 className="break-words-keep text-base font-semibold leading-snug">{task.title}</h3>}
           {detailed && task.description.trim() && (
             <Suspense
-              fallback={<p className="whitespace-pre-line break-words text-sm text-muted-foreground">{task.description}</p>}
+              fallback={<p className="whitespace-pre-line break-words-keep text-sm text-muted-foreground">{task.description}</p>}
             >
               <Markdown source={task.description} />
             </Suspense>
@@ -1550,7 +1550,7 @@ function CompletionNote({ task, adding, onAdded }: { task: Task; adding: boolean
     return task.completionNote === null ? null : (
       <div className="flex items-start gap-1 rounded-md bg-muted/60 px-2 py-1">
         <StickyNote aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-        <p aria-label={`Completion note of #${task.id}`} className="min-w-0 flex-1 whitespace-pre-line text-xs">
+        <p aria-label={`Completion note of #${task.id}`} className="min-w-0 flex-1 whitespace-pre-line break-words-keep text-xs">
           {task.completionNote}
         </p>
         <Button
@@ -1971,7 +1971,7 @@ function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
       {commits.data.map((commit) => (
         <li key={commit.sha} className="flex gap-2 text-xs" title={commit.author}>
           <code className="shrink-0 text-muted-foreground">{commit.sha.slice(0, 7)}</code>
-          <span className={detailed ? "min-w-0 break-words" : "truncate"}>{commit.message.split("\n", 1)[0]}</span>
+          <span className={detailed ? "min-w-0 break-words-keep" : "truncate"}>{commit.message.split("\n", 1)[0]}</span>
         </li>
       ))}
     </ul>
@@ -2029,7 +2029,7 @@ function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
               <NoteKindBadge kind={note.kind} />
               <When className="text-muted-foreground" at={note.at} />
             </div>
-            <Suspense fallback={<p className="whitespace-pre-line break-words">{note.body}</p>}>
+            <Suspense fallback={<p className="whitespace-pre-line break-words-keep">{note.body}</p>}>
               <Markdown source={note.body} />
             </Suspense>
           </li>
@@ -2726,7 +2726,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
         <span
           className={cn(
             "min-w-0",
-            detailed ? "break-words" : "truncate",
+            detailed ? "break-words-keep" : "truncate",
             criterion.state === "failed" && toneText.danger,
           )}
         >{criterion.text}</span>
@@ -2741,7 +2741,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
       </div>
       {detailed && target && <code className="ml-5.5 break-all text-muted-foreground">{target}</code>}
       {detailed && (criterion.evidence || checkedBy) && (
-        <p className="ml-5.5 whitespace-pre-line break-words text-muted-foreground">
+        <p className="ml-5.5 whitespace-pre-line break-words-keep text-muted-foreground">
           {[criterion.evidence, checkedBy].filter(Boolean).join(" \u00b7 ")}
         </p>
       )}

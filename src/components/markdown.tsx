@@ -72,7 +72,7 @@ const components: Components = {
 /** A task description rendered as GitHub-flavored Markdown. */
 export default function Markdown({ source, className }: { source: string; className?: string }) {
   return (
-    <div className={cn("flex min-w-0 flex-col gap-2 break-words text-sm text-muted-foreground", className)}>
+    <div className={cn("flex min-w-0 flex-col gap-2 break-words-keep text-sm text-muted-foreground", className)}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {source}
       </ReactMarkdown>
