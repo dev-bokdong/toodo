@@ -480,20 +480,49 @@ Order: **251 first**. 252 and 253 are independent of each other after it.
 - Done when a message sent from a client reaches Dori, Dori's reply appears in every open
   client without reload, and history survives a reload.
 
-### Not Numbered Yet: Desktop Thin Client
+### Install and Connection Model
+
+One server serves many clients, and a server and a client can run on the same machine.
+Installation works like VS Code Remote-SSH, with one difference: the VS Code server lives
+only while a window is attached, but toodo-server must stay resident, because agents, PR
+checks, and backups keep running with no client open. So the client installs the server,
+and the server runs as a service.
+
+- **Same machine:** the desktop app bundles the server binary, starts it as a sidecar,
+  and connects to it like any other server. There is no separate standalone core mode,
+  so open decision 1 is settled: one runtime path.
+- **Remote machine over SSH:** the client connects with ssh, checks the installed server
+  version, installs or upgrades the release matching the client (`install-server.sh`),
+  registers a systemd user service, reads the web token over ssh, and connects through
+  an `ssh -L` forward. No token copy, no public exposure, and versions stay matched.
+- **Phone (PWA):** no ssh, so it reaches the server through TLS and an authenticating
+  front (4.4).
+- **Many clients:** per-device tokens (4.4) so one device can be revoked alone.
+
+### 254: Desktop Thin Client With a Bundled Local Server
 
 Turn the Tauri app into a client of a configured server: base URL plus token storage
 (2.6), the web build's `src/web/*` transport in the WebView, no DB, threads, MCP, or
-tunnels in the shell, and the version check against `app_info`. This is a separate task
-after 251, since it is the step that changes how the existing desktop users work.
+tunnels in the shell, and the version check against `app_info`. The app ships the server
+binary and starts and stops a local server for same-machine use. Depends on 251.
+
+### 255: Install and Upgrade the Server Over SSH
+
+"Add SSH host" in the client: version check, install or upgrade of the matching release,
+systemd user service, token read over ssh, and an `ssh -L` forward. Depends on 254.
+
+### 256: Per-Device Tokens
+
+A `devices` table with hashed tokens, labels, last seen, and revoke, plus a UI to manage
+them. The shared `web-token` keeps working during migration. Depends on 251; needed
+before phones use the server off the machine.
 
 ## 6. Open Decisions
 
 These need an owner decision before the thin-client step. They do not block 251 to 253.
 
-1. **Standalone desktop mode.** Keep a "run the core locally" mode in the desktop app
-   (today's behavior, `desktop` feature) next to the thin-client mode, or remove it once
-   the thin client works. Keeping it means two runtime paths stay supported.
+1. **Standalone desktop mode.** Settled: removed. The desktop app runs a bundled local
+   server instead (see Install and Connection Model).
 2. **Workspaces on the Windows PC.** In the desktop app, "Local" is the PC (Windows
    paths). With a Linux server, "Local" is the server. PC-local workspaces either move
    to the server, or the PC becomes an SSH machine of the server (OpenSSH server and
