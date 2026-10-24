@@ -49,7 +49,7 @@ pub fn token_hash(token: &str) -> String {
         .collect()
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     run: impl FnOnce() -> CommandResult<T> + Send + 'static,
 ) -> CommandResult<T> {
     tokio::task::spawn_blocking(run)

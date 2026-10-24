@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
@@ -7,17 +7,19 @@ import { DevicesPanel } from "@/components/devices-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { MemoryPanel } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
+import { NotificationsPanel } from "@/components/notifications-panel";
 import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
-import { commands, type WorkspaceId } from "@/lib/bindings";
+import { commands, type TaskId, type WorkspaceId } from "@/lib/bindings";
 import { runsOnServer } from "@/lib/platform";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
+import { listenForOpenTask } from "@/web/push";
 
 export default function App() {
   const appInfo = useQuery({
@@ -44,6 +46,13 @@ export default function App() {
   const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
+  const showTask = (id: TaskId) => {
+    setSelectedId("all");
+    openPage(null);
+    setShownTask({ id });
+  };
+  // A clicked notification of the web build opens its task.
+  useEffect(() => listenForOpenTask(showTask), []);
   const onPage = reviewing || sharedMemory;
   const showingAll = selectedId === "all" && !onPage;
   const selected =
@@ -81,13 +90,7 @@ export default function App() {
             <X />
           </Button>
         </div>
-        <NeedsAttention
-          onShow={(id) => {
-            setSelectedId("all");
-            openPage(null);
-            setShownTask({ id });
-          }}
-        />
+        <NeedsAttention onShow={showTask} />
         <nav className="flex flex-col gap-0.5">
           <Button
             variant={reviewing ? "secondary" : "ghost"}
@@ -131,6 +134,7 @@ export default function App() {
         <div className="mt-auto flex flex-col gap-2">
           <AgentAccessPanel />
           {runsOnServer && <DevicesPanel />}
+          {runsOnServer && <NotificationsPanel />}
           <BackupPanel />
         </div>
         <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1">

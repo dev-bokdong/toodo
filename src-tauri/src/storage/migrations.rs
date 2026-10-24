@@ -379,6 +379,21 @@ pub(super) const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX task_criteria_task_id ON task_criteria (task_id, position);
     ",
+    // Version 17: the Web Push subscription of each device, with the kinds of
+    // notification it wants. A device has at most one (its browser's), and an endpoint
+    // belongs to one device.
+    "
+    CREATE TABLE push_subscriptions (
+        device_id INTEGER PRIMARY KEY REFERENCES devices (id) ON DELETE CASCADE,
+        endpoint TEXT NOT NULL UNIQUE CHECK (endpoint LIKE 'https://%'),
+        p256dh BLOB NOT NULL CHECK (length(p256dh) = 65),
+        auth BLOB NOT NULL CHECK (length(auth) = 16),
+        agent INTEGER NOT NULL DEFAULT 1 CHECK (agent IN (0, 1)),
+        pull_requests INTEGER NOT NULL DEFAULT 1 CHECK (pull_requests IN (0, 1)),
+        completion INTEGER NOT NULL DEFAULT 1 CHECK (completion IN (0, 1)),
+        created_at INTEGER NOT NULL
+    );
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1277,5 +1292,54 @@ mod tests {
         }
         conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
         assert!(criteria(1).is_empty());
+    }
+
+    #[test]
+    fn version_17_keeps_devices_without_subscriptions_and_drops_them_with_the_device() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..16] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 16).unwrap();
+        conn.execute(
+            "INSERT INTO devices (label, token_hash, created_at, last_seen_at)
+             VALUES ('Phone', ?1, 1, 1)",
+            ["0".repeat(64)],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM push_subscriptions", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(count(&conn), 0);
+        let insert = |endpoint: &str, p256dh: usize, auth: usize| {
+            conn.execute(
+                "INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth, created_at)
+                 VALUES (1, ?1, ?2, ?3, 2)",
+                params![endpoint, vec![4u8; p256dh], vec![1u8; auth]],
+            )
+        };
+        assert!(insert("http://push.example/1", 65, 16).is_err());
+        assert!(insert("https://push.example/1", 64, 16).is_err());
+        assert!(insert("https://push.example/1", 65, 15).is_err());
+        insert("https://push.example/1", 65, 16).unwrap();
+        let settings: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT agent, pull_requests, completion FROM push_subscriptions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(settings, (1, 1, 1));
+        conn.execute("DELETE FROM devices WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(count(&conn), 0);
     }
 }

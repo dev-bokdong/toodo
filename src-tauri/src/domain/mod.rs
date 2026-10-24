@@ -10,6 +10,7 @@ pub mod model;
 pub mod naming;
 pub mod path;
 pub mod plan;
+pub mod push;
 pub mod remote;
 pub mod review;
 pub mod slug;
