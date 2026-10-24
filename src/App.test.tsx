@@ -1196,7 +1196,15 @@ describe("App", () => {
     expect(mocked.startTask).toHaveBeenCalledWith(1);
     const details = await openDetails("Add login");
     expect(within(details).getByText("feat/add-login-1")).toBeInTheDocument();
-    expect(within(details).getByText("D:\\wt\\toodo\\feat-add-login-1")).toBeInTheDocument();
+    expect(within(details).getByText("…\\toodo\\feat-add-login-1")).toHaveAttribute(
+      "title",
+      "D:\\wt\\toodo\\feat-add-login-1",
+    );
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    fireEvent.click(within(details).getByRole("button", { name: "Copy worktree path of #1" }));
+    expect(writeText).toHaveBeenCalledWith("D:\\wt\\toodo\\feat-add-login-1");
+    expect(await within(details).findByText("Copied")).toBeInTheDocument();
     fireEvent.click(within(details).getByRole("button", { name: "Close details" }));
     await chooseAction(1, "Open #1 in herdr");
     await waitFor(() => expect(mocked.openTaskInHerdr).toHaveBeenCalledWith(1));

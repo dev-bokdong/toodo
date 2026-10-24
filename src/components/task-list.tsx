@@ -27,7 +27,14 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
-import { compactSelectClass, inputClass, describeLocation, escapeCloses } from "@/components/workspace-list";
+import {
+  compactSelectClass,
+  inputClass,
+  describeLocation,
+  escapeCloses,
+  shortLocation,
+} from "@/components/workspace-list";
+import { PathLabel } from "@/components/path-label";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { AgentBadge } from "@/components/agent-badge";
 import type { SheetNavigation } from "@/components/task-graph";
@@ -119,6 +126,7 @@ import { needsAttention } from "@/lib/attention";
 import { formatDate, reachedMilestones } from "@/lib/timeline";
 import { firstParagraph, markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
+import { normalizePath, shortPath } from "@/lib/paths";
 import { runsOnServer } from "@/lib/platform";
 import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
@@ -1124,7 +1132,12 @@ function TaskRow({
       )}
       {detailed && task.worktreePath && (
         <DetailField label="Worktree">
-          <span className="break-all font-mono select-all">{task.worktreePath}</span>
+          <PathLabel
+            label={`worktree path of #${task.id}`}
+            full={normalizePath(task.worktreePath)}
+            short={shortPath(task.worktreePath)}
+            className="font-mono"
+          />
         </DetailField>
       )}
       {detailed && task.pullRequestUrl && (
@@ -2137,7 +2150,8 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   if (draft === null) {
     return (
       <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground max-md:flex-wrap">
-        <span className="truncate">{location} &middot; base</span>
+        <PathLabel label="workspace path" full={location} short={shortLocation(workspace.location)} />
+        <span className="shrink-0">&middot; base</span>
         <code className="text-foreground">{workspace.defaultBaseBranch}</code>
         <Button
           size="xs"
