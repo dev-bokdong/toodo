@@ -36,7 +36,7 @@ export function InstallBanner() {
           )}
         </p>
       </div>
-      <div className="flex gap-1">
+      <div className="flex gap-1 max-md:gap-2">
         {offer === "prompt" && (
           <Button size="sm" disabled={installing} onClick={run}>
             <Download />
