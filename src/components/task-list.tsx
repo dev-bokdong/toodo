@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import {
   Check,
   ChevronDown,
@@ -133,6 +133,7 @@ import { normalizePath, shortPath } from "@/lib/paths";
 import { runsOnServer } from "@/lib/platform";
 import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
+import { reachability, subscribeReachability } from "@/web/connection";
 
 const Markdown = lazy(() => import("@/components/markdown"));
 // The timeline pulls in React Flow, so it loads only when it is first shown.
@@ -263,7 +264,7 @@ export function TaskList({
         );
 
   return (
-    <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4">
+    <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4 max-md:gap-3">
       <header className="flex flex-col max-md:gap-2">
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
           {workspace?.name ?? "All workspaces"}
@@ -274,7 +275,7 @@ export function TaskList({
             <AgentMergeSetting workspace={workspace} />
           </>
         ) : (
-          <p className="text-sm text-muted-foreground">Tasks of every workspace and the dependencies between them.</p>
+          <p className="text-sm text-muted-foreground max-md:hidden">Tasks of every workspace and the dependencies between them.</p>
         )}
       </header>
 
@@ -1911,17 +1912,17 @@ function RelatedTasks({
   }
   return (
     <DetailField label="Related">
-      <ul aria-label={`Related tasks of #${task.id}`} className="flex flex-wrap items-center gap-1">
+      <ul aria-label={`Related tasks of #${task.id}`} className="flex flex-wrap items-center gap-1 max-md:gap-2">
         {related.map((id) => {
           const other = context.byId.get(id);
           const label = taskRef(id, task.workspaceId, context);
           return (
-            <li key={id} className="inline-flex h-6 min-w-0 items-center rounded-md border">
+            <li key={id} className="inline-flex h-6 min-w-0 items-center rounded-md border max-md:h-11 max-md:gap-2 max-md:border-0">
               <button
                 type="button"
                 aria-label={`Open related task ${label}`}
                 title={other?.title}
-                className="min-w-0 max-w-56 truncate rounded-l-md px-1.5 tabular-nums hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
+                className="h-full min-w-0 max-w-56 truncate rounded-l-md px-1.5 tabular-nums hover:bg-muted max-md:rounded-md max-md:border max-md:px-3 disabled:cursor-default disabled:hover:bg-transparent"
                 disabled={navigation === undefined || !navigation.canOpen(id)}
                 onClick={() => navigation?.open(id)}
               >
@@ -1931,7 +1932,7 @@ function RelatedTasks({
                 type="button"
                 aria-label={`Remove related task #${id} from #${task.id}`}
                 title="Remove related task"
-                className="rounded-r-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                className="flex h-full items-center justify-center rounded-r-md p-1 text-muted-foreground hover:bg-muted max-md:w-11 max-md:rounded-md max-md:border hover:text-foreground disabled:opacity-50"
                 disabled={busy}
                 onClick={() => removeRelation.mutate({ taskId: task.id, relatedId: id })}
               >
@@ -2065,6 +2066,9 @@ export function EmptyState({
 function AgentMergeSetting({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
   const value = updateWorkspace.isPending ? updateWorkspace.variables.agentMerge : workspace.agentMerge;
+  // Saved on change, so it waits, like the buttons that change data, while the server is away.
+  const reach = useSyncExternalStore(subscribeReachability, reachability);
+  const serverDown = reach === "unreachable" || reach === "retrying";
 
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
@@ -2075,7 +2079,7 @@ function AgentMergeSetting({ workspace }: { workspace: Workspace }) {
         id="agent-merge"
         className={cn(compactSelectClass, "max-w-72")}
         value={value}
-        disabled={updateWorkspace.isPending}
+        disabled={updateWorkspace.isPending || serverDown}
         onChange={(e) => updateWorkspace.mutate({ ...workspace, agentMerge: e.target.value as AgentMerge })}
       >
         <option value="never">Never, stop at the pull request</option>
@@ -2316,13 +2320,13 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         settings.isSuccess && !saved && "border-amber-300 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30",
       )}
     >
-      <div className="flex items-center gap-2">
-        <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 max-md:flex-wrap">
+        <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground max-md:basis-full">
           Worktree root on {machineName}
         </label>
         <input
           id="worktree-root"
-          className={cn(inputClass, "font-mono")}
+          className={cn(inputClass, "font-mono max-md:min-w-0 max-md:flex-1")}
           placeholder={machine.kind === "local" && !runsOnServer ? "D:\\worktrees" : "/srv/worktrees"}
           value={draft ?? saved}
           onChange={(e) => setDraft(e.target.value)}
@@ -2737,7 +2741,19 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
       {detailed && target && <code className="ml-5.5 break-all text-muted-foreground">{target}</code>}
       {detailed && (criterion.evidence || checkedBy) && (
         <p className="ml-5.5 whitespace-pre-line break-words-keep text-muted-foreground">
-          {[criterion.evidence, checkedBy].filter(Boolean).join(" \u00b7 ")}
+          {criterion.evidence}
+          {criterion.evidence && checkedBy && " \u00b7 "}
+          {criterion.checkedBy !== null && (
+            <>
+              Checked by {checkedByLabels[criterion.checkedBy]}
+              {criterion.checkedAt !== null && (
+                <>
+                  {" "}
+                  <When at={criterion.checkedAt} />
+                </>
+              )}
+            </>
+          )}
         </p>
       )}
       {writing && (

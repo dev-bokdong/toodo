@@ -1,11 +1,16 @@
+import { useSyncExternalStore } from "react";
+
 import { Button } from "@/components/ui/button";
 import { useHerdrStatus } from "@/lib/queries";
 import { tonePanel } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
+import { reachability, subscribeReachability } from "@/web/connection";
 
 export function HerdrBanner() {
   const status = useHerdrStatus();
-  if (status.isPending || status.data?.running) {
+  // While the Toodo server cannot be reached, its banner says so; herdr may be fine.
+  const serverDown = useSyncExternalStore(subscribeReachability, reachability) !== "reachable";
+  if (status.isPending || status.data?.running || serverDown) {
     return null;
   }
   const reason = status.isError ? status.error.message : "The herdr server is not running.";

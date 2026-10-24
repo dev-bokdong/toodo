@@ -128,17 +128,12 @@ function MemoryItem({ entry }: { entry: MemoryEntry }) {
         <span className="rounded-full border px-2 py-0.5 text-xs font-medium" data-memory-kind={entry.kind}>
           {kindLabel(entry.kind)}
         </span>
-        <h3 className="min-w-0 flex-1 font-medium break-words-keep">{entry.title}</h3>
+        <h3 className="min-w-0 flex-1 font-medium break-words-keep max-md:order-last max-md:basis-full">{entry.title}</h3>
         {!superseded && mode === "view" && (
-          <div className="flex gap-1">
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              aria-label={`Edit memory entry #${entry.id}`}
-              title="Edit"
-              onClick={() => setMode("edit")}
-            >
+          <div className="flex gap-1 max-md:ml-auto">
+            <Button size="xs" variant="ghost" aria-label={`Edit memory entry #${entry.id}`} onClick={() => setMode("edit")}>
               <Pencil />
+              Edit
             </Button>
             <Button
               size="xs"
