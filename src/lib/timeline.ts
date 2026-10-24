@@ -1,11 +1,12 @@
 import type { TaskEvent, TaskMilestones, Timestamp } from "@/lib/bindings";
+import { statusNames } from "@/lib/status-styles";
 
 const milestoneLabels: [keyof TaskMilestones, string][] = [
   ["plannedAt", "Planned"],
   ["startedAt", "Started"],
-  ["reviewAt", "Awaiting completion"],
+  ["reviewAt", statusNames.in_review],
   ["completedAt", "Completed"],
-  ["pausedAt", "Paused"],
+  ["pausedAt", statusNames.paused],
 ];
 
 /** Calendar date of `at` in the local time zone, as `YYYY-MM-DD`. */

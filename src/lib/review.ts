@@ -17,10 +17,11 @@ import {
   formatEstimate,
   secondsPastDue,
 } from "@/lib/plan";
+import { statusNames } from "@/lib/status-styles";
 
 export const outcomeLabels: Record<ReviewOutcome, string> = {
   completed: "Completed",
-  opened_for_review: "Opened for review",
+  opened_for_review: statusNames.in_review,
   started: "Started",
   worked_on: "Worked on",
   planned: "Planned",

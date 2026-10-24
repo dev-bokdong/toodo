@@ -60,7 +60,17 @@ import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
 import { activeSeconds, formatDate, reachedMilestones } from "@/lib/timeline";
 import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
-import { barStyles, nowLabel, nowLine, toneFill, toneMark, toneText } from "@/lib/status-styles";
+import {
+  barStyles,
+  nowLabel,
+  nowLine,
+  plannedOnName,
+  statusNames,
+  toneFill,
+  toneMark,
+  toneText,
+  type Tone,
+} from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
@@ -140,8 +150,8 @@ const phaseStyles: Record<TimelinePhase, string> = {
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
-  in_progress: "In progress",
-  in_review: "Awaiting completion",
+  in_progress: statusNames.in_progress,
+  in_review: statusNames.in_review,
 };
 
 
@@ -577,7 +587,7 @@ export function TaskGraph({
         <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 text-muted-foreground [&>li]:whitespace-nowrap">
           <li className="flex items-center gap-1">
             <span className="size-2 rotate-45 border border-muted-foreground" />
-            Planned
+            {plannedOnName}
           </li>
           <li className="flex items-center gap-1">
             <span className={cn("h-2 border-l-2", toneMark.attention)} />
@@ -589,11 +599,11 @@ export function TaskGraph({
           </li>
           <li className="flex items-center gap-1">
             <span className={cn("h-2 w-3 rounded-sm border", barStyles.blocked)} />
-            Blocked
+            {statusNames.planned}
           </li>
           <li className="flex items-center gap-1">
             <span className={cn("h-2 w-3 rounded-sm border", barStyles.ready)} />
-            Ready to start
+            {statusNames.ready}
           </li>
           {(Object.keys(phaseLabels) as TimelinePhase[]).map((phase) => (
             <li key={phase} className="flex items-center gap-1">
@@ -603,7 +613,7 @@ export function TaskGraph({
           ))}
           <li className="flex items-center gap-1">
             <span className={cn("h-2 w-3 rounded-sm border", barStyles.done)} />
-            Done
+            {statusNames.done}
           </li>
           <li className="flex items-center gap-1">
             <span className="h-3 border-l-2 border-muted-foreground" />
@@ -1030,6 +1040,8 @@ function TimelineBarView({
     behindBase,
   ].filter((warning): warning is string => typeof warning === "string");
   const severe = notAdopted.length > 0 || conflicting;
+  // Waiting alone is nothing to act on, so only a branch behind its base warns in amber.
+  const warningTone: Tone = severe ? "danger" : behindBase !== null ? "attention" : "neutral";
   // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
   const faded = isPaused(task) && !ready;
   const behindDue = dueState === "late" || dueState === "overdue";
@@ -1156,10 +1168,8 @@ function TimelineBarView({
             role="img"
             aria-label={`Warnings of #${task.id}: ${warnings.join("; ")}`}
             data-severe={severe || undefined}
-            className={cn(
-              "size-3.5 shrink-0",
-              severe ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400",
-            )}
+            data-tone={warningTone}
+            className={cn("size-3.5 shrink-0", toneText[warningTone])}
           >
             <title>{warnings.join("\n")}</title>
           </TriangleAlert>
