@@ -2416,19 +2416,29 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
         title={detailed ? undefined : [checkedBy, criterion.evidence, target].filter(Boolean).join("\n") || undefined}
       >
         {checkable ? (
-          <label className="flex size-4 shrink-0 items-center justify-center max-md:-mx-3.5 max-md:size-11">
-            <input
-              type="checkbox"
-              aria-label={`Check criterion ${criterion.id} of #${task.id}`}
-              checked={criterion.state === "met" || writing}
-              disabled={checkCriterion.isPending}
-              onChange={(e) => toggle(e.target.checked)}
-            />
-          </label>
+          <>
+            <label className="flex size-4 shrink-0 items-center justify-center max-md:-mx-3.5 max-md:size-11">
+              <input
+                type="checkbox"
+                aria-label={`Check criterion ${criterion.id} of #${task.id}`}
+                checked={criterion.state === "met" || writing}
+                disabled={checkCriterion.isPending}
+                onChange={(e) => toggle(e.target.checked)}
+              />
+            </label>
+            {/* An unchecked box alone cannot tell a failed check from a pending one. */}
+            {criterion.state === "failed" && <CriterionMarker state="failed" />}
+          </>
         ) : (
           <CriterionMarker state={criterion.state} />
         )}
-        <span className={cn("min-w-0", detailed ? "break-words" : "truncate")}>{criterion.text}</span>
+        <span
+          className={cn(
+            "min-w-0",
+            detailed ? "break-words" : "truncate",
+            criterion.state === "failed" && toneText.danger,
+          )}
+        >{criterion.text}</span>
         {criterion.kind !== "manual" && (
           <span className="shrink-0 rounded-md bg-muted px-1.5 text-muted-foreground">
             {criterionKindLabels[criterion.kind]}
