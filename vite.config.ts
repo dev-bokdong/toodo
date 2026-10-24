@@ -4,7 +4,7 @@ import process from "node:process";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { pwa } from "./vite-pwa";
+import { pwa } from "./vite-pwa.ts";
 
 const host = process.env.TAURI_DEV_HOST;
 
