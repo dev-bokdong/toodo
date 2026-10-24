@@ -201,8 +201,9 @@ drops, the web app reconnects and refetches everything.
   result; a command error is `{ "kind", "message" }` with `422` (invalidInput), `404`
   (notFound), `409` (rejected), `502` (external), or `500` (internal). An unknown command
   is `404` and malformed arguments `400`, both with a text body.
-- `GET /api/events`: server-sent events `tasks-changed`, `agent-statuses-changed`, and
-  `pull-request-statuses-changed` with the payloads of the desktop app's events.
+- `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
+  `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
+  desktop app's events.
 
 Both require `Authorization: Bearer <web-token>`; `/mcp` requires the MCP token. The web
 build swaps the Tauri modules for `src/web/`, so the generated bindings in
