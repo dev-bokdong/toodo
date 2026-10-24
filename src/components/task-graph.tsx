@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, Crosshair, TriangleAlert, XIcon } from "lucide-react";
+import { EmptyState } from "@/components/task-list";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
   BaseEdge,
@@ -691,9 +692,21 @@ export function TaskGraph({
           className="min-w-0 flex-1 rounded-lg border"
         >
           {layout.bars.length === 0 ? (
-            <p className="p-3 text-sm text-muted-foreground">
-              {year === null ? "No planned tasks yet." : `No tasks in ${year}.`}
-            </p>
+            <EmptyState
+              title={year === null ? "No planned tasks yet." : `No tasks in ${year}.`}
+              hint={
+                year === null
+                  ? "Add a task in a workspace and it appears here on the timeline."
+                  : "Show every year to see the tasks planned or finished in other years."
+              }
+              action={
+                year === null ? undefined : (
+                  <Button size="sm" variant="outline" onClick={() => setYear(null)}>
+                    Show all years
+                  </Button>
+                )
+              }
+            />
           ) : (
             <ReactFlow
               key={`${scale}-${year ?? "all"}`}

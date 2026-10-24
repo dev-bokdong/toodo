@@ -188,7 +188,7 @@ export default function App() {
           {chatting && lead.data ? (
             <LeadChat lead={lead.data} />
           ) : reviewing ? (
-            <Review />
+            <Review onShowTask={showTask} />
           ) : sharedMemory ? (
             <MemoryPanel workspace={null} />
           ) : showingAll && workspaces.data?.length ? (

@@ -1655,7 +1655,17 @@ function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
 }
 
 /** A dashed placeholder for a list with nothing in it yet. */
-export function EmptyState({ title, hint, icon }: { title: string; hint?: string; icon?: ReactNode }) {
+export function EmptyState({
+  title,
+  hint,
+  icon,
+  action,
+}: {
+  title: string;
+  hint?: string;
+  icon?: ReactNode;
+  action?: ReactNode;
+}) {
   return (
     <div className="flex flex-col items-center gap-1 rounded-xl border border-dashed px-6 py-10 text-center">
       <span aria-hidden className="mb-1 text-muted-foreground [&_svg]:size-6">
@@ -1663,6 +1673,7 @@ export function EmptyState({ title, hint, icon }: { title: string; hint?: string
       </span>
       <p className="text-sm font-medium">{title}</p>
       {hint && <p className="max-w-sm text-xs text-muted-foreground">{hint}</p>}
+      {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }

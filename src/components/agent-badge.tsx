@@ -35,7 +35,7 @@ export function AgentBadge({
         className,
       )}
     >
-      <span aria-hidden className={cn("size-1.5 rounded-full bg-current", status === "working" && "animate-pulse")} />
+      <span aria-hidden className={cn("size-1.5 rounded-full bg-current", status === "working" && "motion-safe:animate-pulse")} />
       {agentLabels[status]}
     </span>
   );

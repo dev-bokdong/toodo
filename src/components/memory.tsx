@@ -63,6 +63,10 @@ export function MemoryPanel({ workspace }: { workspace: Workspace | null }) {
         <p role="alert" className="text-sm text-destructive">
           {entries.error.message}
         </p>
+      ) : entries.isPending ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Loading memory...
+        </p>
       ) : entries.data?.length === 0 ? (
         <EmptyState
           icon={<BookMarked />}

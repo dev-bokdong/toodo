@@ -430,7 +430,10 @@ describe("App", () => {
     const completed = await screen.findByRole("region", { name: "Completed" });
     expect(within(completed).getByText("Add storage")).toBeInTheDocument();
     expect(within(completed).getByText(`toodo · ${formatDate(at)}`)).toBeInTheDocument();
-    expect(within(completed).getByText("https://github.com/acme/toodo/pull/7")).toBeInTheDocument();
+    const pullRequest = within(completed).getByRole("link", { name: "Pull request #7" });
+    expect(pullRequest).toHaveTextContent("#7");
+    expect(pullRequest).toHaveAttribute("href", "https://github.com/acme/toodo/pull/7");
+    expect(within(completed).getByRole("button", { name: "Open #1 Add storage" })).toBeInTheDocument();
     expect(within(completed).getByRole("list", { name: "Commits of #1 this week" })).toHaveTextContent(
       "0123456Add the storage schema",
     );
@@ -442,7 +445,8 @@ describe("App", () => {
     expect(within(summary).getByText("Completed by type").nextSibling).toHaveTextContent("feat 1");
     expect(within(summary).queryByRole("list", { name: "Completed per month" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Markdown" }));
     expect(await screen.findByText("Copied as Markdown.")).toBeInTheDocument();
     expect(writeText).toHaveBeenCalledWith(
       expect.stringContaining(
@@ -465,7 +469,8 @@ describe("App", () => {
     expect(within(months).getAllByRole("listitem")).toHaveLength(12);
     expect(within(months).getAllByRole("listitem")[9]).toHaveTextContent("2026-101");
 
-    fireEvent.click(screen.getByRole("button", { name: "Save as CSV" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save as CSV" }));
     expect(await screen.findByText("Saved to C:\\reports\\review.csv")).toBeInTheDocument();
     expect(mockedSaveDialog).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "toodo-review-2026.csv" }));
     expect(mocked.saveReport).toHaveBeenCalledWith(
@@ -2153,7 +2158,7 @@ describe("App", () => {
 
     const preview = within(form).getByRole("region", { name: "Preview of Description of #1" });
     expect(await within(preview).findByRole("heading", { name: "Steps" })).toBeInTheDocument();
-    expect(within(preview).getByRole("checkbox")).toBeChecked();
+    expect(within(preview).getByRole("img", { name: "Done" })).toBeInTheDocument();
     expect(within(form).queryByLabelText("Description of #1")).not.toBeInTheDocument();
     fireEvent.click(within(form).getByRole("button", { name: "Write" }));
     expect(within(form).getByLabelText("Description of #1")).toHaveValue("## Steps\n\n- [x] **form**");

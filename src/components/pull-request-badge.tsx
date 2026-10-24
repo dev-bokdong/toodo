@@ -36,7 +36,7 @@ export function PullRequestBadges({ taskId, status }: { taskId: TaskId; status: 
         <span aria-label={`CI of #${taskId}`} className={cn(pillClass, checksStyles[status.checks])}>
           <span
             aria-hidden
-            className={cn("size-1.5 rounded-full bg-current", status.checks === "pending" && "animate-pulse")}
+            className={cn("size-1.5 rounded-full bg-current", status.checks === "pending" && "motion-safe:animate-pulse")}
           />
           {checksLabels[status.checks]}
         </span>
