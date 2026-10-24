@@ -25,6 +25,12 @@ if (import.meta.env.MODE === "web") {
     ([{ ServerAccess }, { onReconnect }]) => {
       // Events sent while the stream was down are lost; refetch what they would have changed.
       onReconnect(() => void queryClient.invalidateQueries());
+      // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
+      if (import.meta.env.PROD && "serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js").catch((error: unknown) => {
+          console.error("Toodo: could not register the service worker", error);
+        });
+      }
       render(
         <ServerAccess>
           <App />
