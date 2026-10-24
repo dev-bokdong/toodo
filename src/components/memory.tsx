@@ -131,14 +131,9 @@ function MemoryItem({ entry }: { entry: MemoryEntry }) {
         <h3 className="min-w-0 flex-1 font-medium break-words-keep">{entry.title}</h3>
         {!superseded && mode === "view" && (
           <div className="flex gap-1">
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              aria-label={`Edit memory entry #${entry.id}`}
-              title="Edit"
-              onClick={() => setMode("edit")}
-            >
+            <Button size="xs" variant="ghost" aria-label={`Edit memory entry #${entry.id}`} onClick={() => setMode("edit")}>
               <Pencil />
+              Edit
             </Button>
             <Button
               size="xs"

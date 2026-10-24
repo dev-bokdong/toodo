@@ -215,7 +215,7 @@ export function BackupPanel() {
                     setConfirming({ kind: "backup", path: backup.path });
                   }}
                 >
-                  Restore
+                  Restore this backup
                 </Button>
               </span>
             </li>
