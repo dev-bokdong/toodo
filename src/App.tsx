@@ -173,7 +173,7 @@ export default function App() {
             />
           ) : selected ? (
             <div className="flex flex-1 flex-col gap-4">
-              <div role="group" aria-label="Workspace view" className="flex gap-1">
+              <div role="group" aria-label="Workspace view" className="flex gap-1 max-md:gap-2">
                 {(["tasks", "memory"] as const).map((view) => (
                   <Button
                     key={view}

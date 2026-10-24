@@ -238,7 +238,7 @@ export function TaskList({
 
   return (
     <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4">
-      <header>
+      <header className="flex flex-col max-md:gap-2">
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
           {workspace?.name ?? "All workspaces"}
         </h2>
@@ -276,7 +276,7 @@ export function TaskList({
         <>
           <div className="flex flex-wrap items-center gap-2">
             {workspace === null && (
-              <div role="group" aria-label="Task view" className="flex gap-1">
+              <div role="group" aria-label="Task view" className="flex gap-1 max-md:gap-2">
                 {(["timeline", "list"] as const).map((option) => (
                   <Button
                     key={option}
@@ -365,12 +365,16 @@ export function TaskList({
 /** Search text and status and type filters narrowing the task list and the timeline. */
 function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (filter: TaskFilter) => void }) {
   return (
-    <div role="search" aria-label="Task filters" className="flex flex-1 flex-wrap items-center justify-end gap-2">
+    <div
+      role="search"
+      aria-label="Task filters"
+      className="flex flex-1 flex-wrap items-center justify-end gap-2 max-md:grid max-md:basis-full max-md:grid-cols-2"
+    >
       <input
         type="search"
         aria-label="Search tasks"
         placeholder="Search title or description"
-        className={cn(compactSelectClass, "w-56")}
+        className={cn(compactSelectClass, "w-56 max-md:col-span-2 max-md:w-full")}
         value={filter.query}
         onChange={(event) => onChange({ ...filter, query: event.target.value })}
       />
@@ -552,7 +556,7 @@ function TaskRow({
   }
 
   return (
-    <li className={cn("flex flex-col", detailed ? "gap-3 p-4" : "gap-1.5 px-4 py-3")}>
+    <li className={cn("flex flex-col", detailed ? "gap-3 p-4" : "gap-1.5 px-4 py-3 max-md:gap-2")}>
       {editing ? (
         <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex min-w-0 items-center gap-2">
@@ -564,7 +568,7 @@ function TaskRow({
         </div>
       ) : (
         <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
-          <div className={cn("flex min-w-0 items-center gap-2", detailed && "flex-wrap")}>
+          <div className={cn("flex min-w-0 items-center gap-2", detailed ? "flex-wrap" : "max-md:flex-wrap max-md:gap-y-1")}>
             <StatusBadge task={task} byId={context.byId} />
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             {showWorkspace && (
@@ -574,7 +578,11 @@ function TaskRow({
             )}
             <TaskTypeBadge type={task.taskType} />
             {!detailed && (
-              <span className="min-w-0 flex-1 truncate text-sm font-semibold" title={task.title}>
+              // Below md the title gets a line of its own under the chips and wraps to three lines.
+              <span
+                className="break-words-keep min-w-0 text-base font-semibold max-md:order-last max-md:line-clamp-3 max-md:basis-full md:flex-1 md:truncate md:text-sm"
+                title={task.title}
+              >
                 {task.title}
               </span>
             )}
@@ -590,7 +598,7 @@ function TaskRow({
             </Suspense>
           )}
           {!detailed && markdownPreview(task.description) && (
-            <p className="line-clamp-2 text-xs text-muted-foreground">{markdownPreview(task.description)}</p>
+            <p className="line-clamp-2 text-sm text-muted-foreground">{markdownPreview(task.description)}</p>
           )}
         </div>
       )}
@@ -599,14 +607,14 @@ function TaskRow({
         <div
           role="group"
           aria-label={`Dependencies of #${task.id}`}
-          className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
+          className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground max-md:gap-2"
         >
           {task.dependsOn.length > 0 && <span>Depends on</span>}
           {task.dependsOn.map((id) => (
             <span
               key={id}
               className={cn(
-                "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 tabular-nums",
+                "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 tabular-nums max-md:h-auto max-md:pr-0",
                 context.byId.get(id)?.status === "done" && "line-through decoration-muted-foreground/60",
                 notAdopted.includes(id) && toneOutline.attention,
               )}
@@ -622,7 +630,7 @@ function TaskRow({
                   type="button"
                   aria-label={`Remove dependency #${id} from #${task.id}`}
                   title="Remove dependency"
-                  className="rounded-sm p-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  className="flex items-center justify-center self-stretch rounded-sm p-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50 max-md:size-11"
                   disabled={changingDependencies}
                   onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
                 >
@@ -783,7 +791,7 @@ function TaskRow({
       )}
       {concluding && !editing && <ConcludeForm task={task} onDone={() => setConcluding(false)} />}
       {!editing && !concluding && (
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
           {task.status === "planned" && (
             <Button
               size="xs"
@@ -907,7 +915,7 @@ function TaskRow({
             </Button>
           )}
           <div
-            className="ml-auto flex items-center gap-0.5"
+            className="ml-auto flex items-center gap-0.5 max-md:gap-2"
             onKeyDown={confirming ? escapeCloses(() => setConfirming(null), deleteTask.isPending) : undefined}
           >
             {confirming ? (
@@ -1132,7 +1140,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
       onSubmit={submit}
       aria-label={`Edit task #${task.id}`}
       data-dirty={dirty || undefined}
-      className="flex flex-col gap-1"
+      className="flex flex-col gap-1 max-md:gap-2"
       onKeyDown={escapeCloses(
         () => (confirmingDiscard ? setConfirmingDiscard(false) : discard()),
         updateTask.isPending,
@@ -1177,7 +1185,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         <div
           role="group"
           aria-label={`Discard changes to #${task.id}`}
-          className="flex flex-wrap items-center gap-1 text-xs"
+          className="flex flex-wrap items-center gap-1 text-xs max-md:gap-2"
         >
           <span className="mr-1">Discard your changes to #{task.id}?</span>
           <Button type="button" size="xs" variant="outline" autoFocus onClick={() => setConfirmingDiscard(false)}>
@@ -1188,7 +1196,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
           </Button>
         </div>
       ) : (
-        <div className="flex gap-1">
+        <div className="flex gap-1 max-md:gap-2">
           <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined || criteriaInvalid}>
             {updateTask.isPending ? "Saving..." : "Save"}
           </Button>
@@ -1729,7 +1737,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
 
   if (draft === null) {
     return (
-      <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
+      <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground max-md:flex-wrap">
         <span className="truncate">{location} &middot; base</span>
         <code className="text-foreground">{workspace.defaultBaseBranch}</code>
         <Button
@@ -1742,7 +1750,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
           Change
         </Button>
         {inReview && inReview.length > 0 && (
-          <span className="truncate text-xs">
+          <span className="text-xs max-md:basis-full md:truncate">
             Locked while {inReview.map((task) => `#${task.id}`).join(", ")} {inReview.length > 1 ? "are" : "is"}{" "}
             awaiting completion
           </span>
@@ -2097,20 +2105,24 @@ function CriteriaEditor({
   }
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1 max-md:gap-2">
       {criteria.length > 0 && (
-        <ol className="flex flex-col gap-1">
+        <ol className="flex flex-col gap-1 max-md:gap-2">
           {criteria.map((draft, index) => {
             const n = index + 1;
             const problem = targetProblem(draft);
             const fixedKind = !editableCriterionKinds.includes(draft.kind);
             return (
-              <li key={draft.key} className="flex flex-wrap items-center gap-1">
+              // Below md each criterion is a block: its text on the first line, kind and remove on the next.
+              <li
+                key={draft.key}
+                className="flex flex-wrap items-center gap-1 max-md:grid max-md:grid-cols-[1rem_1fr_auto] max-md:gap-2 max-md:rounded-lg max-md:border max-md:p-2"
+              >
                 <span aria-hidden className="w-4 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
                   {n}
                 </span>
                 <input
-                  className={cn(inputClass, "h-7 flex-1 basis-48")}
+                  className={cn(inputClass, "h-7 flex-1 basis-48 max-md:col-span-2")}
                   aria-label={`Criterion ${n} text${of}`}
                   placeholder="What has to hold, e.g. Docs updated"
                   value={draft.text}
@@ -2119,7 +2131,7 @@ function CriteriaEditor({
                 />
                 <select
                   aria-label={`Criterion ${n} kind${of}`}
-                  className={cn(compactSelectClass, "h-7")}
+                  className={cn(compactSelectClass, "h-7 max-md:col-start-2 max-md:row-start-2")}
                   value={draft.kind}
                   disabled={fixedKind}
                   title={fixedKind ? "The merge criterion keeps its kind" : "How the criterion is checked"}
@@ -2135,7 +2147,7 @@ function CriteriaEditor({
                   <input
                     className={cn(
                       inputClass,
-                      "h-7 flex-1 basis-40 font-mono aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20",
+                      "h-7 flex-1 basis-40 font-mono max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20",
                     )}
                     aria-label={`Criterion ${n} target${of}`}
                     aria-invalid={problem !== null}
@@ -2156,6 +2168,7 @@ function CriteriaEditor({
                   variant="ghost"
                   aria-label={`Remove criterion ${n}${of}`}
                   title="Remove criterion"
+                  className="max-md:col-start-3 max-md:row-start-2"
                   onClick={() => onChange(criteria.filter((other) => other.key !== draft.key))}
                 >
                   <X />
@@ -2278,7 +2291,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
         title={detailed ? undefined : [checkedBy, criterion.evidence, target].filter(Boolean).join("\n") || undefined}
       >
         {checkable ? (
-          <span className="flex size-4 shrink-0 items-center justify-center">
+          <label className="flex size-4 shrink-0 items-center justify-center max-md:-mx-3.5 max-md:size-11">
             <input
               type="checkbox"
               aria-label={`Check criterion ${criterion.id} of #${task.id}`}
@@ -2286,7 +2299,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
               disabled={checkCriterion.isPending}
               onChange={(e) => toggle(e.target.checked)}
             />
-          </span>
+          </label>
         ) : (
           <CriterionMarker state={criterion.state} />
         )}
@@ -2446,7 +2459,7 @@ function NewTaskForm({
           className="flex-1"
         />
         <input
-          className={cn(inputClass, "mt-7 w-36 shrink-0")}
+          className={cn(inputClass, "mt-7 w-36 shrink-0 max-md:mt-13")}
           inputMode="numeric"
           placeholder="Issue # (optional)"
           aria-label="Issue number"
@@ -2465,7 +2478,7 @@ function NewTaskForm({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <span className="font-medium text-muted-foreground">Completion criteria</span>
           <label
-            className="flex items-center gap-1.5"
+            className="flex items-center gap-1.5 max-md:min-h-11"
             title="Add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
           >
             <input

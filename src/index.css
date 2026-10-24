@@ -136,6 +136,17 @@
     }
 }
 
+/*
+ * On a phone, the small print of the main pane (meta lines, chips, notes) is read at 14px.
+ * Timeline bars and axis labels keep their size, since their layout is measured in pixels.
+ */
+@media (width < 48rem) {
+  main .text-xs:not(.react-flow__renderer *) {
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+  }
+}
+
 /* Hangul titles break between words, not inside one; long unbroken strings still wrap. */
 .break-words-keep {
   word-break: keep-all;

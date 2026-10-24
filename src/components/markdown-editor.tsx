@@ -23,8 +23,8 @@ export function MarkdownEditor({
   const [previewing, setPreviewing] = useState(false);
 
   return (
-    <div className={cn("flex min-w-0 flex-col gap-1", className)}>
-      <div role="group" aria-label={`Mode of ${label}`} className="flex gap-0.5">
+    <div className={cn("flex min-w-0 flex-col gap-1 max-md:gap-2", className)}>
+      <div role="group" aria-label={`Mode of ${label}`} className="flex gap-0.5 max-md:gap-2">
         <Button type="button" size="xs" variant={previewing ? "ghost" : "default"} aria-pressed={!previewing} onClick={() => setPreviewing(false)}>
           Write
         </Button>
@@ -49,7 +49,7 @@ export function MarkdownEditor({
         </div>
       ) : (
         <textarea
-          className={cn(inputClass, "h-auto min-h-16 resize-y py-1.5")}
+          className={cn(inputClass, "h-auto min-h-16 resize-y py-1.5 max-md:h-auto")}
           rows={3}
           placeholder={placeholder}
           aria-label={label}
