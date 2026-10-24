@@ -405,6 +405,20 @@ pub(super) const MIGRATIONS: &[&str] = &[
         at INTEGER NOT NULL
     );
     ",
+    // Version 19: when a person's message reached the lead's pane, and when the lead
+    // picked it up. Earlier messages were all typed into the pane before they were
+    // stored; those the lead answered afterwards count as picked up.
+    "
+    ALTER TABLE chat_messages ADD COLUMN delivered_at INTEGER
+        CHECK (delivered_at IS NULL OR author = 'user');
+    ALTER TABLE chat_messages ADD COLUMN seen_at INTEGER
+        CHECK (seen_at IS NULL OR delivered_at IS NOT NULL);
+    UPDATE chat_messages SET delivered_at = at WHERE author = 'user';
+    UPDATE chat_messages SET seen_at = delivered_at
+        WHERE author = 'user'
+          AND EXISTS (SELECT 1 FROM chat_messages AS later
+                      WHERE later.author = 'lead' AND later.id > chat_messages.id);
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1377,5 +1391,36 @@ mod tests {
         assert!(insert("lead", "Hello", Some("c2")).is_err());
         assert!(insert("user", " ", None).is_err());
         assert!(insert("dori", "Hi", None).is_err());
+    }
+
+    #[test]
+    fn version_19_counts_earlier_messages_delivered_and_answered_ones_seen() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..18] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 18).unwrap();
+        for (author, at) in [("user", 10), ("lead", 20), ("user", 30)] {
+            conn.execute(
+                "INSERT INTO chat_messages (author, body, at) VALUES (?1, 'Hi', ?2)",
+                params![author, at],
+            )
+            .unwrap();
+        }
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let rows: Vec<(Option<i64>, Option<i64>)> = conn
+            .prepare("SELECT delivered_at, seen_at FROM chat_messages ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, [(Some(10), Some(10)), (None, None), (Some(30), None)]);
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(set("UPDATE chat_messages SET delivered_at = 1 WHERE author = 'lead'").is_err());
+        assert!(set("UPDATE chat_messages SET delivered_at = NULL WHERE id = 1").is_err());
     }
 }

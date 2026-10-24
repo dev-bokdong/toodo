@@ -45,6 +45,11 @@ pub struct ChatMessage {
     /// Markdown.
     pub body: String,
     pub at: i64,
+    /// When a person's message was typed into the lead's pane; `None` for the lead's.
+    pub delivered_at: Option<i64>,
+    /// When the lead picked a delivered message up: it started a turn after the message
+    /// reached its pane, or it replied.
+    pub seen_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

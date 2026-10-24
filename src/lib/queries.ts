@@ -4,6 +4,7 @@ import {
   commands,
   events,
   type BackupSettings,
+  type ChatMessage,
   type CommandError,
   type CriterionId,
   type LeadStatus,
@@ -111,7 +112,14 @@ export function useSendChatMessage() {
   return useMutation({
     mutationFn: ({ text, clientId }: { text: string; clientId: string }) =>
       unwrap(commands.sendChatMessage(text, clientId)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages }),
+    onSuccess: (sent) => {
+      // Shown at once, in place of the pending one, so it does not vanish or show twice
+      // until the refetch; not awaited, since the mutation stays pending until this returns.
+      queryClient.setQueryData<ChatMessage[]>(queryKeys.chatMessages, (list) =>
+        list && !list.some((message) => message.id === sent.id) ? [...list, sent] : list,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages });
+    },
   });
 }
 

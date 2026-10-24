@@ -363,6 +363,13 @@ export type ChatMessage = {
 	/**  Markdown. */
 	body: string,
 	at: Timestamp,
+	/**  When a person's message was typed into the lead's pane; null for the lead's. */
+	deliveredAt: Timestamp | null,
+	/**
+	 *  When the lead picked the message up: it started a turn after the message reached
+	 *  its pane, or it replied in the chat.
+	 */
+	seenAt: Timestamp | null,
 };
 
 /**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */

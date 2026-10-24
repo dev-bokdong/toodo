@@ -1,15 +1,18 @@
 import { expect, test as base, type Page } from "@playwright/test";
-import { startServer, type ScratchServer } from "./server";
+import { startServer, type ScratchServer, type ServerOptions } from "./server";
 
 type Fixtures = {
+  /** How the scratch server starts; set with `test.use({ serverOptions })`. */
+  serverOptions: ServerOptions;
   server: ScratchServer;
   /** A page signed in to the scratch server with its web token. */
   app: Page;
 };
 
 export const test = base.extend<Fixtures>({
-  server: async ({}, use) => {
-    const server = await startServer();
+  serverOptions: [{}, { option: true }],
+  server: async ({ serverOptions }, use) => {
+    const server = await startServer(serverOptions);
     try {
       await use(server);
     } finally {
