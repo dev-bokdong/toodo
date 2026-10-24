@@ -50,6 +50,10 @@ server = [
   "dep:tower-http",
   "dep:futures-util",
   "dep:sha2",
+  "dep:ring",
+  "dep:rustls",
+  "dep:reqwest",
+  "dep:base64",
 ]
 
 [build-dependencies]
@@ -71,6 +75,11 @@ tauri-plugin-opener = { version = "2", optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
 sha2 = { version = "0.10", optional = true }
+# Web Push: message encryption and VAPID signing, and posting to push services.
+ring = { version = "0.17", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"], optional = true }
+base64 = { version = "0.22", optional = true }
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 tokio = { version = "1.53.3", features = ["net", "rt", "macros"] }
 getrandom = { version = "0.3", features = ["std"] }

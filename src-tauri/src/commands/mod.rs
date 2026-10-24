@@ -127,6 +127,13 @@ impl CommandError {
             message: message.into(),
         }
     }
+
+    pub fn external(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommandErrorKind::External,
+            message: message.into(),
+        }
+    }
 }
 
 impl From<GitError> for CommandError {
@@ -198,6 +205,7 @@ impl From<StorageError> for CommandError {
             | StorageError::CriterionNotFound { .. }
             | StorageError::MemoryNotFound(_)
             | StorageError::DeviceNotFound(_)
+            | StorageError::PushSubscriptionNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
                 CommandErrorKind::NotFound
             }

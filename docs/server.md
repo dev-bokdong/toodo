@@ -108,6 +108,7 @@ toodo-server
 | `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on; avoid port 47615 (see above) |
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
+| `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
 
 On first start the data directory gets two access tokens:
 
@@ -143,6 +144,40 @@ database. Whoever holds it can run code as that user. `mcp-token` gives the MCP
 tools only, but still lets an agent start, complete, and conclude tasks.
 
 The server speaks plain HTTP. Keep the default loopback address; never expose the port.
+
+### Notifications
+
+A device can get notifications while Toodo is closed, through the Web Push service of
+its browser: Chrome and Edge on Android and desktop, Firefox, and Safari on iOS and
+iPadOS 16.4 or later once Toodo is added to the Home Screen (Safari has no Web Push in
+a plain tab). Web Push needs HTTPS, so phones reach the server through an
+authenticating HTTPS front (see [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access));
+on the server itself, `http://127.0.0.1` counts as secure.
+
+Under **Notifications** in the sidebar, a device turns notifications on, picks which
+ones it gets, and sends itself a test notification:
+
+| Setting | Notifications |
+| --- | --- |
+| Agent finished or needs input | An agent of a task stopped working, or started waiting for input |
+| Pull request checks and reviews | CI of a task's pull request passed or failed; a reviewer approved it or requested changes |
+| Task awaiting completion | A task moved to awaiting completion |
+
+Notifications report what changed on its own: agents, pull requests, and the server's
+background checks. A change made in the app itself sends none. Opening a notification
+opens its task. While notifications are on, the app shows no
+notifications of its own on that device, so nothing arrives twice.
+
+Subscriptions belong to devices: a browser signed in with the shared `web-token` signs
+in again to get a device token first. Revoking a device ends its subscription, and a
+subscription the push service reports gone is dropped.
+
+The server signs its requests to push services with a P-256 key (VAPID) that it creates
+in `push-key` in the data directory on first start (`0600`, like the tokens). Browsers
+bind their subscriptions to that key: replacing or losing the file ends every
+subscription, and each device turns notifications on again. Messages are encrypted for
+the device (RFC 8291); the push service sees only where to deliver them and when.
+Push services keep a message for an offline device for a day.
 
 ### Agents
 

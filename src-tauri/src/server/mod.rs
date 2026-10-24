@@ -8,6 +8,8 @@
 //!   `pull-request-statuses-changed` events with JSON data.
 //! - `/api/backups/...` moves database files in and out (see [`files`]).
 //! - `/api/devices...` registers, lists, and revokes devices (see [`devices`]).
+//! - `/api/push...` subscribes the asking device to Web Push notifications and sets which
+//!   ones it gets (see [`push`]).
 //! - `POST /api/stream-tickets` and `GET /api/panes/stream` mirror a pane of a task's herdr
 //!   workspace over a WebSocket (see [`panes`]); the stream takes a ticket instead of the
 //!   token.
@@ -21,6 +23,7 @@
 mod devices;
 mod files;
 mod panes;
+mod push;
 mod rpc;
 
 use std::convert::Infallible;
@@ -33,7 +36,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, post, put};
 use futures_util::Stream;
 use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
@@ -82,13 +85,18 @@ Environment:
   TOODO_DATA_DIR  database, backups, and access tokens
                   (default $XDG_DATA_HOME/toodo-server or ~/.local/share/toodo-server)
   TOODO_WEB_DIR   web build of the frontend (`npm run build:web` writes dist-web);
-                  without it only the API and MCP are served";
+                  without it only the API and MCP are served
+  TOODO_PUSH_SUBJECT
+                  contact for push services in notifications, a mailto: or https: URL
+                  (default https://github.com/dev-bokdong/toodo)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
     pub web_dir: Option<PathBuf>,
+    /// The contact push services see in the VAPID token of every notification.
+    pub push_subject: String,
 }
 
 impl Config {
@@ -109,10 +117,22 @@ impl Config {
             },
         };
         let web_dir = var("TOODO_WEB_DIR").map(PathBuf::from);
+        let push_subject = match var("TOODO_PUSH_SUBJECT") {
+            Some(subject) if subject.starts_with("mailto:") || subject.starts_with("https://") => {
+                subject
+            }
+            Some(subject) => {
+                return Err(format!(
+                    "TOODO_PUSH_SUBJECT {subject:?} is not a mailto: or https: URL"
+                ));
+            }
+            None => push::DEFAULT_SUBJECT.to_owned(),
+        };
         Ok(Self {
             listen,
             data_dir,
             web_dir,
+            push_subject,
         })
     }
 }
@@ -141,6 +161,7 @@ pub struct Services {
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
     panes: panes::Panes,
+    push: push::Push,
 }
 
 impl Services {
@@ -159,6 +180,7 @@ impl Notifier for Services {
             workspace_id: workspace.into(),
         };
         self.emit(names::TASKS_CHANGED, &event);
+        self.push.tasks_changed();
     }
 
     fn workspaces_changed(&self) {
@@ -174,6 +196,7 @@ impl Notifier for Services {
             statuses: statuses.to_vec(),
         };
         self.emit(names::AGENT_STATUSES_CHANGED, &event);
+        self.push.agent_statuses_changed(statuses);
     }
 
     fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]) {
@@ -181,6 +204,7 @@ impl Notifier for Services {
             statuses: statuses.to_vec(),
         };
         self.emit(names::PULL_REQUEST_STATUSES_CHANGED, &event);
+        self.push.pull_request_statuses_changed(statuses);
     }
 }
 
@@ -251,6 +275,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mcp_token = mcp::load_token(&config.data_dir.join(mcp::TOKEN_FILE))?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
     let web_token = mcp::load_token(&web_token_path)?;
+    let push = push::Push::load(&config.data_dir, config.push_subject.clone())?;
     let listener = mcp::bind(config.listen)?;
     let port = listener.local_addr()?.port();
     let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
@@ -273,7 +298,9 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port))),
         events: broadcast::channel(EVENT_BUFFER).0,
         restore_limit: files::RESTORE_LIMIT,
+        push,
     });
+    push::spawn(services.clone())?;
     events::spawn(services.clone())?;
     backup::spawn(services.clone())?;
     completion::spawn(services.clone())?;
@@ -352,6 +379,13 @@ fn router(
         .route("/api/backups/{name}", get(files::download))
         .route("/api/devices", get(devices::list).post(devices::register))
         .route("/api/devices/{id}/revoke", post(devices::revoke))
+        .route("/api/push", get(push::state))
+        .route(
+            "/api/push/subscription",
+            put(push::subscribe).delete(push::unsubscribe),
+        )
+        .route("/api/push/settings", put(push::save_settings))
+        .route("/api/push/test", post(push::send_test))
         .route("/api/stream-tickets", post(panes::issue_ticket))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .route_layer(middleware::from_fn_with_state(
@@ -477,6 +511,7 @@ mod tests {
             tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
             events: broadcast::channel(EVENT_BUFFER).0,
             restore_limit: TEST_RESTORE_LIMIT,
+            push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
         })
     }
 
@@ -868,6 +903,136 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    fn send_json(
+        address: SocketAddr,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: &serde_json::Value,
+    ) -> (String, serde_json::Value) {
+        let body = body.to_string();
+        let (status, _, reply) = exchange(
+            address,
+            &format!(
+                "{method} {path} HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}",
+                body.len()
+            ),
+            body.as_bytes(),
+        );
+        (status, serde_json::from_slice(&reply).unwrap_or_default())
+    }
+
+    #[test]
+    fn devices_subscribe_to_push_notifications_and_get_a_test_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let transport = push::tests::FakeTransport::default();
+        let requests = transport.requests.clone();
+        let services = services(temp.path());
+        let services = Arc::new(Services {
+            push: push::tests::push(temp.path(), transport),
+            ..Arc::into_inner(services).unwrap()
+        });
+        let address = serve(services.clone(), None);
+        let (_, phone) = post_json(
+            address,
+            "/api/devices",
+            "web",
+            &serde_json::json!({ "label": "Phone" }),
+        );
+        let token = phone["token"].as_str().unwrap().to_owned();
+        let browser = push::tests::Browser::new();
+        let subscription = browser.json("https://push.example/send/1");
+
+        let (status, state) =
+            send_json(address, "GET", "/api/push", &token, &serde_json::json!({}));
+        assert!(status.contains(" 200 "), "{status}");
+        let public_key = state["publicKey"].as_str().unwrap();
+        assert_eq!(push::crypto::from_base64url(public_key).unwrap().len(), 65);
+        assert_eq!(state["subscription"], serde_json::Value::Null);
+
+        let shared = send_json(
+            address,
+            "PUT",
+            "/api/push/subscription",
+            "web",
+            &subscription,
+        );
+        assert!(shared.0.contains(" 403 "), "{}", shared.0);
+        let mut bad = subscription.clone();
+        bad["endpoint"] = "http://push.example/send/1".into();
+        let bad = send_json(address, "PUT", "/api/push/subscription", &token, &bad);
+        assert!(bad.0.contains(" 422 "), "{}", bad.0);
+        let mut off_curve = subscription.clone();
+        off_curve["keys"]["p256dh"] = push::crypto::base64url(&[4; 65]).into();
+        let off_curve = send_json(address, "PUT", "/api/push/subscription", &token, &off_curve);
+        assert!(off_curve.0.contains(" 422 "), "{}", off_curve.0);
+        let test = send_json(
+            address,
+            "POST",
+            "/api/push/test",
+            &token,
+            &serde_json::json!({}),
+        );
+        assert!(test.0.contains(" 404 "), "{}", test.0);
+
+        let (status, saved) = send_json(
+            address,
+            "PUT",
+            "/api/push/subscription",
+            &token,
+            &subscription,
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        assert_eq!(
+            saved,
+            serde_json::json!({
+                "endpoint": "https://push.example/send/1",
+                "settings": { "agent": true, "pullRequests": true, "completion": true }
+            })
+        );
+        let quiet = serde_json::json!({ "agent": true, "pullRequests": false, "completion": true });
+        let (status, saved) = send_json(address, "PUT", "/api/push/settings", &token, &quiet);
+        assert!(status.contains(" 200 "), "{status}");
+        assert_eq!(saved["settings"], quiet);
+        let state = send_json(address, "GET", "/api/push", &token, &serde_json::json!({})).1;
+        assert_eq!(state["subscription"]["settings"], quiet);
+
+        let (status, _) = send_json(
+            address,
+            "POST",
+            "/api/push/test",
+            &token,
+            &serde_json::json!({}),
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        let request = requests.lock().unwrap().remove(0);
+        assert_eq!(request.endpoint, "https://push.example/send/1");
+        let message = browser.decrypt(&request.body);
+        assert_eq!(message["tag"], "test");
+        assert_eq!(message["taskId"], serde_json::Value::Null);
+        assert!(
+            request
+                .authorization
+                .ends_with(&format!(", k={public_key}"))
+        );
+
+        let (status, _) = send_json(
+            address,
+            "DELETE",
+            "/api/push/subscription",
+            &token,
+            &serde_json::json!({}),
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        assert!(
+            crate::commands::lock(&services.storage)
+                .active_push_subscriptions()
+                .unwrap()
+                .is_empty()
         );
     }
 

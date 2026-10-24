@@ -267,7 +267,7 @@ for example over `herdr --remote`.
 
 | Piece | Why it stays |
 | --- | --- |
-| Notifications (`src/lib/agent-alerts.ts:117`) | They are per device. The diff runs on the client against the event stream, so each client decides itself whether it is focused. Server push (Web Push) is a later option for a closed PWA. |
+| Notifications (`src/lib/agent-alerts.ts:117`) | They are per device. The diff runs on the client against the event stream, so each client decides itself whether it is focused. A PWA can also subscribe to Web Push (263): the server then sends the notifications itself, also while the app is closed, and the client stays silent (`docs/server.md`, Notifications). |
 | Opening links (`src/components/markdown.tsx:16`) | Opens the client's browser. |
 | Tray, close-to-tray (`src-tauri/src/desktop.rs:105`, `src-tauri/src/desktop.rs:175`) | Desktop shell only. |
 | App updater (`src/components/update-banner.tsx:17`) | Updates the desktop shell. The server updates through `scripts/install-server.sh`. The client compares its own version with `app_info` from the server, and on a major or minor mismatch it shows "server is vX, app is vY" instead of failing on missing commands. |

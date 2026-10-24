@@ -13,6 +13,7 @@ mod criteria;
 mod devices;
 mod memory;
 mod migrations;
+mod push;
 mod search;
 mod tasks;
 mod workspaces;
@@ -35,6 +36,7 @@ use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
 pub use criteria::{CriterionCheck, CriterionEdit};
+pub use push::NewPushSubscription;
 pub use search::TaskSearch;
 pub use tasks::{AddedDependencies, NewTask};
 pub use workspaces::NewWorkspace;
@@ -132,6 +134,8 @@ pub enum StorageError {
     },
     MemoryNotFound(MemoryId),
     DeviceNotFound(DeviceId),
+    /// The device has not subscribed to push notifications.
+    PushSubscriptionNotFound(DeviceId),
     /// A memory entry that was replaced is history and cannot change.
     MemorySuperseded {
         id: MemoryId,
@@ -208,6 +212,9 @@ impl fmt::Display for StorageError {
             ),
             Self::MemoryNotFound(id) => write!(f, "memory entry {id} does not exist"),
             Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
+            Self::PushSubscriptionNotFound(id) => {
+                write!(f, "device {id} has not subscribed to push notifications")
+            }
             Self::MemorySuperseded { id, by } => write!(
                 f,
                 "memory entry {id} was superseded by entry {by}; change entry {by} instead"

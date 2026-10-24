@@ -86,13 +86,18 @@ impl Storage {
         Ok(Some(device))
     }
 
-    /// Revokes the device's token for good. Revoking it again keeps the first time.
+    /// Revokes the device's token for good, and drops its push subscription. Revoking it
+    /// again keeps the first time.
     pub fn revoke_device(&mut self, id: DeviceId) -> Result<Device> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         tx.execute(
             "UPDATE devices SET revoked_at = coalesce(revoked_at, ?2) WHERE id = ?1",
             [id.0, at],
+        )?;
+        tx.execute(
+            "DELETE FROM push_subscriptions WHERE device_id = ?1",
+            [id.0],
         )?;
         let device = find(&tx, id)?;
         tx.commit()?;

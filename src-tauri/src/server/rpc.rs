@@ -96,7 +96,11 @@ pub async fn handle(
             Err(error) => return Reply::BadArguments(error.to_string()),
         }
     };
-    dispatch(services, &command, args).await
+    let reply = dispatch(services.clone(), &command, args).await;
+    // Changes the user makes in the app are not news to them: notifications only report
+    // what changed on its own (agents, pull requests, background checks).
+    services.push.tasks_seen();
+    reply
 }
 
 fn parse<T: DeserializeOwned>(args: serde_json::Value) -> Result<T, Reply> {
