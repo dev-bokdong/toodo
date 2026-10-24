@@ -44,10 +44,15 @@ impl Storage {
         })
     }
 
-    /// Writes a backup of `kind` into `dir`, creating the directory if needed.
+    /// Writes a backup of `kind` into `dir`, creating the directory if needed. Names carry
+    /// the time to the second; a backup never replaces an earlier one from the same second,
+    /// it takes the next free second instead.
     pub fn backup_into(&self, dir: &Path, kind: BackupKind) -> Result<BackupFile> {
         fs::create_dir_all(dir)?;
-        let created_at = self.now();
+        let mut created_at = self.now();
+        while dir.join(backup::file_name(kind, created_at)).exists() {
+            created_at += 1;
+        }
         let path = dir.join(backup::file_name(kind, created_at));
         self.export_to(&path)?;
         Ok(BackupFile {
@@ -293,6 +298,28 @@ mod tests {
             .map(|workspace| workspace.name)
             .collect();
         assert_eq!(names, ["toodo"]);
+    }
+
+    #[test]
+    fn backups_in_the_same_second_keep_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = Storage::open_in_memory().unwrap();
+        storage.set_clock(|| 1_000);
+        let first = storage
+            .backup_into(dir.path(), BackupKind::PreRestore)
+            .unwrap();
+        add_workspace(&mut storage, "toodo");
+        let second = storage
+            .backup_into(dir.path(), BackupKind::PreRestore)
+            .unwrap();
+
+        assert_ne!(first.path, second.path);
+        assert_eq!(second.created_at, 1_001);
+        let mut restored = Storage::open_in_memory().unwrap();
+        restored
+            .restore(stage_backup(&first.path).unwrap())
+            .unwrap();
+        assert!(snapshot(&restored).is_empty());
     }
 
     #[test]
