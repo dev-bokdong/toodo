@@ -15,6 +15,16 @@ export function mcpConfig(info: McpServerInfo): string {
   return JSON.stringify({ mcpServers: { toodo: server } }, null, 2);
 }
 
+/** `url` with a line break opportunity after each "/" that does not start "//", so it never wraps mid-word. */
+function breakableUrl(url: string) {
+  return url.split(/(?<=\/)(?!\/)/).map((part, index) => (
+    <span key={index}>
+      {index > 0 && <wbr />}
+      {part}
+    </span>
+  ));
+}
+
 const tunnelStates: Record<McpTunnelState, { label: string; className: string }> = {
   open: { label: "Connected", className: toneFill.success },
   connecting: { label: "Connecting", className: toneFill.attention },
@@ -77,8 +87,11 @@ export function AgentAccessPanel() {
         </p>
         {data && (
           <>
-            <code className="break-all rounded bg-muted px-1.5 py-1" aria-label="MCP server URL">
-              {data.url}
+            <code
+              className="overflow-x-auto break-normal rounded bg-muted px-1.5 py-1 [overflow-wrap:normal]"
+              aria-label="MCP server URL"
+            >
+              {breakableUrl(data.url)}
             </code>
             {data.error ? (
               <p role="alert" className="text-destructive">

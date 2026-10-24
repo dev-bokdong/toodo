@@ -178,17 +178,19 @@ export function BackupPanel() {
           </p>
         )}
         <AutoBackupSettings />
-        <ul aria-label="Saved backups" className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+        <ul aria-label="Saved backups" className="flex max-h-48 flex-col divide-y overflow-y-auto">
           {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">No backups yet.</li>}
           {backups.data?.map((backup) => (
-            <li key={backup.path} className="flex flex-wrap items-center justify-between gap-1 text-xs" title={backup.path}>
-              <span className="min-w-0">
-                <When className="block truncate" at={backup.createdAt} />
+            <li key={backup.path} className="flex flex-col gap-1 py-1.5 text-xs first:pt-0" title={backup.path}>
+              <span className="flex flex-col">
+                <time className="font-medium" dateTime={new Date(backup.createdAt * 1000).toISOString()}>
+                  {formatFull(backup.createdAt)}
+                </time>
                 <span className="text-muted-foreground">
-                  {kindLabels[backup.kind]} · {formatSize(backup.sizeBytes)}
+                  <When at={backup.createdAt} /> · {kindLabels[backup.kind]} · {formatSize(backup.sizeBytes)}
                 </span>
               </span>
-              <span className="flex shrink-0 gap-0.5">
+              <span className="flex flex-wrap gap-1">
                 {runsOnServer && (
                   <Button
                     changesData
@@ -213,7 +215,7 @@ export function BackupPanel() {
                     setConfirming({ kind: "backup", path: backup.path });
                   }}
                 >
-                  Restore this backup
+                  Restore
                 </Button>
               </span>
             </li>
