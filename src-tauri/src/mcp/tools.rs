@@ -73,6 +73,10 @@ pub struct CreateTask {
     /// Tasks the new task depends on, from any workspace.
     #[serde(default)]
     pub depends_on: Vec<TaskId>,
+    /// Tasks from any workspace to link as related (see add_related); they never block
+    /// the new task.
+    #[serde(default)]
+    pub related: Vec<TaskId>,
     /// Your estimate of the work, in hours, days, weeks, or months of active work.
     #[serde(default)]
     pub estimate: Option<Estimate>,
@@ -172,11 +176,32 @@ pub struct AddNote {
     pub note: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub struct TaskRef {
+pub struct StartTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
+    /// A command to run in the shell pane of the task's new herdr workspace once it is
+    /// started, e.g. the coding agent that works on the task. Only for tasks of
+    /// workspaces on the machine Toodo runs on.
+    #[serde(default)]
+    pub agent_command: Option<String>,
+}
+
+/// A started task with the panes of its herdr workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStart {
+    #[serde(flatten)]
+    pub task: Task,
+    pub panes: Vec<types::TaskPane>,
+    /// The pane `agent_command` ran in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ran_in: Option<String>,
+    /// Why the panes could not be listed or `agent_command` did not run; the task is
+    /// started all the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -184,6 +209,10 @@ pub struct TaskRef {
 pub struct CompleteTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
+    /// Only for the Toodo lead: the code of the confirmation request a person answered
+    /// in the chat panel.
+    #[serde(default)]
+    pub confirmation: Option<String>,
     /// Only for a task whose work shipped with the merged pull request of another task,
     /// e.g. one pull request that fixed several tasks: that task's ID (`178` or `"#178"`),
     /// which must be done as merged, or the pull request URL. Omit it to complete the
@@ -200,6 +229,14 @@ pub enum MergedWithRef {
 }
 
 impl MergedWithRef {
+    /// `#178` or the pull request URL, for the lead's confirmation request.
+    pub(super) fn describe(&self) -> String {
+        match self {
+            Self::Task(id) => format!("#{id}"),
+            Self::Text(text) => text.trim().to_owned(),
+        }
+    }
+
     fn target(self) -> CommandResult<completion::MergedWithTarget> {
         let text = match self {
             Self::Task(id) => return Ok(completion::MergedWithTarget::Task(model::TaskId(id))),
@@ -259,6 +296,10 @@ pub struct ConcludeTask {
     /// The conclusion in GitHub-flavored Markdown: what was tried or found and why the
     /// work ends without a merge. Kept as the task's completion note.
     pub note: String,
+    /// Only for the Toodo lead: the code of the confirmation request a person answered
+    /// in the chat panel.
+    #[serde(default)]
+    pub confirmation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -463,10 +504,10 @@ fn insert_task(
     request: CreateTask,
     merge: Option<NewCriterion>,
 ) -> CommandResult<Task> {
-    for &prerequisite in &request.depends_on {
+    for &linked in request.depends_on.iter().chain(&request.related) {
         storage
-            .get_task(prerequisite.into())?
-            .ok_or(StorageError::TaskNotFound(prerequisite.into()))?;
+            .get_task(linked.into())?
+            .ok_or(StorageError::TaskNotFound(linked.into()))?;
     }
     let mut new: storage::NewTask = types::NewTask {
         workspace_id: request.workspace_id,
@@ -483,16 +524,28 @@ fn insert_task(
         new.criteria.insert(0, merge);
     }
     let task = storage.create_task(&new)?;
-    for &prerequisite in &request.depends_on {
-        if let Err(error) = storage.add_dependency(task.id, prerequisite.into()) {
-            if let Err(cleanup) = storage.delete_task(task.id) {
-                eprintln!(
-                    "toodo: failed to delete task {} after a failed MCP create: {cleanup}",
-                    task.id
-                );
-            }
-            return Err(error.into());
+    let linked = request
+        .depends_on
+        .iter()
+        .try_for_each(|&prerequisite| {
+            storage
+                .add_dependency(task.id, prerequisite.into())
+                .map(drop)
+        })
+        .and_then(|()| {
+            request
+                .related
+                .iter()
+                .try_for_each(|&related| storage.add_related(task.id, related.into()))
+        });
+    if let Err(error) = linked {
+        if let Err(cleanup) = storage.delete_task(task.id) {
+            eprintln!(
+                "toodo: failed to delete task {} after a failed MCP create: {cleanup}",
+                task.id
+            );
         }
+        return Err(error.into());
     }
     get_task(storage, task.id.into())
 }
@@ -562,18 +615,65 @@ pub fn add_note(storage: &mut Storage, kind: NoteKind, request: AddNote) -> Comm
     Ok((&task).into())
 }
 
-/// Starts or resumes a ready `planned` task as the app's Start does.
+/// Starts or resumes a ready `planned` task as the app's Start does, then runs
+/// `agent_command` in the first pane of its herdr workspace.
 pub fn start_task(
     storage: &StorageState,
     git: &Git,
     herdr: &Herdr,
-    request: TaskRef,
-) -> CommandResult<Task> {
+    request: StartTask,
+) -> CommandResult<TaskStart> {
     let id = request.id.into();
-    match herdr_commands::start(storage, git, herdr, id) {
-        Ok(task) => Ok((&task).into()),
-        Err(error) => Err(with_worktree_root_hint(&lock(storage), id, error)),
+    let command = match request.agent_command.as_deref().map(str::trim) {
+        Some("") => return Err(CommandError::invalid_input("agent_command is empty")),
+        Some(command) if command.contains(['\n', '\r']) => {
+            return Err(CommandError::invalid_input(
+                "agent_command must be one line",
+            ));
+        }
+        command => command,
+    };
+    if command.is_some() {
+        let task = get_task(&lock(storage), request.id)?;
+        let workspace = lock(storage)
+            .get_workspace(task.workspace_id.into())?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id.into()))?;
+        if workspace.location.machine() != model::Machine::Local {
+            return Err(CommandError::invalid_input(
+                "agent_command runs only for tasks of workspaces on the machine Toodo runs \
+                 on; start the task without it and run the agent in its pane with herdr on \
+                 that machine",
+            ));
+        }
     }
+    let task: Task = match herdr_commands::start(storage, git, herdr, id) {
+        Ok(task) => (&task).into(),
+        Err(error) => return Err(with_worktree_root_hint(&lock(storage), id, error)),
+    };
+    let mut started = TaskStart {
+        task,
+        panes: Vec::new(),
+        ran_in: None,
+        pane_error: None,
+    };
+    let panes = match herdr_commands::task_panes(storage, herdr, id) {
+        Ok(found) => found.panes,
+        Err(error) => {
+            started.pane_error = Some(error.message);
+            return Ok(started);
+        }
+    };
+    started.panes = panes.iter().map(types::TaskPane::from).collect();
+    if let Some(command) = command {
+        match panes.first() {
+            None => started.pane_error = Some("herdr lists no pane of the task's workspace".into()),
+            Some(pane) => match herdr.run_in_pane(&pane.pane_id, command) {
+                Ok(()) => started.ran_in = Some(pane.pane_id.clone()),
+                Err(error) => started.pane_error = Some(error.to_string()),
+            },
+        }
+    }
+    Ok(started)
 }
 
 /// Tells the agent how to fix a start rejected because the task's machine has no worktree
@@ -860,7 +960,7 @@ pub fn remove_related(storage: &mut Storage, request: Related) -> CommandResult<
     )
 }
 
-fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
+pub(super) fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
     let task = storage
         .get_task(id.into())?
         .ok_or(StorageError::TaskNotFound(id.into()))?;
@@ -903,6 +1003,7 @@ mod tests {
                 title: title.to_owned(),
                 description: String::new(),
                 depends_on,
+                related: Vec::new(),
                 estimate: None,
                 due_date: None,
                 criteria: Vec::new(),
@@ -1465,14 +1566,32 @@ mod tests {
         let (git, git_runner) = fake(Git::new, vec![]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
-        let error = start_task(&storage, &git, &herdr, TaskRef { id: dependent.id }).unwrap_err();
+        let error = start_task(
+            &storage,
+            &git,
+            &herdr,
+            StartTask {
+                id: dependent.id,
+                agent_command: None,
+            },
+        )
+        .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
             error.message.contains("dependencies are done"),
             "{}",
             error.message
         );
-        let error = start_task(&storage, &git, &herdr, TaskRef { id: task.id }).unwrap_err();
+        let error = start_task(
+            &storage,
+            &git,
+            &herdr,
+            StartTask {
+                id: task.id,
+                agent_command: None,
+            },
+        )
+        .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
 
         assert!(git_runner.invocations.lock().unwrap().is_empty());
@@ -1535,6 +1654,7 @@ mod tests {
     fn own(id: TaskId) -> CompleteTask {
         CompleteTask {
             id,
+            confirmation: None,
             merged_with: None,
         }
     }
@@ -1542,6 +1662,7 @@ mod tests {
     fn merged_with(id: TaskId, target: MergedWithRef) -> CompleteTask {
         CompleteTask {
             id,
+            confirmation: None,
             merged_with: Some(target),
         }
     }
@@ -1812,6 +1933,7 @@ mod tests {
         ConcludeTask {
             id,
             note: note.to_owned(),
+            confirmation: None,
         }
     }
 

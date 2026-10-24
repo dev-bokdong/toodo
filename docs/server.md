@@ -114,9 +114,11 @@ toodo-server
 | `TOODO_LEAD_MODEL` | none | Model for the lead, passed to the command as `$TOODO_LEAD_MODEL` |
 | `TOODO_LEAD_DIR` | `$TOODO_DATA_DIR/lead` | The lead's workspace |
 
-On first start the data directory gets two access tokens:
+On first start the data directory gets three access tokens:
 
 - `mcp-token`: agents send it to `/mcp` as `Authorization: Bearer <token>`.
+- `lead-token`: the lead's token for `/mcp`, which tells the tools that the lead calls
+  them (see [Lead tools](#lead-tools)). Only the lead's launcher carries it.
 - `web-token`: the shared web token. A browser signs in with it once and is registered
   as a device with a token of its own (see [Devices](#devices)); `/api` accepts the
   shared token too, so existing clients keep working.
@@ -225,7 +227,8 @@ the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
   herdr workspace, ending the agent; the next start opens it again.
 - **Command.** The server writes `lead-start` (owner-only, `0600`) and `lead-prompt.md`
   to the data directory and types `sh <data dir>/lead-start` into the pane. The launcher
-  exports `TOODO_MCP_URL`, `TOODO_MCP_TOKEN`, `TOODO_LEAD_MODEL`, `TOODO_LEAD_PROMPT`
+  exports `TOODO_MCP_URL`, `TOODO_MCP_TOKEN` (the contents of `lead-token`),
+  `TOODO_LEAD_MODEL`, `TOODO_LEAD_PROMPT`
   (the prompt file), and `TOODO_LEAD_DIR`, changes to the workspace, and runs
   `TOODO_LEAD_COMMAND` with `sh`. The default runs omo:
 
@@ -259,6 +262,37 @@ answers with the MCP tool `reply_in_chat`, as its prompt tells it to. Both store
 message in the database and send the `chat-changed` event, so every open client reloads
 `list_chat_messages` (the latest 500 messages). Each client keeps the ID of the last
 message it showed in local storage and counts the lead's later replies as unread.
+
+#### Lead tools
+
+The lead drives tasks through the same MCP tools as other agents, and the server knows
+its calls by the lead token:
+
+- **Create.** `create_task` takes `depends_on` and `related`, so a plan is wired in one
+  call; an unknown task in either rejects the call and creates nothing.
+- **Start.** `start_task` takes `agent_command`, which Toodo runs in the shell pane of
+  the task's new herdr workspace once the task is started (for the coding agent; only
+  for workspaces on the server's machine). The reply is the task with `panes`, `ranIn`
+  (the pane the command ran in), and `paneError` when the panes could not be listed or
+  the command did not run; the task is started either way.
+- **Record.** Each task the lead creates, starts, completes, or concludes gets a
+  progress note in its history ("Started by the Toodo lead and ran `...` in its pane
+  ...") and a lead message in the chat, and the `chat-changed` event fires.
+- **Confirm.** `conclude_task`, `complete_task` with `merged_with`, and `complete_task`
+  of a task awaiting completion (which confirms its manual criteria for a person) do
+  nothing when the lead first calls them: Toodo posts a request with a random
+  six-character code to the chat, naming the action and its arguments, and rejects the
+  call. Once a person answers `confirm <code>` in the chat, the lead calls the tool again
+  with the same arguments and `confirmation` set to the code. The request must still be
+  among the latest chat messages and match the action exactly, so a code confirms only
+  the action it was asked for. The lead cannot answer for a person: it posts only through
+  `reply_in_chat`, as the lead, and has no web or device token.
+- **Merge.** Toodo has no merge tool. The lead's prompt forbids merging pull requests and
+  pushing to base branches; agents that implement tasks follow the workspace's agent
+  merge policy, which never allows merging past the base branch.
+
+Calls with `mcp-token` behave as before: no notes or chat messages, and no
+confirmations.
 
 ### systemd
 

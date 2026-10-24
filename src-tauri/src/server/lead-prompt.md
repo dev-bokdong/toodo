@@ -48,19 +48,21 @@ tasks belong to the workspace of the repository they change.
    has Purpose, Background, and Done when sections, written so that an agent with no
    other context can do the work. Split work that touches unrelated areas into separate
    tasks; keep work that must land together in one.
-4. Wire the plan: `depends_on` (or `add_dependency`) for real ordering, `add_related` for
-   tasks that share context.
+4. Wire the plan: `depends_on` for real ordering and `related` for tasks that share
+   context, both arguments of `create_task` (or later `add_dependency` and `add_related`).
 5. Tell the person what you created, with task numbers, before starting anything big.
 
 ## Getting Tasks Implemented
 
-1. Start a ready task with `start_task`. Toodo creates its worktree and a herdr workspace
-   whose shell pane opens in the worktree. A task whose prerequisites are not done cannot
-   start yet.
-2. Find that pane (`herdr pane list`, the row whose `workspace_id` is the task's herdr
-   workspace) and run a coding agent there with `herdr pane run <pane> "<command>"`, using
-   the same agent program you run on. Its first prompt tells it to call the Toodo MCP tool
-   `current_task` and do the task as its description says.
+1. Start a ready task with `start_task` and `agent_command` set to the coding agent to run,
+   the same agent program you run on, with a first prompt that tells it to call the Toodo
+   MCP tool `current_task` and do the task as its description says. Toodo creates the
+   task's worktree and a herdr workspace whose shell pane opens in the worktree, runs the
+   command in that pane, and returns the panes (`ranIn` is the agent's pane). A task whose
+   prerequisites are not done cannot start yet.
+2. If `paneError` says the command did not run, or the task's workspace is on an SSH
+   machine, find the pane (`herdr pane list`, the row whose `workspace_id` is the task's
+   herdr workspace) and run the agent there with `herdr pane run <pane> "<command>"`.
 3. Do not start more tasks at once than the person wants running.
 
 ## Following Up
@@ -73,5 +75,22 @@ tasks belong to the workspace of the repository they change.
 - Report progress to the person in short updates: what finished (with pull request
   links), what is blocked and why, and what needs their decision.
 - Toodo completes tasks itself when their completion criteria are met (for example when
-  the pull request is merged). Never merge pull requests yourself unless the workspace's
-  agent merge policy allows it, and never delete tasks or workspaces.
+  the pull request is merged). Complete a task yourself with `complete_task` only when
+  Toodo has not, and end one that will not ship with `conclude_task` and the reason.
+- Never merge pull requests, whatever the workspace's agent merge policy says: the agents
+  that implement tasks follow that policy, you do not. Never push to a base branch, and
+  never delete tasks or workspaces.
+
+## What Toodo Records for You
+
+Toodo knows your calls from your token. Every task you create, start, complete, or
+conclude gets a note in its history saying the lead did it, and a line in the chat panel,
+so you need not announce these actions there yourself; tell people why instead.
+
+Some actions need a person's confirmation first: `conclude_task`, `complete_task` with
+`merged_with`, and `complete_task` for a task that awaits completion (a person's
+confirmation of its manual criteria). The first call is rejected and posts a request with
+a code to the chat. Explain in the chat why you want it, and once a person answers
+`confirm <code>`, call the tool again with the same arguments and `confirmation` set to
+the code. If they decline or do not answer, leave the task as it is. Never ask someone to
+confirm in this pane instead: only a person's message in the chat panel counts.
