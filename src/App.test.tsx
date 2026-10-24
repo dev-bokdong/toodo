@@ -11,6 +11,7 @@ import {
   events,
   type CommitRecord,
   type HerdrMachine,
+  type MemoryEntry,
   type Task,
   type TaskAgentStatus,
   type Workspace,
@@ -74,10 +75,15 @@ vi.mock("@/lib/bindings", () => ({
     restoreDatabase: vi.fn(),
     reviewPeriod: vi.fn(),
     saveReport: vi.fn(),
+    listMemory: vi.fn(),
+    addMemory: vi.fn(),
+    updateMemory: vi.fn(),
+    supersedeMemory: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
     workspacesChanged: { listen: vi.fn() },
+    memoryChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
     updateCheckRequested: { listen: vi.fn() },
@@ -194,6 +200,7 @@ describe("App", () => {
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.workspacesChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.memoryChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
@@ -240,6 +247,94 @@ describe("App", () => {
     expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(screen.queryByText("Add storage")).not.toBeInTheDocument();
+  });
+
+  it("reads, adds, edits, and supersedes the memory of a workspace and the shared memory", async () => {
+    const entry = (id: number, workspaceId: number | null, title: string, overrides: Partial<MemoryEntry> = {}) =>
+      ({
+        id,
+        workspaceId,
+        kind: "decision",
+        title,
+        body: "",
+        taskId: null,
+        createdAt: 1760000000,
+        updatedAt: 1760000000,
+        supersededBy: null,
+        ...overrides,
+      }) satisfies MemoryEntry;
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listMemory.mockImplementation(async (workspaceId, includeSuperseded) => ({
+      status: "ok",
+      data:
+        workspaceId === null
+          ? [entry(9, null, "Write docs in English", { kind: "rule" })]
+          : [
+              entry(2, 1, "Use npm scripts", { body: "Runs on **Windows**.", taskId: 4 }),
+              ...(includeSuperseded ? [entry(1, 1, "Use make", { supersededBy: 2 })] : []),
+            ],
+    }));
+    mocked.addMemory.mockResolvedValue({ status: "ok", data: entry(3, 1, "Keep it") });
+    mocked.updateMemory.mockResolvedValue({ status: "ok", data: entry(2, 1, "Use npm run") });
+    mocked.supersedeMemory.mockResolvedValue({ status: "ok", data: entry(4, 1, "Use pnpm") });
+    await renderWorkspace();
+
+    const views = await screen.findByRole("group", { name: "Workspace view" });
+    fireEvent.click(within(views).getByRole("button", { name: "Memory" }));
+    const entries = await screen.findByRole("list", { name: "Memory entries" });
+    expect(screen.getByRole("heading", { name: "Memory of toodo" })).toBeInTheDocument();
+    const current = within(entries).getByRole("listitem", { name: "Memory entry #2" });
+    expect(current).toHaveTextContent("Use npm scripts");
+    expect(current).toHaveTextContent("from task #4");
+    expect((await within(current).findByText("Windows")).tagName).toBe("STRONG");
+    expect(within(entries).queryByText("Use make")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Show superseded entries"));
+    const old = await screen.findByRole("listitem", { name: "Memory entry #1" });
+    expect(old).toHaveTextContent("superseded by #2");
+    expect(within(old).queryByRole("button", { name: "Edit memory entry #1" })).not.toBeInTheDocument();
+
+    const form = screen.getByRole("form", { name: "New memory entry" });
+    fireEvent.change(within(form).getByLabelText("Kind"), { target: { value: "rule" } });
+    fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "Keep it" } });
+    fireEvent.change(within(form).getByLabelText("Body"), { target: { value: "Small." } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add entry" }));
+    await waitFor(() =>
+      expect(mocked.addMemory).toHaveBeenCalledWith(1, { kind: "rule", title: "Keep it", body: "Small.", taskId: null }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit memory entry #2" }));
+    const edit = screen.getByRole("form", { name: "Edit of #2" });
+    expect(within(edit).getByLabelText("Body")).toHaveValue("Runs on **Windows**.");
+    fireEvent.change(within(edit).getByLabelText("Title"), { target: { value: "Use npm run" } });
+    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocked.updateMemory).toHaveBeenCalledWith(2, {
+        kind: "decision",
+        title: "Use npm run",
+        body: "Runs on **Windows**.",
+        taskId: 4,
+      }),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Supersede memory entry #2" }));
+    const replacement = screen.getByRole("form", { name: "Replacement of #2" });
+    fireEvent.change(within(replacement).getByLabelText("Title"), { target: { value: "Use pnpm" } });
+    fireEvent.click(within(replacement).getByRole("button", { name: "Supersede" }));
+    await waitFor(() =>
+      expect(mocked.supersedeMemory).toHaveBeenCalledWith(2, {
+        kind: "decision",
+        title: "Use pnpm",
+        body: "",
+        taskId: 4,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Shared memory" }));
+    expect(await screen.findByRole("heading", { name: "Shared memory" })).toBeInTheDocument();
+    expect(await screen.findByText("Write docs in English")).toBeInTheDocument();
+    expect(mocked.listMemory).toHaveBeenCalledWith(null, false);
   });
 
   it("plans dependencies across workspaces and lists every workspace together", async () => {

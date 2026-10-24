@@ -9,6 +9,7 @@
 
 mod backup;
 mod commits;
+mod memory;
 mod migrations;
 mod search;
 mod tasks;
@@ -24,6 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 use crate::domain::dag::DependencyError;
+use crate::domain::memory::MemoryId;
 use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::TransitionError;
 
@@ -111,6 +113,17 @@ pub enum StorageError {
     DependenciesNotDone(TaskId),
     /// A task cannot be related to itself.
     SelfRelation(TaskId),
+    MemoryNotFound(MemoryId),
+    /// A memory entry that was replaced is history and cannot change.
+    MemorySuperseded {
+        id: MemoryId,
+        by: MemoryId,
+    },
+    /// A memory entry of a workspace can only come from a task of that workspace.
+    MemoryTaskMismatch {
+        task: TaskId,
+        workspace: WorkspaceId,
+    },
     /// The worktree path is a Windows path for an SSH workspace or a POSIX path for a
     /// local one.
     WorktreePathMismatch(TaskId),
@@ -158,6 +171,16 @@ impl fmt::Display for StorageError {
                 )
             }
             Self::SelfRelation(id) => write!(f, "task {id} cannot be related to itself"),
+            Self::MemoryNotFound(id) => write!(f, "memory entry {id} does not exist"),
+            Self::MemorySuperseded { id, by } => write!(
+                f,
+                "memory entry {id} was superseded by entry {by}; change entry {by} instead"
+            ),
+            Self::MemoryTaskMismatch { task, workspace } => write!(
+                f,
+                "task {task} does not belong to workspace {}, the workspace of the memory entry",
+                workspace.0
+            ),
             Self::WorktreePathMismatch(id) => write!(
                 f,
                 "worktree path of task {id} does not match the machine of its workspace"

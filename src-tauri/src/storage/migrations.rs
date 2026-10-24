@@ -322,6 +322,25 @@ pub(super) const MIGRATIONS: &[&str] = &[
         REFERENCES tasks (id) ON DELETE SET NULL
         CHECK (merged_with_task_id IS NULL OR merged_with_pull_request_url IS NOT NULL);
     ",
+    // Version 14: project memory. Entries belong to one workspace, or to none, which
+    // makes them shared by every workspace. Replacing an entry keeps it, pointing at its
+    // replacement through `superseded_by`; current entries have none.
+    "
+    CREATE TABLE memory_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id INTEGER REFERENCES workspaces (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('decision', 'rule', 'note', 'summary')),
+        title TEXT NOT NULL CHECK (trim(title) <> ''),
+        body TEXT NOT NULL DEFAULT '',
+        task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        superseded_by INTEGER REFERENCES memory_entries (id) ON DELETE SET NULL,
+        CHECK (superseded_by IS NULL OR superseded_by <> id)
+    );
+    CREATE INDEX memory_entries_workspace_id ON memory_entries (workspace_id);
+    CREATE INDEX memory_entries_superseded_by ON memory_entries (superseded_by);
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;

@@ -13,12 +13,12 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    BackupSettings, Machine, MachineSettings, NewSshHost, NewTask, NewWorkspace, TaskEdit, TaskId,
-    Timestamp, Workspace, WorkspaceId,
+    BackupSettings, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost, NewTask,
+    NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, review, tasks, workspaces,
+    herdr, issues, machines, mcp, memory, review, tasks, workspaces,
 };
 
 /// What running a command gave.
@@ -274,6 +274,19 @@ commands!(s => {
     );
     "list_backups"() => sync Reply::result(backup::list_backups(State(&s.backups)));
     "export_database"(path: String) => sync Reply::result(backup::export_database(State(&s.storage), path));
+
+    "list_memory"(workspace_id: Option<WorkspaceId>, include_superseded: bool) => sync Reply::result(
+        memory::list_memory(State(&s.storage), workspace_id, include_superseded)
+    );
+    "add_memory"(workspace_id: Option<WorkspaceId>, content: MemoryContent) => sync Reply::result(
+        memory::add_memory(State(&s.storage), workspace_id, content)
+    );
+    "update_memory"(id: MemoryId, content: MemoryContent) => sync Reply::result(
+        memory::update_memory(State(&s.storage), id, content)
+    );
+    "supersede_memory"(id: MemoryId, content: MemoryContent) => sync Reply::result(
+        memory::supersede_memory(State(&s.storage), id, content)
+    );
     "restore_database"(path: String) => sync Reply::result(
         backup::restore_database(State(&s.storage), State(&s.backups), path)
     );
