@@ -114,7 +114,8 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         </Button>
       </div>
 
-      {addingMachine && (
+      {addingMachine && runsOnServer && <AddMachineHelp onClose={() => setAddingMachine(false)} />}
+      {addingMachine && !runsOnServer && (
         <AddMachineForm
           saved={saved.map((machine) => machine.target)}
           onAdded={() => setAddingMachine(false)}
@@ -305,6 +306,49 @@ export function escapeCloses(close: () => void, busy = false) {
       close();
     }
   };
+}
+
+const ADD_MACHINE_COMMAND = "herdr machine add <host>";
+
+/** The server cannot open a terminal for `herdr machine add`, so the user runs it on the server. */
+function AddMachineHelp({ onClose }: { onClose: () => void }) {
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(ADD_MACHINE_COMMAND);
+      setNotice("Copied the command.");
+    } catch (error) {
+      setNotice(`Could not copy: ${String(error)}`);
+    }
+  }
+
+  return (
+    <section
+      aria-label="Add machine"
+      className="flex flex-col gap-2 rounded-lg border p-2"
+      onKeyDown={escapeCloses(onClose)}
+    >
+      <p className="text-xs text-muted-foreground">
+        herdr asks questions in a terminal, which the Toodo server cannot open. Run this command in a terminal on the
+        server, replacing <code>&lt;host&gt;</code> with an SSH host from its ~/.ssh/config, then reload the machine
+        list here.
+      </p>
+      <div className="flex items-center gap-1">
+        <code className="min-w-0 flex-1 break-all rounded bg-muted px-1.5 py-1 text-xs" aria-label="Add machine command">
+          {ADD_MACHINE_COMMAND}
+        </code>
+        <Button type="button" size="sm" variant="outline" onClick={() => void copy()}>
+          Copy command
+        </Button>
+      </div>
+      {notice && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {notice}
+        </p>
+      )}
+    </section>
+  );
 }
 
 function AddMachineForm({ saved, onAdded, onCancel }: { saved: string[]; onAdded: () => void; onCancel: () => void }) {
