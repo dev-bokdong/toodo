@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronLeft, ChevronsLeft, Crosshair, TriangleAlert, XIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, Crosshair, TriangleAlert, XIcon } from "lucide-react";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
   BaseEdge,
@@ -115,6 +115,9 @@ const sheetShare = 0.4;
 const sheetMargin = 16;
 /** Gap between a bar and a label drawn after it, because the label does not fit inside. */
 const labelGap = 8;
+/** Space kept between a label's end and the panel's right edge, and the least a label may shrink to. */
+const labelEdgeGap = 8;
+const labelMinRoom = 96;
 /** Distance from the panel's left edge at which the label of a bar that starts off screen is pinned. */
 const pinnedLabelInset = 2;
 
@@ -201,6 +204,10 @@ export function TaskGraph({
   /** Details of the task selected on the timeline, with its actions. */
   renderDetail: (task: Task) => ReactNode;
 }) {
+  // The legend starts closed on a phone, where it would push the chart below the first screen.
+  const [legendOpen, setLegendOpen] = useState(
+    () => typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 768px)").matches,
+  );
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const focusAgent = useFocusAgentPane();
@@ -584,7 +591,16 @@ export function TaskGraph({
             </Button>
           </div>
         )}
-        <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 text-muted-foreground [&>li]:whitespace-nowrap">
+        <details
+          open={legendOpen}
+          onToggle={(event) => setLegendOpen(event.currentTarget.open)}
+          className="group min-w-0 text-muted-foreground open:basis-full"
+        >
+        <summary className="flex min-h-7 cursor-pointer list-none items-center gap-1 font-medium max-md:min-h-11 [&::-webkit-details-marker]:hidden">
+          <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+          Legend
+        </summary>
+        <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
           <li className="flex items-center gap-1">
             <span className="size-2 rotate-45 border border-muted-foreground" />
             {plannedOnName}
@@ -624,12 +640,16 @@ export function TaskGraph({
             Past due
           </li>
         </ul>
+        <p className="pb-1">
+          Tasks not started yet wait at the current time, after their prerequisites.
+          <span className="[@media(pointer:coarse)]:hidden">
+            {" "}Drag from a task's right handle to another task to make it a prerequisite. With a task selected, use the
+            arrow keys to move between rows.
+          </span>
+        </p>
+        </details>
       </div>
-      <div className="flex min-h-7 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>
-          Tasks not started yet wait at the current time, after their prerequisites. Drag from a task's right handle
-          to another task to make it a prerequisite. With a task selected, use the arrow keys to move between rows.
-        </span>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground empty:hidden">
         {selected.length > 0 && (
           <Button
             size="xs"
@@ -1056,16 +1076,24 @@ function TimelineBarView({
     if (element === null) {
       return;
     }
-    const minWidth = element.style.minWidth;
+    const { minWidth, maxWidth } = element.style;
     element.style.minWidth = "0";
+    element.style.maxWidth = "none";
     const natural = element.offsetWidth;
     element.style.minWidth = minWidth;
+    element.style.maxWidth = maxWidth;
     setLabelOutside(natural > bar.width);
   }, [bar.width, task.title, workspace, statusLabel, agentStatus]);
   const labelLeft = labelOutside ? drawnWidth + labelGap - 6 : 0;
   // A label that would start off screen is pinned to the panel's left edge, behind a chevron
   // saying that the bar goes on to the left.
   const pinned = labelLeft < offScreen;
+  const labelMargin = pinned ? offScreen : labelOutside ? labelLeft : 0;
+  // A label longer than the room left up to the panel's right edge ends with an ellipsis there
+  // instead of being cut off.
+  const room = useStore((state) =>
+    Math.max(labelMinRoom, Math.floor(state.width - positionAbsoluteX - state.transform[0] - labelMargin - labelEdgeGap)),
+  );
   return (
     <div
       data-dimmed={dimmed || undefined}
@@ -1149,7 +1177,8 @@ function TimelineBarView({
         data-pinned={pinned || undefined}
         style={{
           width: "max-content",
-          ...(pinned ? { marginLeft: offScreen } : labelOutside ? { marginLeft: labelLeft } : { minWidth: "100%" }),
+          maxWidth: room,
+          ...(labelMargin > 0 ? { marginLeft: labelMargin } : { minWidth: "100%" }),
         }}
       >
         {pinned && (
@@ -1162,7 +1191,7 @@ function TimelineBarView({
         {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
         <TaskTypeBadge type={task.taskType} className="bg-card px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
-        <span className="font-semibold">{task.title}</span>
+        <span className="min-w-0 truncate font-semibold">{task.title}</span>
         {warnings.length > 0 && (
           <TriangleAlert
             role="img"
