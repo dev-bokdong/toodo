@@ -5,6 +5,7 @@ import {
   dependenciesDone,
   dependencyEdges,
   layoutTimeline,
+  openingViewport,
   relatedTasks,
   pausesStartedTask,
   timelineAxis,
@@ -395,6 +396,24 @@ describe("layoutTimeline", () => {
       Array.from({ length: 12 }, (_, month) => `2026-${String(month + 1).padStart(2, "0")}`),
     );
     expect(axis.majorTicks).toEqual([{ at: jan(1), x: 0, right: 365 * 3, label: "2026" }]);
+  });
+});
+
+describe("openingViewport", () => {
+  const panel = { visible: 1000, panel: 400, height: 600 };
+
+  it("opens Hour, Day and Week with Now at the left edge and the last row at the bottom", () => {
+    for (const scale of ["hour", "day", "week"] as const) {
+      expect(openingViewport({ scale, nowX: 50000, width: 96000 }, panel)).toEqual({ x: 16 - 50000, y: -208, zoom: 1 });
+    }
+  });
+
+  it("opens Month on the newest end of the axis", () => {
+    expect(openingViewport({ scale: "month", nowX: 200, width: 3000 }, panel)).toEqual({ x: -2016, y: 0, zoom: 1 });
+  });
+
+  it("falls back to the newest end of the axis when Now is outside it", () => {
+    expect(openingViewport({ scale: "hour", nowX: null, width: 96000 }, panel)).toEqual({ x: -95016, y: 0, zoom: 1 });
   });
 });
 

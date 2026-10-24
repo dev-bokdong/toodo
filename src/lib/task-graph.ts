@@ -601,3 +601,18 @@ export function timelineYears(tasks: Task[], now: Timestamp): number[] {
   const first = new Date(Math.min(now, ...planned) * 1000).getFullYear();
   return Array.from({ length: last - first + 1 }, (_, index) => last - index);
 }
+
+/**
+ * Where the timeline opens. Hour, Day and Week open on the newest work: the last row at the
+ * bottom, the Now line at the left edge. Hour needs this most, since its axis is so wide that
+ * the end of it, where Month opens, holds none of the work. Month fits the newest end on screen.
+ */
+export function openingViewport(
+  layout: Pick<TimelineLayout, "scale" | "nowX" | "width">,
+  panel: { visible: number; panel: number; height: number },
+): { x: number; y: number; zoom: 1 } {
+  if (layout.scale !== "month" && layout.nowX !== null) {
+    return { x: 16 - layout.nowX, y: Math.min(0, panel.panel - panel.height - 8), zoom: 1 };
+  }
+  return { x: Math.min(16, panel.visible - layout.width - 16), y: 0, zoom: 1 };
+}
