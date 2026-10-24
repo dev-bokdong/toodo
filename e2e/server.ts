@@ -63,6 +63,8 @@ function launch(dataDir: string, port: number) {
       TOODO_LISTEN: `127.0.0.1:${port}`,
       TOODO_DATA_DIR: dataDir,
       TOODO_WEB_DIR: webDir(),
+      // The lead would add a workspace and start an agent in the real herdr.
+      TOODO_LEAD: "off",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

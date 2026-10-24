@@ -358,6 +358,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .shut_down();
+    lead::close(&services.lead, &services.herdr);
     Ok(served?)
 }
 

@@ -381,6 +381,20 @@ pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<
     Ok(())
 }
 
+/// Closes the lead's herdr workspace (and with it the agent) when the server stops, so a
+/// stopped server leaves nothing running in herdr; the next start opens it anew.
+pub fn close(lead: &LeadStatusState, herdr: &Herdr) {
+    let id = lead
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .herdr_workspace_id
+        .clone();
+    let Some(id) = id else { return };
+    if let Err(error) = herdr.close_workspace(&Machine::Local, &id) {
+        eprintln!("toodo-server: cannot close the lead's herdr workspace {id}: {error}");
+    }
+}
+
 /// Stores `status`, returning the one it replaced if it differs.
 fn publish(lead: &LeadStatusState, status: &LeadStatus) -> Option<LeadStatus> {
     let mut current = lead.lock().unwrap_or_else(PoisonError::into_inner);
@@ -774,6 +788,22 @@ mod tests {
         );
         assert!(herdr_runner.results.lock().unwrap().is_empty());
         assert_eq!(git_runner.invocations.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn closing_the_lead_closes_its_herdr_workspace_only_when_it_has_one() {
+        let runner = Arc::new(FakeRunner::new([Ok(String::new())]));
+        let herdr = Herdr::new(Box::new(runner.clone()));
+        let lead = LeadStatusState::default();
+
+        close(&lead, &herdr);
+        assert!(runner.invocations.lock().unwrap().is_empty());
+
+        lead.lock().unwrap().herdr_workspace_id = Some("w7".to_owned());
+        close(&lead, &herdr);
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].args, ["workspace", "close", "w7"]);
     }
 
     #[test]

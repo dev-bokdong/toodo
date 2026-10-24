@@ -220,7 +220,8 @@ the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
   minute of starting is retried after 10 s, 30 s, 1 min, 2 min, then every 5 min, and
   after three such exits in a row the lead is reported `failed`. A closed pane or herdr
   workspace is opened again. After a server restart an agent still running in the pane
-  is kept, not started a second time.
+  is kept, not started a second time. When the server stops (Ctrl+C or SIGTERM) it
+  closes the lead's herdr workspace, ending the agent; the next start opens it again.
 - **Command.** The server writes `lead-start` (owner-only, `0600`) and `lead-prompt.md`
   to the data directory and types `sh <data dir>/lead-start` into the pane. The launcher
   exports `TOODO_MCP_URL`, `TOODO_MCP_TOKEN`, `TOODO_LEAD_MODEL`, `TOODO_LEAD_PROMPT`
