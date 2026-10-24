@@ -77,6 +77,18 @@ function isServerPath(pathname) {
   return SERVER_PATHS.some((path) => pathname === path || pathname.startsWith(path + "/"));
 }
 
+// A proxy in front of the server, such as a tunnel, answers for it with its own error page;
+// see isGatewayFailure in src/web/connection.ts.
+function isGatewayFailure(response) {
+  const status = response.status;
+  const gateway = status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 530);
+  return gateway && !(response.headers.get("Content-Type") ?? "").includes("application/json");
+}
+
+function cachedApp() {
+  return caches.match("/", { cacheName: CACHE });
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
@@ -84,8 +96,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (request.mode === "navigate") {
-    // The server answers every page with the app; offline, the cached app starts instead.
-    event.respondWith(fetch(request).catch(() => caches.match("/", { cacheName: CACHE })));
+    // The server answers every page with the app; while it is unreachable, the cached app
+    // starts instead and shows the offline screen.
+    event.respondWith(
+      fetch(request)
+        .then((response) => (isGatewayFailure(response) ? cachedApp().then((app) => app ?? response) : response))
+        .catch(() => cachedApp()),
+    );
     return;
   }
   if (SHELL.includes(url.pathname)) {

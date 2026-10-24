@@ -3,8 +3,10 @@
  * `toodo-server`'s event stream (`GET /api/events`), which one connection reads for all
  * of them. When the stream drops, it reconnects after a growing delay and, once the server
  * answers again, tells `onReconnect` subscribers, since events may have been missed
- * meanwhile. A rejected token is forgotten, so the app asks for it again.
+ * meanwhile. It reconnects at once when the server answers again (see `connection.ts`).
+ * A rejected token is forgotten, so the app asks for it again.
  */
+import { onReachable, recoveryCount, serverFetch } from "@/web/connection";
 import { authorization, forgetToken, getToken, subscribeToken } from "@/web/session";
 
 export type Event<T> = { event: string; id: number; payload: T };
@@ -58,7 +60,7 @@ function deliver({ event, data }: ServerSentEvent) {
 
 /** Opens the event stream; resolves once the server accepted it. */
 async function open(token: string, signal: AbortSignal): Promise<ReadableStreamDefaultReader<string>> {
-  const response = await fetch("/api/events", { headers: authorization(token), signal });
+  const response = await serverFetch("/api/events", { headers: authorization(token), signal });
   if (response.status === 401) {
     // Stops this connection: forgetting the token disconnects.
     forgetToken();
@@ -89,6 +91,7 @@ function connect() {
     let delay = FIRST_RETRY_MS;
     let connected = false;
     while (!controller.signal.aborted) {
+      const recoveries = recoveryCount();
       try {
         const reader = await open(token, controller.signal);
         if (connected) {
@@ -101,7 +104,18 @@ function connect() {
         if (controller.signal.aborted) return;
         console.warn("toodo: event stream dropped, reconnecting", error);
       }
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (recoveryCount() !== recoveries) {
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          clearTimeout(timer);
+          stop();
+          resolve();
+        };
+        const timer = setTimeout(wake, delay);
+        const stop = onReachable(wake);
+      });
       delay = Math.min(delay * 2, MAX_RETRY_MS);
     }
   })();

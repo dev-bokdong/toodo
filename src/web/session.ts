@@ -4,6 +4,7 @@
  * request bears it; a request the server rejects forgets it, so the app asks for it again.
  */
 import type { CommandError } from "@/lib/bindings";
+import { serverFetch } from "@/web/connection";
 
 const STORAGE_KEY = "toodo-server-token";
 
@@ -41,7 +42,7 @@ export async function apiRequest(path: string, init: RequestInit = {}): Promise<
   if (token === null) {
     throw new Error("No access token for the Toodo server.");
   }
-  const response = await fetch(path, { ...init, headers: { ...authorization(token), ...init.headers } });
+  const response = await serverFetch(path, { ...init, headers: { ...authorization(token), ...init.headers } });
   if (response.status === 401) {
     forgetToken();
     throw new Error("The Toodo server did not accept the access token.");

@@ -2,6 +2,7 @@
  * Stands in for `@tauri-apps/api/core` in the web build: the generated bindings invoke
  * commands through `invoke`, which posts them to `toodo-server`.
  */
+import { serverFetch } from "@/web/connection";
 import { authorization, forgetToken, getToken } from "@/web/session";
 
 type CommandError = { kind: string; message: string };
@@ -25,7 +26,7 @@ export async function invoke<T>(command: string, args: Record<string, unknown> =
   if (token === null) {
     throw new Error("No access token for the Toodo server.");
   }
-  const response = await fetch(`/api/rpc/${encodeURIComponent(command)}`, {
+  const response = await serverFetch(`/api/rpc/${encodeURIComponent(command)}`, {
     method: "POST",
     headers: { ...authorization(token), "Content-Type": "application/json" },
     body: JSON.stringify(args),

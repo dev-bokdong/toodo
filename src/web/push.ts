@@ -4,6 +4,7 @@
  * is closed, and the service worker (see `vite-pwa.ts`) shows them and opens their task.
  */
 import type { TaskId } from "@/lib/bindings";
+import { isAppleMobile, runsInstalled } from "@/web/install";
 import { apiRequest } from "@/web/session";
 
 export interface PushSettings {
@@ -35,12 +36,7 @@ export function pushSupport(): PushSupport {
   if ("serviceWorker" in navigator && "PushManager" in window && "Notification" in window) {
     return "supported";
   }
-  const { userAgent, maxTouchPoints } = navigator;
-  // iPadOS Safari presents itself as a Mac, told apart by its touch screen.
-  const apple = /iPhone|iPad|iPod/.test(userAgent) || (userAgent.includes("Macintosh") && maxTouchPoints > 1);
-  const installed =
-    matchMedia("(display-mode: standalone)").matches || ("standalone" in navigator && navigator.standalone === true);
-  return apple && !installed ? "needs-install" : "unsupported";
+  return isAppleMobile() && !runsInstalled() ? "needs-install" : "unsupported";
 }
 
 let active = false;

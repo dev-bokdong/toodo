@@ -31,13 +31,16 @@ describe("event stream connection", () => {
   it("tells reconnect listeners only once the server answers again", async () => {
     vi.useFakeTimers();
     localStorage.setItem(TOKEN_KEY, "secret");
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
+    const stream = vi
+      .fn<() => Promise<Response>>()
       .mockResolvedValueOnce(eventStream(false))
       .mockRejectedValueOnce(new TypeError("connection refused"))
       .mockRejectedValueOnce(new TypeError("connection refused"))
       .mockResolvedValueOnce(eventStream(true));
-    vi.stubGlobal("fetch", fetch);
+    // The failed connections make the app probe the server (see connection.ts), which stays down.
+    vi.stubGlobal("fetch", (path: string) =>
+      path === "/api/events" ? stream() : Promise.reject(new TypeError("connection refused")),
+    );
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { listen, onReconnect } = await freshEventModule();
     const reconnected = vi.fn();
@@ -45,11 +48,36 @@ describe("event stream connection", () => {
     const unlisten = await listen("tasks-changed", () => {});
 
     await vi.advanceTimersByTimeAsync(1000 + 2000);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(stream).toHaveBeenCalledTimes(3);
     expect(reconnected).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(4000);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(stream).toHaveBeenCalledTimes(4);
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    unlisten();
+  });
+
+  it("reconnects at once when the server answers again", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(TOKEN_KEY, "secret");
+    const stream = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(eventStream(false))
+      .mockRejectedValueOnce(new TypeError("connection refused"))
+      .mockResolvedValueOnce(eventStream(true));
+    vi.stubGlobal("fetch", (path: string) =>
+      path === "/api/events" ? stream() : Promise.resolve(new Response(null, { status: 401 })),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { listen, onReconnect } = await freshEventModule();
+    const reconnected = vi.fn();
+    onReconnect(reconnected);
+    const unlisten = await listen("tasks-changed", () => {});
+
+    // The second connection fails, the probe it starts gets an answer, and the stream does
+    // not wait out its 2 s delay.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(stream).toHaveBeenCalledTimes(3);
     expect(reconnected).toHaveBeenCalledTimes(1);
     unlisten();
   });

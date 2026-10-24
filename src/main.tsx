@@ -4,6 +4,8 @@ import ReactDOM from "react-dom/client";
 import App from "@/App";
 import "@/index.css";
 import { initTheme } from "@/lib/theme";
+import { onReachable, watchConnection } from "@/web/connection";
+import { watchInstallOffer } from "@/web/install";
 
 initTheme();
 
@@ -21,10 +23,19 @@ function render(app: ReactNode) {
 
 // A literal condition, so the desktop build drops the web build's access form and event stream.
 if (import.meta.env.MODE === "web") {
-  void Promise.all([import("@/components/server-access"), import("@/web/event")]).then(
-    ([{ ServerAccess }, { onReconnect }]) => {
+  // The browser may announce that it can install the app before the app has loaded.
+  watchInstallOffer();
+  watchConnection();
+  void Promise.all([
+    import("@/components/server-access"),
+    import("@/components/offline-screen"),
+    import("@/web/event"),
+  ]).then(
+    ([{ ServerAccess }, { ConnectionGate }, { onReconnect }]) => {
       // Events sent while the stream was down are lost; refetch what they would have changed.
       onReconnect(() => void queryClient.invalidateQueries());
+      // What failed while the server was unreachable shows its data again.
+      onReachable(() => void queryClient.invalidateQueries());
       // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
       if (import.meta.env.PROD && "serviceWorker" in navigator) {
         navigator.serviceWorker.register("/sw.js").catch((error: unknown) => {
@@ -32,9 +43,11 @@ if (import.meta.env.MODE === "web") {
         });
       }
       render(
-        <ServerAccess>
-          <App />
-        </ServerAccess>,
+        <ConnectionGate>
+          <ServerAccess>
+            <App />
+          </ServerAccess>
+        </ConnectionGate>,
       );
     },
   );
