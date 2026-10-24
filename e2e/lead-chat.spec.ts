@@ -33,6 +33,6 @@ test("the lead's messages come from Dori and each message shows how far it got, 
   const reply = log.getByRole("listitem", { name: "Dori" });
   await expect(reply).toContainText("On it.");
   await expect(reply.locator("img")).toBeVisible();
-  expect(await reply.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(80);
+  await expect(reply.locator("img")).toHaveJSProperty("naturalWidth", 80);
   await expect(mine("Then tag it").locator("[data-receipt]")).toHaveText("Seen");
 });
