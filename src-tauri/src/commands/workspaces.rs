@@ -136,6 +136,11 @@ fn prepare_workspace(
             setup.location
         }
         WorkspaceSource::Open => git.repository_root(&setup.location)?,
+        WorkspaceSource::Init => {
+            let branch = setup.default_base_branch.as_deref().unwrap_or("main");
+            git.init_repository(&setup.location, branch)?;
+            git.repository_root(&setup.location)?
+        }
     };
     ensure_unused(existing, &location)?;
     let default_base_branch = match setup.default_base_branch {
@@ -503,6 +508,7 @@ mod tests {
                     description: String::new(),
                     estimate: None,
                     due_date: None,
+                    criteria: Vec::new(),
                 })
                 .unwrap();
             storage

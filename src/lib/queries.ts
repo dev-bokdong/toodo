@@ -5,6 +5,7 @@ import {
   events,
   type BackupSettings,
   type CommandError,
+  type CriterionId,
   type Machine,
   type MachineSettings,
   type MemoryContent,
@@ -493,7 +494,11 @@ export function useOpenPullRequest() {
   });
 }
 
-/** Marks an `in_review` task `done` once its pull request is merged. */
+/**
+ * Completes an `in_progress` or `in_review` task once all its criteria are met; the backend
+ * checks the automatic ones again first. For a task with a manual criterion this is the
+ * confirmation that it is done.
+ */
 export function useCompleteTask() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -572,6 +577,18 @@ export function usePauseTask() {
 /** Closes the herdr workspace of a paused task; its worktree is kept for resuming. */
 export function useCloseTaskWorkspace() {
   return useTasksMutation((id: TaskId) => unwrap(commands.closeTaskWorkspace(id)));
+}
+
+type CriterionCheck = { taskId: TaskId; criterionId: CriterionId; met: boolean; evidence: string | null };
+
+/**
+ * Checks or unchecks a manual criterion of a task that is not done. Checking the last one
+ * moves a started task to awaiting completion.
+ */
+export function useCheckCriterion() {
+  return useTasksMutation(({ taskId, criterionId, met, evidence }: CriterionCheck) =>
+    unwrap(commands.checkCriterion(taskId, criterionId, met, evidence)),
+  );
 }
 
 /** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */

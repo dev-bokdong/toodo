@@ -24,6 +24,7 @@ function task(overrides: Partial<Task> = {}): Task {
     resolution: null,
     completionNote: null,
     notes: [],
+    criteria: [],
     timeline: [],
     milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, pausedAt: null },
     ...overrides,

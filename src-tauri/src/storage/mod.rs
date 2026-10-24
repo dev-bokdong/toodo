@@ -9,6 +9,7 @@
 
 mod backup;
 mod commits;
+mod criteria;
 mod devices;
 mod memory;
 mod migrations;
@@ -25,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
+use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::DependencyError;
 use crate::domain::device::DeviceId;
 use crate::domain::memory::MemoryId;
@@ -32,6 +34,7 @@ use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
+pub use criteria::{CriterionCheck, CriterionEdit};
 pub use search::TaskSearch;
 pub use tasks::{AddedDependencies, NewTask};
 pub use workspaces::NewWorkspace;
@@ -115,6 +118,18 @@ pub enum StorageError {
     DependenciesNotDone(TaskId),
     /// A task cannot be related to itself.
     SelfRelation(TaskId),
+    CriterionNotFound {
+        task: TaskId,
+        criterion: CriterionId,
+    },
+    /// The criteria of a done task are its record and cannot change.
+    CriteriaOfDoneTask(TaskId),
+    /// Only manual criteria are checked by hand; Toodo checks the others.
+    AutomaticCriterion {
+        task: TaskId,
+        criterion: CriterionId,
+        kind: CheckKind,
+    },
     MemoryNotFound(MemoryId),
     DeviceNotFound(DeviceId),
     /// A memory entry that was replaced is history and cannot change.
@@ -174,6 +189,23 @@ impl fmt::Display for StorageError {
                 )
             }
             Self::SelfRelation(id) => write!(f, "task {id} cannot be related to itself"),
+            Self::CriterionNotFound { task, criterion } => {
+                write!(f, "task {task} has no criterion {criterion}")
+            }
+            Self::CriteriaOfDoneTask(id) => {
+                write!(
+                    f,
+                    "task {id} is done; its completion criteria cannot change"
+                )
+            }
+            Self::AutomaticCriterion {
+                task,
+                criterion,
+                kind,
+            } => write!(
+                f,
+                "criterion {criterion} of task {task} is a {kind} criterion, which Toodo checks on its own; only manual criteria are checked by hand"
+            ),
             Self::MemoryNotFound(id) => write!(f, "memory entry {id} does not exist"),
             Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
             Self::MemorySuperseded { id, by } => write!(

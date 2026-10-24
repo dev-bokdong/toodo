@@ -1,8 +1,11 @@
 import { lazy, Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   Check,
+  Circle,
+  CircleCheck,
   CircleDot,
   CircleSlash,
+  CircleX,
   Crosshair,
   FolderGit2,
   GitBranch,
@@ -30,6 +33,12 @@ import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type {
   AgentMerge,
+  CheckKind,
+  CheckedBy,
+  Criterion,
+  CriterionId,
+  CriterionInput,
+  CriterionState,
   Estimate,
   EstimateUnit,
   MergedWith,
@@ -49,6 +58,7 @@ import {
   useAgentStatuses,
   useCloseTaskWorkspace,
   useBranchFreshness,
+  useCheckCriterion,
   usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
@@ -114,7 +124,7 @@ const statusLabels: Record<ShownStatus, string> = {
   ready: "Ready",
   paused: "Paused",
   in_progress: "In progress",
-  in_review: "In review",
+  in_review: "Awaiting completion",
   done: "Done",
   not_adopted: "Not adopted",
 };
@@ -501,6 +511,12 @@ function TaskRow({
     : undefined;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
+  const criteriaMet = task.criteria.every((criterion) => criterion.state === "met");
+  // Every criterion is met and one is checked by hand: the user confirms that the task is done.
+  const awaitingConfirmation =
+    inReview && task.criteria.length > 0 && criteriaMet && task.criteria.some((criterion) => criterion.kind === "manual");
+  // A started task completes once its criteria are met, or right away when it has none.
+  const completable = inReview || (task.status === "in_progress" && criteriaMet);
   const paused = isPaused(task);
   const startable = task.status === "planned" && dependenciesDone(task, context.byId);
   // Prerequisites concluded without merging: this task cannot build on them.
@@ -585,6 +601,7 @@ function TaskRow({
           )}
         </div>
       )}
+      {!editing && <TaskCriteria task={task} detailed={detailed} />}
       {(task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
         <div
           role="group"
@@ -849,17 +866,34 @@ function TaskRow({
               </Button>
             </>
           )}
-          {inReview && (
+          {awaitingConfirmation ? (
             <Button
               size="xs"
-              aria-label={`Complete #${task.id}`}
-              title="Complete the task once its pull request is merged; its herdr workspace is closed and the worktree kept"
+              aria-label={`Confirm completion of #${task.id}`}
+              title="Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept"
               disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
               onClick={() => completeTask.mutate(task.id)}
             >
               <Check />
-              {completeTask.isPending ? "Completing..." : "Complete"}
+              {completeTask.isPending ? "Completing..." : "Confirm completion"}
             </Button>
+          ) : (
+            completable && (
+              <Button
+                size="xs"
+                aria-label={`Complete #${task.id}`}
+                title={
+                  task.criteria.length === 0
+                    ? "Complete the task; its herdr workspace is closed and the worktree kept"
+                    : "Check the criteria again and complete the task once all are met; its herdr workspace is closed and the worktree kept"
+                }
+                disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
+                onClick={() => completeTask.mutate(task.id)}
+              >
+                <Check />
+                {completeTask.isPending ? "Completing..." : "Complete"}
+              </Button>
+            )
           )}
           {active && (
             <Button
@@ -1051,8 +1085,14 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
     dueDate: task.dueDate ?? "",
   }));
   const [plan, setPlan] = useState<PlanDraft>(initialPlan);
+  const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
+  const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const estimate = planEstimate(plan);
+  // Unchanged criteria are not sent, so a save never touches the ones checked so far.
+  const criteriaChanged =
+    JSON.stringify(criterionInputs(criteria)) !== JSON.stringify(criterionInputs(initialCriteria));
+  const criteriaInvalid = criteria.some((draft) => targetProblem(draft) !== null);
   // The timeline asks before closing a details sheet whose edit form is marked dirty.
   const dirty =
     taskType !== task.taskType ||
@@ -1060,7 +1100,8 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
     description !== task.description ||
     plan.estimate !== initialPlan.estimate ||
     plan.estimateUnit !== initialPlan.estimateUnit ||
-    plan.dueDate !== initialPlan.dueDate;
+    plan.dueDate !== initialPlan.dueDate ||
+    criteriaChanged;
 
   function discard() {
     if (dirty) {
@@ -1072,7 +1113,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (estimate === undefined) return;
+    if (estimate === undefined || criteriaInvalid) return;
     updateTask.mutate(
       {
         id: task.id,
@@ -1081,6 +1122,8 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         description: description.trim(),
         estimate,
         dueDate: plan.dueDate || null,
+        // The criteria of a done task cannot change.
+        criteria: criteriaChanged && task.status !== "done" ? criterionInputs(criteria) : null,
       },
       { onSuccess: onDone },
     );
@@ -1126,6 +1169,12 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         onChange={setDescription}
       />
       <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} />
+      {task.status !== "done" && (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">Completion criteria</span>
+          <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
+        </div>
+      )}
       {confirmingDiscard ? (
         <div
           role="group"
@@ -1142,7 +1191,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         </div>
       ) : (
         <div className="flex gap-1">
-          <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined}>
+          <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined || criteriaInvalid}>
             {updateTask.isPending ? "Saving..." : "Save"}
           </Button>
           <Button type="button" size="xs" variant="ghost" onClick={discard}>
@@ -1645,7 +1694,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
   const createBaseBranch = useCreateBaseBranch();
   const tasks = useTasks();
-  // An open pull request targets the current branch, so it stays while a task is in review.
+  // An open pull request targets the current branch, so it stays while a task awaits completion.
   const inReview = tasks.data?.filter((task) => task.workspaceId === workspace.id && task.status === "in_review");
   const locked = inReview === undefined || inReview.length > 0;
   const [draft, setDraft] = useState<string | null>(null);
@@ -1696,8 +1745,8 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
         </Button>
         {inReview && inReview.length > 0 && (
           <span className="truncate text-xs">
-            Locked while {inReview.map((task) => `#${task.id}`).join(", ")} {inReview.length > 1 ? "are" : "is"} in
-            review
+            Locked while {inReview.map((task) => `#${task.id}`).join(", ")} {inReview.length > 1 ? "are" : "is"}{" "}
+            awaiting completion
           </span>
         )}
       </p>
@@ -1964,11 +2013,341 @@ function TaskPlan({ task }: { task: Task }) {
   );
 }
 
+const criterionKindLabels: Record<CheckKind, string> = {
+  manual: "Manual",
+  url: "URL responds",
+  command: "Command succeeds",
+  pr_open_ci_green: "PR open with green CI",
+  pr_merged: "PR merged",
+  branch_merged_locally: "Merged locally",
+};
+
+/**
+ * Kinds the criteria editor offers. The merge criterion (`pr_merged`, or
+ * `branch_merged_locally` in a repository without `origin`) comes from "Done when merged"
+ * when the task is created and keeps its kind when the task is edited.
+ */
+const editableCriterionKinds: CheckKind[] = ["manual", "url", "command", "pr_open_ci_green"];
+
+/** Kinds checked against a target their author gives: the URL to fetch or the command to run. */
+function takesTarget(kind: CheckKind): boolean {
+  return kind === "url" || kind === "command";
+}
+
+/** A row of the criteria editor; `id` is set for an existing criterion of the edited task. */
+type CriterionDraft = { key: number; id: CriterionId | null; text: string; kind: CheckKind; target: string };
+
+/** Tells editor rows apart, so removing one keeps the values and focus of the others. */
+let lastCriterionKey = 0;
+
+/** A new, empty row, or a row holding the existing `criterion`. */
+function criterionDraft(criterion?: Criterion): CriterionDraft {
+  lastCriterionKey += 1;
+  if (criterion === undefined) {
+    return { key: lastCriterionKey, id: null, text: "", kind: "manual", target: "" };
+  }
+  // The target of a merged-locally criterion is the commit Toodo found, not one to edit.
+  const target = takesTarget(criterion.kind) ? (criterion.target ?? "") : "";
+  return { key: lastCriterionKey, id: criterion.id, text: criterion.text, kind: criterion.kind, target };
+}
+
+/** The rows with a text, in order, as the backend takes them; blank rows are left out. */
+function criterionInputs(drafts: CriterionDraft[]): CriterionInput[] {
+  return drafts
+    .filter((draft) => draft.text.trim() !== "")
+    .map((draft) => ({
+      ...(draft.id === null ? {} : { id: draft.id }),
+      text: draft.text.trim(),
+      kind: draft.kind,
+      target: takesTarget(draft.kind) ? draft.target.trim() : null,
+    }));
+}
+
+/** Why the backend would reject the target of a row, or null when it takes it. */
+function targetProblem(draft: CriterionDraft): string | null {
+  if (draft.text.trim() === "") return null;
+  const target = draft.target.trim();
+  if (draft.kind === "url" && !/^https?:\/\/\S*$/.test(target)) return "Enter an http:// or https:// URL";
+  if (draft.kind === "command" && target === "") return "Enter the command to run";
+  return null;
+}
+
+/**
+ * The completion criteria of a new or an edited task: one row per criterion with what has
+ * to hold, how it is checked, and the URL or command a check runs against. In the edit form
+ * of a task, `taskId` ends the labels with ` of #id`.
+ */
+function CriteriaEditor({
+  criteria,
+  onChange,
+  taskId,
+}: {
+  criteria: CriterionDraft[];
+  onChange: (criteria: CriterionDraft[]) => void;
+  taskId?: TaskId;
+}) {
+  // The row just added gets the focus.
+  const [addedKey, setAddedKey] = useState<number | null>(null);
+  const of = taskId === undefined ? "" : ` of #${taskId}`;
+  const update = (key: number, change: Partial<CriterionDraft>) =>
+    onChange(criteria.map((draft) => (draft.key === key ? { ...draft, ...change } : draft)));
+
+  function add() {
+    const draft = criterionDraft();
+    setAddedKey(draft.key);
+    onChange([...criteria, draft]);
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      {criteria.length > 0 && (
+        <ol className="flex flex-col gap-1">
+          {criteria.map((draft, index) => {
+            const n = index + 1;
+            const problem = targetProblem(draft);
+            const fixedKind = !editableCriterionKinds.includes(draft.kind);
+            return (
+              <li key={draft.key} className="flex flex-wrap items-center gap-1">
+                <span aria-hidden className="w-4 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                  {n}
+                </span>
+                <input
+                  className={cn(inputClass, "h-7 flex-1 basis-48")}
+                  aria-label={`Criterion ${n} text${of}`}
+                  placeholder="What has to hold, e.g. Docs updated"
+                  value={draft.text}
+                  onChange={(e) => update(draft.key, { text: e.target.value })}
+                  autoFocus={draft.key === addedKey}
+                />
+                <select
+                  aria-label={`Criterion ${n} kind${of}`}
+                  className={cn(compactSelectClass, "h-7")}
+                  value={draft.kind}
+                  disabled={fixedKind}
+                  title={fixedKind ? "The merge criterion keeps its kind" : "How the criterion is checked"}
+                  onChange={(e) => update(draft.key, { kind: e.target.value as CheckKind })}
+                >
+                  {(fixedKind ? [draft.kind] : editableCriterionKinds).map((kind) => (
+                    <option key={kind} value={kind}>
+                      {criterionKindLabels[kind]}
+                    </option>
+                  ))}
+                </select>
+                {takesTarget(draft.kind) && (
+                  <input
+                    className={cn(
+                      inputClass,
+                      "h-7 flex-1 basis-40 font-mono aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20",
+                    )}
+                    aria-label={`Criterion ${n} target${of}`}
+                    aria-invalid={problem !== null}
+                    title={
+                      problem ??
+                      (draft.kind === "url"
+                        ? "Toodo checks that a GET of this URL succeeds"
+                        : "Toodo checks that this command exits with 0 in the task worktree")
+                    }
+                    placeholder={draft.kind === "url" ? "https://example.com/health" : "npm test"}
+                    value={draft.target}
+                    onChange={(e) => update(draft.key, { target: e.target.value })}
+                  />
+                )}
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label={`Remove criterion ${n}${of}`}
+                  title="Remove criterion"
+                  onClick={() => onChange(criteria.filter((other) => other.key !== draft.key))}
+                >
+                  <X />
+                </Button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      <Button
+        type="button"
+        size="xs"
+        variant="ghost"
+        className="self-start"
+        aria-label={taskId === undefined ? undefined : `Add criterion to #${taskId}`}
+        onClick={add}
+      >
+        <Plus />
+        Add criterion
+      </Button>
+    </div>
+  );
+}
+
+const criterionStateLabels: Record<CriterionState, string> = { pending: "Pending", met: "Met", failed: "Failed" };
+
+/** Green once met, rose only when the last check failed. */
+const criterionStateStyles: Record<CriterionState, string> = {
+  pending: toneText.neutral,
+  met: toneText.success,
+  failed: toneText.danger,
+};
+
+const checkedByLabels: Record<CheckedBy, string> = { user: "you", agent: "an agent", toodo: "Toodo" };
+
+function CriterionMarker({ state }: { state: CriterionState }) {
+  const Icon = state === "met" ? CircleCheck : state === "failed" ? CircleX : Circle;
+  return (
+    <span
+      role="img"
+      aria-label={criterionStateLabels[state]}
+      className={cn("flex size-4 shrink-0 items-center justify-center", criterionStateStyles[state])}
+    >
+      <Icon aria-hidden className="size-3.5" />
+    </span>
+  );
+}
+
+/** Who checked a criterion last and when, or null when nobody has. */
+function checkedByText(criterion: Criterion): string | null {
+  if (criterion.checkedBy === null) return null;
+  const at = criterion.checkedAt === null ? "" : ` ${new Date(criterion.checkedAt * 1000).toLocaleString()}`;
+  return `Checked by ${checkedByLabels[criterion.checkedBy]}${at}`;
+}
+
+/**
+ * What has to hold for the task to be done, each criterion with its state. A list row keeps
+ * every criterion to one line; the details sheet adds targets, evidence, and who checked.
+ */
+function TaskCriteria({ task, detailed }: { task: Task; detailed: boolean }) {
+  const criteria = task.criteria;
+  if (criteria.length === 0) {
+    return null;
+  }
+  const list = (
+    <ul aria-label={`Criteria of #${task.id}`} className="flex flex-col gap-0.5">
+      {criteria.map((criterion) => (
+        <CriterionItem key={criterion.id} task={task} criterion={criterion} detailed={detailed} />
+      ))}
+    </ul>
+  );
+  if (!detailed) {
+    return list;
+  }
+  const met = criteria.filter((criterion) => criterion.state === "met").length;
+  return <DetailField label={`Criteria (${met} of ${criteria.length} met)`}>{list}</DetailField>;
+}
+
+/**
+ * One criterion of a task. A manual one of a task that is not done is a checkbox: checking
+ * asks for optional evidence before it is saved, unchecking saves right away.
+ */
+function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: Criterion; detailed: boolean }) {
+  const checkCriterion = useCheckCriterion();
+  // The evidence form of a check that is not saved yet.
+  const [writing, setWriting] = useState(false);
+  const [evidence, setEvidence] = useState("");
+  const checkable = criterion.kind === "manual" && task.status !== "done";
+  const checkedBy = checkedByText(criterion);
+  const target = takesTarget(criterion.kind) ? criterion.target : null;
+
+  function cancel() {
+    setWriting(false);
+    setEvidence("");
+  }
+
+  function toggle(checked: boolean) {
+    if (writing) {
+      cancel();
+    } else if (checked) {
+      checkCriterion.reset();
+      setWriting(true);
+    } else {
+      checkCriterion.mutate({ taskId: task.id, criterionId: criterion.id, met: false, evidence: null });
+    }
+  }
+
+  function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    checkCriterion.mutate(
+      { taskId: task.id, criterionId: criterion.id, met: true, evidence: evidence.trim() || null },
+      { onSuccess: cancel },
+    );
+  }
+
+  return (
+    <li data-criterion-state={criterion.state} className="flex min-w-0 flex-col gap-0.5 text-xs">
+      <div
+        className="flex min-w-0 items-center gap-1.5"
+        title={detailed ? undefined : [checkedBy, criterion.evidence, target].filter(Boolean).join("\n") || undefined}
+      >
+        {checkable ? (
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <input
+              type="checkbox"
+              aria-label={`Check criterion ${criterion.id} of #${task.id}`}
+              checked={criterion.state === "met" || writing}
+              disabled={checkCriterion.isPending}
+              onChange={(e) => toggle(e.target.checked)}
+            />
+          </span>
+        ) : (
+          <CriterionMarker state={criterion.state} />
+        )}
+        <span className={cn("min-w-0", detailed ? "break-words" : "truncate")}>{criterion.text}</span>
+        {criterion.kind !== "manual" && (
+          <span className="shrink-0 rounded-md bg-muted px-1.5 text-muted-foreground">
+            {criterionKindLabels[criterion.kind]}
+          </span>
+        )}
+        {!detailed && criterion.evidence && (
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{criterion.evidence}</span>
+        )}
+      </div>
+      {detailed && target && <code className="ml-5.5 break-all text-muted-foreground">{target}</code>}
+      {detailed && (criterion.evidence || checkedBy) && (
+        <p className="ml-5.5 whitespace-pre-line break-words text-muted-foreground">
+          {[criterion.evidence, checkedBy].filter(Boolean).join(" \u00b7 ")}
+        </p>
+      )}
+      {writing && (
+        <form
+          onSubmit={save}
+          className="ml-5.5 flex flex-wrap items-center gap-1"
+          onKeyDown={escapeCloses(cancel, checkCriterion.isPending)}
+        >
+          <input
+            className={cn(inputClass, "h-7 flex-1 basis-48")}
+            aria-label={`Evidence for criterion ${criterion.id}`}
+            placeholder="Evidence (optional), e.g. a link or what you checked"
+            value={evidence}
+            onChange={(e) => setEvidence(e.target.value)}
+            autoFocus
+          />
+          <Button type="submit" size="xs" disabled={checkCriterion.isPending}>
+            {checkCriterion.isPending ? "Saving..." : "Save"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={cancel}>
+            Cancel
+          </Button>
+        </form>
+      )}
+      {checkCriterion.isError && (
+        <p role="alert" className="ml-5.5 text-destructive">
+          {checkCriterion.error.message}
+        </p>
+      )}
+    </li>
+  );
+}
+
 export type TaskDraft = {
   taskType: TaskType;
   title: string;
   description: string;
   issue: string;
+  /** Rows of the criteria editor; blank ones are left out when the task is added. */
+  criteria: CriterionDraft[];
+  /** Whether the backend puts the merge criterion first. */
+  mergeCriterion: boolean;
 } & PlanDraft;
 
 const emptyDraft: TaskDraft = {
@@ -1976,6 +2355,8 @@ const emptyDraft: TaskDraft = {
   title: "",
   description: "",
   issue: "",
+  criteria: [],
+  mergeCriterion: true,
   estimate: "",
   estimateUnit: "hours",
   dueDate: "",
@@ -1995,6 +2376,7 @@ function NewTaskForm({
   const issueNumber = parseIssueNumber(issue);
   const invalidIssue = issue.trim() !== "" && issueNumber === null;
   const estimate = planEstimate(draft);
+  const criteriaInvalid = draft.criteria.some((criterion) => targetProblem(criterion) !== null);
   const setTaskType = (value: TaskType) => onChange({ ...draft, taskType: value });
   const setTitle = (value: string) => onChange({ ...draft, title: value });
   const setDescription = (value: string) => onChange({ ...draft, description: value });
@@ -2002,8 +2384,9 @@ function NewTaskForm({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (estimate === undefined) return;
-    const added = () => onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "" });
+    if (estimate === undefined || criteriaInvalid) return;
+    const added = () =>
+      onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "", criteria: [] });
     createTask.mutate(
       {
         workspaceId: workspace.id,
@@ -2012,6 +2395,8 @@ function NewTaskForm({
         description,
         estimate,
         dueDate: draft.dueDate || null,
+        criteria: criterionInputs(draft.criteria),
+        mergeCriterion: draft.mergeCriterion,
         issue: issueNumber,
       },
       {
@@ -2049,7 +2434,7 @@ function NewTaskForm({
           onChange={(e) => setTitle(e.target.value)}
           required
         />
-        <Button type="submit" disabled={createTask.isPending || invalidIssue || estimate === undefined}>
+        <Button type="submit" disabled={createTask.isPending || invalidIssue || estimate === undefined || criteriaInvalid}>
           <Plus />
           Add task
         </Button>
@@ -2078,6 +2463,23 @@ function NewTaskForm({
         plan={draft}
         onChange={(plan) => onChange({ ...draft, ...plan })}
       />
+      <div className="flex flex-col gap-1 border-t pt-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className="font-medium text-muted-foreground">Completion criteria</span>
+          <label
+            className="flex items-center gap-1.5"
+            title="Add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
+          >
+            <input
+              type="checkbox"
+              checked={draft.mergeCriterion}
+              onChange={(e) => onChange({ ...draft, mergeCriterion: e.target.checked })}
+            />
+            Done when merged
+          </label>
+        </div>
+        <CriteriaEditor criteria={draft.criteria} onChange={(criteria) => onChange({ ...draft, criteria })} />
+      </div>
       {createTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {createTask.error.message}

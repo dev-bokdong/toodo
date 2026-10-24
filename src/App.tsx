@@ -200,7 +200,7 @@ export default function App() {
               <EmptyState
                 icon={<FolderPlus />}
                 title="Create a workspace to start planning tasks."
-                hint={`Clone a repository or open one already cloned, on ${runsOnServer ? "the server" : "this computer"} or a saved herdr machine.`}
+                hint={`Clone a repository, open one already cloned, or make a folder a new repository, on ${runsOnServer ? "the server" : "this computer"} or a saved herdr machine.`}
               />
             )
           )}

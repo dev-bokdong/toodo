@@ -51,6 +51,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       resolution: null,
       completionNote: null,
       notes: [],
+      criteria: [],
       timeline: [],
       milestones: {
         plannedAt: null,
@@ -340,7 +341,7 @@ describe("reviewMarkdown", () => {
         "- Median lead time (planned to completed): 2.0d (1 task)",
         "- Median cycle time (started to completed): no data",
         "- Median active time (started to completed, without pauses): no data",
-        "- Median review time (in review to merged): no data",
+        "- Median review time (awaiting completion to merged): no data",
         "",
         "## Completed (1)",
         "",
@@ -649,7 +650,7 @@ describe("reviewCsv", () => {
     expect(csv).toBe(
       "\uFEFF" +
         [
-          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,In review,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Estimate,Estimate unit,Due date,Due status,Additions,Deletions,Changed files,Reviews,Completion note",
+          "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,Awaiting completion,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Estimate,Estimate unit,Due date,Due status,Additions,Deletions,Changed files,Reviews,Completion note",
           '7,toodo,feat,"Fix ""login"", then\nlogout",Completed,2026-10-13 15:00,Not adopted,2026-10-01 09:00,,,2026-10-13 15:00,2026-10-13 14:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,2,hours,2026-10-12,Late,120,30,4,2,"Cut login time in half, finally"',
           "8,workspace 9,feat,Plan café,Planned,2026-10-13 15:00,,,,,,,,,0,0.5,,,,,,,,,",
         ].join("\r\n") +

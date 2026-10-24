@@ -3,7 +3,7 @@ import type { TaskEvent, TaskMilestones, Timestamp } from "@/lib/bindings";
 const milestoneLabels: [keyof TaskMilestones, string][] = [
   ["plannedAt", "Planned"],
   ["startedAt", "Started"],
-  ["reviewAt", "In review"],
+  ["reviewAt", "Awaiting completion"],
   ["completedAt", "Completed"],
   ["pausedAt", "Paused"],
 ];

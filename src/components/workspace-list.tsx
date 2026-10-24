@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Download, FolderOpen, Laptop, Plus, Server, X } from "lucide-react";
+import { Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
@@ -31,6 +31,21 @@ export function describeLocation(location: WorkspaceLocation): string {
 type MachineKey = string | null;
 
 type Mode = WorkspaceSource["kind"];
+
+/**
+ * How each way of adding a workspace on a machine is offered and submitted. The buttons are
+ * text only, so the three of them leave room for the machine name in the narrow sidebar.
+ */
+const modes: Record<Mode, { label: string; title: string; submit: string; pending: string }> = {
+  clone: { label: "Clone", title: "Clone a repository", submit: "Clone workspace", pending: "Cloning..." },
+  open: { label: "Open", title: "Open a cloned repository", submit: "Open workspace", pending: "Opening..." },
+  init: {
+    label: "Init",
+    title: "Make a folder a new git repository",
+    submit: "Init workspace",
+    pending: "Initializing...",
+  },
+};
 
 function machineKeyOf(location: WorkspaceLocation): MachineKey {
   return location.kind === "local" ? null : location.machine;
@@ -129,18 +144,17 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
                     <span className="truncate">{label}</span>
                     {problem && <span className="ml-1.5 font-normal text-destructive">{problem}</span>}
                   </h3>
-                  {(["clone", "open"] as const).map((mode) => (
+                  {(["clone", "open", "init"] as const).map((mode) => (
                     <Button
                       key={mode}
                       size="xs"
                       variant={active === mode ? "secondary" : "ghost"}
-                      aria-label={`${mode === "clone" ? "Clone" : "Open"} on ${label}`}
+                      aria-label={`${modes[mode].label} on ${label}`}
                       aria-pressed={active === mode}
-                      title={mode === "clone" ? "Clone a repository" : "Open a cloned repository"}
+                      title={modes[mode].title}
                       onClick={() => setAdding(active === mode ? null : { machine, mode })}
                     >
-                      {mode === "clone" ? <Download /> : <FolderOpen />}
-                      {mode === "clone" ? "Clone" : "Open"}
+                      {modes[mode].label}
                     </Button>
                   ))}
                 </div>
@@ -435,7 +449,7 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
     event.preventDefault();
     const location: WorkspaceLocation =
       machine === null ? { kind: "local", path } : { kind: "ssh", machine, path };
-    const source: WorkspaceSource = cloning ? { kind: "clone", url } : { kind: "open" };
+    const source: WorkspaceSource = mode === "clone" ? { kind: "clone", url } : { kind: mode };
     createWorkspace.mutate(
       { name: effectiveName, location, source, defaultBaseBranch: baseBranch.trim() || null },
       { onSuccess: onCreated },
@@ -445,7 +459,7 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
   return (
     <form
       onSubmit={submit}
-      aria-label={`${cloning ? "Clone" : "Open"} workspace on ${machine ?? "Local"}`}
+      aria-label={`${modes[mode].label} workspace on ${machine ?? "Local"}`}
       className="flex flex-col gap-2 rounded-lg border p-2"
       onKeyDown={escapeCloses(onCancel, createWorkspace.isPending)}
     >
@@ -497,9 +511,14 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
         required
       />
       {cloning && path && <p className="truncate text-xs text-muted-foreground" title={path}>Clones into {path}</p>}
+      {mode === "init" && (
+        <p className="text-xs text-muted-foreground">
+          The folder is created if it does not exist and becomes a git repository without a remote.
+        </p>
+      )}
       <input
         className={inputClass}
-        placeholder="Base branch (detected if empty)"
+        placeholder={mode === "init" ? "Base branch (main if empty)" : "Base branch (detected if empty)"}
         aria-label="Base branch"
         value={baseBranch}
         onChange={(e) => setBaseBranch(e.target.value)}
@@ -510,13 +529,7 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
         </p>
       )}
       <Button type="submit" size="sm" disabled={createWorkspace.isPending}>
-        {createWorkspace.isPending
-          ? cloning
-            ? "Cloning..."
-            : "Opening..."
-          : cloning
-            ? "Clone workspace"
-            : "Open workspace"}
+        {createWorkspace.isPending ? modes[mode].pending : modes[mode].submit}
       </Button>
     </form>
   );

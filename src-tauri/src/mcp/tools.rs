@@ -12,13 +12,14 @@ use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::completion::{self, OpenPullRequest};
 use crate::commands::herdr as herdr_commands;
-use crate::commands::tasks::edit_task;
+use crate::commands::tasks::{self as task_commands, edit_task};
 use crate::commands::types::{
     self, CommitRecord, Estimate, Task, TaskEdit, TaskId, TaskResolution, TaskStatus, TaskType,
     Workspace, WorkspaceId,
 };
 use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
+use crate::domain::criteria::{CheckedBy, NewCriterion};
 use crate::domain::model::{self, NoteKind};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
@@ -43,8 +44,14 @@ pub struct CreateWorkspace {
     /// cloned there.
     pub clone_url: Option<String>,
     /// The branch task pull requests go into, e.g. `dev`; detected from the repository's
-    /// `origin` default branch when omitted.
+    /// `origin` default branch when omitted. With `init`, the first branch of the new
+    /// repository (`main` when omitted).
     pub default_base_branch: Option<String>,
+    /// Make `path`, a plain folder or one that does not exist yet, a new git repository
+    /// without a remote; tasks then merge into the base branch locally. Not with
+    /// `clone_url`.
+    #[serde(default)]
+    pub init: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -72,6 +79,16 @@ pub struct CreateTask {
     /// The day the task should be done by, as YYYY-MM-DD, if the user gave one.
     #[serde(default)]
     pub due_date: Option<String>,
+    /// Verifiable completion criteria in order (no `id`). Use `manual` for what a person
+    /// or you check with evidence, and `url`, `command`, `pr_open_ci_green` for what
+    /// Toodo can check itself.
+    #[serde(default)]
+    pub criteria: Vec<types::CriterionInput>,
+    /// Put the merge criterion first (the pull request is merged, or the branch is merged
+    /// into the base branch locally in a repository without `origin`); true when
+    /// omitted. Set false for work that ships nothing, e.g. research or an errand.
+    #[serde(default)]
+    pub merge_criterion: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -92,6 +109,25 @@ pub struct UpdateTask {
     #[serde(default, deserialize_with = "present")]
     #[schemars(with = "Option<String>")]
     pub due_date: Option<Option<String>>,
+    /// The full new list of completion criteria, replacing the current one; unchanged when
+    /// omitted. Keep an existing criterion by passing its `id`; it keeps its state unless
+    /// its kind or target changes. Criteria of a done task cannot change.
+    pub criteria: Option<Vec<types::CriterionInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckCriterion {
+    pub task_id: TaskId,
+    /// A manual criterion of the task; Toodo checks the other kinds itself.
+    pub criterion_id: types::CriterionId,
+    /// True to check it, false to uncheck it; true when omitted.
+    #[serde(default)]
+    pub met: Option<bool>,
+    /// What shows the criterion holds: a link, a command and its output, or what you
+    /// verified and how. Required to check it.
+    #[serde(default)]
+    pub evidence: Option<String>,
 }
 
 /// Tells a field given as `null` (`Some(None)`) from an omitted one (`None`, the default).
@@ -305,11 +341,17 @@ pub fn create_workspace(
     herdr: &Herdr,
     request: CreateWorkspace,
 ) -> CommandResult<Workspace> {
+    if request.init && request.clone_url.is_some() {
+        return Err(CommandError::invalid_input(
+            "init makes a new repository; it cannot be combined with clone_url",
+        ));
+    }
     let setup = types::NewWorkspace {
         name: request.name,
         location: types::WorkspaceLocation::Local { path: request.path },
         source: match request.clone_url {
             Some(url) => types::WorkspaceSource::Clone { url },
+            None if request.init => types::WorkspaceSource::Init,
             None => types::WorkspaceSource::Open,
         },
         default_base_branch: request.default_base_branch,
@@ -393,21 +435,46 @@ fn comparable_path(path: &str) -> String {
 /// Creates a `planned` task with its dependencies. Unknown prerequisites are rejected
 /// before anything is written; a new task has no dependents, so its edges cannot close
 /// a cycle.
-pub fn create_task(storage: &mut Storage, request: CreateTask) -> CommandResult<Task> {
+pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> CommandResult<Task> {
+    let merge = if request.merge_criterion.unwrap_or(true) {
+        let criteria = request
+            .criteria
+            .iter()
+            .map(types::CriterionInput::parse)
+            .collect::<CommandResult<Vec<_>>>()?;
+        task_commands::merge_criterion(storage, git, request.workspace_id.into(), &criteria)?
+    } else {
+        None
+    };
+    insert_task(&mut lock(storage), request, merge)
+}
+
+/// Creates the task of `request` with `merge`, its merge criterion if it gets one, in
+/// front of its criteria.
+fn insert_task(
+    storage: &mut Storage,
+    request: CreateTask,
+    merge: Option<NewCriterion>,
+) -> CommandResult<Task> {
     for &prerequisite in &request.depends_on {
         storage
             .get_task(prerequisite.into())?
             .ok_or(StorageError::TaskNotFound(prerequisite.into()))?;
     }
-    let new: storage::NewTask = types::NewTask {
+    let mut new: storage::NewTask = types::NewTask {
         workspace_id: request.workspace_id,
         task_type: request.task_type,
         title: request.title,
         description: request.description,
         estimate: request.estimate,
         due_date: request.due_date,
+        criteria: request.criteria,
+        merge_criterion: false,
     }
     .try_into()?;
+    if let Some(merge) = merge {
+        new.criteria.insert(0, merge);
+    }
     let task = storage.create_task(&new)?;
     for &prerequisite in &request.depends_on {
         if let Err(error) = storage.add_dependency(task.id, prerequisite.into()) {
@@ -434,7 +501,27 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
             description: request.description.unwrap_or(current.description),
             estimate: request.estimate.unwrap_or(current.estimate),
             due_date: request.due_date.unwrap_or(current.due_date),
+            criteria: request.criteria,
         },
+    )
+}
+
+/// Checks or unchecks a manual criterion as the agent; checking needs evidence.
+pub fn check_criterion(storage: &mut Storage, request: CheckCriterion) -> CommandResult<Task> {
+    let met = request.met.unwrap_or(true);
+    let evidence = request.evidence.as_deref().map(str::trim).unwrap_or("");
+    if met && evidence.is_empty() {
+        return Err(CommandError::invalid_input(
+            "evidence must say what shows the criterion holds",
+        ));
+    }
+    task_commands::check(
+        storage,
+        request.task_id,
+        request.criterion_id,
+        met,
+        Some(evidence),
+        CheckedBy::Agent,
     )
 }
 
@@ -518,7 +605,7 @@ fn with_worktree_root_hint(
     error
 }
 
-/// Completes an `in_review` task whose pull request is merged, as the app does, or with
+/// Completes (or confirms) a task whose completion criteria are met, as the app does, or with
 /// `merged_with`, a task whose work shipped with another task's merged pull request.
 pub fn complete_task(
     storage: &StorageState,
@@ -529,7 +616,7 @@ pub fn complete_task(
 ) -> CommandResult<Task> {
     let id = request.id.into();
     let task = match request.merged_with {
-        None => completion::complete(storage, github, herdr, id)?,
+        None => completion::complete(storage, git, github, herdr, id)?,
         Some(merged_with) => completion::complete_merged_with(
             storage,
             git,
@@ -801,7 +888,7 @@ mod tests {
         title: &str,
         depends_on: Vec<TaskId>,
     ) -> CommandResult<Task> {
-        create_task(
+        insert_task(
             storage,
             CreateTask {
                 workspace_id: workspace,
@@ -811,7 +898,10 @@ mod tests {
                 depends_on,
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
+                merge_criterion: None,
             },
+            Some(NewCriterion::merge(true)),
         )
     }
 
@@ -938,6 +1028,7 @@ mod tests {
                 description: Some("Add tables".to_owned()),
                 estimate: None,
                 due_date: None,
+                criteria: None,
             },
         )
         .unwrap();
@@ -957,7 +1048,7 @@ mod tests {
             "due_date": "2026-10-20",
         }))
         .unwrap();
-        let task = create_task(&mut storage, request).unwrap();
+        let task = insert_task(&mut storage, request, None).unwrap();
         let planned = Some(Estimate {
             unit: types::EstimateUnit::Hours,
             amount: 2.5,
@@ -1426,7 +1517,7 @@ mod tests {
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
-            error.message.contains("only an in_review task"),
+            error.message.contains("the task has no pull request yet"),
             "{}",
             error.message
         );

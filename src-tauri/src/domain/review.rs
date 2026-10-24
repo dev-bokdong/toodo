@@ -148,6 +148,7 @@ mod tests {
                 .map(|&(status, at)| TaskEvent { status, at })
                 .collect(),
             notes: Vec::new(),
+            criteria: Vec::new(),
         }
     }
 

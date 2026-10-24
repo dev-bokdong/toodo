@@ -18,14 +18,14 @@ describe("taskStatusAlerts", () => {
       ),
     ).toEqual([
       { title: "Task started", body: "#1 Add login: Planned -> In progress" },
-      { title: "Task done", body: "#2 Add logout: In review -> Done" },
+      { title: "Task done", body: "#2 Add logout: Awaiting completion -> Done" },
     ]);
   });
 
   it("words the review, not adopted, and pause transitions", () => {
     const started = { ...login, status: "in_progress" } as Task;
     expect(taskStatusAlerts([started], [{ ...started, status: "in_review" }])).toEqual([
-      { title: "Task in review", body: "#1 Add login: In progress -> In review" },
+      { title: "Task awaiting completion", body: "#1 Add login: In progress -> Awaiting completion" },
     ]);
     expect(taskStatusAlerts([started], [{ ...started, status: "done", resolution: "not_adopted" }])).toEqual([
       { title: "Task concluded without merging", body: "#1 Add login: In progress -> Not adopted" },

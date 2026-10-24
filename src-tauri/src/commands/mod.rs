@@ -195,6 +195,7 @@ impl From<StorageError> for CommandError {
         let kind = match &error {
             StorageError::WorkspaceNotFound(_)
             | StorageError::TaskNotFound(_)
+            | StorageError::CriterionNotFound { .. }
             | StorageError::MemoryNotFound(_)
             | StorageError::DeviceNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
@@ -205,6 +206,8 @@ impl From<StorageError> for CommandError {
             | StorageError::BaseBranchInReview { .. }
             | StorageError::Transition(_)
             | StorageError::DependenciesNotDone(_)
+            | StorageError::CriteriaOfDoneTask(_)
+            | StorageError::AutomaticCriterion { .. }
             | StorageError::MemorySuperseded { .. } => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)

@@ -61,7 +61,11 @@ export const commands = {
 	 */
 	listTasks: () => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks")),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
-	/**  Creates a `planned` task without dependencies. */
+	/**
+	 *  Creates a `planned` task without dependencies, with its completion criteria. The merge
+	 *  criterion depends on whether the repository has an `origin` remote, which git may
+	 *  check over `ssh`, so this runs off the main thread.
+	 */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(__TAURI_INVOKE("update_task", { task })),
 	/**
@@ -76,6 +80,12 @@ export const commands = {
 	 *  is its required conclusion.
 	 */
 	setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("set_completion_note", { id, note })),
+	/**
+	 *  Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
+	 *  with what shows it; blank evidence is none. A task in progress whose criteria are then
+	 *  all met awaits completion until it is completed.
+	 */
+	checkCriterion: (taskId: TaskId, criterionId: CriterionId, met: boolean, evidence: string | null) => typedError<Task, CommandError>(__TAURI_INVOKE("check_criterion", { taskId, criterionId, met, evidence })),
 	/**
 	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
@@ -134,9 +144,11 @@ export const commands = {
 	 */
 	openPullRequest: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("open_pull_request", { id })),
 	/**
-	 *  Moves an `in_review` task to `done` once its pull request is merged, which may make
-	 *  its dependents `ready`. The size, reviews, and commits of the pull request are
-	 *  recorded for reviews. Its herdr workspace is closed; the worktree stays on disk.
+	 *  Moves an `in_progress` or `in_review` task to `done` once its completion criteria are
+	 *  met, which also confirms a task with a manual criterion and may make its dependents
+	 *  ready. Toodo checks its automatic criteria first; a merged pull request's size,
+	 *  reviews, and commits are recorded for reviews. Its herdr workspace is closed; the
+	 *  worktree stays on disk. Rejected with the criteria that are not met.
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 	/**
@@ -302,6 +314,27 @@ export type BranchList = {
 	fetchError: string | null,
 };
 
+/**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */
+export type CheckKind = 
+/**  Checked by the user or an agent, with evidence. */
+"manual" | 
+/**  The task's pull request is merged into the workspace base branch. */
+"pr_merged" | 
+/**  The task's pull request is open and all its checks passed. */
+"pr_open_ci_green" | 
+/**
+ *  The task branch is merged into the base branch in the repository itself, for
+ *  workspaces without an `origin` remote.
+ */
+"branch_merged_locally" | 
+/**  A GET of `target`, an http(s) URL, succeeds. */
+"url" | 
+/**  `target`, a shell command, exits with status 0 in the task worktree. */
+"command";
+
+/**  Who checked a criterion last. */
+export type CheckedBy = "user" | "agent" | "toodo";
+
 /**  Combined result of the CI checks of a pull request. */
 export type ChecksStatus = "passing" | "failing" | "pending";
 
@@ -336,6 +369,52 @@ export type CommitRecord = {
 	/**  Commit timestamp in seconds since the Unix epoch. */
 	committedAt: number,
 };
+
+/**  A completion criterion of a task. */
+export type Criterion = {
+	id: CriterionId,
+	text: string,
+	kind: CheckKind,
+	/**
+	 *  The URL or command to check; for `branch_merged_locally`, the commit the branch
+	 *  started from once Toodo knows it.
+	 */
+	target: string | null,
+	state: CriterionState,
+	/**  What showed the last check's result, or why it failed. */
+	evidence: string | null,
+	checkedBy: CheckedBy | null,
+	checkedAt: Timestamp | null,
+};
+
+export type CriterionId = number;
+
+/**
+ *  A completion criterion given when creating or editing a task: an existing one by `id`
+ *  (only when editing), or a new one.
+ */
+export type CriterionInput = {
+	/**
+	 *  An existing criterion of the task, which keeps its state unless its kind or
+	 *  target changes; omit it for a new criterion.
+	 */
+	id?: CriterionId | null,
+	/**  What has to hold, in words, e.g. `The server answers /health`. */
+	text: string,
+	kind: CheckKind,
+	/**
+	 *  The http(s) URL of a `url` criterion or the shell command of a `command`
+	 *  criterion; omit it for other kinds.
+	 */
+	target?: string | null,
+};
+
+export type CriterionState = "pending" | "met" | 
+/**
+ *  The last automatic check failed, e.g. a command exited with an error; Toodo checks
+ *  it again.
+ */
+"failed";
 
 /**  The expected size of a task. */
 export type Estimate = {
@@ -485,6 +564,14 @@ export type NewTask = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` for none. */
 	dueDate: string | null,
+	/**  Completion criteria in order; an `id` is not allowed here. */
+	criteria: CriterionInput[],
+	/**
+	 *  Whether to put the merge criterion first: the task's pull request is merged, or,
+	 *  in a repository without an `origin` remote, its branch is merged into the base
+	 *  branch locally. Ignored when `criteria` already has one of those.
+	 */
+	mergeCriterion: boolean,
 };
 
 export type NewWorkspace = {
@@ -598,6 +685,8 @@ export type Task = {
 	milestones: TaskMilestones,
 	/**  Notes agents left on the task through the MCP server, oldest first. */
 	notes: TaskNote[],
+	/**  What has to hold for the task to be done, in order. */
+	criteria: Criterion[],
 };
 
 /**
@@ -622,6 +711,11 @@ export type TaskEdit = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` clears the due date. */
 	dueDate: string | null,
+	/**
+	 *  The new completion criteria in order, which replace the current ones; `null`
+	 *  keeps them. The criteria of a done task cannot change.
+	 */
+	criteria: CriterionInput[] | null,
 };
 
 export type TaskEvent = {
@@ -716,7 +810,12 @@ export type WorkspaceSource =
 /**  The location already holds a cloned repository. */
 { kind: "open" } | 
 /**  Clone `url` into the location, which must not exist or be empty. */
-{ kind: "clone"; url: string };
+{ kind: "clone"; url: string } | 
+/**
+ *  Make the location, a plain folder or one that does not exist yet, a new git
+ *  repository without a remote.
+ */
+{ kind: "init" };
 
 /**  Workspaces were added outside the app's own forms, e.g. by an agent through MCP. */
 export type WorkspacesChanged = null;

@@ -319,6 +319,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap()
             .id

@@ -11,10 +11,11 @@ use super::types::{HerdrStatus, Task, TaskId};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree};
+use crate::domain::criteria::{CheckKind, CriterionState};
 use crate::domain::model::{self, Machine, WorkspaceLocation};
 use crate::domain::naming;
 use crate::domain::status::TaskStatus;
-use crate::storage::StorageError;
+use crate::storage::{CriterionCheck, StorageError};
 
 #[cfg_attr(feature = "desktop", tauri::command(async))]
 #[cfg_attr(feature = "desktop", specta::specta)]
@@ -95,7 +96,7 @@ pub(crate) fn start(
     herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let (workspace, mut checkout, resumed, kept_worktree) = {
+    let (workspace, mut checkout, resumed, kept_worktree, start_unknown) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -114,7 +115,23 @@ pub(crate) fn start(
         if let Some(branch) = task.branch {
             checkout.branch = branch;
         }
-        (workspace, checkout, resumed, task.worktree_path)
+        // A local merge criterion tells merged work from a branch nobody committed to
+        // by the commit the branch started at.
+        let start_unknown: Vec<_> = task
+            .criteria
+            .iter()
+            .filter(|criterion| {
+                criterion.kind == CheckKind::BranchMergedLocally && criterion.target.is_none()
+            })
+            .map(|criterion| criterion.id)
+            .collect();
+        (
+            workspace,
+            checkout,
+            resumed,
+            task.worktree_path,
+            start_unknown,
+        )
     };
     let machine = workspace.location.machine();
     let repository = match &workspace.location {
@@ -140,6 +157,7 @@ pub(crate) fn start(
     // herdr checks out an existing branch as is and ignores the base.
     let mut fetch_failure = None;
     let mut created_branch = false;
+    let mut start_checks = Vec::new();
     let base = match source {
         Some(source) => source,
         None => {
@@ -150,6 +168,22 @@ pub(crate) fn start(
             let start = git.task_branch_start(&workspace.location, base)?;
             created_branch =
                 git.create_task_branch(&workspace.location, &checkout.branch, &start.start)?;
+            if created_branch && !start_unknown.is_empty() {
+                let commit = git
+                    .commit_of(&workspace.location, &checkout.branch)
+                    .inspect_err(|_| {
+                        let _ = git.delete_branch(&workspace.location, &checkout.branch);
+                    })?;
+                start_checks = start_unknown
+                    .iter()
+                    .map(|&id| CriterionCheck {
+                        id,
+                        state: CriterionState::Pending,
+                        evidence: None,
+                        target: Some(commit.clone()),
+                    })
+                    .collect();
+            }
             fetch_failure = start.fetch_failure;
             start.start
         }
@@ -173,7 +207,10 @@ pub(crate) fn start(
             }
         })?;
     let mut storage = lock(storage);
-    let started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
+    let mut started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
+    if !start_checks.is_empty() {
+        started = storage.record_criterion_checks(id, &start_checks)?.0;
+    }
     let Some(failure) = fetch_failure else {
         return Ok(started);
     };
@@ -506,6 +543,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap();
         if let Some(settings) = settings {
@@ -790,6 +828,7 @@ mod tests {
                     description: String::new(),
                     estimate: None,
                     due_date: None,
+                    criteria: Vec::new(),
                 })
                 .unwrap();
             storage
@@ -1627,6 +1666,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap()
     }

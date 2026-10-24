@@ -2,11 +2,14 @@
 
 use super::State;
 
-use super::types::{self, CommitRecord, NewTask, Task, TaskEdit, TaskId};
-use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
+use super::types::{self, CommitRecord, CriterionId, NewTask, Task, TaskEdit, TaskId};
+use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
+use crate::adapters::git::Git;
+use crate::domain::criteria::{CheckKind, CheckedBy, NewCriterion};
+use crate::domain::model;
 use crate::domain::model::TaskResolution;
 use crate::domain::status::TaskStatus;
-use crate::storage::{Storage, StorageError};
+use crate::storage::{self, CriterionEdit, Storage, StorageError};
 
 /// Tasks of every workspace ordered by ID, each with its dependencies, which may belong
 /// to another workspace.
@@ -25,12 +28,59 @@ pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<T
     Ok((&task).into())
 }
 
-/// Creates a `planned` task without dependencies.
-#[cfg_attr(feature = "desktop", tauri::command)]
+/// Creates a `planned` task without dependencies, with its completion criteria. The merge
+/// criterion depends on whether the repository has an `origin` remote, which git may
+/// check over `ssh`, so this runs off the main thread.
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 #[cfg_attr(feature = "desktop", specta::specta)]
-pub fn create_task(storage: State<'_, StorageState>, task: NewTask) -> CommandResult<Task> {
-    let new = task.try_into()?;
-    Ok((&lock(&storage).create_task(&new)?).into())
+pub fn create_task(
+    storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
+    task: NewTask,
+) -> CommandResult<Task> {
+    Ok((&create(&storage, &git, task)?).into())
+}
+
+/// Creates a task as [`create_task`] does.
+pub(crate) fn create(
+    storage: &StorageState,
+    git: &Git,
+    task: NewTask,
+) -> CommandResult<model::Task> {
+    let wants_merge = task.merge_criterion;
+    let mut new: storage::NewTask = task.try_into()?;
+    if wants_merge
+        && let Some(merge) = merge_criterion(storage, git, new.workspace_id, &new.criteria)?
+    {
+        new.criteria.insert(0, merge);
+    }
+    Ok(lock(storage).create_task(&new)?)
+}
+
+/// The merge criterion a new task of `workspace` gets in front of `criteria`, unless they
+/// already have one: its pull request is merged, or, in a repository without an `origin`
+/// remote, its branch is merged locally. Git runs without the database lock.
+pub(crate) fn merge_criterion(
+    storage: &StorageState,
+    git: &Git,
+    workspace: model::WorkspaceId,
+    criteria: &[NewCriterion],
+) -> CommandResult<Option<NewCriterion>> {
+    let has_merge = criteria.iter().any(|criterion| {
+        matches!(
+            criterion.kind,
+            CheckKind::PullRequestMerged | CheckKind::BranchMergedLocally
+        )
+    });
+    if has_merge {
+        return Ok(None);
+    }
+    let workspace = lock(storage)
+        .get_workspace(workspace)?
+        .ok_or(StorageError::WorkspaceNotFound(workspace))?;
+    Ok(Some(NewCriterion::merge(
+        git.has_origin(&workspace.location)?,
+    )))
 }
 
 #[cfg_attr(feature = "desktop", tauri::command)]
@@ -52,7 +102,60 @@ pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<
     task.description = edit.description;
     task.estimate = types::estimate(edit.estimate)?;
     task.due_date = types::due_date(edit.due_date.as_deref())?;
+    if let Some(criteria) = &edit.criteria {
+        let edits = criteria
+            .iter()
+            .map(|input| {
+                Ok(CriterionEdit {
+                    id: input.id.map(Into::into),
+                    criterion: input.parse()?,
+                })
+            })
+            .collect::<CommandResult<Vec<_>>>()?;
+        storage.set_criteria(task.id, &edits)?;
+    }
     storage.update_task(&task)?;
+    let task = storage
+        .get_task(task.id)?
+        .ok_or(StorageError::TaskNotFound(task.id))?;
+    Ok((&task).into())
+}
+
+/// Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
+/// with what shows it; blank evidence is none. A task in progress whose criteria are then
+/// all met awaits completion until it is completed.
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
+pub fn check_criterion(
+    storage: State<'_, StorageState>,
+    task_id: TaskId,
+    criterion_id: CriterionId,
+    met: bool,
+    evidence: Option<String>,
+) -> CommandResult<Task> {
+    check(
+        &mut lock(&storage),
+        task_id,
+        criterion_id,
+        met,
+        evidence.as_deref(),
+        CheckedBy::User,
+    )
+}
+
+/// Checks a manual criterion as [`check_criterion`] does, as `by`.
+pub(crate) fn check(
+    storage: &mut Storage,
+    task_id: TaskId,
+    criterion_id: CriterionId,
+    met: bool,
+    evidence: Option<&str>,
+    by: CheckedBy,
+) -> CommandResult<Task> {
+    let evidence = evidence
+        .map(str::trim)
+        .filter(|evidence| !evidence.is_empty());
+    let task = storage.check_criterion(task_id.into(), criterion_id.into(), met, evidence, by)?;
     Ok((&task).into())
 }
 
@@ -188,6 +291,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap();
         task.branch = Some("feat/add-commands-1".to_owned());
@@ -210,6 +314,7 @@ mod tests {
                     amount: 3.0,
                 }),
                 due_date: Some(" 2026-10-31 ".to_owned()),
+                criteria: None,
             },
         )
         .unwrap();
@@ -300,6 +405,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            criteria: None,
         };
         let error = edit_task(&mut storage, edit(task.id.into(), " ")).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);

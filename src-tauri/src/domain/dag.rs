@@ -208,6 +208,7 @@ mod tests {
             issue: None,
             timeline: Vec::new(),
             notes: Vec::new(),
+            criteria: Vec::new(),
         }
     }
 
