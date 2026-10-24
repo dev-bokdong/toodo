@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import {
   Check,
   ChevronDown,
@@ -133,6 +133,7 @@ import { normalizePath, shortPath } from "@/lib/paths";
 import { runsOnServer } from "@/lib/platform";
 import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
+import { reachability, subscribeReachability } from "@/web/connection";
 
 const Markdown = lazy(() => import("@/components/markdown"));
 // The timeline pulls in React Flow, so it loads only when it is first shown.
@@ -2065,6 +2066,9 @@ export function EmptyState({
 function AgentMergeSetting({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
   const value = updateWorkspace.isPending ? updateWorkspace.variables.agentMerge : workspace.agentMerge;
+  // Saved on change, so it waits, like the buttons that change data, while the server is away.
+  const reach = useSyncExternalStore(subscribeReachability, reachability);
+  const serverDown = reach === "unreachable" || reach === "retrying";
 
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
@@ -2075,7 +2079,7 @@ function AgentMergeSetting({ workspace }: { workspace: Workspace }) {
         id="agent-merge"
         className={cn(compactSelectClass, "max-w-72")}
         value={value}
-        disabled={updateWorkspace.isPending}
+        disabled={updateWorkspace.isPending || serverDown}
         onChange={(e) => updateWorkspace.mutate({ ...workspace, agentMerge: e.target.value as AgentMerge })}
       >
         <option value="never">Never, stop at the pull request</option>

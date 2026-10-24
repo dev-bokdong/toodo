@@ -24,6 +24,23 @@ import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
 import { listenForOpenTask } from "@/web/push";
 
+/** Wraps Tab and Shift+Tab around the ends of a modal, so focus cannot leave it. */
+function keepFocusIn(container: HTMLElement | null, event: KeyboardEvent) {
+  if (container === null) return;
+  const focusable = [
+    ...container.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, summary, [tabindex]"),
+  ].filter((element) => !element.matches(":disabled, [tabindex='-1']") && element.getClientRects().length > 0);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const inside = active instanceof Node && container.contains(active);
+  if (event.shiftKey ? !inside || active === first : !inside || active === last) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  }
+}
+
 export default function App() {
   const appInfo = useQuery({
     queryKey: ["app-info"],
@@ -53,6 +70,7 @@ export default function App() {
   const openMenuButton = useRef<HTMLButtonElement>(null);
   const closeMenuButton = useRef<HTMLButtonElement>(null);
   const menuWasOpen = useRef(false);
+  const drawer = useRef<HTMLElement>(null);
   useEffect(() => {
     if (menuOpen) closeMenuButton.current?.focus();
     else if (menuWasOpen.current) openMenuButton.current?.focus();
@@ -61,6 +79,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       // An inline form in the drawer handles its own Escape first.
       if (event.key === "Escape" && !event.defaultPrevented) setMenuOpen(false);
+      if (event.key === "Tab") keepFocusIn(drawer.current, event);
     };
     // Past the md breakpoint (48rem) the sidebar is no drawer, so nothing may stay inert.
     const onResize = () => {
@@ -101,6 +120,7 @@ export default function App() {
         <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
       )}
       <aside
+        ref={drawer}
         role={menuOpen ? "dialog" : undefined}
         aria-modal={menuOpen || undefined}
         aria-label={menuOpen ? "Menu" : undefined}
@@ -276,7 +296,8 @@ export default function App() {
               )}
             </div>
           ) : (
-            !workspaces.isPending && (
+            // A failed load is explained, with a retry, in the sidebar's workspace list.
+            !workspaces.isPending && !workspaces.isError && (
               <EmptyState
                 icon={<FolderPlus />}
                 title="Create a workspace to start planning tasks."
