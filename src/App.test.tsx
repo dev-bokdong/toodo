@@ -2350,6 +2350,29 @@ describe("App", () => {
     await waitFor(() => expect(within(attention).getAllByRole("listitem")).toHaveLength(2));
   });
 
+  it("opens the task a clicked notification asks for and drops it from the address", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const milestones = { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + 3600 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { status: "in_progress", milestones }),
+        task(2, 1, "Fix redirect", { status: "in_progress", milestones }),
+      ],
+    });
+    window.history.replaceState(null, "", "/?task=2");
+
+    renderApp();
+
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByRole("heading", { name: "Fix redirect" })).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+  });
+
   it("shows the latest agent note in the list and every note in the task details", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
