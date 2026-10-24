@@ -16,11 +16,16 @@ const FIRST_RETRY_MS = 2000;
 const MAX_RETRY_MS = 30_000;
 /** How long a probe waits for an answer: a host that went away may never refuse it. */
 const PROBE_TIMEOUT_MS = 10_000;
+/** How often an idle app asks the server whether it is still there. */
+const HEARTBEAT_MS = 5000;
+/** The heartbeat gives up sooner than a probe, so an outage shows within 10 s. */
+const HEARTBEAT_TIMEOUT_MS = 3000;
 
 let state: Reachability = "reachable";
 let delay = FIRST_RETRY_MS;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let recoveries = 0;
+let cause = "";
 const listeners = new Set<() => void>();
 const reachableListeners = new Set<() => void>();
 
@@ -37,6 +42,11 @@ export function reachability(): Reachability {
 export function subscribeReachability(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Why the server counts as unreachable, for the person looking at the banner. */
+export function unreachableCause(): string {
+  return cause;
 }
 
 /** How often the server answered again after it was unreachable, to tell a recovery that came before a wait. */
@@ -80,14 +90,8 @@ async function probe(running: "checking" | "retrying") {
   clearTimeout(timer);
   timer = undefined;
   set(running);
-  let answered = false;
-  try {
-    // Any answer will do: without a token the server answers 401.
-    const response = await fetch("/api", { cache: "no-store", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-    answered = !isGatewayFailure(response);
-  } catch {
-    answered = false;
-  }
+  const failure = await ask(PROBE_TIMEOUT_MS);
+  const answered = failure === null;
   if (state !== running) {
     // Another request reached the server meanwhile.
     return;
@@ -96,9 +100,38 @@ async function probe(running: "checking" | "retrying") {
     reachable();
     return;
   }
+  cause = failure;
+  giveUp();
+}
+
+/** Asks the server for any answer; returns why it did not give one, or null. */
+async function ask(timeoutMs: number): Promise<string | null> {
+  try {
+    // Any answer will do: without a token the server answers 401.
+    const response = await fetch("/api", { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    return isGatewayFailure(response) ? `A gateway in front of the server answered ${response.status}.` : null;
+  } catch (error) {
+    return error instanceof DOMException && error.name === "TimeoutError"
+      ? "The server did not answer in time."
+      : "No connection to the server.";
+  }
+}
+
+function giveUp() {
   set("unreachable");
   timer = setTimeout(() => void probe("retrying"), delay);
   delay = Math.min(delay * 2, MAX_RETRY_MS);
+}
+
+/** A quiet check of an app that sends no requests: an outage shows without waiting for one. */
+async function heartbeat() {
+  if (state !== "reachable" || document.visibilityState !== "visible") return;
+  const failure = await ask(HEARTBEAT_TIMEOUT_MS);
+  if (failure === null) return;
+  if (state === "reachable") {
+    cause = failure;
+    giveUp();
+  }
 }
 
 export function retryNow(): void {
@@ -133,6 +166,7 @@ export async function serverFetch(input: string, init?: RequestInit): Promise<Re
 export function watchConnection(): void {
   addEventListener("offline", unreachable);
   addEventListener("online", retryNow);
+  setInterval(() => void heartbeat(), HEARTBEAT_MS);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       retryNow();

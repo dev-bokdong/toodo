@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useSyncExternalStore } from "react"
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
+import { reachability, subscribeReachability } from "@/web/connection"
 
 const buttonVariants = cva(
   "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 motion-safe:active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:text-muted-foreground aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 max-md:min-h-11 max-md:min-w-11",
@@ -45,8 +46,14 @@ function Button({
   variant = "default",
   size = "default",
   autoFocus,
+  changesData = false,
+  disabled,
   ...props
-}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants> & { changesData?: boolean }) {
+  // A button that changes data waits while the web app cannot reach the server.
+  const state = useSyncExternalStore(subscribeReachability, reachability)
+  const serverDown = state === "unreachable" || state === "retrying"
+  const pausesWithServer = changesData || props.type === "submit"
   // Base UI does not pass autoFocus on to the element, so a button that appears in place of
   // another (a confirm step's "Back") is focused here.
   const element = useRef<HTMLButtonElement>(null)
@@ -58,6 +65,7 @@ function Button({
     <ButtonPrimitive
       ref={element}
       data-slot="button"
+      disabled={disabled || (pausesWithServer && serverDown)}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />

@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
@@ -15,6 +15,7 @@ import {
   useWorkspaces,
 } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { reachability, subscribeReachability, unreachableCause } from "@/web/connection";
 
 export const inputClass =
   "h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-sm outline-none max-md:h-11 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -78,6 +79,8 @@ type WorkspaceListProps = {
 
 export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   const workspaces = useWorkspaces();
+  const reach = useSyncExternalStore(subscribeReachability, reachability);
+  const serverDown = reach === "unreachable" || reach === "retrying";
   const herdrMachines = useHerdrMachines();
   const [adding, setAdding] = useState<{ machine: MachineKey; mode: Mode } | null>(null);
   const [addingMachine, setAddingMachine] = useState(false);
@@ -115,11 +118,19 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
           Failed to list herdr machines: {herdrMachines.error.message}
         </p>
       )}
-      {workspaces.isPending && <p className="text-sm text-muted-foreground">Loading workspaces...</p>}
-      {workspaces.isError && (
-        <p role="alert" className="text-sm text-destructive">
-          Failed to load workspaces: {workspaces.error.message}
-        </p>
+      {workspaces.isPending && !serverDown && (
+        <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+      )}
+      {(workspaces.isError || (workspaces.isPending && serverDown)) && (
+        <div role="alert" className="flex flex-col items-start gap-2 text-sm text-destructive">
+          <p>
+            Failed to load workspaces:{" "}
+            {workspaces.error?.message ?? (unreachableCause() || "The Toodo server does not answer.")}
+          </p>
+          <Button size="xs" variant="outline" onClick={() => void workspaces.refetch()}>
+            Retry now
+          </Button>
+        </div>
       )}
       {workspaces.data?.length === 0 && adding === null && (
         <p className="text-sm text-muted-foreground">No workspaces yet.</p>
@@ -257,6 +268,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           )}
           <div className="flex gap-1">
             <Button
+              changesData
               size="xs"
               variant="destructive"
               aria-label={`Confirm remove ${workspace.name}`}

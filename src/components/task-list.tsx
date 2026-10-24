@@ -794,6 +794,7 @@ function TaskRow({
         <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
           {task.status === "planned" && (
             <Button
+              changesData
               size="xs"
               aria-label={`${paused ? "Resume" : "Start"} #${task.id}`}
               title={
@@ -812,6 +813,7 @@ function TaskRow({
           )}
           {active && task.worktreePath === null && task.branch !== null && (
             <Button
+              changesData
               size="xs"
               variant="outline"
               aria-label={`Restore worktree of #${task.id}`}
@@ -825,6 +827,7 @@ function TaskRow({
           )}
           {active && task.herdrWorkspaceId && (
             <Button
+              changesData
               size="xs"
               variant="outline"
               aria-label={`Open #${task.id} in herdr`}
@@ -837,6 +840,7 @@ function TaskRow({
           )}
           {detailed && active && task.herdrWorkspaceId && agentStatus && (
             <Button
+              changesData
               size="xs"
               variant="outline"
               aria-label={`Focus agent pane of #${task.id}`}
@@ -851,6 +855,7 @@ function TaskRow({
           {hasWorktree && (
             <>
               <Button
+                changesData
                 size="xs"
                 variant="outline"
                 aria-label={`Refresh commits of #${task.id}`}
@@ -861,6 +866,7 @@ function TaskRow({
                 {refreshCommits.isPending ? "Refreshing..." : "Refresh commits"}
               </Button>
               <Button
+                changesData
                 size="xs"
                 variant={inReview ? "outline" : "default"}
                 aria-label={inReview ? `Push #${task.id} to its pull request` : `Open pull request for #${task.id}`}
@@ -874,6 +880,7 @@ function TaskRow({
           )}
           {awaitingConfirmation ? (
             <Button
+              changesData
               size="xs"
               aria-label={`Confirm completion of #${task.id}`}
               title="Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept"
@@ -886,6 +893,7 @@ function TaskRow({
           ) : (
             completable && (
               <Button
+                changesData
                 size="xs"
                 aria-label={`Complete #${task.id}`}
                 title={
@@ -961,6 +969,7 @@ function TaskRow({
                 )}
                 {active && (
                   <Button
+                    changesData
                     size="icon-xs"
                     variant="ghost"
                     aria-label={`Pause #${task.id}`}
@@ -1394,6 +1403,7 @@ function TaskIssue({
       </span>
       {editable && (
         <Button
+          changesData
           size="icon-xs"
           variant="ghost"
           aria-label={`Unlink issue from #${task.id}`}
@@ -1421,6 +1431,7 @@ function TaskIssue({
           {linkIssue.isPending ? "Linking..." : "Link"}
         </Button>
         <Button
+          changesData
           type="button"
           size="xs"
           variant="outline"

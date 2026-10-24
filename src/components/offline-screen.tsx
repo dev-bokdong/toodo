@@ -1,53 +1,43 @@
 import { useSyncExternalStore, type ReactNode } from "react";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { reachability, retryNow, subscribeReachability } from "@/web/connection";
+import { reachability, retryNow, subscribeReachability, unreachableCause } from "@/web/connection";
 
 /**
- * Covers the app with the offline screen while `toodo-server` does not answer, and takes it
- * away once the server answers again. The app stays mounted underneath, so nothing typed or
- * selected is lost.
+ * Tells while `toodo-server` does not answer and takes the banner away once it answers
+ * again. The app stays mounted underneath, so what was loaded stays readable and nothing
+ * typed or selected is lost; buttons that change data are disabled meanwhile (see
+ * `src/components/ui/button.tsx`).
  */
 export function ConnectionGate({ children }: { children: ReactNode }) {
   const state = useSyncExternalStore(subscribeReachability, reachability);
   const offline = state === "unreachable" || state === "retrying";
   return (
     <>
-      <div className="contents" inert={offline}>
-        {children}
-      </div>
-      {offline && <OfflineScreen retrying={state === "retrying"} />}
+      {offline && <OfflineBanner retrying={state === "retrying"} />}
+      {children}
     </>
   );
 }
 
-function OfflineScreen({ retrying }: { retrying: boolean }) {
+function OfflineBanner({ retrying }: { retrying: boolean }) {
+  const reason = navigator.onLine ? unreachableCause() : "This device is offline.";
   return (
     <div
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="offline-title"
-      aria-describedby="offline-description"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background p-6 text-foreground"
+      role="alert"
+      className="fixed inset-x-2 bottom-2 z-50 mx-auto flex max-w-xl flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-500 bg-amber-100 p-3 text-sm text-amber-950 shadow-md dark:bg-amber-950 dark:text-amber-100"
     >
-      <div className="flex w-full max-w-sm flex-col items-center gap-3 text-center">
-        <WifiOff aria-hidden className="size-8 text-muted-foreground" />
-        <h2 id="offline-title" className="text-lg font-semibold">
-          Can't reach the Toodo server
-        </h2>
-        <p id="offline-description" className="text-sm text-muted-foreground">
-          {navigator.onLine ? "The server or the connection to it is down." : "This device is offline."} Toodo
-          reconnects on its own as soon as the server answers.
+      <WifiOff aria-hidden className="size-4 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">Can't reach the Toodo server</p>
+        <p className="text-xs">
+          {reason} What you see may be out of date, and changes are paused. Toodo reconnects on its own as soon as
+          the server answers.
         </p>
-        <div className="flex gap-2">
-          <Button autoFocus disabled={retrying} onClick={retryNow}>
-            {retrying ? "Trying..." : "Try again"}
-          </Button>
-          <Button variant="outline" onClick={() => location.reload()}>
-            Reload
-          </Button>
-        </div>
       </div>
+      <Button size="sm" variant="outline" disabled={retrying} onClick={retryNow}>
+        {retrying ? "Trying..." : "Retry now"}
+      </Button>
     </div>
   );
 }
