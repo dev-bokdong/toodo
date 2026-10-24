@@ -50,6 +50,12 @@ export const commands = {
 	 */
 	listRemoteDirectories: (machine: string, path: string | null) => typedError<RemoteDirectory, CommandError>(__TAURI_INVOKE("list_remote_directories", { machine, path })),
 	/**
+	 *  Subdirectories of `path` on `machine`, or of the home directory when `path` is absent.
+	 *  On the server, "Local" is the server, so `local` lists the server's own directories;
+	 *  the desktop app picks local folders with the system folder dialog and refuses it.
+	 */
+	listDirectories: (machine: Machine, path: string | null) => typedError<RemoteDirectory, CommandError>(__TAURI_INVOKE("list_directories", { machine, path })),
+	/**
 	 *  Tasks of every workspace ordered by ID, each with its dependencies, which may belong
 	 *  to another workspace.
 	 */
@@ -173,7 +179,8 @@ export const commands = {
 	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(__TAURI_INVOKE("review_period", { start, end })),
 	/**
 	 *  Writes a report built by the frontend to `path`, replacing any file there. Only
-	 *  Markdown (`.md`) and CSV (`.csv`) files are written.
+	 *  Markdown (`.md`) and CSV (`.csv`) files are written. Desktop only: the web app
+	 *  downloads reports in the browser instead.
 	 */
 	saveReport: (path: string, contents: string) => typedError<null, CommandError>(__TAURI_INVOKE("save_report", { path, contents })),
 	getBackupSettings: () => __TAURI_INVOKE<BackupSettings>("get_backup_settings"),
@@ -184,11 +191,14 @@ export const commands = {
 	saveBackupSettings: (settings: BackupSettings) => typedError<BackupSettings, CommandError>(__TAURI_INVOKE("save_backup_settings", { settings })),
 	/**  Backups in Toodo's backup directory, newest first. */
 	listBackups: () => typedError<BackupEntry[], CommandError>(__TAURI_INVOKE("list_backups")),
-	/**  Writes a snapshot of the database to `path`, replacing any file there. */
+	/**
+	 *  Writes a snapshot of the database to `path`, replacing any file there. Desktop only:
+	 *  the server sends snapshots over HTTP instead of writing them at a path.
+	 */
 	exportDatabase: (path: string) => typedError<null, CommandError>(__TAURI_INVOKE("export_database", { path })),
 	/**
 	 *  Replaces all data with the backup at `path`. The current data is first saved as a
-	 *  pre-restore backup, which is returned.
+	 *  pre-restore backup, which is returned. Desktop only: the server takes uploads instead.
 	 */
 	restoreDatabase: (path: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_database", { path })),
 	/**
@@ -205,6 +215,12 @@ export const commands = {
 	 *  the old one stays as history.
 	 */
 	supersedeMemory: (id: MemoryId, content: MemoryContent) => typedError<MemoryEntry, CommandError>(__TAURI_INVOKE("supersede_memory", { id, content })),
+	/**
+	 *  Replaces all data with the backup named `name` in Toodo's backup directory (see
+	 *  [`list_backups`]). The current data is first saved as a pre-restore backup, which is
+	 *  returned.
+	 */
+	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_backup", { name })),
 };
 
 /** Events */

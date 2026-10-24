@@ -115,6 +115,16 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the web app
+        run: npm run build:web
+
       - name: Build toodo-server
         working-directory: src-tauri
         run: >-
@@ -125,7 +135,7 @@ jobs:
         id: package
         run: |
           tarball=$(scripts/package-server.sh \
-            src-tauri/target/x86_64-unknown-linux-gnu/release/toodo-server dist-server)
+            src-tauri/target/x86_64-unknown-linux-gnu/release/toodo-server dist-web dist-server)
           expected="dist-server/toodo-server-${{ needs.version.outputs.tag }}-linux-x86_64.tar.gz"
           [ "$tarball" = "$expected" ] || { echo "::error::built $tarball, expected $expected"; exit 1; }
           echo "tarball=$tarball" >>"$GITHUB_OUTPUT"

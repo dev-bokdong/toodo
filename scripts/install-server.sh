@@ -3,7 +3,8 @@
 # from this checkout (the default, for development):
 #   ~/.local/bin/toodo-server                     the headless server (MCP + background work)
 #   ~/.config/systemd/user/toodo-server.service   a systemd user service (unless --no-service)
-#   ~/.local/share/toodo-server-web               the web build, only with --with-web
+#   ~/.local/share/toodo-server-web               the web app: from the release, or built
+#                                                 from this checkout with --with-web
 # Safe to run again: an update is this script with --release latest (or `git pull` and
 # this script for a checkout build). See docs/server.md.
 set -euo pipefail
@@ -17,8 +18,8 @@ Usage: scripts/install-server.sh [--release latest|vX.Y.Z] [--listen ADDR] [--no
                   check its sha256, and install it; needs no Rust toolchain
   --listen ADDR   address the service listens on (default 127.0.0.1:47616)
   --no-service    install only; do not write or restart the systemd service
-  --with-web      build from this checkout and also serve the web app (needs Node.js and
-                  npm); releases carry no web app
+  --with-web      build the web app from this checkout too and serve it (needs Node.js
+                  and npm); a release installs and serves the web app it carries
 
 Without --release, toodo-server is built from this checkout (needs cargo).
 EOF
@@ -89,7 +90,7 @@ fi
 from_release=0
 { [ -n "$release" ] || [ -n "$from_file" ]; } && from_release=1
 if [ "$from_release" = 1 ] && [ "$web" = 1 ]; then
-  die "--with-web builds from a checkout; releases carry no web app"
+  die "--with-web builds the web app from a checkout; a release installs the one it carries"
 fi
 
 if ! [[ $listen =~ ^(.+):([0-9]+)$ ]]; then
@@ -178,6 +179,14 @@ if [ "$from_release" = 1 ]; then
   mkdir "$work/unpacked"
   tar -xzf "$work/$asset" -C "$work/unpacked" toodo-server
   new_bin=$work/unpacked/toodo-server
+  # Releases from before the web app was published carry the binary only.
+  if tar -tzf "$work/$asset" | grep -qx 'web/index.html'; then
+    tar -xzf "$work/$asset" -C "$work/unpacked" web
+    web=1
+    web_src=$work/unpacked/web
+  else
+    log "$asset carries no web app; serving the API and MCP only"
+  fi
   version=$("$new_bin" --version) || die "the downloaded toodo-server does not run on this machine"
   [ "$version" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
 else
@@ -185,6 +194,7 @@ else
   (cd "$repo/src-tauri" && cargo build --release --no-default-features --features server --bin toodo-server)
   new_bin=$repo/src-tauri/target/release/toodo-server
   version=$("$new_bin" --version)
+  web_src=$repo/dist-web
 fi
 
 log "Installing $bin_dir/toodo-server: $version"
@@ -198,7 +208,7 @@ if [ "$web" = 1 ]; then
   log "Installing $web_dir"
   mkdir -p "$share_dir"
   tmp_web=$(mktemp -d "$share_dir/.toodo-server-web.XXXXXX")
-  cp -R "$repo/dist-web/." "$tmp_web/"
+  cp -R "$web_src/." "$tmp_web/"
   chmod 755 "$tmp_web"
   if [ -e "$web_dir" ]; then
     old_web=$(mktemp -d "$share_dir/.toodo-server-web.old.XXXXXX")

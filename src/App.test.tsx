@@ -63,7 +63,7 @@ vi.mock("@/lib/bindings", () => ({
     addHerdrMachine: vi.fn(),
     listSshHosts: vi.fn(),
     addSshHost: vi.fn(),
-    listRemoteDirectories: vi.fn(),
+    listDirectories: vi.fn(),
     listAgentStatuses: vi.fn(),
     listPullRequestStatuses: vi.fn(),
     listBackups: vi.fn(),
@@ -73,6 +73,7 @@ vi.mock("@/lib/bindings", () => ({
     saveBackupSettings: vi.fn(),
     exportDatabase: vi.fn(),
     restoreDatabase: vi.fn(),
+    restoreBackup: vi.fn(),
     reviewPeriod: vi.fn(),
     saveReport: vi.fn(),
     listMemory: vi.fn(),
@@ -877,7 +878,7 @@ describe("App", () => {
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [savedMachine("devbox")] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: herdr });
-    mocked.listRemoteDirectories.mockImplementation(async (_machine, path) => ({
+    mocked.listDirectories.mockImplementation(async (_machine, path) => ({
       status: "ok",
       data:
         path === null
@@ -896,13 +897,21 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
     const browser = screen.getByRole("group", { name: "Browse folders on devbox" });
+    await within(browser).findByRole("button", { name: "src/" });
+    const folder = within(browser).getByLabelText("Remote folder");
+    fireEvent.change(folder, { target: { value: "/home" } });
+    fireEvent.keyDown(folder, { key: "Enter" });
+    await within(browser).findByRole("button", { name: "me/" });
+    expect(mocked.createWorkspace).not.toHaveBeenCalled();
+    fireEvent.change(folder, { target: { value: "" } });
+    fireEvent.keyDown(folder, { key: "Enter" });
     fireEvent.click(await within(browser).findByRole("button", { name: "src/" }));
     await within(browser).findByText("No subfolders");
     fireEvent.click(within(browser).getByRole("button", { name: "Select folder" }));
 
     expect(screen.getByLabelText("Parent folder")).toHaveValue("/home/me/src");
     expect(screen.getByText("Clones into /home/me/src/herdr")).toBeInTheDocument();
-    expect(mocked.listRemoteDirectories).toHaveBeenCalledWith("devbox", null);
+    expect(mocked.listDirectories).toHaveBeenCalledWith({ kind: "ssh", label: "devbox" }, null);
     fireEvent.click(screen.getByRole("button", { name: "Clone workspace" }));
 
     expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();

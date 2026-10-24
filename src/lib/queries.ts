@@ -22,6 +22,7 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
+import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
@@ -62,8 +63,7 @@ export const queryKeys = {
   mcpServerInfo: ["mcp-server-info"] as const,
   mcpTunnels: ["mcp-tunnels"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
-  remoteDirectories: (machine: string, path: string | null) =>
-    ["remote-directories", machine, path] as const,
+  directories: (machine: Machine, path: string | null) => ["directories", machine, path] as const,
   /** Memory entries of a workspace, or the shared ones for `null`. */
   memory: (workspace: WorkspaceId | null, includeSuperseded: boolean) =>
     ["memory", workspace, includeSuperseded] as const,
@@ -164,6 +164,34 @@ export function useRestoreDatabase() {
   });
 }
 
+/** Replaces all data with a backup from Toodo's backup directory, by its file name. */
+export function useRestoreBackup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => unwrap(commands.restoreBackup(name)),
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+}
+
+/** Web build: downloads a snapshot of the server's database; resolves with its file name. */
+export function useDownloadExport() {
+  return useMutation({ mutationFn: downloadExport });
+}
+
+/** Web build: downloads a backup from the server's backup directory. */
+export function useDownloadBackup() {
+  return useMutation({ mutationFn: downloadBackup });
+}
+
+/** Web build: replaces all data on the server with an uploaded database file. */
+export function useUploadRestore() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: uploadRestore,
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+}
+
 /** Machines saved in herdr; refetched when the window regains focus. */
 export function useHerdrMachines() {
   return useQuery({
@@ -197,11 +225,14 @@ export function useAddSshHost() {
   });
 }
 
-/** Subdirectories of `path` on `machine`; `null` lists the login directory. */
-export function useRemoteDirectories(machine: string, path: string | null) {
+/**
+ * Subdirectories of `path` on `machine` (the server for `local` in the web build); `null`
+ * lists the home directory.
+ */
+export function useDirectories(machine: Machine, path: string | null) {
   return useQuery({
-    queryKey: queryKeys.remoteDirectories(machine, path),
-    queryFn: () => unwrap(commands.listRemoteDirectories(machine, path)),
+    queryKey: queryKeys.directories(machine, path),
+    queryFn: () => unwrap(commands.listDirectories(machine, path)),
     retry: false,
   });
 }

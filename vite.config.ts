@@ -4,6 +4,7 @@ import process from "node:process";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { pwa } from "./vite-pwa.ts";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -27,7 +28,7 @@ const webModules = {
 const server = process.env.TOODO_SERVER ?? "http://127.0.0.1:47616";
 
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), ...(mode === "web" ? [pwa()] : [])],
   resolve: {
     alias: [
       ...(mode === "web"

@@ -1,19 +1,13 @@
 /**
- * Stands in for `@tauri-apps/plugin-dialog` in the web build. Paths are paths on the
- * server, which the browser cannot browse, so the user types them.
+ * Stands in for `@tauri-apps/plugin-dialog` in the web build, which has no file dialogs:
+ * it browses the server's folders in the app, downloads files in the browser, and uploads
+ * picked files instead. Nothing in the web build calls these.
  */
 
-type DialogOptions = { title?: string; defaultPath?: string };
-
-function ask(options: DialogOptions): string | null {
-  const path = window.prompt(`${options.title ?? "Path"} (path on the server)`, options.defaultPath ?? "");
-  return path?.trim() ? path.trim() : null;
+function unavailable(): Promise<never> {
+  return Promise.reject(new Error("The web app has no file dialogs."));
 }
 
-export async function open(options: DialogOptions = {}): Promise<string | null> {
-  return ask(options);
-}
+export const open = unavailable;
 
-export async function save(options: DialogOptions = {}): Promise<string | null> {
-  return ask(options);
-}
+export const save = unavailable;

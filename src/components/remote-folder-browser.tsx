@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
-import { useRemoteDirectories } from "@/lib/queries";
+import type { Machine } from "@/lib/bindings";
+import { useDirectories } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 export function joinPosix(base: string, name: string): string {
@@ -12,8 +13,9 @@ function parentOf(path: string): string {
 }
 
 type RemoteFolderBrowserProps = {
-  machine: string;
-  /** Directory to start in; the login directory when empty. */
+  /** An SSH machine, or `local` for the server in the web build. */
+  machine: Machine;
+  /** Directory to start in; the home directory when empty. */
   initialPath: string;
   onSelect: (path: string) => void;
   onCancel: () => void;
@@ -22,34 +24,42 @@ type RemoteFolderBrowserProps = {
 export function RemoteFolderBrowser({ machine, initialPath, onSelect, onCancel }: RemoteFolderBrowserProps) {
   const [path, setPath] = useState<string | null>(initialPath.trim() || null);
   const [draft, setDraft] = useState(initialPath);
-  const listing = useRemoteDirectories(machine, path);
+  const listing = useDirectories(machine, path);
   const current = listing.data?.path;
+  const machineName = machine.kind === "local" ? "the server" : machine.label;
 
   useEffect(() => {
     if (current) setDraft(current);
   }, [current]);
 
-  function go(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    event.stopPropagation();
+  function go() {
     setPath(draft.trim() || null);
   }
 
+  // The browser sits inside the workspace form, so Enter must not submit that form; a
+  // nested <form> is invalid HTML and browsers submit it natively instead.
+  function goOnEnter(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    go();
+  }
+
   return (
-    <div role="group" aria-label={`Browse folders on ${machine}`} className="flex flex-col gap-1.5 rounded-lg border bg-background p-1.5">
-      <form onSubmit={go} className="flex gap-1">
+    <div role="group" aria-label={`Browse folders on ${machineName}`} className="flex flex-col gap-1.5 rounded-lg border bg-background p-1.5">
+      <div className="flex gap-1">
         <input
           className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus-visible:border-ring"
           aria-label="Remote folder"
           placeholder="~"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={goOnEnter}
         />
-        <Button type="submit" size="xs" variant="outline">
+        <Button type="button" size="xs" variant="outline" onClick={go}>
           Go
         </Button>
-      </form>
-      {listing.isPending && <p className="px-1 text-xs text-muted-foreground">Connecting to {machine}...</p>}
+      </div>
+      {listing.isPending && <p className="px-1 text-xs text-muted-foreground">{machine.kind === "local" ? "Reading folders..." : `Connecting to ${machineName}...`}</p>}
       {listing.isError && (
         <p role="alert" className="px-1 text-xs break-words text-destructive">
           {listing.error.message}

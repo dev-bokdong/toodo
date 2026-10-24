@@ -40,6 +40,14 @@ pub fn file_name(kind: BackupKind, at: i64) -> String {
     )
 }
 
+/// File name a snapshot exported at `at` is saved under, e.g.
+/// `toodo-backup-2026-10-14.sqlite3`. The date is UTC. It is not a backup name that
+/// [`parse_file_name`] accepts, so an export saved into the backup directory is not listed.
+pub fn export_file_name(at: i64) -> String {
+    let (year, month, day) = civil_from_days(at.div_euclid(SECONDS_PER_DAY));
+    format!("{PREFIX}backup-{year:04}-{month:02}-{day:02}{EXTENSION}")
+}
+
 /// Kind and time of a backup named by [`file_name`]; `None` for any other file.
 pub fn parse_file_name(name: &str) -> Option<(BackupKind, i64)> {
     let rest = name.strip_prefix(PREFIX)?.strip_suffix(EXTENSION)?;
@@ -164,6 +172,13 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_names_carry_the_utc_date_and_are_not_backup_names() {
+        let name = export_file_name(1_791_970_205);
+        assert_eq!(name, "toodo-backup-2026-10-14.sqlite3");
+        assert_eq!(parse_file_name(&name), None);
+    }
 
     #[test]
     fn file_names_carry_kind_and_utc_time() {
