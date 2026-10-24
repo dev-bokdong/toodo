@@ -287,7 +287,8 @@ You need a domain on Cloudflare and a Zero Trust organization (the free plan doe
    ```
 
    Then open `https://toodo.example.com` on the phone, sign in to Access, and enter
-   `web-token` once. Install it from the browser: *Install app* (or *Add to Home screen*)
+   `web-token` and a name for the phone once; the phone then keeps a device token of its
+   own. Install it from the browser: *Install app* (or *Add to Home screen*)
    in Chrome on Android, *Share > Add to Home Screen* in Safari on iOS.
 
 Things to know:
@@ -305,6 +306,8 @@ Things to know:
   timeout.
 - Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels);
   do not point remote agents at the public hostname, where Access stops them.
+- If a phone is lost, revoke it under **Devices** from another device; the shared
+  `web-token` and the other devices keep working.
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
 
