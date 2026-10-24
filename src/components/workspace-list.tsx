@@ -4,6 +4,7 @@ import { Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
+import { normalizePath, shortPath } from "@/lib/paths";
 import { runsOnServer } from "@/lib/platform";
 import {
   useAddHerdrMachine,
@@ -25,7 +26,14 @@ export const compactSelectClass =
   "h-6 rounded-md border border-input bg-background px-1.5 text-xs outline-none max-md:h-11 max-md:px-2.5 max-md:text-sm focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50";
 
 export function describeLocation(location: WorkspaceLocation): string {
-  return location.kind === "local" ? location.path : `${location.machine}:${location.path}`;
+  const path = normalizePath(location.path);
+  return location.kind === "local" ? path : `${location.machine}:${path}`;
+}
+
+/** The location with only the last folders of its path. */
+export function shortLocation(location: WorkspaceLocation): string {
+  const path = shortPath(location.path);
+  return location.kind === "local" ? path : `${location.machine}:${path}`;
 }
 
 /** SSH host of a herdr machine, or `null` for this computer. */
@@ -227,7 +235,9 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           className="flex min-w-0 flex-1 flex-col px-2.5 py-1.5 text-left"
         >
           <span className="truncate text-sm font-medium">{workspace.name}</span>
-          <span className="truncate text-xs text-muted-foreground">{workspace.location.path}</span>
+          <span className="truncate text-xs text-muted-foreground" title={describeLocation(workspace.location)}>
+            {shortPath(workspace.location.path)}
+          </span>
         </button>
         {!confirming && (
           <Button
