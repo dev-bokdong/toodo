@@ -114,6 +114,8 @@ Run from the repository root unless noted. Package manager is npm.
   `scripts/package-server.sh`)
 - Test (frontend): `npm test`
 - Test (Rust, also regenerates `src/lib/bindings.ts`): `cargo test` in `src-tauri/`
+- Test (web UI end to end): `npm run test:e2e`, after building the server and `dist-web/`; see
+  the "End-to-End Tests" section of `README.md`
 - Typecheck (frontend): `npm run typecheck`
 - Web build for the server: `npm run build:web` (into `dist-web/`); dev against a running
   server: `npm run dev:web`
