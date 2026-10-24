@@ -60,6 +60,12 @@ export const commands = {
 	 *  to another workspace.
 	 */
 	listTasks: () => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks")),
+	/**  Every related link between tasks, which neither block nor wait on each other. */
+	listTaskRelations: () => typedError<TaskRelation[], CommandError>(__TAURI_INVOKE("list_task_relations")),
+	/**  Links two tasks, from any workspaces, as related; linking twice keeps one link. */
+	addTaskRelation: (taskId: TaskId, relatedId: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("add_task_relation", { taskId, relatedId })),
+	/**  Removes the related link between two tasks, given in either order. */
+	removeTaskRelation: (taskId: TaskId, relatedId: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("remove_task_relation", { taskId, relatedId })),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
 	/**
 	 *  Creates a `planned` task without dependencies, with its completion criteria. The merge
@@ -804,6 +810,15 @@ export type TaskPullRequestStatus = {
 	/**  `null` when the pull request has no checks. */
 	checks: ChecksStatus | null,
 	review: ReviewStatus,
+};
+
+/**
+ *  A related link between two tasks, which may belong to different workspaces. The link
+ *  goes both ways; `task_id` is the lower ID.
+ */
+export type TaskRelation = {
+	taskId: TaskId,
+	relatedId: TaskId,
 };
 
 /**  How a `done` task ended. */

@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation, escapeCloses } from "@/components/workspace-list";
 import { AgentBadge } from "@/components/agent-badge";
+import type { SheetNavigation } from "@/components/task-graph";
 import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MarkdownEditor } from "@/components/markdown-editor";
@@ -55,6 +56,7 @@ import {
   IssueLinkFailure,
   machineOf,
   useAddDependency,
+  useAddRelation,
   useAgentStatuses,
   useCloseTaskWorkspace,
   useBranchFreshness,
@@ -76,10 +78,12 @@ import {
   usePauseTask,
   useRefreshCommitRecords,
   useRemoveDependency,
+  useRemoveRelation,
   useRestoreTaskWorktree,
   useSaveMachineSettings,
   useSetCompletionNote,
   useStartTask,
+  useTaskRelations,
   useTasks,
   useUpdateTask,
   useUpdateWorkspace,
@@ -343,7 +347,7 @@ export function TaskList({
                 onScaleChange={onTimelineScaleChange}
                 shownTaskId={shownTask?.id ?? null}
                 onTaskShown={() => onTaskShown?.()}
-                renderDetail={(selected) => (
+                renderDetail={(selected, navigation) => (
                   <TaskRow
                     key={selected.id}
                     task={selected}
@@ -351,6 +355,7 @@ export function TaskList({
                     context={context}
                     showWorkspace
                     detailed
+                    navigation={navigation}
                   />
                 )}
               />
@@ -466,6 +471,7 @@ function TaskRow({
   context,
   showWorkspace,
   detailed = false,
+  navigation,
 }: {
   task: Task;
   /** Tasks of every workspace; any of them can become a prerequisite. */
@@ -474,6 +480,8 @@ function TaskRow({
   showWorkspace: boolean;
   /** Shown on its own, as in the timeline's details sheet: nothing is cut off and fields are labeled. */
   detailed?: boolean;
+  /** Opens another task in the sheet; lets related-task chips jump to their task. */
+  navigation?: SheetNavigation;
 }) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
@@ -781,6 +789,7 @@ function TaskRow({
       {(task.issue !== null || linkingIssue) && (
         <TaskIssue task={task} detailed={detailed} linking={linkingIssue} onDone={() => setLinkingIssue(false)} />
       )}
+      {detailed && <RelatedTasks task={task} tasks={tasks} context={context} navigation={navigation} />}
       <CommitList task={task} detailed={detailed} />
       <TaskNotes task={task} detailed={detailed} />
       {final && !editing && <CompletionNote task={task} />}
@@ -1551,6 +1560,111 @@ function DetailField({ label, children }: { label: string; children: ReactNode }
       <h4 className="font-medium text-muted-foreground">{label}</h4>
       {children}
     </section>
+  );
+}
+
+/**
+ * Related tasks of the details sheet: earlier work an agent or the owner linked, in any
+ * workspace. Links neither block nor wait. Without links only the add control shows.
+ */
+function RelatedTasks({
+  task,
+  tasks,
+  context,
+  navigation,
+}: {
+  task: Task;
+  tasks: Task[];
+  context: TaskContext;
+  navigation?: SheetNavigation;
+}) {
+  const relations = useTaskRelations();
+  const addRelation = useAddRelation();
+  const removeRelation = useRemoveRelation();
+  const related = (relations.data ?? [])
+    .flatMap(({ taskId, relatedId }) => (taskId === task.id ? [relatedId] : relatedId === task.id ? [taskId] : []))
+    .filter((id) => context.byId.has(id));
+  const candidates = tasks.filter((other) => other.id !== task.id && !related.includes(other.id));
+  const groups = [...new Set([task.workspaceId, ...candidates.map((other) => other.workspaceId)])]
+    .map((workspaceId) => ({ workspaceId, tasks: candidates.filter((other) => other.workspaceId === workspaceId) }))
+    .filter((group) => group.tasks.length > 0);
+  const busy = addRelation.isPending || removeRelation.isPending;
+  const failure = addRelation.error ?? removeRelation.error;
+  if (related.length === 0 && groups.length === 0) {
+    return null;
+  }
+  const picker = groups.length > 0 && (
+    <select
+      aria-label={`Add related task to #${task.id}`}
+      className={cn(compactSelectClass, "max-w-48")}
+      value=""
+      disabled={busy}
+      onChange={(event) => {
+        if (event.target.value) {
+          addRelation.mutate({ taskId: task.id, relatedId: Number(event.target.value) });
+        }
+      }}
+    >
+      <option value="">Add related task...</option>
+      {groups.map((group) => (
+        <optgroup key={group.workspaceId} label={context.workspaceName(group.workspaceId)}>
+          {group.tasks.map((other) => (
+            <option key={other.id} value={other.id}>
+              #{other.id} {other.title}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  );
+  const error = failure && (
+    <p role="alert" className="text-destructive">
+      {failure.message}
+    </p>
+  );
+  if (related.length === 0) {
+    return (
+      <div className="flex flex-col gap-1 text-xs">
+        {picker}
+        {error}
+      </div>
+    );
+  }
+  return (
+    <DetailField label="Related">
+      <ul aria-label={`Related tasks of #${task.id}`} className="flex flex-wrap items-center gap-1">
+        {related.map((id) => {
+          const other = context.byId.get(id);
+          const label = taskRef(id, task.workspaceId, context);
+          return (
+            <li key={id} className="inline-flex h-6 min-w-0 items-center rounded-md border">
+              <button
+                type="button"
+                aria-label={`Open related task ${label}`}
+                title={other?.title}
+                className="min-w-0 max-w-56 truncate rounded-l-md px-1.5 tabular-nums hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
+                disabled={navigation === undefined || !navigation.canOpen(id)}
+                onClick={() => navigation?.open(id)}
+              >
+                {label} {other?.title}
+              </button>
+              <button
+                type="button"
+                aria-label={`Remove related task #${id} from #${task.id}`}
+                title="Remove related task"
+                className="rounded-r-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                disabled={busy}
+                onClick={() => removeRelation.mutate({ taskId: task.id, relatedId: id })}
+              >
+                <X className="size-3" />
+              </button>
+            </li>
+          );
+        })}
+        {picker}
+      </ul>
+      {error}
+    </DetailField>
   );
 }
 

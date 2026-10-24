@@ -381,6 +381,14 @@ impl ToodoMcp {
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
 
+    /// Tells the frontend that the links of a task changed.
+    fn announce_links(&self, result: &CommandResult<tools::TaskDetails>) {
+        if let Ok(details) = result {
+            self.backend
+                .tasks_changed(model::WorkspaceId(details.task.workspace_id.0));
+        }
+    }
+
     fn announce(&self, result: CommandResult<Task>) -> Result<CallToolResult, ErrorData> {
         if let Ok(task) = &result {
             self.backend
@@ -479,10 +487,9 @@ impl ToodoMcp {
         &self,
         Parameters(request): Parameters<tools::Related>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::add_related(
-            &mut lock(self.backend.storage()),
-            request,
-        ))
+        let result = tools::add_related(&mut lock(self.backend.storage()), request);
+        self.announce_links(&result);
+        reply(result)
     }
 
     #[tool(
@@ -492,10 +499,9 @@ impl ToodoMcp {
         &self,
         Parameters(request): Parameters<tools::Related>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::remove_related(
-            &mut lock(self.backend.storage()),
-            request,
-        ))
+        let result = tools::remove_related(&mut lock(self.backend.storage()), request);
+        self.announce_links(&result);
+        reply(result)
     }
 
     /// Runs a tool that changes project memory and announces the change to the frontend.

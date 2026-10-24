@@ -167,6 +167,9 @@ function useNow(): Timestamp {
   return now;
 }
 
+/** Lets the details sheet select another task on the timeline; `canOpen` is false for tasks the filters hide. */
+export type SheetNavigation = { open: (id: TaskId) => void; canOpen: (id: TaskId) => boolean };
+
 export function TaskGraph({
   tasks,
   allTasks,
@@ -199,7 +202,7 @@ export function TaskGraph({
   shownTaskId?: TaskId | null;
   onTaskShown?: () => void;
   /** Details of the task selected on the timeline, with its actions. */
-  renderDetail: (task: Task) => ReactNode;
+  renderDetail: (task: Task, navigation: SheetNavigation) => ReactNode;
 }) {
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
@@ -775,7 +778,7 @@ export function TaskGraph({
                 </Button>
               </div>
             )}
-            <ul className="min-h-0 flex-1 overflow-y-auto">{renderDetail(selectedTask)}</ul>
+            <ul className="min-h-0 flex-1 overflow-y-auto">{renderDetail(selectedTask, { open: changeSelection, canOpen: (id) => placed.has(id) })}</ul>
           </aside>
         )}
         {layout.unplaced.length > 0 && (

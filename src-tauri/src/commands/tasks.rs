@@ -2,7 +2,9 @@
 
 use super::State;
 
-use super::types::{self, CommitRecord, CriterionId, NewTask, Task, TaskEdit, TaskId};
+use super::types::{
+    self, CommitRecord, CriterionId, NewTask, Task, TaskEdit, TaskId, TaskRelation,
+};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::domain::criteria::{CheckKind, CheckedBy, NewCriterion};
@@ -251,6 +253,42 @@ pub fn remove_dependency(
     depends_on: TaskId,
 ) -> CommandResult<()> {
     Ok(lock(&storage).remove_dependency(task_id.into(), depends_on.into())?)
+}
+
+/// Every related link between tasks, which neither block nor wait on each other.
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
+pub fn list_task_relations(storage: State<'_, StorageState>) -> CommandResult<Vec<TaskRelation>> {
+    Ok(lock(&storage)
+        .list_relations()?
+        .into_iter()
+        .map(|(task, related)| TaskRelation {
+            task_id: task.into(),
+            related_id: related.into(),
+        })
+        .collect())
+}
+
+/// Links two tasks, from any workspaces, as related; linking twice keeps one link.
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
+pub fn add_task_relation(
+    storage: State<'_, StorageState>,
+    task_id: TaskId,
+    related_id: TaskId,
+) -> CommandResult<()> {
+    Ok(lock(&storage).add_related(task_id.into(), related_id.into())?)
+}
+
+/// Removes the related link between two tasks, given in either order.
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
+pub fn remove_task_relation(
+    storage: State<'_, StorageState>,
+    task_id: TaskId,
+    related_id: TaskId,
+) -> CommandResult<()> {
+    Ok(lock(&storage).remove_related(task_id.into(), related_id.into())?)
 }
 
 #[cfg_attr(feature = "desktop", tauri::command)]
