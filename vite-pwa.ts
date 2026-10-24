@@ -96,7 +96,13 @@ export function pwa(): Plugin {
     enforce: "post",
     transformIndexHtml() {
       return [
-        { tag: "link", attrs: { rel: "manifest", href: "/manifest.webmanifest" }, injectTo: "head" },
+        // Browsers fetch the manifest without cookies unless asked to; with them, it still
+        // loads behind a proxy that authenticates by cookie (see docs/server.md).
+        {
+          tag: "link",
+          attrs: { rel: "manifest", href: "/manifest.webmanifest", crossorigin: "use-credentials" },
+          injectTo: "head",
+        },
         { tag: "link", attrs: { rel: "apple-touch-icon", href: `/pwa/${appleTouchIcon}` }, injectTo: "head" },
         {
           tag: "meta",
