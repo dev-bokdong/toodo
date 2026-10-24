@@ -3,9 +3,52 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
-import { listDevices, revokeDevice, type Device } from "@/web/devices";
+import { guessDeviceLabel, listDevices, registerDevice, revokeDevice, type Device } from "@/web/devices";
+import { setToken } from "@/web/session";
 
 const devicesKey = ["devices"];
+
+/** How this browser is signed in: as a listed device, or with the shared token, which it can trade for its own. */
+function ThisBrowser({ devices }: { devices: Device[] }) {
+  const queryClient = useQueryClient();
+  const register = useMutation({
+    mutationFn: () => registerDevice(guessDeviceLabel(navigator.userAgent)),
+    onSuccess: (token) => {
+      setToken(token);
+      return queryClient.invalidateQueries({ queryKey: devicesKey });
+    },
+  });
+  const current = devices.find((device) => device.current);
+
+  return (
+    <div role="group" aria-label="This browser" className="flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5">
+      <p>
+        <span className="text-muted-foreground">This browser: </span>
+        <span className="font-medium break-words">{current ? current.label : "shared token"}</span>
+      </p>
+      {!current && (
+        <>
+          <p className="text-muted-foreground">Register it to give it a token of its own that you can revoke alone.</p>
+          <Button
+            changesData
+            size="xs"
+            variant="outline"
+            className="self-start"
+            disabled={register.isPending}
+            onClick={() => register.mutate()}
+          >
+            {register.isPending ? "Registering..." : "Register this browser"}
+          </Button>
+        </>
+      )}
+      {register.error && (
+        <p role="alert" className="break-words text-destructive">
+          {register.error.message}
+        </p>
+      )}
+    </div>
+  );
+}
 
 
 function DeviceRow({ device }: { device: Device }) {
@@ -87,6 +130,7 @@ export function DevicesPanel() {
             {devices.error.message}
           </p>
         )}
+        {devices.data && <ThisBrowser devices={devices.data} />}
         {devices.data && (
           <ul aria-label="Signed-in devices" className="flex flex-col gap-2">
             {devices.data.map((device) => (

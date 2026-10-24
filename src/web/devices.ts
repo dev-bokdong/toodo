@@ -48,6 +48,19 @@ export async function listDevices(): Promise<Device[]> {
   return (await (await apiRequest("/api/devices")).json()) as Device[];
 }
 
+/**
+ * Registers this browser, signed in with the shared web token, as a device named `label`
+ * and resolves with the device's own token. The server rejects it for a device token.
+ */
+export async function registerDevice(label: string): Promise<string> {
+  const response = await apiRequest("/api/devices", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  return ((await response.json()) as { token: string }).token;
+}
+
 export async function revokeDevice(id: number): Promise<Device> {
   const response = await apiRequest(`/api/devices/${id}/revoke`, { method: "POST" });
   return (await response.json()) as Device;
