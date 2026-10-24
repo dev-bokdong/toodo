@@ -1,6 +1,7 @@
-import { lazy, Suspense, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { BookMarked, Pencil } from "lucide-react";
 
+import { CollapsibleForm } from "@/components/collapsible-form";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { EmptyState } from "@/components/task-list";
 import { Button } from "@/components/ui/button";
@@ -22,11 +23,24 @@ const kinds: { kind: MemoryKind; label: string }[] = [
 
 const kindLabel = (kind: MemoryKind) => kinds.find((entry) => entry.kind === kind)?.label ?? kind;
 
+export type MemoryDraft = Pick<MemoryContent, "kind" | "title" | "body">;
+
+const emptyDraft: MemoryDraft = { kind: "decision", title: "", body: "" };
+
 /**
  * The project memory of a workspace, or the memory shared by every workspace when
  * `workspace` is null: decisions, rules, notes, and summaries agents read before they act.
  */
-export function MemoryPanel({ workspace }: { workspace: Workspace | null }) {
+export function MemoryPanel({
+  workspace,
+  draft = emptyDraft,
+  onDraftChange,
+}: {
+  workspace: Workspace | null;
+  /** The new entry being written, owned by the caller so it survives switching away. */
+  draft?: MemoryDraft;
+  onDraftChange?: (draft: MemoryDraft) => void;
+}) {
   const [showSuperseded, setShowSuperseded] = useState(false);
   const entries = useMemoryEntries(workspace?.id ?? null, showSuperseded);
   const add = useAddMemory();
@@ -48,10 +62,21 @@ export function MemoryPanel({ workspace }: { workspace: Workspace | null }) {
         key={formKey}
         label="New memory entry"
         submitLabel="Add entry"
+        collapsible
+        initial={{ ...draft, taskId: null }}
+        onChange={onDraftChange}
         pending={add.isPending}
         error={add.error}
         onSubmit={(content) =>
-          add.mutate({ workspace: workspace?.id ?? null, content }, { onSuccess: () => setFormKey((key) => key + 1) })
+          add.mutate(
+            { workspace: workspace?.id ?? null, content },
+            {
+              onSuccess: () => {
+                onDraftChange?.(emptyDraft);
+                setFormKey((key) => key + 1);
+              },
+            },
+          )
         }
       />
 
@@ -159,18 +184,23 @@ function MemoryItem({ entry }: { entry: MemoryEntry }) {
 function EntryForm({
   label,
   submitLabel,
+  collapsible = false,
   initial,
   pending,
   error,
   onSubmit,
+  onChange,
   onCancel,
 }: {
   label: string;
   submitLabel: string;
+  /** Rest as one line with the submit button until the form is used. */
+  collapsible?: boolean;
   initial?: Pick<MemoryEntry, "kind" | "title" | "body" | "taskId">;
   pending: boolean;
   error: Error | null;
   onSubmit: (content: MemoryContent) => void;
+  onChange?: (draft: MemoryDraft) => void;
   onCancel?: () => void;
 }) {
   const [kind, setKind] = useState<MemoryKind>(initial?.kind ?? "decision");
@@ -179,11 +209,63 @@ function EntryForm({
   const dirty =
     kind !== (initial?.kind ?? "decision") || title !== (initial?.title ?? "") || body !== (initial?.body ?? "");
   const guard = useDiscardGuard(dirty, () => onCancel?.(), pending);
+  const [expanded, setExpanded] = useState(!collapsible);
+  useEffect(() => onChange?.({ kind, title, body }), [kind, title, body]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     onSubmit({ kind, title, body, taskId: initial?.taskId ?? null });
   };
+
+  const submitButton = (
+    <Button type="submit" size="sm" disabled={pending || !title.trim()}>
+      {submitLabel}
+    </Button>
+  );
+  const fields = (
+    <>
+      <div className="flex flex-wrap gap-2">
+        {expanded && (
+          <select
+            aria-label="Kind"
+            className={cn(inputClass, "w-auto")}
+            value={kind}
+            onChange={(e) => setKind(e.target.value as MemoryKind)}
+          >
+            {kinds.map((option) => (
+              <option key={option.kind} value={option.kind}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        )}
+        <input
+          aria-label="Title"
+          className={cn(inputClass, "min-w-48 flex-1", collapsible && "min-w-0")}
+          placeholder={expanded ? "One line that states the point" : "New entry"}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        {collapsible && submitButton}
+      </div>
+      {expanded && (
+        <MarkdownEditor label="Body" value={body} onChange={setBody} placeholder="Why, context, alternatives" />
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error.message}
+        </p>
+      )}
+    </>
+  );
+
+  if (collapsible) {
+    return (
+      <CollapsibleForm label={label} expanded={expanded} onExpandedChange={setExpanded} onSubmit={submit}>
+        {fields}
+      </CollapsibleForm>
+    );
+  }
 
   return (
     <form
@@ -192,33 +274,7 @@ function EntryForm({
       onKeyDown={onCancel ? guard.onKeyDown : undefined}
       className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3"
     >
-      <div className="flex flex-wrap gap-2">
-        <select
-          aria-label="Kind"
-          className={cn(inputClass, "w-auto")}
-          value={kind}
-          onChange={(e) => setKind(e.target.value as MemoryKind)}
-        >
-          {kinds.map((option) => (
-            <option key={option.kind} value={option.kind}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <input
-          aria-label="Title"
-          className={cn(inputClass, "min-w-48 flex-1")}
-          placeholder="One line that states the point"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-        />
-      </div>
-      <MarkdownEditor label="Body" value={body} onChange={setBody} placeholder="Why, context, alternatives" />
-      {error && (
-        <p role="alert" className="text-sm text-destructive">
-          {error.message}
-        </p>
-      )}
+      {fields}
       {guard.asking ? (
         <DiscardConfirm
           label={`Discard ${label}`}
@@ -228,9 +284,7 @@ function EntryForm({
         />
       ) : (
         <div className="flex gap-2">
-          <Button type="submit" size="sm" disabled={pending || !title.trim()}>
-            {submitLabel}
-          </Button>
+          {submitButton}
           {onCancel && (
             <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
               Cancel
