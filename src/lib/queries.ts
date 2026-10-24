@@ -6,6 +6,7 @@ import {
   type BackupSettings,
   type CommandError,
   type CriterionId,
+  type LeadStatus,
   type Machine,
   type MachineSettings,
   type MemoryContent,
@@ -23,6 +24,8 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
+import { listen } from "@tauri-apps/api/event";
+import { runsOnServer } from "@/lib/platform";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
@@ -70,7 +73,44 @@ export const queryKeys = {
   memory: (workspace: WorkspaceId | null, includeSuperseded: boolean) =>
     ["memory", workspace, includeSuperseded] as const,
   allMemory: ["memory"] as const,
+  lead: ["lead"] as const,
+  chatMessages: ["chat-messages"] as const,
 };
+
+/** The server's lead; the desktop app has none. Kept current by `lead-changed` events. */
+export function useLead() {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!runsOnServer) return;
+    const subscription = listen<LeadStatus>("lead-changed", ({ payload }) =>
+      queryClient.setQueryData(queryKeys.lead, payload),
+    );
+    return () => void subscription.then((unlisten) => unlisten());
+  }, [queryClient]);
+  return useQuery({
+    queryKey: queryKeys.lead,
+    queryFn: () => commands.getLead(),
+    enabled: runsOnServer,
+  });
+}
+
+/** The chat with the lead; kept current by `useHerdrEvents`. */
+export function useChatMessages(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.chatMessages,
+    queryFn: () => unwrap(commands.listChatMessages()),
+    enabled,
+  });
+}
+
+export function useSendChatMessage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ text, clientId }: { text: string; clientId: string }) =>
+      unwrap(commands.sendChatMessage(text, clientId)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages }),
+  });
+}
 
 export function useMemoryEntries(workspace: WorkspaceId | null, includeSuperseded: boolean) {
   return useQuery({
@@ -414,6 +454,7 @@ export function useHerdrEvents() {
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
       events.memoryChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory })),
+      events.chatChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages })),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),

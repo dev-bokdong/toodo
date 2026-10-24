@@ -87,6 +87,7 @@ vi.mock("@/lib/bindings", () => ({
     tasksChanged: { listen: vi.fn() },
     workspacesChanged: { listen: vi.fn() },
     memoryChanged: { listen: vi.fn() },
+    chatChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
     updateCheckRequested: { listen: vi.fn() },
@@ -219,6 +220,7 @@ describe("App", () => {
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.workspacesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.memoryChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.chatChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});

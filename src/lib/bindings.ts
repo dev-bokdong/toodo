@@ -240,11 +240,20 @@ export const commands = {
 	 */
 	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_backup", { name })),
 	getLead: () => __TAURI_INVOKE<LeadStatus>("get_lead"),
+	/**  The latest messages of the chat with the lead, oldest first. */
+	listChatMessages: () => typedError<ChatMessage[], CommandError>(__TAURI_INVOKE("list_chat_messages")),
+	/**
+	 *  Types `text` into the lead's pane and stores it as the user's message. `client_id`,
+	 *  chosen by the client for each message, makes sending it again harmless: a message
+	 *  already stored under it is returned without typing it again.
+	 */
+	sendChatMessage: (text: string, clientId: string) => typedError<ChatMessage, CommandError>(__TAURI_INVOKE("send_chat_message", { text, clientId })),
 };
 
 /** Events */
 export const events = {
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
+	chatChanged: makeEvent<ChatChanged>("chat-changed"),
 	memoryChanged: makeEvent<MemoryChanged>("memory-changed"),
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
@@ -319,6 +328,20 @@ export type BranchList = {
 	names: string[],
 	/**  Why fetching `origin` failed; the names are then the ones known locally. */
 	fetchError: string | null,
+};
+
+export type ChatAuthor = "user" | "lead";
+
+/**  A message of the chat with the lead was sent or answered. */
+export type ChatChanged = null;
+
+/**  A message of the chat with the lead. */
+export type ChatMessage = {
+	id: number,
+	author: ChatAuthor,
+	/**  Markdown. */
+	body: string,
+	at: Timestamp,
 };
 
 /**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */

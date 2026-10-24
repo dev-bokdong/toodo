@@ -15,7 +15,8 @@
 //!   token.
 //! - `/mcp` is the MCP endpoint, as in the desktop app.
 //! - `get_lead` and the `lead-changed` event report the lead, an agent the server keeps
-//!   running in herdr (see [`lead`]).
+//!   running in herdr (see [`lead`]); `send_chat_message` types a message into its pane,
+//!   and the `chat-changed` event tells clients to read the chat again.
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
 //! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
@@ -52,7 +53,7 @@ use crate::adapters::ssh_tunnel::SshForwarder;
 use crate::commands::backup::{self, Backups};
 use crate::commands::completion::{self, PullRequestStatusState};
 use crate::commands::events::{
-    self, AgentStatusState, AgentStatusesChanged, MemoryChanged, Notifier,
+    self, AgentStatusState, AgentStatusesChanged, ChatChanged, MemoryChanged, Notifier,
     PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::lead::LeadStatusState;
@@ -204,6 +205,10 @@ impl Notifier for Services {
 
     fn memory_changed(&self) {
         self.emit(names::MEMORY_CHANGED, &MemoryChanged);
+    }
+
+    fn chat_changed(&self) {
+        self.emit(names::CHAT_CHANGED, &ChatChanged);
     }
 
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {

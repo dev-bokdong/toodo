@@ -12,8 +12,8 @@ use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::events::{
-    AgentStatusState, AgentStatusesChanged, MemoryChanged, Notifier, PullRequestStatusesChanged,
-    TasksChanged, WorkspacesChanged, names,
+    AgentStatusState, AgentStatusesChanged, ChatChanged, MemoryChanged, Notifier,
+    PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
@@ -85,11 +85,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::memory::supersede_memory,
             commands::backup::restore_backup,
             commands::lead::get_lead,
+            commands::lead::list_chat_messages,
+            commands::lead::send_chat_message,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
             commands::events::WorkspacesChanged,
             commands::events::MemoryChanged,
+            commands::events::ChatChanged,
             commands::events::AgentStatusesChanged,
             commands::events::PullRequestStatusesChanged,
             UpdateCheckRequested,
@@ -276,6 +279,12 @@ impl Notifier for AppHandle {
         }
     }
 
+    fn chat_changed(&self) {
+        if let Err(error) = ChatChanged.emit(self) {
+            eprintln!("toodo: failed to emit {}: {error}", names::CHAT_CHANGED);
+        }
+    }
+
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
         let event = AgentStatusesChanged {
             statuses: statuses.to_vec(),
@@ -350,6 +359,7 @@ mod tests {
         assert_eq!(TasksChanged::NAME, names::TASKS_CHANGED);
         assert_eq!(WorkspacesChanged::NAME, names::WORKSPACES_CHANGED);
         assert_eq!(MemoryChanged::NAME, names::MEMORY_CHANGED);
+        assert_eq!(ChatChanged::NAME, names::CHAT_CHANGED);
         assert_eq!(AgentStatusesChanged::NAME, names::AGENT_STATUSES_CHANGED);
         assert_eq!(
             PullRequestStatusesChanged::NAME,

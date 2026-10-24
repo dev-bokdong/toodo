@@ -158,6 +158,13 @@ pub struct Dependency {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub struct ChatReply {
+    /// The reply, in GitHub-flavored Markdown.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct AddNote {
     /// The task the note is about, usually your current task.
     pub task_id: TaskId,
