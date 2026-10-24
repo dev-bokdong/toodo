@@ -235,7 +235,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
             variant="ghost"
             aria-label={`Remove ${workspace.name}`}
             title="Remove the workspace and its tasks from Toodo"
-            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
+            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
             onClick={() => {
               deleteWorkspace.reset();
               setConfirming(true);

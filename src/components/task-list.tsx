@@ -28,6 +28,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, inputClass, describeLocation, escapeCloses } from "@/components/workspace-list";
+import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { AgentBadge } from "@/components/agent-badge";
 import type { SheetNavigation } from "@/components/task-graph";
 import { PullRequestBadges } from "@/components/pull-request-badge";
@@ -558,6 +559,16 @@ const confirmLabels: Record<Confirmation, string> = {
   "force-delete": "Confirm force delete",
 };
 
+/** What a delete of task `id` removes, as asked before it runs. */
+function deleteQuestion(action: Confirmation, id: TaskId, removableWorktree: boolean): string {
+  if (action === "force-delete") {
+    return `Force delete #${id}? Its worktree is removed with its modified and untracked files, and its herdr workspace is closed; the branch is kept.`;
+  }
+  return removableWorktree
+    ? `Delete #${id}? Its worktree and herdr workspace are removed; the branch is kept.`
+    : `Delete #${id} and its history from Toodo?`;
+}
+
 function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
   const milestones = reachedMilestones(task.milestones);
   if (milestones.length === 0) {
@@ -981,7 +992,22 @@ function TaskRow({
         </div>
       )}
       {detailed && !editing && <TaskCriteria task={task} detailed />}
-      {detailed && (task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
+      {/* The question takes the place of the dependency row, so the lines below stay put. */}
+      {confirmingPrerequisite !== null ? (
+        <PrerequisiteConfirmation
+          taskId={task.id}
+          prerequisite={taskRef(confirmingPrerequisite, task.workspaceId, context)}
+          pending={addDependency.isPending}
+          onConfirm={() =>
+            addDependency.mutate(
+              { id: task.id, dependsOn: confirmingPrerequisite },
+              { onSettled: () => setConfirmingPrerequisite(null) },
+            )
+          }
+          onCancel={() => setConfirmingPrerequisite(null)}
+        />
+      ) : (
+        detailed && (task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
         <div
           role="group"
           aria-label={`Dependencies of #${task.id}`}
@@ -1052,20 +1078,7 @@ function TaskRow({
             </select>
           )}
         </div>
-      )}
-      {confirmingPrerequisite !== null && (
-        <PrerequisiteConfirmation
-          taskId={task.id}
-          prerequisite={taskRef(confirmingPrerequisite, task.workspaceId, context)}
-          pending={addDependency.isPending}
-          onConfirm={() =>
-            addDependency.mutate(
-              { id: task.id, dependsOn: confirmingPrerequisite },
-              { onSettled: () => setConfirmingPrerequisite(null) },
-            )
-          }
-          onCancel={() => setConfirmingPrerequisite(null)}
-        />
+        )
       )}
       {detailed && notAdopted.length > 0 && (
         <p
@@ -1152,11 +1165,19 @@ function TaskRow({
           {primary && actionButton(primary, detailed ? "default" : "outline")}
           {detailed && others.map((action) => actionButton(action, "outline"))}
           <div
-            className="ml-auto flex items-center gap-1 max-md:gap-2"
+            role={confirming ? "group" : undefined}
+            aria-label={confirming ? `Delete #${task.id}?` : undefined}
+            className={cn(
+              "ml-auto flex items-center gap-1 max-md:gap-2",
+              confirming && "basis-full flex-wrap justify-end",
+            )}
             onKeyDown={confirming ? escapeCloses(() => setConfirming(null), deleteTask.isPending) : undefined}
           >
             {confirming ? (
               <>
+                <span className="min-w-0 flex-1 basis-48 text-xs">
+                  {deleteQuestion(confirming, task.id, removableWorktree)}
+                </span>
                 <Button
                   size="xs"
                   variant="destructive"
@@ -1311,7 +1332,6 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const [plan, setPlan] = useState<PlanDraft>(initialPlan);
   const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
   const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
-  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const estimate = planEstimate(plan);
   // Unchanged criteria are not sent, so a save never touches the ones checked so far.
   const criteriaChanged =
@@ -1326,14 +1346,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
     plan.estimateUnit !== initialPlan.estimateUnit ||
     plan.dueDate !== initialPlan.dueDate ||
     criteriaChanged;
-
-  function discard() {
-    if (dirty) {
-      setConfirmingDiscard(true);
-    } else {
-      onDone();
-    }
-  }
+  const guard = useDiscardGuard(dirty, onDone, updateTask.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1359,10 +1372,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
       aria-label={`Edit task #${task.id}`}
       data-dirty={dirty || undefined}
       className="flex flex-col gap-1 max-md:gap-2"
-      onKeyDown={escapeCloses(
-        () => (confirmingDiscard ? setConfirmingDiscard(false) : discard()),
-        updateTask.isPending,
-      )}
+      onKeyDown={guard.onKeyDown}
     >
       <div className="flex gap-2">
         <select
@@ -1399,26 +1409,19 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
           <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
         </div>
       )}
-      {confirmingDiscard ? (
-        <div
-          role="group"
-          aria-label={`Discard changes to #${task.id}`}
-          className="flex flex-wrap items-center gap-1 text-xs max-md:gap-2"
-        >
-          <span className="mr-1">Discard your changes to #{task.id}?</span>
-          <Button type="button" size="xs" variant="outline" autoFocus onClick={() => setConfirmingDiscard(false)}>
-            Keep editing
-          </Button>
-          <Button type="button" size="xs" variant="destructive" onClick={onDone}>
-            Discard changes
-          </Button>
-        </div>
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard changes to #${task.id}`}
+          question={`Discard your changes to #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
       ) : (
         <div className="flex gap-1 max-md:gap-2">
           <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined || criteriaInvalid}>
             {updateTask.isPending ? "Saving..." : "Save"}
           </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={discard}>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
             Discard
           </Button>
         </div>
@@ -1439,6 +1442,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
 function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const concludeTask = useConcludeTask();
   const [note, setNote] = useState("");
+  const guard = useDiscardGuard(note.trim() !== "", onDone, concludeTask.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1450,7 +1454,7 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
       onSubmit={submit}
       aria-label={`Conclude #${task.id}`}
       className="flex flex-col gap-1"
-      onKeyDown={escapeCloses(onDone, concludeTask.isPending)}
+      onKeyDown={guard.onKeyDown}
     >
       <p className="text-xs text-muted-foreground">
         Finish #{task.id} without merging. It is marked not adopted, its pull request is closed with the
@@ -1465,15 +1469,29 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
         required
         autoFocus
       />
-      <div className="flex gap-1">
-        <Button type="submit" size="xs" disabled={concludeTask.isPending || note.trim() === ""}>
-          <CircleSlash />
-          {concludeTask.isPending ? "Concluding..." : "Conclude without merge"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
-          Back
-        </Button>
-      </div>
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard conclusion of #${task.id}`}
+          question={`Discard your conclusion of #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button
+            type="submit"
+            size="xs"
+            variant="destructive"
+            disabled={concludeTask.isPending || note.trim() === ""}
+          >
+            <CircleSlash />
+            {concludeTask.isPending ? "Concluding..." : "Conclude without merge"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
       {concludeTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {concludeTask.error.message}
@@ -1498,6 +1516,14 @@ function CompletionNote({ task, adding, onAdded }: { task: Task; adding: boolean
     setEditing(false);
     onAdded();
   }
+  const guard = useDiscardGuard(
+    note.trim() !== saved.trim(),
+    () => {
+      setNoteText(saved);
+      close();
+    },
+    setNote.isPending,
+  );
 
   function edit() {
     setNoteText(saved);
@@ -1529,7 +1555,12 @@ function CompletionNote({ task, adding, onAdded }: { task: Task; adding: boolean
     );
   }
   return (
-    <form onSubmit={submit} aria-label={`Completion note form of #${task.id}`} className="flex flex-col gap-1">
+    <form
+      onSubmit={submit}
+      aria-label={`Completion note form of #${task.id}`}
+      className="flex flex-col gap-1"
+      onKeyDown={guard.onKeyDown}
+    >
       <textarea
         className={cn(inputClass, "h-auto min-h-16 py-1.5")}
         aria-label={`Completion note for #${task.id}`}
@@ -1538,19 +1569,28 @@ function CompletionNote({ task, adding, onAdded }: { task: Task; adding: boolean
         onChange={(e) => setNoteText(e.target.value)}
         autoFocus
       />
-      <div className="flex gap-1">
-        <Button
-          type="submit"
-          size="xs"
-          // The conclusion of work that was not adopted cannot be cleared.
-          disabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
-        >
-          {setNote.isPending ? "Saving..." : "Save note"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={close}>
-          Discard
-        </Button>
-      </div>
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard note of #${task.id}`}
+          question={`Discard your note for #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button
+            type="submit"
+            size="xs"
+            // The conclusion of work that was not adopted cannot be cleared.
+            disabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
+          >
+            {setNote.isPending ? "Saving..." : "Save note"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Discard
+          </Button>
+        </div>
+      )}
       {setNote.isError && (
         <p role="alert" className="text-xs text-destructive">
           {setNote.error.message}
@@ -1589,6 +1629,14 @@ function TaskIssue({
   const pending = linkIssue.isPending || createIssue.isPending;
   const error = linkIssue.error ?? createIssue.error;
   const editable = task.status !== "done";
+  const guard = useDiscardGuard(
+    number.trim() !== "",
+    () => {
+      setNumber("");
+      onDone();
+    },
+    pending,
+  );
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1624,7 +1672,12 @@ function TaskIssue({
     </p>
   ) : (
     linking && (
-      <form onSubmit={submit} aria-label={`Issue form of #${task.id}`} className="flex flex-wrap items-center gap-1">
+      <form
+        onSubmit={submit}
+        aria-label={`Issue form of #${task.id}`}
+        className="flex flex-wrap items-center gap-1"
+        onKeyDown={guard.onKeyDown}
+      >
         <input
           className={cn(inputClass, "h-7 w-28")}
           inputMode="numeric"
@@ -1634,25 +1687,36 @@ function TaskIssue({
           onChange={(e) => setNumber(e.target.value)}
           autoFocus
         />
-        <Button type="submit" size="xs" disabled={parsed === null || pending}>
-          {linkIssue.isPending ? "Linking..." : "Link"}
-        </Button>
-        <Button
-          changesData
-          type="button"
-          size="xs"
-          variant="outline"
-          aria-label={`Create issue for #${task.id}`}
-          title="Open a GitHub issue with the title and description of this task and link it"
-          disabled={pending}
-          onClick={() => createIssue.mutate(task.id, { onSuccess: onDone })}
-        >
-          <Plus />
-          {createIssue.isPending ? "Creating..." : "Create issue"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
-          Discard
-        </Button>
+        {guard.asking ? (
+          <DiscardConfirm
+            label={`Discard issue number of #${task.id}`}
+            question="Discard the issue number?"
+            onKeep={guard.keep}
+            onDiscard={guard.discard}
+          />
+        ) : (
+          <>
+            <Button type="submit" size="xs" disabled={parsed === null || pending}>
+              {linkIssue.isPending ? "Linking..." : "Link"}
+            </Button>
+            <Button
+              changesData
+              type="button"
+              size="xs"
+              variant="outline"
+              aria-label={`Create issue for #${task.id}`}
+              title="Open a GitHub issue with the title and description of this task and link it"
+              disabled={pending}
+              onClick={() => createIssue.mutate(task.id, { onSuccess: onDone })}
+            >
+              <Plus />
+              {createIssue.isPending ? "Creating..." : "Create issue"}
+            </Button>
+            <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+              Discard
+            </Button>
+          </>
+        )}
       </form>
     )
   );
@@ -2049,6 +2113,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   const canSave =
     !pending && (draft === NEW_BRANCH ? name !== "" && !names.includes(name) && newFrom !== "" : draft !== current);
   const error = updateWorkspace.error ?? createBaseBranch.error;
+  const guard = useDiscardGuard(draft === NEW_BRANCH && name !== "", () => setDraft(null), pending);
 
   function open() {
     updateWorkspace.reset();
@@ -2094,7 +2159,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label="Base branch" className="flex flex-col gap-1.5">
+    <form onSubmit={submit} aria-label="Base branch" className="flex flex-col gap-1.5" onKeyDown={guard.onKeyDown}>
       <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
         <span className="truncate">{location} &middot;</span>
         <label htmlFor="base-branch" className="shrink-0">
@@ -2149,14 +2214,23 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
           {names.includes(name) && <span className="text-xs">Branch {name} already exists; pick it above.</span>}
         </div>
       )}
-      <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" variant="outline" disabled={!canSave}>
-          {draft === NEW_BRANCH ? "Create and save" : "Save"}
-        </Button>
-        <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
-          Discard
-        </Button>
-      </div>
+      {guard.asking ? (
+        <DiscardConfirm
+          label="Discard new branch name"
+          question="Discard the new branch name?"
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex items-center gap-2">
+          <Button type="submit" size="sm" variant="outline" disabled={!canSave}>
+            {draft === NEW_BRANCH ? "Create and save" : "Save"}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
+            Discard
+          </Button>
+        </div>
+      )}
       <p className="text-xs text-muted-foreground">
         New task branches start from this branch and pull requests target it.
         {draft === NEW_BRANCH && " The new branch is pushed to origin."}
@@ -2193,6 +2267,11 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   const saved = settings.data?.worktreeRoot ?? "";
   const machineName = machine.kind === "local" ? (runsOnServer ? "the server" : "this computer") : machine.label;
   const error = settings.error ?? saveSettings.error;
+  const closeChange = () => {
+    setDraft(null);
+    setChanging(false);
+  };
+  const guard = useDiscardGuard(draft !== null && draft.trim() !== saved, closeChange, saveSettings.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2226,6 +2305,7 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
     <form
       onSubmit={submit}
       aria-label="Worktree root"
+      onKeyDown={changing ? guard.onKeyDown : undefined}
       className={cn(
         "flex flex-col gap-1.5 rounded-xl border p-3",
         settings.isSuccess && !saved && "border-amber-300 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30",
@@ -2246,20 +2326,20 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         <Button type="submit" size="sm" variant="outline" disabled={draft === null || saveSettings.isPending}>
           Save
         </Button>
-        {changing && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setDraft(null);
-              setChanging(false);
-            }}
-          >
+        {changing && !guard.asking && (
+          <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
             Discard
           </Button>
         )}
       </div>
+      {guard.asking && (
+        <DiscardConfirm
+          label="Discard worktree root change"
+          question="Discard the new worktree root?"
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      )}
       {settings.isSuccess && !saved && (
         <p className="text-xs text-muted-foreground">Set a worktree root to start tasks on this machine.</p>
       )}
@@ -2589,6 +2669,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
     setWriting(false);
     setEvidence("");
   }
+  const guard = useDiscardGuard(evidence.trim() !== "", cancel, checkCriterion.isPending);
 
   function toggle(checked: boolean) {
     if (writing) {
@@ -2658,7 +2739,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
         <form
           onSubmit={save}
           className="ml-5.5 flex flex-wrap items-center gap-1"
-          onKeyDown={escapeCloses(cancel, checkCriterion.isPending)}
+          onKeyDown={guard.onKeyDown}
         >
           <input
             className={cn(inputClass, "h-7 flex-1 basis-48")}
@@ -2668,12 +2749,23 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
             onChange={(e) => setEvidence(e.target.value)}
             autoFocus
           />
-          <Button type="submit" size="xs" disabled={checkCriterion.isPending}>
-            {checkCriterion.isPending ? "Saving..." : "Save"}
-          </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={cancel}>
-            Cancel
-          </Button>
+          {guard.asking ? (
+            <DiscardConfirm
+              label={`Discard evidence for criterion ${criterion.id}`}
+              question="Discard the evidence?"
+              onKeep={guard.keep}
+              onDiscard={guard.discard}
+            />
+          ) : (
+            <>
+              <Button type="submit" size="xs" disabled={checkCriterion.isPending}>
+                {checkCriterion.isPending ? "Saving..." : "Save"}
+              </Button>
+              <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+                Cancel
+              </Button>
+            </>
+          )}
         </form>
       )}
       {checkCriterion.isError && (

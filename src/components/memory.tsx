@@ -4,6 +4,7 @@ import { BookMarked, Pencil } from "lucide-react";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { EmptyState } from "@/components/task-list";
 import { Button } from "@/components/ui/button";
+import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { inputClass } from "@/components/workspace-list";
 import type { MemoryContent, MemoryEntry, MemoryKind, Workspace } from "@/lib/bindings";
 import { useAddMemory, useMemoryEntries, useSupersedeMemory, useUpdateMemory } from "@/lib/queries";
@@ -175,6 +176,9 @@ function EntryForm({
   const [kind, setKind] = useState<MemoryKind>(initial?.kind ?? "decision");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [body, setBody] = useState(initial?.body ?? "");
+  const dirty =
+    kind !== (initial?.kind ?? "decision") || title !== (initial?.title ?? "") || body !== (initial?.body ?? "");
+  const guard = useDiscardGuard(dirty, () => onCancel?.(), pending);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -182,7 +186,12 @@ function EntryForm({
   };
 
   return (
-    <form aria-label={label} onSubmit={submit} className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
+    <form
+      aria-label={label}
+      onSubmit={submit}
+      onKeyDown={onCancel ? guard.onKeyDown : undefined}
+      className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3"
+    >
       <div className="flex flex-wrap gap-2">
         <select
           aria-label="Kind"
@@ -210,16 +219,25 @@ function EntryForm({
           {error.message}
         </p>
       )}
-      <div className="flex gap-2">
-        <Button type="submit" size="sm" disabled={pending || !title.trim()}>
-          {submitLabel}
-        </Button>
-        {onCancel && (
-          <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
-            Cancel
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard ${label}`}
+          question="Discard your changes to this entry?"
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-2">
+          <Button type="submit" size="sm" disabled={pending || !title.trim()}>
+            {submitLabel}
           </Button>
-        )}
-      </div>
+          {onCancel && (
+            <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
+              Cancel
+            </Button>
+          )}
+        </div>
+      )}
     </form>
   );
 }
