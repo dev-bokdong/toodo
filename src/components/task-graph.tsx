@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, ChevronsLeft, Crosshair, TriangleAlert, XIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, Crosshair, TriangleAlert } from "lucide-react";
 import { EmptyState } from "@/components/task-list";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
@@ -21,6 +21,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AgentBadge } from "@/components/agent-badge";
+import { DetailsSheet } from "@/components/details-sheet";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
@@ -229,6 +230,9 @@ export function TaskGraph({
   // select next, or `null` to close the sheet.
   const [discarding, setDiscarding] = useState<{ next: TaskId | null } | null>(null);
   const sheet = useRef<HTMLElement>(null);
+  // False while the arrow keys move the selection, so the details sheet they open leaves the
+  // focus on the bars for the next key.
+  const focusSheet = useRef(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A shown task selected before the timeline was ready, revealed once it is.
   const pendingReveal = useRef<TaskId | null>(null);
@@ -378,6 +382,7 @@ export function TaskGraph({
   function applySelection(next: TaskId | null) {
     setDiscarding(null);
     if (next === null) {
+      focusSheet.current = true;
       setSelectedTaskId(null);
     } else {
       select(next);
@@ -523,6 +528,7 @@ export function TaskGraph({
     container.current
       .querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
       ?.focus({ preventScroll: true });
+    focusSheet.current = false;
     changeSelection(id);
   }
 
@@ -776,44 +782,35 @@ export function TaskGraph({
         )}
         {selectedTask !== undefined && (
           // A floating sheet over the window's right side: the timeline keeps its full width and
-          // the details get room to wrap instead of being cut off.
-          <aside
+          // the details get room to wrap instead of being cut off. On a phone, a bottom sheet.
+          <DetailsSheet
             ref={sheet}
-            aria-label="Task details"
-            className="fixed inset-y-4 right-4 z-40 flex flex-col overflow-hidden rounded-xl border bg-card shadow-xl"
-            style={{
-              width: `min(${sheetWidth}px, max(${sheetMinWidth}px, ${sheetShare * 100}vw), calc(100vw - ${2 * sheetMargin}px))`,
-            }}
+            width={`min(${sheetWidth}px, max(${sheetMinWidth}px, ${sheetShare * 100}vw), calc(100vw - ${2 * sheetMargin}px))`}
+            takeFocus={focusSheet.current}
+            returnFocus={() =>
+              container.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${selectedTask.id}"]`)
+            }
+            onClose={() => changeSelection(null)}
+            banner={
+              discarding !== null && (
+                <div
+                  role="group"
+                  aria-label="Unsaved changes"
+                  className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
+                >
+                  <span className="min-w-0 flex-1">Discard your unsaved changes to #{selectedTask.id}?</span>
+                  <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(null)}>
+                    Keep editing
+                  </Button>
+                  <Button size="xs" variant="destructive" onClick={() => applySelection(discarding.next)}>
+                    Discard changes
+                  </Button>
+                </div>
+              )
+            }
           >
-            <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
-              <h3 className="text-xs font-medium text-muted-foreground">Task details</h3>
-              <Button
-                size="icon-xs"
-                variant="ghost"
-                aria-label="Close details"
-                title="Close details (Esc)"
-                onClick={() => changeSelection(null)}
-              >
-                <XIcon />
-              </Button>
-            </div>
-            {discarding !== null && (
-              <div
-                role="group"
-                aria-label="Unsaved changes"
-                className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
-              >
-                <span className="min-w-0 flex-1">Discard your unsaved changes to #{selectedTask.id}?</span>
-                <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(null)}>
-                  Keep editing
-                </Button>
-                <Button size="xs" variant="destructive" onClick={() => applySelection(discarding.next)}>
-                  Discard changes
-                </Button>
-              </div>
-            )}
-            <ul className="min-h-0 flex-1 overflow-y-auto">{renderDetail(selectedTask, { open: changeSelection, canOpen: (id) => placed.has(id) })}</ul>
-          </aside>
+            {renderDetail(selectedTask, { open: changeSelection, canOpen: (id) => placed.has(id) })}
+          </DetailsSheet>
         )}
         {layout.unplaced.length > 0 && (
               <aside aria-label="Tasks without a planned date" className="flex w-56 shrink-0 flex-col gap-1 text-xs">
