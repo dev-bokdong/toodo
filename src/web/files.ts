@@ -3,31 +3,8 @@
  * backups and uploads a database to restore over `/api/backups`, since it cannot reach
  * paths on the server.
  */
-import type { BackupEntry, CommandError } from "@/lib/bindings";
-import { authorization, forgetToken, getToken } from "@/web/session";
-
-async function request(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = getToken();
-  if (token === null) {
-    throw new Error("No access token for the Toodo server.");
-  }
-  const response = await fetch(path, { ...init, headers: { ...authorization(token), ...init.headers } });
-  if (response.status === 401) {
-    forgetToken();
-    throw new Error("The Toodo server did not accept the access token.");
-  }
-  if (!response.ok) {
-    const text = await response.text();
-    let message = text || `${response.status} ${response.statusText}`;
-    try {
-      message = (JSON.parse(text) as CommandError).message ?? message;
-    } catch {
-      // Not JSON: the server's own message, e.g. an upload over the size limit.
-    }
-    throw new Error(message);
-  }
-  return response;
-}
+import type { BackupEntry } from "@/lib/bindings";
+import { apiRequest as request } from "@/web/session";
 
 /** The file name in a `Content-Disposition: attachment; filename="..."` header. */
 function attachmentName(response: Response, fallback: string): string {

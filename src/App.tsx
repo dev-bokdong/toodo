@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
+import { DevicesPanel } from "@/components/devices-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { MemoryPanel } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
@@ -129,6 +130,7 @@ export default function App() {
         />
         <div className="mt-auto flex flex-col gap-2">
           <AgentAccessPanel />
+          {runsOnServer && <DevicesPanel />}
           <BackupPanel />
         </div>
         <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1">
