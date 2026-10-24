@@ -76,7 +76,7 @@ impl IntoResponse for Reply {
     }
 }
 
-fn json(status: StatusCode, body: &impl Serialize) -> Response {
+pub(super) fn json(status: StatusCode, body: &impl Serialize) -> Response {
     match serde_json::to_vec(body) {
         Ok(body) => (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),

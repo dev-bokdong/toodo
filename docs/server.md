@@ -112,11 +112,29 @@ toodo-server
 On first start the data directory gets two access tokens:
 
 - `mcp-token`: agents send it to `/mcp` as `Authorization: Bearer <token>`.
-- `web-token`: every `/api` request bears it.
+- `web-token`: the shared web token. A browser signs in with it once and is registered
+  as a device with a token of its own (see [Devices](#devices)); `/api` accepts the
+  shared token too, so existing clients keep working.
 
 The data directory is created readable by its owner only (`0700`) and the token files
 `0600`; the server tightens an existing directory and token files on start. To replace a
-token, delete its file and restart the server.
+token, delete its file and restart the server. Replacing `web-token` does not sign out
+registered devices; revoke them one by one.
+
+### Devices
+
+Each device has its own access token, so a lost phone is revoked alone instead of
+rotating the token of every client. The database keeps a device's name, when it was
+registered and last seen (to within a minute), and when it was revoked, but only a
+SHA-256 hash of its token; the token itself is shown to the device once, when it
+registers. Revoking is final: the token never works again, and the device signs in anew
+with the shared token. Only the shared token registers devices, so a device token cannot
+mint more tokens. A device keeps its id after it is revoked, so data kept per device can
+refer to it.
+
+The web app lists the devices under **Devices** in the sidebar, marks the current one,
+and revokes them. Devices live in the database, so restoring a backup also restores the
+devices of that backup: devices registered after it sign in again.
 
 **Treat `web-token` like a password to the server account.** It opens every command of
 the app, including ones that write `~/.ssh/config` (which can run commands through
@@ -182,7 +200,8 @@ the `Wants=` is ignored. To set the service up by hand, run
 The web build of the frontend uses the server from a browser. A release install serves it
 (`scripts/install-server.sh --release ...`); from a checkout, use `--with-web`, or
 `npm ci && npm run build:web` into `dist-web/` with `TOODO_WEB_DIR` pointing at it. The
-browser asks for `web-token` once and keeps it in local storage.
+browser asks for `web-token` and a device name once, registers itself as a device, and
+keeps its device token in local storage.
 
 It is an installable web app (PWA): browsers offer to install it from the server URL, and
 it then opens in its own window. Browsers install web apps only from a secure origin:
@@ -268,7 +287,8 @@ You need a domain on Cloudflare and a Zero Trust organization (the free plan doe
    ```
 
    Then open `https://toodo.example.com` on the phone, sign in to Access, and enter
-   `web-token` once. Install it from the browser: *Install app* (or *Add to Home screen*)
+   `web-token` and a name for the phone once; the phone then keeps a device token of its
+   own. Install it from the browser: *Install app* (or *Add to Home screen*)
    in Chrome on Android, *Share > Add to Home Screen* in Safari on iOS.
 
 Things to know:
@@ -286,6 +306,8 @@ Things to know:
   timeout.
 - Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels);
   do not point remote agents at the public hostname, where Access stops them.
+- If a phone is lost, revoke it under **Devices** from another device; the shared
+  `web-token` and the other devices keep working.
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
 
@@ -313,6 +335,14 @@ Things to know:
   request body (`application/octet-stream`, at most 256 MB, else `413`). The current data
   is saved as a pre-restore backup first, which is the JSON result, like `restore_backup`.
   A file that is not a Toodo database is `422` and changes nothing.
+- `GET /api/devices`: every device as `{ id, label, createdAt, lastSeenAt, revokedAt,
+  current }` (Unix seconds; `current` marks the device whose token the request bears),
+  active ones first.
+- `POST /api/devices` with `{ "label": string }`: registers a device and returns `201`
+  with `{ device, token }`. Only the shared web token may register (else `403`); a blank
+  name or one over 80 characters is `422`.
+- `POST /api/devices/{id}/revoke`: revokes the device for good and returns it; `404` for
+  an unknown id. Revoking it again keeps the first revocation time.
 
 Commands that read or write a path on the desktop app's own machine are not served:
 `save_report` (the web app downloads reports instead), `export_database`, and
@@ -321,7 +351,8 @@ command). `list_directories { machine, path }` lists directories on the server f
 `{ "kind": "local" }` and on an SSH machine for `{ "kind": "ssh", "label": ... }`;
 `add_herdr_machine` is refused, since `herdr machine add` asks questions in a terminal.
 
-All of them require `Authorization: Bearer <web-token>`; `/mcp` requires the MCP token. The web
+All of them require `Authorization: Bearer <token>` with the shared web token or the token
+of a device that is not revoked; `/mcp` requires the MCP token. The web
 build swaps the Tauri modules for `src/web/`, so the generated bindings in
 `src/lib/bindings.ts` serve both apps; a test checks that the server routes every command
 they invoke.

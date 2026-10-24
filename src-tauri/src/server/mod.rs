@@ -7,12 +7,15 @@
 //! - `GET /api/events` streams `tasks-changed`, `agent-statuses-changed`, and
 //!   `pull-request-statuses-changed` events with JSON data.
 //! - `/api/backups/...` moves database files in and out (see [`files`]).
+//! - `/api/devices...` registers, lists, and revokes devices (see [`devices`]).
 //! - `/mcp` is the MCP endpoint, as in the desktop app.
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
-//! `/api` requires the web access token and `/mcp` the MCP access token as a bearer token;
-//! both are created in the data directory on first start.
+//! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
+//! access token, as a bearer token; the shared tokens are created in the data directory on
+//! first start.
 
+mod devices;
 mod files;
 mod rpc;
 
@@ -340,10 +343,15 @@ fn router(
             post(files::restore).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/backups/{name}", get(files::download))
+        .route("/api/devices", get(devices::list).post(devices::register))
+        .route("/api/devices/{id}/revoke", post(devices::revoke))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .route_layer(middleware::from_fn_with_state(
-            Arc::new(web_token),
-            mcp::require_token,
+            devices::Gate {
+                services: services.clone(),
+                shared_token: Arc::new(web_token),
+            },
+            devices::require_access,
         ))
         .with_state(services.clone());
     let app = api.merge(mcp::router(services, mcp_token));
@@ -738,6 +746,101 @@ mod tests {
         );
         assert!(upload(address, "agent", b"").0.contains(" 401 "));
         assert_eq!(workspace_names(&services), ["toodo"]);
+    }
+
+    fn post_json(
+        address: SocketAddr,
+        path: &str,
+        token: &str,
+        body: &serde_json::Value,
+    ) -> (String, serde_json::Value) {
+        let body = body.to_string();
+        let (status, _, reply) = exchange(
+            address,
+            &format!(
+                "POST {path} HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}",
+                body.len()
+            ),
+            body.as_bytes(),
+        );
+        (status, serde_json::from_slice(&reply).unwrap_or_default())
+    }
+
+    fn devices_seen_by(address: SocketAddr, token: &str) -> serde_json::Value {
+        let (status, _, body) = get(address, "/api/devices", Some(token));
+        assert!(status.contains(" 200 "), "{status}");
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[test]
+    fn devices_sign_in_with_the_shared_token_and_are_revoked_alone() {
+        let (address, _temp, services) = serve_services(None);
+        let label = |name: &str| serde_json::json!({ "label": name });
+        let app_info = |token: &str| status(address, "POST", "/api/rpc/app_info", Some(token));
+
+        let (created, phone) = post_json(address, "/api/devices", "web", &label(" Phone "));
+        assert!(created.contains(" 201 "), "{created}");
+        let phone_token = phone["token"].as_str().unwrap().to_owned();
+        assert_eq!(phone_token.len(), 64);
+        assert_eq!(phone["device"]["label"], "Phone");
+        let (_, laptop) = post_json(address, "/api/devices", "web", &label("Laptop"));
+        let laptop_token = laptop["token"].as_str().unwrap().to_owned();
+
+        assert!(app_info(&phone_token).contains(" 200 "));
+        let seen = devices_seen_by(address, &phone_token);
+        let current: Vec<&str> = seen
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|device| device["current"] == true)
+            .map(|device| device["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(current, ["Phone"]);
+        assert!(
+            devices_seen_by(address, "web")
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|device| device["current"] == false)
+        );
+
+        // A device token cannot mint more tokens; bad labels are refused.
+        let (forbidden, _) = post_json(address, "/api/devices", &phone_token, &label("Spare"));
+        assert!(forbidden.contains(" 403 "), "{forbidden}");
+        let (blank, _) = post_json(address, "/api/devices", "web", &label("  "));
+        assert!(blank.contains(" 422 "), "{blank}");
+        assert!(
+            post_json(address, "/api/devices", "agent", &label("MCP"))
+                .0
+                .contains(" 401 ")
+        );
+
+        let phone_id = phone["device"]["id"].as_i64().unwrap();
+        let revoke = format!("/api/devices/{phone_id}/revoke");
+        let (revoked, device) = post_json(address, &revoke, &laptop_token, &serde_json::json!({}));
+        assert!(revoked.contains(" 200 "), "{revoked}");
+        assert!(device["revokedAt"].is_i64());
+        assert!(app_info(&phone_token).contains(" 401 "));
+        assert!(app_info(&laptop_token).contains(" 200 "));
+        assert!(app_info("web").contains(" 200 "));
+        assert!(
+            post_json(
+                address,
+                "/api/devices/99/revoke",
+                "web",
+                &serde_json::json!({})
+            )
+            .0
+            .contains(" 404 ")
+        );
+        assert_eq!(
+            crate::commands::lock(&services.storage)
+                .list_devices()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

@@ -196,6 +196,7 @@ impl From<StorageError> for CommandError {
             StorageError::WorkspaceNotFound(_)
             | StorageError::TaskNotFound(_)
             | StorageError::MemoryNotFound(_)
+            | StorageError::DeviceNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
                 CommandErrorKind::NotFound
             }

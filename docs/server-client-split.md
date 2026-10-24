@@ -432,9 +432,10 @@ resyncs, and a POST per message is fine at chat rates.
   TLS and an authenticating front (a reverse proxy, a zero-trust tunnel, or an SSH
   forward), as `docs/server.md` already requires. A PWA also needs HTTPS for its service
   worker.
-- Later: per-device tokens (a `devices` table with hashed tokens, labels, last seen, and
-  revoke) instead of one shared `web-token`. Losing a phone would then not mean rotating
-  every client's token. This is not needed for 251 to 253.
+- Per-device tokens (256): a `devices` table with hashed tokens, labels, last seen, and
+  revoke, next to the shared `web-token`. A client signs in with the shared token once and
+  then keeps a device token of its own, so losing a phone does not mean rotating every
+  client's token. See `docs/server.md` (Devices).
 
 ## 5. Follow-up Slicing
 

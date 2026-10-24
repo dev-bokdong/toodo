@@ -341,6 +341,18 @@ pub(super) const MIGRATIONS: &[&str] = &[
     CREATE INDEX memory_entries_workspace_id ON memory_entries (workspace_id);
     CREATE INDEX memory_entries_superseded_by ON memory_entries (superseded_by);
     ",
+    // Version 15: devices that use toodo-server, each with its own access token, stored
+    // only as a SHA-256 hash. Revoked devices are kept, so their id stays unique.
+    "
+    CREATE TABLE devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL CHECK (trim(label) <> ''),
+        token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        revoked_at INTEGER
+    );
+    ",
 ];
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
