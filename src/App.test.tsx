@@ -718,9 +718,16 @@ describe("App", () => {
     );
     expect(bar("Add UI").querySelector("[data-dimmed]")).toBeNull();
 
+    bar("Add UI").focus();
     fireEvent.click(bar("Add UI"));
+    expect(
+      within(await within(timeline).findByRole("complementary", { name: "Task details" })).getByRole("heading", {
+        name: "Task details",
+      }),
+    ).toHaveFocus();
     fireEvent.click(await within(timeline).findByRole("button", { name: "Close details" }));
     expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument();
+    expect(bar("Add UI")).toHaveFocus();
   });
 
   it("summarizes a hovered timeline bar and moves between rows with the arrow keys", async () => {
