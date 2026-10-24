@@ -2173,6 +2173,76 @@ describe("App", () => {
     expect(mocked.updateTask).not.toHaveBeenCalled();
   });
 
+  it("closes inline forms on Escape and asks before discarding what was typed", async () => {
+    const started = task(1, 1, "Try a new cache", {
+      status: "in_progress",
+      branch: "feat/try-a-new-cache-1",
+      worktreePath: "D:\\wt\\toodo\\feat-try-a-new-cache-1",
+      herdrWorkspaceId: "w1",
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    const finished = task(2, 1, "Add storage", { status: "done", resolution: "merged" });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started, finished] });
+    await renderWorkspace();
+
+    await chooseAction(1, "Link issue to #1");
+    fireEvent.keyDown(screen.getByLabelText("Issue number of #1"), { key: "Escape" });
+    expect(screen.queryByRole("form", { name: "Issue form of #1" })).not.toBeInTheDocument();
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    // The details sheet keeps the note mounted while its form is closed.
+    const details = await openDetails("Add storage");
+    await chooseAction(2, "Add completion note to #2", details);
+    fireEvent.change(screen.getByLabelText("Completion note for #2"), { target: { value: "Shipped" } });
+    fireEvent.keyDown(screen.getByLabelText("Completion note for #2"), { key: "Escape" });
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Discard note of #2" })).getByRole("button", {
+        name: "Discard changes",
+      }),
+    );
+    expect(screen.queryByRole("form", { name: "Completion note form of #2" })).not.toBeInTheDocument();
+    // Opened again, the form starts out empty instead of asking.
+    await chooseAction(2, "Add completion note to #2", details);
+    expect(screen.getByLabelText("Completion note for #2")).toHaveValue("");
+    expect(screen.queryByRole("group", { name: "Discard note of #2" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText("Completion note for #2"), { key: "Escape" });
+    expect(screen.queryByRole("form", { name: "Completion note form of #2" })).not.toBeInTheDocument();
+
+    await chooseAction(1, "Conclude #1 without merging");
+    const conclusion = screen.getByRole("textbox", { name: "Conclusion of #1" });
+    fireEvent.change(conclusion, { target: { value: "Twice as slow" } });
+    fireEvent.keyDown(conclusion, { key: "Escape" });
+    const question = screen.getByRole("group", { name: "Discard conclusion of #1" });
+    expect(within(question).getByRole("button", { name: "Keep editing" })).toHaveFocus();
+    // A second Escape goes back to the form with the text kept.
+    fireEvent.keyDown(within(question).getByRole("button", { name: "Keep editing" }), { key: "Escape" });
+    expect(screen.getByRole("textbox", { name: "Conclusion of #1" })).toHaveValue("Twice as slow");
+    expect(screen.getByRole("textbox", { name: "Conclusion of #1" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(screen.queryByRole("form", { name: "Conclude #1" })).not.toBeInTheDocument();
+    expect(mocked.concludeTask).not.toHaveBeenCalled();
+  });
+
+  it("opens the phone menu as a modal drawer and returns focus when it closes", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    const open = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(open);
+    const menu = screen.getByRole("dialog", { name: "Menu" });
+    expect(menu).toHaveAttribute("aria-modal", "true");
+    expect(within(menu).getByRole("button", { name: "Close menu" })).toHaveFocus();
+    expect(open.closest("[inert]")).not.toBeNull();
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Menu" })).not.toBeInTheDocument();
+    expect(open.closest("[inert]")).toBeNull();
+    expect(open).toHaveFocus();
+  });
+
   it("keeps the timeline details open while its edit form has unsaved changes", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
@@ -2610,17 +2680,19 @@ describe("App", () => {
     await renderWorkspace();
     await screen.findByLabelText("Agent of #2");
     const details = await openDetails("Verify login");
-    const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
+    const add = () => within(details).getByRole("combobox", { name: "Add dependency to #2" });
 
-    fireEvent.change(add, { target: { value: "1" } });
+    fireEvent.change(add(), { target: { value: "1" } });
     const confirmation = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
     expect(confirmation).toHaveTextContent("Adding #1 as a prerequisite pauses #2");
+    // The question takes the place of the dependency row instead of pushing the row down.
+    expect(screen.queryByRole("group", { name: "Dependencies of #2" })).not.toBeInTheDocument();
     expect(mocked.addDependency).not.toHaveBeenCalled();
     fireEvent.click(within(confirmation).getByRole("button", { name: "Back" }));
     expect(screen.queryByRole("group", { name: "Confirm prerequisite of #2" })).not.toBeInTheDocument();
     expect(mocked.addDependency).not.toHaveBeenCalled();
 
-    fireEvent.change(add, { target: { value: "1" } });
+    fireEvent.change(add(), { target: { value: "1" } });
     fireEvent.click(
       within(await screen.findByRole("group", { name: "Confirm prerequisite of #2" })).getByRole("button", {
         name: "Pause and add",
@@ -2701,6 +2773,10 @@ describe("App", () => {
     fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
     await chooseAction(1, "Delete #1");
     expect(mocked.deleteTask).not.toHaveBeenCalled();
+    expect(screen.getByRole("group", { name: "Delete #1?" })).toHaveTextContent(
+      "Its worktree and herdr workspace are removed; the branch is kept.",
+    );
+    expect(screen.getByRole("button", { name: "Back" })).toHaveFocus();
     expect(screen.queryByRole("button", { name: /Remove worktree/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Force delete #1" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete #1" }));
@@ -2709,6 +2785,9 @@ describe("App", () => {
     expect(mocked.deleteTask).toHaveBeenCalledWith(1, false);
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     fireEvent.click(screen.getByRole("button", { name: "Force delete #1" }));
+    expect(screen.getByRole("group", { name: "Delete #1?" })).toHaveTextContent(
+      "removed with its modified and untracked files",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Confirm force delete #1" }));
 
     expect(await screen.findByText("No tasks in this workspace yet.")).toBeInTheDocument();

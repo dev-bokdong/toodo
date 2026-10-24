@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { escapeCloses } from "@/components/workspace-list";
 import { listDevices, revokeDevice, type Device } from "@/web/devices";
 
 const devicesKey = ["devices"];
@@ -33,7 +34,12 @@ function DeviceRow({ device }: { device: Device }) {
       </span>
       {!revoked &&
         (confirming ? (
-          <div role="alertdialog" aria-label={`Confirm revoke of ${device.label}`} className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
+          <div
+            role="alertdialog"
+            aria-label={`Confirm revoke of ${device.label}`}
+            className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2"
+            onKeyDown={escapeCloses(() => setConfirming(false), revoke.isPending)}
+          >
             <p>
               {device.current
                 ? "This browser signs out and needs the shared token to sign in again."
@@ -43,7 +49,7 @@ function DeviceRow({ device }: { device: Device }) {
               <Button changesData size="xs" variant="destructive" disabled={revoke.isPending} onClick={() => revoke.mutate()}>
                 Revoke
               </Button>
-              <Button size="xs" variant="ghost" onClick={() => setConfirming(false)}>
+              <Button size="xs" variant="ghost" autoFocus onClick={() => setConfirming(false)}>
                 Keep
               </Button>
             </div>

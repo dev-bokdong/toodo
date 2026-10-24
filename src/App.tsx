@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, MessagesSquare, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
@@ -48,8 +48,31 @@ export default function App() {
     setChatting(page === "chat");
     setMenuOpen(false);
   };
-  // On narrow screens the sidebar is a drawer over the content.
+  // On narrow screens the sidebar is a modal drawer over the content.
   const [menuOpen, setMenuOpen] = useState(false);
+  const openMenuButton = useRef<HTMLButtonElement>(null);
+  const closeMenuButton = useRef<HTMLButtonElement>(null);
+  const menuWasOpen = useRef(false);
+  useEffect(() => {
+    if (menuOpen) closeMenuButton.current?.focus();
+    else if (menuWasOpen.current) openMenuButton.current?.focus();
+    menuWasOpen.current = menuOpen;
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // An inline form in the drawer handles its own Escape first.
+      if (event.key === "Escape" && !event.defaultPrevented) setMenuOpen(false);
+    };
+    // Past the md breakpoint (48rem) the sidebar is no drawer, so nothing may stay inert.
+    const onResize = () => {
+      if (window.innerWidth >= 768) setMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [menuOpen]);
   // Kept here so switching workspaces or views does not reset them.
   const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
   const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
@@ -74,6 +97,9 @@ export default function App() {
         <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
       )}
       <aside
+        role={menuOpen ? "dialog" : undefined}
+        aria-modal={menuOpen || undefined}
+        aria-label={menuOpen ? "Menu" : undefined}
         className={cn(
           "flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground",
           "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-lg",
@@ -95,6 +121,7 @@ export default function App() {
             size="icon-sm"
             className="ml-auto md:hidden"
             aria-label="Close menu"
+            ref={closeMenuButton}
             onClick={() => setMenuOpen(false)}
           >
             <X />
@@ -169,9 +196,15 @@ export default function App() {
           </div>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col" inert={menuOpen}>
         <header className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden">
-          <Button variant="ghost" size="icon-sm" aria-label="Open menu" onClick={() => setMenuOpen(true)}>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Open menu"
+            ref={openMenuButton}
+            onClick={() => setMenuOpen(true)}
+          >
             <Menu />
           </Button>
           <span className="font-semibold tracking-tight">Toodo</span>
