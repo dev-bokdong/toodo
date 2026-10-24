@@ -1,4 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { Square, SquareCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -45,9 +46,12 @@ const components: Components = {
     <ul className={cn("list-disc pl-5", className === "contains-task-list" && "list-none pl-0.5")}>{children}</ul>
   ),
   ol: ({ children }) => <ol className="list-decimal pl-5">{children}</ol>,
-  input: ({ type, checked }) => (
-    <input type={type} checked={checked} readOnly disabled className="mr-1.5 align-middle accent-primary" />
-  ),
+  input: ({ type, checked }) =>
+    type === "checkbox" ? (
+      <span role="img" aria-label={checked ? "Done" : "Not done"} className="mr-1.5 inline-block align-middle">
+        {checked ? <SquareCheck className="size-4 text-foreground" /> : <Square className="size-4" />}
+      </span>
+    ) : null,
   blockquote: ({ children }) => <blockquote className="border-l-2 pl-3">{children}</blockquote>,
   pre: ({ children }) => (
     <pre className="overflow-x-auto rounded-md bg-muted p-2 font-mono text-xs [&_code]:bg-transparent [&_code]:p-0">
