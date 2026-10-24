@@ -40,7 +40,7 @@ function DeviceRow({ device }: { device: Device }) {
                 : "The device's token stops working for good."}
             </p>
             <div className="flex gap-1">
-              <Button size="xs" variant="destructive" disabled={revoke.isPending} onClick={() => revoke.mutate()}>
+              <Button changesData size="xs" variant="destructive" disabled={revoke.isPending} onClick={() => revoke.mutate()}>
                 Revoke
               </Button>
               <Button size="xs" variant="ghost" onClick={() => setConfirming(false)}>

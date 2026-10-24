@@ -75,10 +75,11 @@ function PushControls({ state }: { state: PushState }) {
             ))}
           </fieldset>
           <div className="flex flex-wrap gap-1">
-            <Button size="xs" variant="outline" disabled={test.isPending} onClick={() => test.mutate()}>
+            <Button changesData size="xs" variant="outline" disabled={test.isPending} onClick={() => test.mutate()}>
               Send test notification
             </Button>
             <Button
+              changesData
               size="xs"
               variant="ghost"
               aria-label="Disable notifications on this device"

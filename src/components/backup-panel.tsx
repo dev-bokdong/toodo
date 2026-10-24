@@ -192,6 +192,7 @@ export function BackupPanel() {
               <span className="flex shrink-0 gap-0.5">
                 {runsOnServer && (
                   <Button
+                    changesData
                     size="xs"
                     variant="ghost"
                     aria-label={`Download backup from ${formatTime(backup.createdAt)}`}
