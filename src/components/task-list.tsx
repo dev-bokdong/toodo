@@ -2320,13 +2320,13 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         settings.isSuccess && !saved && "border-amber-300 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30",
       )}
     >
-      <div className="flex items-center gap-2">
-        <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 max-md:flex-wrap">
+        <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground max-md:basis-full">
           Worktree root on {machineName}
         </label>
         <input
           id="worktree-root"
-          className={cn(inputClass, "font-mono")}
+          className={cn(inputClass, "font-mono max-md:min-w-0 max-md:flex-1")}
           placeholder={machine.kind === "local" && !runsOnServer ? "D:\\worktrees" : "/srv/worktrees"}
           value={draft ?? saved}
           onChange={(e) => setDraft(e.target.value)}
