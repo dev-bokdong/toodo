@@ -33,6 +33,7 @@ import { AgentBadge } from "@/components/agent-badge";
 import type { SheetNavigation } from "@/components/task-graph";
 import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
+import { CollapsibleForm } from "@/components/collapsible-form";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { MoreMenu, type Action } from "@/components/more-menu";
 import type {
@@ -2810,6 +2811,7 @@ function NewTaskForm({
   onChange: (draft: TaskDraft) => void;
 }) {
   const createTask = useCreateTask();
+  const [expanded, setExpanded] = useState(false);
   const { taskType, title, description, issue } = draft;
   const issueNumber = parseIssueNumber(issue);
   const invalidIssue = issue.trim() !== "" && issueNumber === null;
@@ -2823,8 +2825,10 @@ function NewTaskForm({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (estimate === undefined || criteriaInvalid) return;
-    const added = () =>
+    const added = () => {
       onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "", criteria: [] });
+      setExpanded(false);
+    };
     createTask.mutate(
       {
         workspaceId: workspace.id,
@@ -2846,27 +2850,25 @@ function NewTaskForm({
   }
 
   return (
-    <form
-      onSubmit={submit}
-      aria-label="New task"
-      className="flex flex-col gap-2 rounded-xl border bg-card p-3 shadow-xs"
-    >
+    <CollapsibleForm label="New task" expanded={expanded} onExpandedChange={setExpanded} onSubmit={submit}>
       <div className="flex gap-2">
-        <select
-          aria-label="Task type"
-          className={cn(inputClass, "w-28 shrink-0 font-mono")}
-          value={taskType}
-          onChange={(e) => setTaskType(e.target.value as TaskType)}
-        >
-          {taskTypes.map((type) => (
-            <option key={type} value={type}>
-              {type}
-            </option>
-          ))}
-        </select>
+        {expanded && (
+          <select
+            aria-label="Task type"
+            className={cn(inputClass, "w-28 shrink-0 font-mono")}
+            value={taskType}
+            onChange={(e) => setTaskType(e.target.value as TaskType)}
+          >
+            {taskTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </select>
+        )}
         <input
           className={cn(inputClass, "min-w-0")}
-          placeholder="Task title"
+          placeholder={expanded ? "Task title" : "New task"}
           aria-label="Task title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
@@ -2877,52 +2879,56 @@ function NewTaskForm({
           Add task
         </Button>
       </div>
-      <div className="flex items-start gap-2">
-        <MarkdownEditor
-          label="Description"
-          placeholder="Description (optional, Markdown)"
-          value={description}
-          onChange={setDescription}
-          className="flex-1"
-        />
-        <input
-          className={cn(inputClass, "mt-7 w-36 shrink-0 max-md:mt-13")}
-          inputMode="numeric"
-          placeholder="Issue # (optional)"
-          aria-label="Issue number"
-          aria-invalid={invalidIssue}
-          title="An issue of the workspace repository; the pull request closes it on merge"
-          value={issue}
-          onChange={(e) => setIssue(e.target.value)}
-        />
-      </div>
-      <PlanFields
-        suffix=""
-        plan={draft}
-        onChange={(plan) => onChange({ ...draft, ...plan })}
-      />
-      <div className="flex flex-col gap-1 border-t pt-2">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          <span className="font-medium text-muted-foreground">Completion criteria</span>
-          <label
-            className="flex items-center gap-1.5 max-md:min-h-11"
-            title="Add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
-          >
-            <input
-              type="checkbox"
-              checked={draft.mergeCriterion}
-              onChange={(e) => onChange({ ...draft, mergeCriterion: e.target.checked })}
+      {expanded && (
+        <>
+          <div className="flex items-start gap-2">
+            <MarkdownEditor
+              label="Description"
+              placeholder="Description (optional, Markdown)"
+              value={description}
+              onChange={setDescription}
+              className="flex-1"
             />
-            Done when merged
-          </label>
-        </div>
-        <CriteriaEditor criteria={draft.criteria} onChange={(criteria) => onChange({ ...draft, criteria })} />
-      </div>
+            <input
+              className={cn(inputClass, "mt-7 w-36 shrink-0 max-md:mt-13")}
+              inputMode="numeric"
+              placeholder="Issue # (optional)"
+              aria-label="Issue number"
+              aria-invalid={invalidIssue}
+              title="An issue of the workspace repository; the pull request closes it on merge"
+              value={issue}
+              onChange={(e) => setIssue(e.target.value)}
+            />
+          </div>
+          <PlanFields
+            suffix=""
+            plan={draft}
+            onChange={(plan) => onChange({ ...draft, ...plan })}
+          />
+          <div className="flex flex-col gap-1 border-t pt-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-medium text-muted-foreground">Completion criteria</span>
+              <label
+                className="flex items-center gap-1.5 max-md:min-h-11"
+                title="Add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
+              >
+                <input
+                  type="checkbox"
+                  checked={draft.mergeCriterion}
+                  onChange={(e) => onChange({ ...draft, mergeCriterion: e.target.checked })}
+                />
+                Done when merged
+              </label>
+            </div>
+            <CriteriaEditor criteria={draft.criteria} onChange={(criteria) => onChange({ ...draft, criteria })} />
+          </div>
+        </>
+      )}
       {createTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {createTask.error.message}
         </p>
       )}
-    </form>
+    </CollapsibleForm>
   );
 }

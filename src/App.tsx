@@ -7,7 +7,7 @@ import { DevicesPanel } from "@/components/devices-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
 import { LeadChat, UnreadBadge } from "@/components/lead-chat";
-import { MemoryPanel } from "@/components/memory";
+import { MemoryPanel, type MemoryDraft } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
 import { NotificationsPanel } from "@/components/notifications-panel";
 import { Review } from "@/components/review";
@@ -77,6 +77,10 @@ export default function App() {
   const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
   const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
   const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
+  // Keyed by workspace, or null for shared memory.
+  const [memoryDrafts, setMemoryDrafts] = useState<ReadonlyMap<WorkspaceId | null, MemoryDraft>>(new Map());
+  const setMemoryDraft = (id: WorkspaceId | null, draft: MemoryDraft) =>
+    setMemoryDrafts((current) => new Map(current).set(id, draft));
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
   const showTask = (id: TaskId) => {
@@ -223,7 +227,11 @@ export default function App() {
           ) : reviewing ? (
             <Review onShowTask={showTask} />
           ) : sharedMemory ? (
-            <MemoryPanel workspace={null} />
+            <MemoryPanel
+              workspace={null}
+              draft={memoryDrafts.get(null)}
+              onDraftChange={(draft) => setMemoryDraft(null, draft)}
+            />
           ) : showingAll && workspaces.data?.length ? (
             <TaskList
               key="all"
@@ -250,7 +258,12 @@ export default function App() {
                 ))}
               </div>
               {workspaceView === "memory" ? (
-                <MemoryPanel key={selected.id} workspace={selected} />
+                <MemoryPanel
+                  key={selected.id}
+                  workspace={selected}
+                  draft={memoryDrafts.get(selected.id)}
+                  onDraftChange={(draft) => setMemoryDraft(selected.id, draft)}
+                />
               ) : (
                 <TaskList
                   key={selected.id}

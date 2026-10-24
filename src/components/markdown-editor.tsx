@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useId, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
@@ -21,6 +21,7 @@ export function MarkdownEditor({
   className?: string;
 }) {
   const [previewing, setPreviewing] = useState(false);
+  const hint = useId();
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-1 max-md:gap-2", className)}>
@@ -31,7 +32,6 @@ export function MarkdownEditor({
         <Button type="button" size="xs" variant={previewing ? "default" : "ghost"} aria-pressed={previewing} onClick={() => setPreviewing(true)}>
           Preview
         </Button>
-        <span className="ml-auto self-center text-xs text-muted-foreground">Markdown</span>
       </div>
       {previewing ? (
         <div
@@ -53,10 +53,14 @@ export function MarkdownEditor({
           rows={3}
           placeholder={placeholder}
           aria-label={label}
+          aria-describedby={hint}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />
       )}
+      <p id={hint} className="text-xs text-muted-foreground">
+        Markdown supported
+      </p>
     </div>
   );
 }

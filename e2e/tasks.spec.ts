@@ -4,8 +4,10 @@ import { createTask } from "./server";
 test("creates a task in a workspace", async ({ app }) => {
   await app.getByRole("button", { name: /^alpha/ }).click();
 
-  await app.getByLabel("Task type").selectOption("fix");
+  // The form rests as one line and opens once its title field takes focus.
+  await expect(app.getByLabel("Task type")).toHaveCount(0);
   await app.getByLabel("Task title").fill("Repair the login redirect");
+  await app.getByLabel("Task type").selectOption("fix");
   await app.getByRole("button", { name: "Add task" }).click();
 
   const row = app.getByRole("region", { name: "Tasks" }).getByRole("listitem").filter({ hasText: "Repair the login redirect" });

@@ -348,6 +348,7 @@ describe("App", () => {
     expect(within(old).queryByRole("button", { name: "Edit memory entry #1" })).not.toBeInTheDocument();
 
     const form = screen.getByRole("form", { name: "New memory entry" });
+    fireEvent.focusIn(within(form).getByLabelText("Title"));
     fireEvent.change(within(form).getByLabelText("Kind"), { target: { value: "rule" } });
     fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "Keep it" } });
     fireEvent.change(within(form).getByLabelText("Body"), { target: { value: "Small." } });
@@ -855,13 +856,15 @@ describe("App", () => {
     fireEvent.click(within(timeline).getByRole("button", { name: "Day" }));
 
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
-    fireEvent.change(await screen.findByLabelText("Task title"), { target: { value: "Half-written task" } });
+    fireEvent.focusIn(await screen.findByLabelText("Task title"));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Half-written task" } });
     fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "fix" } });
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(screen.getByLabelText("Task title")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     expect(await screen.findByLabelText("Task title")).toHaveValue("Half-written task");
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     expect(screen.getByLabelText("Task type")).toHaveValue("fix");
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
@@ -1059,6 +1062,8 @@ describe("App", () => {
 
     await screen.findByText("No tasks in this workspace yet.");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Write docs")] });
+    expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "docs" } });
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Write docs" } });
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
@@ -1079,7 +1084,64 @@ describe("App", () => {
       criteria: [],
       mergeCriterion: true,
     });
+    // The form closes once the task is added, and opens again empty.
+    expect(screen.queryByLabelText("Estimate")).not.toBeInTheDocument();
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
+    expect(screen.getByLabelText("Task title")).toHaveValue("");
     expect(screen.getByLabelText("Estimate")).toHaveValue("");
+  });
+
+  it("keeps the new task form to one line until it is used, and keeps its draft when closed", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    const form = await screen.findByRole("form", { name: "New task" });
+    const title = within(form).getByLabelText("Task title");
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Add task" })).toBeInTheDocument();
+
+    fireEvent.focusIn(title);
+    fireEvent.change(title, { target: { value: "Plan the release" } });
+    fireEvent.change(within(form).getByLabelText("Description"), { target: { value: "Notes" } });
+    expect(within(form).getByText("Markdown supported")).toBeInTheDocument();
+    fireEvent.keyDown(title, { key: "Escape" });
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+    expect(title).toHaveValue("Plan the release");
+
+    fireEvent.focusIn(title);
+    expect(within(form).getByLabelText("Description")).toHaveValue("Notes");
+    fireEvent.click(within(form).getByRole("button", { name: "Close New task" }));
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+    expect(title).toHaveFocus();
+
+    fireEvent.focusIn(title);
+    fireEvent.click(screen.getByRole("heading", { name: "toodo" }));
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+  });
+
+  it("keeps a memory entry draft while switching workspaces", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listMemory.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^toodo/ }));
+    fireEvent.click(within(await screen.findByRole("group", { name: "Workspace view" })).getByRole("button", { name: "Memory" }));
+    const form = await screen.findByRole("form", { name: "New memory entry" });
+    expect(within(form).queryByLabelText("Body")).not.toBeInTheDocument();
+    fireEvent.focusIn(within(form).getByLabelText("Title"));
+    fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "Prefer small PRs" } });
+    fireEvent.change(within(form).getByLabelText("Body"), { target: { value: "Easier to review." } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
+    expect(await screen.findByRole("heading", { name: "Memory of herdr" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
+    expect(await screen.findByRole("heading", { name: "Memory of toodo" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toHaveValue("Prefer small PRs");
+    fireEvent.focusIn(screen.getByLabelText("Title"));
+    expect(screen.getByLabelText("Body")).toHaveValue("Easier to review.");
   });
 
   it("creates a task with completion criteria", async () => {
@@ -1090,6 +1152,7 @@ describe("App", () => {
 
     await screen.findByText("No tasks in this workspace yet.");
     const form = screen.getByRole("form", { name: "New task" });
+    fireEvent.focusIn(within(form).getByLabelText("Task title"));
     fireEvent.change(within(form).getByLabelText("Task title"), { target: { value: "Add search" } });
     expect(within(form).getByRole("checkbox", { name: "Done when merged" })).toBeChecked();
     const add = within(form).getByRole("button", { name: "Add criterion" });
@@ -1129,6 +1192,7 @@ describe("App", () => {
 
     await screen.findByText("No tasks in this workspace yet.");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Fix login", { issue })] });
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Fix login" } });
     fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "#12x" } });
     expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
@@ -1138,6 +1202,7 @@ describe("App", () => {
     const details = await openDetails("Fix login");
     expect(await within(details).findByLabelText("Issue of #5")).toHaveTextContent("#12");
     expect(mocked.linkIssue).toHaveBeenCalledWith(5, 12);
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     expect(screen.getByLabelText("Issue number")).toHaveValue("");
   });
 
