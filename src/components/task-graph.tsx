@@ -959,7 +959,7 @@ function TimelineEdge({ sourceX, sourceY, targetX, targetY, markerEnd, style, in
   return (
     <>
       {/* A halo in the background color keeps the line apart from bar borders and crossing lines. */}
-      <path d={path} className="fill-none stroke-background" strokeWidth={5} style={{ opacity: style?.opacity }} />
+      <path d={path} className="dependency-halo fill-none" strokeWidth={5} style={{ opacity: style?.opacity }} />
       <BaseEdge path={path} markerEnd={markerEnd} style={style} interactionWidth={interactionWidth} />
     </>
   );
