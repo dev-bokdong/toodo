@@ -613,7 +613,7 @@ describe("App", () => {
     const tasks = await screen.findByRole("list", { name: "Tasks" });
     expect(await within(tasks).findByText("Add UI")).toBeInTheDocument();
     expect(within(tasks).getByText("Ready")).toBeInTheDocument();
-    expect(within(tasks).getByText("Planned")).toBeInTheDocument();
+    expect(within(tasks).getByText("Blocked")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "ready" } });
     expect(within(tasks).getAllByRole("listitem")).toHaveLength(1);
     expect(within(tasks).getByText("Add UI")).toBeInTheDocument();
