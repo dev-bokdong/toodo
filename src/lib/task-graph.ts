@@ -484,6 +484,30 @@ export function timelineAxis(
   return { ticks, majorTicks };
 }
 
+/** Generous width of an axis header label in its 10px font, left padding included. */
+export function axisLabelWidth(text: string): number {
+  return text.length * 6 + 6;
+}
+
+/**
+ * Where the label of a major tick starts, relative to the tick, or null to leave it out. The
+ * label of a period that began left of the screen (`viewLeft`) stays at the screen's left edge,
+ * and a label that would run into the Now label (`now`) moves past it; either way it must still
+ * fit inside its period, or it would be cut off at the edge or collide with the next one.
+ */
+export function majorLabelOffset(
+  tick: TimelineMajorTick,
+  width: number,
+  viewLeft: number,
+  now: { x: number; width: number } | null,
+): number | null {
+  let left = Math.max(tick.x, viewLeft);
+  if (now !== null && left < now.x + now.width && left + width > now.x) {
+    left = now.x + now.width;
+  }
+  return left + width > tick.right ? null : left - tick.x;
+}
+
 /**
  * Lays tasks out as a Gantt chart: one row per task, prerequisites before their dependents.
  * A task that has not started waits at `now`, pushed right past the bars of its unfinished

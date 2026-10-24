@@ -5,6 +5,7 @@ import {
   dependenciesDone,
   dependencyEdges,
   layoutTimeline,
+  majorLabelOffset,
   openingViewport,
   relatedTasks,
   pausesStartedTask,
@@ -396,6 +397,29 @@ describe("layoutTimeline", () => {
       Array.from({ length: 12 }, (_, month) => `2026-${String(month + 1).padStart(2, "0")}`),
     );
     expect(axis.majorTicks).toEqual([{ at: jan(1), x: 0, right: 365 * 3, label: "2026" }]);
+  });
+});
+
+describe("majorLabelOffset", () => {
+  const tick = { at: 0, x: 0, right: 400, label: "2026-10" };
+
+  it("keeps the label of a period that began off screen at the left edge", () => {
+    expect(majorLabelOffset(tick, 50, -100, null)).toBe(0);
+    expect(majorLabelOffset(tick, 50, 120, null)).toBe(120);
+  });
+
+  it("leaves out a label that would be cut off where its period ends", () => {
+    expect(majorLabelOffset(tick, 50, 360, null)).toBeNull();
+  });
+
+  it("moves a label that would run into the Now label past it", () => {
+    expect(majorLabelOffset(tick, 50, 120, { x: 136, width: 60 })).toBe(196);
+    expect(majorLabelOffset(tick, 50, 120, { x: 300, width: 60 })).toBe(120);
+  });
+
+  it("leaves out a label that has no room left after the Now label", () => {
+    expect(majorLabelOffset(tick, 50, 120, { x: 320, width: 60 })).toBe(120);
+    expect(majorLabelOffset(tick, 50, 300, { x: 316, width: 60 })).toBeNull();
   });
 });
 
