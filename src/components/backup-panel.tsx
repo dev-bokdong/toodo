@@ -182,7 +182,7 @@ export function BackupPanel() {
         <ul aria-label="Saved backups" className="flex max-h-48 flex-col gap-1 overflow-y-auto">
           {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">No backups yet.</li>}
           {backups.data?.map((backup) => (
-            <li key={backup.path} className="flex items-center justify-between gap-1 text-xs" title={backup.path}>
+            <li key={backup.path} className="flex flex-wrap items-center justify-between gap-1 text-xs" title={backup.path}>
               <span className="min-w-0">
                 <span className="block truncate">{formatTime(backup.createdAt)}</span>
                 <span className="text-muted-foreground">
@@ -194,7 +194,7 @@ export function BackupPanel() {
                   <Button
                     changesData
                     size="xs"
-                    variant="ghost"
+                    variant="outline"
                     aria-label={`Download backup from ${formatTime(backup.createdAt)}`}
                     disabled={downloadBackup.isPending}
                     onClick={() => {
@@ -207,14 +207,14 @@ export function BackupPanel() {
                 )}
                 <Button
                   size="xs"
-                  variant="ghost"
-                  aria-label={`Restore backup from ${formatTime(backup.createdAt)}`}
+                  variant="outline"
+                  aria-label={`Restore this backup from ${formatTime(backup.createdAt)}`}
                   onClick={() => {
                     setNotice(null);
                     setConfirming({ kind: "backup", path: backup.path });
                   }}
                 >
-                  Restore
+                  Restore this backup
                 </Button>
               </span>
             </li>
@@ -284,7 +284,7 @@ function AutoBackupForm({ initial }: { initial: BackupSettings }) {
           {save.error.message}
         </p>
       )}
-      <Button type="submit" size="xs" variant="secondary" className="self-start" disabled={save.isPending}>
+      <Button type="submit" size="xs" variant="outline" className="self-start" disabled={save.isPending}>
         {save.isPending ? "Saving..." : "Save schedule"}
       </Button>
     </form>

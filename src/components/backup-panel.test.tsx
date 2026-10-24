@@ -102,7 +102,7 @@ describe("BackupPanel", () => {
     renderPanel();
 
     const list = await screen.findByRole("list", { name: "Saved backups" });
-    fireEvent.click(await within(list).findByRole("button", { name: /^Restore backup from/ }));
+    fireEvent.click(await within(list).findByRole("button", { name: /^Restore this backup from/ }));
     fireEvent.click(screen.getByRole("button", { name: "Replace data" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("not a Toodo database");
