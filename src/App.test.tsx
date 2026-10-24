@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
-import { formatDate } from "@/lib/timeline";
+import { formatFull, formatWhen } from "@/lib/timeline";
 import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notification";
@@ -10,7 +10,9 @@ import {
   commands,
   events,
   type CommitRecord,
+  type Criterion,
   type HerdrMachine,
+  type MemoryEntry,
   type Task,
   type TaskAgentStatus,
   type Workspace,
@@ -39,9 +41,13 @@ vi.mock("@/lib/bindings", () => ({
     updateTask: vi.fn(),
     pauseTask: vi.fn(),
     setCompletionNote: vi.fn(),
+    checkCriterion: vi.fn(),
     deleteTask: vi.fn(),
     addDependency: vi.fn(),
     removeDependency: vi.fn(),
+    listTaskRelations: vi.fn(),
+    addTaskRelation: vi.fn(),
+    removeTaskRelation: vi.fn(),
     herdrStatus: vi.fn(),
     getMachineSettings: vi.fn(),
     saveMachineSettings: vi.fn(),
@@ -62,7 +68,7 @@ vi.mock("@/lib/bindings", () => ({
     addHerdrMachine: vi.fn(),
     listSshHosts: vi.fn(),
     addSshHost: vi.fn(),
-    listRemoteDirectories: vi.fn(),
+    listDirectories: vi.fn(),
     listAgentStatuses: vi.fn(),
     listPullRequestStatuses: vi.fn(),
     listBackups: vi.fn(),
@@ -72,12 +78,19 @@ vi.mock("@/lib/bindings", () => ({
     saveBackupSettings: vi.fn(),
     exportDatabase: vi.fn(),
     restoreDatabase: vi.fn(),
+    restoreBackup: vi.fn(),
     reviewPeriod: vi.fn(),
     saveReport: vi.fn(),
+    listMemory: vi.fn(),
+    addMemory: vi.fn(),
+    updateMemory: vi.fn(),
+    supersedeMemory: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
     workspacesChanged: { listen: vi.fn() },
+    memoryChanged: { listen: vi.fn() },
+    chatChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
     updateCheckRequested: { listen: vi.fn() },
@@ -128,6 +141,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     resolution: null,
     completionNote: null,
     notes: [],
+    criteria: [],
     timeline: [],
     milestones: {
       plannedAt: null,
@@ -136,6 +150,20 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
       completedAt: null,
       pausedAt: null,
     },
+    ...overrides,
+  };
+}
+
+function criterion(id: number, text: string, overrides: Partial<Criterion> = {}): Criterion {
+  return {
+    id,
+    text,
+    kind: "manual",
+    target: null,
+    state: "pending",
+    evidence: null,
+    checkedBy: null,
+    checkedAt: null,
     ...overrides,
   };
 }
@@ -160,7 +188,30 @@ function renderApp() {
 /** Renders the app and opens one workspace, since the app starts on All workspaces. */
 async function renderWorkspace(name: RegExp = /^toodo/) {
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name }));
+  // The first render of a test file is slow on a loaded machine.
+  fireEvent.click(await screen.findByRole("button", { name }, { timeout: 5000 }));
+}
+
+/** The row of the task titled `title` in the list. */
+function row(title: string) {
+  return screen.getByRole("button", { name: title }).closest("li") as HTMLElement;
+}
+
+/** The list view's tasks, in sections by status. */
+function taskList() {
+  return screen.findByRole("region", { name: "Tasks" });
+}
+
+/** Opens the details sheet of the task titled `title` from its row in the list. */
+async function openDetails(title: string) {
+  fireEvent.click(await within(await taskList()).findByRole("button", { name: title }));
+  return screen.findByRole("complementary", { name: "Task details" });
+}
+
+/** Picks `name` from the "More" menu of task `id`, in a row or, given `scope`, in the details sheet. */
+async function chooseAction(id: number, name: string, scope: HTMLElement = document.body) {
+  fireEvent.click(await within(scope).findByRole("button", { name: `More actions for #${id}` }));
+  fireEvent.click(await screen.findByRole("menuitem", { name }));
 }
 
 describe("App", () => {
@@ -180,6 +231,7 @@ describe("App", () => {
       data: { machine, worktreeRoot: null },
     }));
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listTaskRelations.mockResolvedValue({ status: "ok", data: [] });
     mocked.branchFreshness.mockResolvedValue({
       status: "ok",
       data: { base: "origin/main", behind: 0, fetchError: null, mergeable: null, mergeableError: null },
@@ -194,6 +246,8 @@ describe("App", () => {
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.workspacesChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.memoryChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.chatChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
@@ -223,23 +277,118 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
+    // Done tasks are folded away until asked for.
+    expect(within(tasks).queryByText("Add storage")).not.toBeInTheDocument();
+    fireEvent.click(within(tasks).getByRole("button", { name: "Done 1" }));
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
-    const dependencies = within(tasks).getByRole("group", { name: "Dependencies of #2" });
-    expect(within(dependencies).getByText("#1")).toBeInTheDocument();
     // Its only prerequisite is done, so #2 can be started now.
-    expect(within(tasks).getByText("Ready")).toBeInTheDocument();
-    const timeline = within(tasks).getByLabelText("Timeline of #1");
-    expect(timeline).toHaveTextContent(`Planned ${formatDate(1760000000)}`);
-    expect(timeline).toHaveTextContent(`Completed ${formatDate(1760500000)}`);
-    expect(timeline).not.toHaveTextContent("Paused");
-    expect(within(tasks).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
+    expect(within(row("Add UI")).getByText("Ready")).toBeInTheDocument();
     expect(within(tasks).queryByText("Fix ssh")).not.toBeInTheDocument();
+    let details = await openDetails("Add UI");
+    const dependencies = within(details).getByRole("group", { name: "Dependencies of #2" });
+    expect(within(dependencies).getByText("#1")).toBeInTheDocument();
+    expect(within(details).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
+    details = await openDetails("Add storage");
+    const timeline = within(details).getByLabelText("Timeline of #1");
+    expect(timeline).toHaveTextContent(`Planned${formatWhen(1760000000)}`);
+    expect(timeline).toHaveTextContent(`Completed${formatWhen(1760500000)}`);
+    expect(within(timeline).getByText(formatWhen(1760500000))).toHaveAttribute("title", formatFull(1760500000));
+    expect(timeline).not.toHaveTextContent("Paused");
 
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(screen.queryByText("Add storage")).not.toBeInTheDocument();
+  });
+
+  it("reads, adds, edits, and supersedes the memory of a workspace and the shared memory", async () => {
+    const entry = (id: number, workspaceId: number | null, title: string, overrides: Partial<MemoryEntry> = {}) =>
+      ({
+        id,
+        workspaceId,
+        kind: "decision",
+        title,
+        body: "",
+        taskId: null,
+        createdAt: 1760000000,
+        updatedAt: 1760000000,
+        supersededBy: null,
+        ...overrides,
+      }) satisfies MemoryEntry;
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listMemory.mockImplementation(async (workspaceId, includeSuperseded) => ({
+      status: "ok",
+      data:
+        workspaceId === null
+          ? [entry(9, null, "Write docs in English", { kind: "rule" })]
+          : [
+              entry(2, 1, "Use npm scripts", { body: "Runs on **Windows**.", taskId: 4 }),
+              ...(includeSuperseded ? [entry(1, 1, "Use make", { supersededBy: 2 })] : []),
+            ],
+    }));
+    mocked.addMemory.mockResolvedValue({ status: "ok", data: entry(3, 1, "Keep it") });
+    mocked.updateMemory.mockResolvedValue({ status: "ok", data: entry(2, 1, "Use npm run") });
+    mocked.supersedeMemory.mockResolvedValue({ status: "ok", data: entry(4, 1, "Use pnpm") });
+    await renderWorkspace();
+
+    const views = await screen.findByRole("group", { name: "Workspace view" });
+    fireEvent.click(within(views).getByRole("button", { name: "Memory" }));
+    const entries = await screen.findByRole("list", { name: "Memory entries" });
+    expect(screen.getByRole("heading", { name: "Memory of toodo" })).toBeInTheDocument();
+    const current = within(entries).getByRole("listitem", { name: "Memory entry #2" });
+    expect(current).toHaveTextContent("Use npm scripts");
+    expect(current).toHaveTextContent("from task #4");
+    expect((await within(current).findByText("Windows")).tagName).toBe("STRONG");
+    expect(within(entries).queryByText("Use make")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Show superseded entries"));
+    const old = await screen.findByRole("listitem", { name: "Memory entry #1" });
+    expect(old).toHaveTextContent("superseded by #2");
+    expect(within(old).queryByRole("button", { name: "Edit memory entry #1" })).not.toBeInTheDocument();
+
+    const form = screen.getByRole("form", { name: "New memory entry" });
+    fireEvent.focusIn(within(form).getByLabelText("Title"));
+    fireEvent.change(within(form).getByLabelText("Kind"), { target: { value: "rule" } });
+    fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "Keep it" } });
+    fireEvent.change(within(form).getByLabelText("Body"), { target: { value: "Small." } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add entry" }));
+    await waitFor(() =>
+      expect(mocked.addMemory).toHaveBeenCalledWith(1, { kind: "rule", title: "Keep it", body: "Small.", taskId: null }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit memory entry #2" }));
+    const edit = screen.getByRole("form", { name: "Edit of #2" });
+    expect(within(edit).getByLabelText("Body")).toHaveValue("Runs on **Windows**.");
+    fireEvent.change(within(edit).getByLabelText("Title"), { target: { value: "Use npm run" } });
+    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocked.updateMemory).toHaveBeenCalledWith(2, {
+        kind: "decision",
+        title: "Use npm run",
+        body: "Runs on **Windows**.",
+        taskId: 4,
+      }),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Supersede memory entry #2" }));
+    const replacement = screen.getByRole("form", { name: "Replacement of #2" });
+    fireEvent.change(within(replacement).getByLabelText("Title"), { target: { value: "Use pnpm" } });
+    fireEvent.click(within(replacement).getByRole("button", { name: "Supersede" }));
+    await waitFor(() =>
+      expect(mocked.supersedeMemory).toHaveBeenCalledWith(2, {
+        kind: "decision",
+        title: "Use pnpm",
+        body: "",
+        taskId: 4,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Shared memory" }));
+    expect(await screen.findByRole("heading", { name: "Shared memory" })).toBeInTheDocument();
+    expect(await screen.findByText("Write docs in English")).toBeInTheDocument();
+    expect(mocked.listMemory).toHaveBeenCalledWith(null, false);
   });
 
   it("plans dependencies across workspaces and lists every workspace together", async () => {
@@ -252,7 +401,8 @@ describe("App", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: /^herdr/ }));
-    const add = await screen.findByRole("combobox", { name: "Add dependency to #3" });
+    const details = await openDetails("Build UI");
+    const add = await within(details).findByRole("combobox", { name: "Add dependency to #3" });
     const groups = within(add).getAllByRole("group");
     expect(groups.map((group) => group.getAttribute("label"))).toEqual(["herdr", "toodo"]);
     expect(within(groups[1]).getByRole("option", { name: "#1 Add low level API" })).toBeInTheDocument();
@@ -269,11 +419,12 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     expect(await screen.findByRole("heading", { name: "All workspaces" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "List" }));
-    const tasks = screen.getByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(within(tasks).getAllByRole("listitem")).toHaveLength(3);
     expect(within(tasks).getByText("Add low level API")).toBeInTheDocument();
     expect(within(tasks).getByText("Write docs")).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Dependencies of #3" })).getByText("toodo #1")).toBeInTheDocument();
+    const all = await openDetails("Build UI");
+    expect(within(within(all).getByRole("group", { name: "Dependencies of #3" })).getByText("toodo #1")).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "New task" })).not.toBeInTheDocument();
   });
 
@@ -314,20 +465,24 @@ describe("App", () => {
     expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-12");
     const completed = await screen.findByRole("region", { name: "Completed" });
     expect(within(completed).getByText("Add storage")).toBeInTheDocument();
-    expect(within(completed).getByText(`toodo · ${formatDate(at)}`)).toBeInTheDocument();
-    expect(within(completed).getByText("https://github.com/acme/toodo/pull/7")).toBeInTheDocument();
+    expect(within(completed).getByText("toodo ·")).toHaveTextContent(`toodo · ${formatWhen(at)}`);
+    const pullRequest = within(completed).getByRole("link", { name: "Pull request #7" });
+    expect(pullRequest).toHaveTextContent("#7");
+    expect(pullRequest).toHaveAttribute("href", "https://github.com/acme/toodo/pull/7");
+    expect(within(completed).getByRole("button", { name: "Open #1 Add storage" })).toBeInTheDocument();
     expect(within(completed).getByRole("list", { name: "Commits of #1 this week" })).toHaveTextContent(
       "0123456Add the storage schema",
     );
     const workedOn = screen.getByRole("region", { name: "Worked on" });
-    expect(within(workedOn).getByText(`herdr · ${formatDate(at)}`)).toBeInTheDocument();
+    expect(within(workedOn).getByText("herdr ·")).toHaveTextContent(`herdr · ${formatWhen(at)}`);
     const { start, end } = weekPeriod("2026-10-12");
     expect(mocked.reviewPeriod).toHaveBeenCalledWith(start, end);
     const summary = screen.getByRole("region", { name: "Summary" });
     expect(within(summary).getByText("Completed by type").nextSibling).toHaveTextContent("feat 1");
     expect(within(summary).queryByRole("list", { name: "Completed per month" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Markdown" }));
     expect(await screen.findByText("Copied as Markdown.")).toBeInTheDocument();
     expect(writeText).toHaveBeenCalledWith(
       expect.stringContaining(
@@ -350,7 +505,8 @@ describe("App", () => {
     expect(within(months).getAllByRole("listitem")).toHaveLength(12);
     expect(within(months).getAllByRole("listitem")[9]).toHaveTextContent("2026-101");
 
-    fireEvent.click(screen.getByRole("button", { name: "Save as CSV" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save as CSV" }));
     expect(await screen.findByText("Saved to C:\\reports\\review.csv")).toBeInTheDocument();
     expect(mockedSaveDialog).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "toodo-review-2026.csv" }));
     expect(mocked.saveReport).toHaveBeenCalledWith(
@@ -389,7 +545,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
 
@@ -401,7 +557,7 @@ describe("App", () => {
     const unplaced = within(timeline).getByRole("complementary", { name: "Tasks without a planned date" });
     expect(within(unplaced).getByText("Write docs")).toBeInTheDocument();
     expect(within(timeline).getByRole("button", { name: "Week" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByRole("list", { name: "Tasks" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Tasks" })).not.toBeInTheDocument();
 
     fireEvent.click(within(timeline).getByRole("button", { name: "Month" }));
     expect(within(timeline).getByRole("button", { name: "Month" })).toHaveAttribute("aria-pressed", "true");
@@ -451,14 +607,14 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "sqlite" } });
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
     expect(within(tasks).queryByText("Fix login")).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "in_progress" } });
     expect(await screen.findByText("No tasks match the search and filters.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
@@ -471,7 +627,7 @@ describe("App", () => {
     // The filters stay when switching to the list of every workspace.
     fireEvent.click(screen.getByRole("button", { name: "List" }));
     fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "SSH" } });
-    const all = screen.getByRole("list", { name: "Tasks" });
+    const all = screen.getByRole("region", { name: "Tasks" });
     expect(within(all).getAllByRole("listitem")).toHaveLength(1);
     expect(within(all).getByText("Fix ssh")).toBeInTheDocument();
   });
@@ -497,10 +653,10 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByText("Add UI")).toBeInTheDocument();
-    expect(within(tasks).getByText("Ready")).toBeInTheDocument();
-    expect(within(tasks).getByText("Planned")).toBeInTheDocument();
+    expect(within(row("Add UI")).getByText("Ready")).toBeInTheDocument();
+    expect(within(row("Write docs")).getByText("Blocked")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "ready" } });
     expect(within(tasks).getAllByRole("listitem")).toHaveLength(1);
     expect(within(tasks).getByText("Add UI")).toBeInTheDocument();
@@ -533,7 +689,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     // The details panel names other tasks too, as dependency choices; look only at the bars.
@@ -562,9 +718,16 @@ describe("App", () => {
     );
     expect(bar("Add UI").querySelector("[data-dimmed]")).toBeNull();
 
+    bar("Add UI").focus();
     fireEvent.click(bar("Add UI"));
+    expect(
+      within(await within(timeline).findByRole("complementary", { name: "Task details" })).getByRole("heading", {
+        name: "Task details",
+      }),
+    ).toHaveFocus();
     fireEvent.click(await within(timeline).findByRole("button", { name: "Close details" }));
     expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument();
+    expect(bar("Add UI")).toHaveFocus();
   });
 
   it("summarizes a hovered timeline bar and moves between rows with the arrow keys", async () => {
@@ -583,7 +746,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const bar = (title: string) =>
@@ -595,7 +758,7 @@ describe("App", () => {
     fireEvent.mouseEnter(bar("Add storage"));
     const summary = await screen.findByRole("tooltip", { name: "Summary of #1" });
     expect(summary).toHaveTextContent("Add storage");
-    expect(summary).toHaveTextContent(`Completed${formatDate(plannedAt + 3600)}`);
+    expect(summary).toHaveTextContent(`Completed${formatWhen(plannedAt + 3600)}`);
     fireEvent.mouseLeave(bar("Add storage"));
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
 
@@ -639,7 +802,7 @@ describe("App", () => {
     ]);
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     expect(await within(timeline).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
@@ -701,13 +864,15 @@ describe("App", () => {
     fireEvent.click(within(timeline).getByRole("button", { name: "Day" }));
 
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
-    fireEvent.change(await screen.findByLabelText("Task title"), { target: { value: "Half-written task" } });
+    fireEvent.focusIn(await screen.findByLabelText("Task title"));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Half-written task" } });
     fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "fix" } });
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(screen.getByLabelText("Task title")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     expect(await screen.findByLabelText("Task title")).toHaveValue("Half-written task");
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     expect(screen.getByLabelText("Task type")).toHaveValue("fix");
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
@@ -777,12 +942,38 @@ describe("App", () => {
     });
   });
 
+  it("makes a local folder a new repository", async () => {
+    const notes: Workspace = { ...toodo, id: 3, name: "notes", location: { kind: "local", path: "C:\\dev\\notes" } };
+    mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.createWorkspace.mockResolvedValue({ status: "ok", data: notes });
+    mockedOpenDialog.mockResolvedValue("C:\\dev\\notes");
+    renderApp();
+
+    await screen.findByText("No workspaces yet.");
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [notes] });
+    fireEvent.click(screen.getByRole("button", { name: "Init on Local" }));
+    const form = screen.getByRole("form", { name: "Init workspace on Local" });
+    fireEvent.click(within(form).getByRole("button", { name: "Browse..." }));
+    await waitFor(() => expect(within(form).getByLabelText("Folder")).toHaveValue("C:\\dev\\notes"));
+    expect(within(form).getByLabelText("Name")).toHaveValue("notes");
+    fireEvent.click(within(form).getByRole("button", { name: "Init workspace" }));
+
+    expect(await screen.findByRole("heading", { name: "notes" })).toBeInTheDocument();
+    expect(mocked.createWorkspace).toHaveBeenCalledWith({
+      name: "notes",
+      location: { kind: "local", path: "C:\\dev\\notes" },
+      source: { kind: "init" },
+      defaultBaseBranch: null,
+    });
+  });
+
   it("clones into a folder browsed on an SSH host and selects the workspace", async () => {
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [savedMachine("devbox")] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: herdr });
-    mocked.listRemoteDirectories.mockImplementation(async (_machine, path) => ({
+    mocked.listDirectories.mockImplementation(async (_machine, path) => ({
       status: "ok",
       data:
         path === null
@@ -801,13 +992,21 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
     const browser = screen.getByRole("group", { name: "Browse folders on devbox" });
+    await within(browser).findByRole("button", { name: "src/" });
+    const folder = within(browser).getByLabelText("Remote folder");
+    fireEvent.change(folder, { target: { value: "/home" } });
+    fireEvent.keyDown(folder, { key: "Enter" });
+    await within(browser).findByRole("button", { name: "me/" });
+    expect(mocked.createWorkspace).not.toHaveBeenCalled();
+    fireEvent.change(folder, { target: { value: "" } });
+    fireEvent.keyDown(folder, { key: "Enter" });
     fireEvent.click(await within(browser).findByRole("button", { name: "src/" }));
     await within(browser).findByText("No subfolders");
     fireEvent.click(within(browser).getByRole("button", { name: "Select folder" }));
 
     expect(screen.getByLabelText("Parent folder")).toHaveValue("/home/me/src");
     expect(screen.getByText("Clones into /home/me/src/herdr")).toBeInTheDocument();
-    expect(mocked.listRemoteDirectories).toHaveBeenCalledWith("devbox", null);
+    expect(mocked.listDirectories).toHaveBeenCalledWith({ kind: "ssh", label: "devbox" }, null);
     fireEvent.click(screen.getByRole("button", { name: "Clone workspace" }));
 
     expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
@@ -871,6 +1070,8 @@ describe("App", () => {
 
     await screen.findByText("No tasks in this workspace yet.");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Write docs")] });
+    expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "docs" } });
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Write docs" } });
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
@@ -888,8 +1089,105 @@ describe("App", () => {
       description: "",
       estimate: { unit: "weeks", amount: 2.5 },
       dueDate: "2026-11-01",
+      criteria: [],
+      mergeCriterion: true,
     });
+    // The form closes once the task is added, and opens again empty.
+    expect(screen.queryByLabelText("Estimate")).not.toBeInTheDocument();
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
+    expect(screen.getByLabelText("Task title")).toHaveValue("");
     expect(screen.getByLabelText("Estimate")).toHaveValue("");
+  });
+
+  it("keeps the new task form to one line until it is used, and keeps its draft when closed", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    const form = await screen.findByRole("form", { name: "New task" });
+    const title = within(form).getByLabelText("Task title");
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Add task" })).toBeInTheDocument();
+
+    fireEvent.focusIn(title);
+    fireEvent.change(title, { target: { value: "Plan the release" } });
+    fireEvent.change(within(form).getByLabelText("Description"), { target: { value: "Notes" } });
+    expect(within(form).getByText("Markdown supported")).toBeInTheDocument();
+    fireEvent.keyDown(title, { key: "Escape" });
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+    expect(title).toHaveValue("Plan the release");
+
+    fireEvent.focusIn(title);
+    expect(within(form).getByLabelText("Description")).toHaveValue("Notes");
+    fireEvent.click(within(form).getByRole("button", { name: "Close New task" }));
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+    expect(title).toHaveFocus();
+
+    fireEvent.focusIn(title);
+    fireEvent.click(screen.getByRole("heading", { name: "toodo" }));
+    expect(within(form).queryByLabelText("Description")).not.toBeInTheDocument();
+  });
+
+  it("keeps a memory entry draft while switching workspaces", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listMemory.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^toodo/ }));
+    fireEvent.click(within(await screen.findByRole("group", { name: "Workspace view" })).getByRole("button", { name: "Memory" }));
+    const form = await screen.findByRole("form", { name: "New memory entry" });
+    expect(within(form).queryByLabelText("Body")).not.toBeInTheDocument();
+    fireEvent.focusIn(within(form).getByLabelText("Title"));
+    fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "Prefer small PRs" } });
+    fireEvent.change(within(form).getByLabelText("Body"), { target: { value: "Easier to review." } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
+    expect(await screen.findByRole("heading", { name: "Memory of herdr" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
+    expect(await screen.findByRole("heading", { name: "Memory of toodo" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toHaveValue("Prefer small PRs");
+    fireEvent.focusIn(screen.getByLabelText("Title"));
+    expect(screen.getByLabelText("Body")).toHaveValue("Easier to review.");
+  });
+
+  it("creates a task with completion criteria", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.createTask.mockResolvedValue({ status: "ok", data: task(5, 1, "Add search") });
+    await renderWorkspace();
+
+    await screen.findByText("No tasks in this workspace yet.");
+    const form = screen.getByRole("form", { name: "New task" });
+    fireEvent.focusIn(within(form).getByLabelText("Task title"));
+    fireEvent.change(within(form).getByLabelText("Task title"), { target: { value: "Add search" } });
+    expect(within(form).getByRole("checkbox", { name: "Done when merged" })).toBeChecked();
+    const add = within(form).getByRole("button", { name: "Add criterion" });
+    fireEvent.click(add);
+    fireEvent.change(within(form).getByLabelText("Criterion 1 text"), { target: { value: " Docs reviewed " } });
+    fireEvent.click(add);
+    fireEvent.change(within(form).getByLabelText("Criterion 2 text"), { target: { value: "Tests pass" } });
+    expect(within(form).queryByLabelText("Criterion 2 target")).not.toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText("Criterion 2 kind"), { target: { value: "command" } });
+    // A command criterion cannot be added without its command.
+    expect(within(form).getByRole("button", { name: "Add task" })).toBeDisabled();
+    fireEvent.change(within(form).getByLabelText("Criterion 2 target"), { target: { value: "npm test" } });
+    // A row left blank is not sent.
+    fireEvent.click(add);
+    fireEvent.click(within(form).getByRole("button", { name: "Add task" }));
+
+    await waitFor(() => expect(within(form).queryByLabelText("Criterion 1 text")).not.toBeInTheDocument());
+    expect(mocked.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Add search",
+        criteria: [
+          { text: "Docs reviewed", kind: "manual", target: null },
+          { text: "Tests pass", kind: "command", target: "npm test" },
+        ],
+        mergeCriterion: true,
+      }),
+    );
   });
 
   it("links the issue number given with a new task", async () => {
@@ -902,14 +1200,17 @@ describe("App", () => {
 
     await screen.findByText("No tasks in this workspace yet.");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Fix login", { issue })] });
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Fix login" } });
     fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "#12x" } });
     expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "#12" } });
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
-    expect(await screen.findByLabelText("Issue of #5")).toHaveTextContent("#12");
+    const details = await openDetails("Fix login");
+    expect(await within(details).findByLabelText("Issue of #5")).toHaveTextContent("#12");
     expect(mocked.linkIssue).toHaveBeenCalledWith(5, 12);
+    fireEvent.focusIn(screen.getByLabelText("Task title"));
     expect(screen.getByLabelText("Issue number")).toHaveValue("");
   });
 
@@ -922,8 +1223,8 @@ describe("App", () => {
       .mockResolvedValue({ status: "ok", data: task(1, 1, "Fix login", { issue }) });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Link issue to #1" }));
-    const number = screen.getByLabelText("Issue number of #1");
+    await chooseAction(1, "Link issue to #1");
+    const number = await screen.findByLabelText("Issue number of #1");
     fireEvent.change(number, { target: { value: "9" } });
     fireEvent.click(screen.getByRole("button", { name: "Link" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("issue #9 not found");
@@ -931,14 +1232,17 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login", { issue })] });
     fireEvent.change(number, { target: { value: "12" } });
     fireEvent.click(screen.getByRole("button", { name: "Link" }));
-    expect(await screen.findByLabelText("Issue of #1")).toHaveTextContent("#12");
+    await waitFor(() => expect(screen.queryByLabelText("Issue number of #1")).not.toBeInTheDocument());
     expect(mocked.linkIssue).toHaveBeenLastCalledWith(1, 12);
-    expect(screen.queryByRole("button", { name: "Link issue to #1" })).not.toBeInTheDocument();
+    const details = await openDetails("Fix login");
+    expect(await within(details).findByLabelText("Issue of #1")).toHaveTextContent("#12");
 
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login")] });
-    fireEvent.click(screen.getByRole("button", { name: "Unlink issue from #1" }));
-    expect(await screen.findByRole("button", { name: "Link issue to #1" })).toBeInTheDocument();
+    fireEvent.click(within(details).getByRole("button", { name: "Unlink issue from #1" }));
+    await waitFor(() => expect(within(details).queryByLabelText("Issue of #1")).not.toBeInTheDocument());
     expect(mocked.linkIssue).toHaveBeenLastCalledWith(1, null);
+    await chooseAction(1, "Link issue to #1", details);
+    expect(within(details).getByLabelText("Issue number of #1")).toBeInTheDocument();
   });
 
   it("starts a ready task in herdr and shows its worktree", async () => {
@@ -959,11 +1263,23 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
     fireEvent.click(start);
 
-    const open = await screen.findByRole("button", { name: "Open #1 in herdr" });
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In progress")).toBeInTheDocument();
-    expect(screen.getByText(/feat\/add-login-1/)).toHaveTextContent("D:\\wt\\toodo\\feat-add-login-1");
+    // Once started, opening a pull request is the next action; herdr is a menu item away.
+    expect(await screen.findByRole("button", { name: "Open pull request for #1" })).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("In progress")).toBeInTheDocument();
     expect(mocked.startTask).toHaveBeenCalledWith(1);
-    fireEvent.click(open);
+    const details = await openDetails("Add login");
+    expect(within(details).getByText("feat/add-login-1")).toBeInTheDocument();
+    expect(within(details).getByText("…\\toodo\\feat-add-login-1")).toHaveAttribute(
+      "title",
+      "D:\\wt\\toodo\\feat-add-login-1",
+    );
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    fireEvent.click(within(details).getByRole("button", { name: "Copy worktree path of #1" }));
+    expect(writeText).toHaveBeenCalledWith("D:\\wt\\toodo\\feat-add-login-1");
+    expect(await within(details).findByText("Copied")).toBeInTheDocument();
+    fireEvent.click(within(details).getByRole("button", { name: "Close details" }));
+    await chooseAction(1, "Open #1 in herdr");
     await waitFor(() => expect(mocked.openTaskInHerdr).toHaveBeenCalledWith(1));
   });
 
@@ -979,7 +1295,7 @@ describe("App", () => {
     mocked.listAgentStatuses.mockResolvedValue([{ taskId: 1, status: "working" }]);
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
 
     const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
@@ -1032,7 +1348,7 @@ describe("App", () => {
     const focus = vi.spyOn(document, "hasFocus");
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
     const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
 
@@ -1073,7 +1389,7 @@ describe("App", () => {
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByLabelText("CI of #1")).toHaveTextContent("CI running");
     expect(within(tasks).getByLabelText("Review of #1")).toHaveTextContent("Review pending");
     expect(within(tasks).queryByLabelText("CI of #2")).not.toBeInTheDocument();
@@ -1130,7 +1446,7 @@ describe("App", () => {
     fireEvent.click(start);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("worktree root is not set for machine local");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Ready")).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Ready")).toBeInTheDocument();
   });
 
   it("copies the MCP config for agents", async () => {
@@ -1340,7 +1656,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    expect(await screen.findByText("Locked while #3 is in review")).toBeInTheDocument();
+    expect(await screen.findByText("Locked while #3 is awaiting completion")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Change base branch" })).toBeDisabled();
   });
 
@@ -1417,8 +1733,9 @@ describe("App", () => {
       "3 commits behind origin/main",
     );
     // The branch was synced outside Toodo; rechecking clears the warning without waiting.
+    const details = await openDetails("Behind");
     synced = true;
-    fireEvent.click(screen.getByRole("button", { name: "Recheck base freshness of #1" }));
+    fireEvent.click(within(details).getByRole("button", { name: "Recheck base freshness of #1" }));
     await waitFor(() =>
       expect(screen.queryByRole("note", { name: "Base freshness of #1" })).not.toBeInTheDocument(),
     );
@@ -1441,6 +1758,7 @@ describe("App", () => {
   it("records commits, opens a pull request, and completes the task once it is merged", async () => {
     const started = task(1, 1, "Add login", {
       status: "in_progress",
+      criteria: [criterion(1, "Pull request merged into the base branch", { kind: "pr_merged" })],
       branch: "feat/add-login-1",
       worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
       herdrWorkspaceId: "w27",
@@ -1453,8 +1771,10 @@ describe("App", () => {
     mocked.refreshCommitRecords.mockResolvedValue({ status: "ok", data: [first] });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh commits of #1" }));
-    const commits = await screen.findByRole("list", { name: "Commits of #1" });
+    // The details sheet offers every action of the task as a button.
+    const details = await openDetails("Add login");
+    fireEvent.click(within(details).getByRole("button", { name: "Refresh commits of #1" }));
+    const commits = await within(details).findByRole("list", { name: "Commits of #1" });
     expect(within(commits).getByText("1111111")).toBeInTheDocument();
     expect(within(commits).getByText("Add login form")).toBeInTheDocument();
     expect(mocked.refreshCommitRecords).toHaveBeenCalledWith(1);
@@ -1464,20 +1784,21 @@ describe("App", () => {
     mocked.openPullRequest.mockResolvedValue({ status: "ok", data: inReview });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [inReview] });
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [first, second] });
-    fireEvent.click(screen.getByRole("button", { name: "Open pull request for #1" }));
+    fireEvent.click(within(details).getByRole("button", { name: "Open pull request for #1" }));
 
-    expect(await screen.findByText(pr)).toBeInTheDocument();
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In review")).toBeInTheDocument();
-    expect(await screen.findByText("Fix login redirect")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
+    expect(await within(details).findByText(pr)).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Awaiting completion")).toBeInTheDocument();
+    expect(await within(details).findByText("Fix login redirect")).toBeInTheDocument();
+    expect(within(details).getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
     expect(mocked.openPullRequest).toHaveBeenCalledWith(1);
 
     const done = { ...inReview, status: "done" as const };
     mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
-    fireEvent.click(screen.getByRole("button", { name: "Complete #1" }));
+    fireEvent.click(within(details).getByRole("button", { name: "Complete #1" }));
 
-    expect(await within(screen.getByRole("list", { name: "Tasks" })).findByText("Done")).toBeInTheDocument();
+    expect(await within(details).findByText("Done")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getByRole("button", { name: "Done 1" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Push #1 to its pull request" })).not.toBeInTheDocument();
     expect(mocked.completeTask).toHaveBeenCalledWith(1);
@@ -1498,7 +1819,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open pull request for #1" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("has no commits that are not on main");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In progress")).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("In progress")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open pull request for #1" })).toBeEnabled();
   });
 
@@ -1524,8 +1845,100 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In review")).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Awaiting completion")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
+  });
+
+  it("checks a manual criterion with evidence and unchecks it", async () => {
+    const docs = criterion(7, "Docs reviewed");
+    const started = task(1, 1, "Add search", { status: "in_progress", criteria: [docs] });
+    const checked = {
+      ...started,
+      criteria: [{ ...docs, state: "met" as const, evidence: "Read by Ada", checkedBy: "user" as const, checkedAt: 1760000000 }],
+    };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    mocked.checkCriterion.mockResolvedValue({ status: "ok", data: checked });
+    await renderWorkspace();
+
+    const details = await openDetails("Add search");
+    const criteria = within(details).getByRole("list", { name: "Criteria of #1" });
+    const box = () => within(criteria).getByRole("checkbox", { name: "Check criterion 7 of #1" });
+    expect(box()).not.toBeChecked();
+    fireEvent.click(box());
+    // Checking asks for the evidence before anything is saved.
+    expect(mocked.checkCriterion).not.toHaveBeenCalled();
+    fireEvent.change(within(criteria).getByLabelText("Evidence for criterion 7"), {
+      target: { value: " Read by Ada " },
+    });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [checked] });
+    fireEvent.click(within(criteria).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(within(criteria).queryByLabelText("Evidence for criterion 7")).not.toBeInTheDocument());
+    expect(mocked.checkCriterion).toHaveBeenCalledWith(1, 7, true, "Read by Ada");
+    expect(box()).toBeChecked();
+    expect(within(criteria).getByText(/^Read by Ada · Checked by you/)).toBeInTheDocument();
+
+    // Unchecking saves right away.
+    mocked.checkCriterion.mockResolvedValue({ status: "ok", data: started });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    fireEvent.click(box());
+
+    await waitFor(() => expect(box()).not.toBeChecked());
+    expect(mocked.checkCriterion).toHaveBeenLastCalledWith(1, 7, false, null);
+  });
+
+  it("marks a failed manual criterion as failed beside its checkbox", async () => {
+    const failed = task(1, 1, "Add search", {
+      status: "in_progress",
+      criteria: [
+        criterion(7, "Docs reviewed", { state: "failed", checkedBy: "user", checkedAt: 1760000000 }),
+        criterion(8, "Demo recorded"),
+      ],
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [failed] });
+    await renderWorkspace();
+
+    // The row counts the failure; the details sheet marks the criterion.
+    await within(await taskList()).findByRole("button", { name: "Add search" });
+    expect(row("Add search")).toHaveTextContent("0/2 criteria met1 failed");
+    const details = await openDetails("Add search");
+    const criteria = within(details).getByRole("list", { name: "Criteria of #1" });
+    const [failedItem, pendingItem] = within(criteria).getAllByRole("listitem");
+    expect(within(failedItem).getByRole("img", { name: "Failed" })).toBeInTheDocument();
+    expect(within(failedItem).getByRole("checkbox")).not.toBeChecked();
+    expect(within(pendingItem).queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("confirms the completion of a task whose criteria are all met", async () => {
+    const met = { state: "met" as const, checkedAt: 1760000000 };
+    const awaiting = task(1, 1, "Add search", {
+      status: "in_review",
+      criteria: [
+        criterion(1, "Branch merged into the base branch locally", {
+          ...met,
+          kind: "branch_merged_locally",
+          checkedBy: "toodo",
+        }),
+        criterion(2, "Docs reviewed", { ...met, checkedBy: "user", evidence: "Read by Ada" }),
+      ],
+    });
+    const done = { ...awaiting, status: "done" as const, resolution: "merged" as const };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [awaiting] });
+    mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
+    await renderWorkspace();
+
+    const tasks = await taskList();
+    expect(within(row("Add search")).getByText("Awaiting completion")).toBeInTheDocument();
+    expect(within(tasks).queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    fireEvent.click(within(tasks).getByRole("button", { name: "Confirm completion of #1" }));
+
+    expect(await within(tasks).findByRole("button", { name: "Done 1" })).toBeInTheDocument();
+    expect(mocked.completeTask).toHaveBeenCalledWith(1);
+    expect(within(tasks).queryByRole("button", { name: "Confirm completion of #1" })).not.toBeInTheDocument();
   });
 
   it("shows which pull request of another task shipped a done task", async () => {
@@ -1541,10 +1954,13 @@ describe("App", () => {
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
     await renderWorkspace();
 
-    const shipped = await screen.findByLabelText("Shipped with pull request of #2");
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 2" }));
+    let details = await openDetails("Fix typo");
+    const shipped = within(details).getByLabelText("Shipped with pull request of #2");
     expect(shipped).toHaveTextContent(url);
-    expect(shipped.parentElement).toHaveTextContent(`Shipped with${url}of #1`);
-    expect(screen.queryByLabelText("Shipped with pull request of #1")).not.toBeInTheDocument();
+    expect(shipped.parentElement).toHaveTextContent(`Shipped with${url}Pull request of #1`);
+    details = await openDetails("Add login");
+    expect(within(details).queryByLabelText("Shipped with pull request of #1")).not.toBeInTheDocument();
   });
 
   it("asks for a completion note on a done task and saves it", async () => {
@@ -1569,9 +1985,11 @@ describe("App", () => {
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
     await renderWorkspace();
 
-    expect(await screen.findByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
-    fireEvent.click(screen.getByRole("button", { name: "Add completion note to #1" }));
-    const save = screen.getByRole("button", { name: "Save note" });
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    const details = await openDetails("Add login");
+    expect(within(details).getByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
+    await chooseAction(1, "Add completion note to #1", details);
+    const save = within(details).getByRole("button", { name: "Save note" });
     expect(save).toBeDisabled();
 
     const noted = { ...done, completionNote: "Cut sign-in time in half" };
@@ -1651,7 +2069,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [research, dependent] });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Conclude #1 without merging" }));
+    await chooseAction(1, "Conclude #1 without merging");
     const conclude = screen.getByRole("button", { name: "Conclude without merge" });
     expect(conclude).toBeDisabled();
 
@@ -1669,16 +2087,16 @@ describe("App", () => {
     });
     fireEvent.click(conclude);
 
-    expect(await screen.findByLabelText("Completion note of #1")).toHaveTextContent(
+    // Concluded research is done, so it moves to the folded Done section.
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    expect(mocked.concludeTask).toHaveBeenCalledWith(1, "Twice as slow as the current cache");
+    expect(within(row("Try a new cache")).getByText("Not adopted")).toBeInTheDocument();
+    expect(screen.getByRole("note", { name: "Blocked prerequisites of #2" })).toHaveTextContent("#1 not adopted");
+    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
+    const details = await openDetails("Try a new cache");
+    expect(within(details).getByLabelText("Completion note of #1")).toHaveTextContent(
       "Twice as slow as the current cache",
     );
-    expect(mocked.concludeTask).toHaveBeenCalledWith(1, "Twice as slow as the current cache");
-    const tasks = screen.getByRole("list", { name: "Tasks" });
-    expect(within(tasks).getByText("Not adopted")).toBeInTheDocument();
-    expect(screen.getByRole("note", { name: "Blocked prerequisites of #2" })).toHaveTextContent(
-      "#1 was not adopted",
-    );
-    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
   });
 
   it("adds and removes task dependencies", async () => {
@@ -1689,7 +2107,8 @@ describe("App", () => {
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
 
-    const add = await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    const details = await openDetails("Add UI");
+    const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
     expect(within(add).getByRole("option", { name: "#1 Add storage" })).toBeInTheDocument();
     expect(within(add).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
     mocked.listTasks.mockResolvedValue({
@@ -1698,9 +2117,9 @@ describe("App", () => {
     });
     fireEvent.change(add, { target: { value: "1" } });
 
-    const remove = await screen.findByRole("button", { name: "Remove dependency #1 from #2" });
+    const remove = await within(details).findByRole("button", { name: "Remove dependency #1 from #2" });
     expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
-    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
+    expect(within(details).getByRole("button", { name: "Start #2" })).toBeDisabled();
     mocked.removeDependency.mockResolvedValue({ status: "ok", data: null });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
     fireEvent.click(remove);
@@ -1723,7 +2142,8 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    fireEvent.change(await screen.findByRole("combobox", { name: "Add dependency to #1" }), {
+    const details = await openDetails("Add storage");
+    fireEvent.change(within(details).getByRole("combobox", { name: "Add dependency to #1" }), {
       target: { value: "2" },
     });
 
@@ -1744,7 +2164,7 @@ describe("App", () => {
     mocked.updateTask.mockResolvedValue({ status: "ok", data: edited });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
     fireEvent.change(within(form).getByLabelText("Type of #1"), { target: { value: "fix" } });
     fireEvent.change(within(form).getByLabelText("Title of #1"), { target: { value: "  Add sign-in " } });
@@ -1764,7 +2184,48 @@ describe("App", () => {
       description: "new",
       estimate: null,
       dueDate: "2026-12-01",
+      criteria: null,
     });
+  });
+
+  it("edits the criteria of a task and keeps the existing ones by ID", async () => {
+    const original = task(1, 1, "Add search", {
+      criteria: [
+        criterion(3, "Pull request merged into the base branch", { kind: "pr_merged" }),
+        criterion(4, "Docs reviewed"),
+      ],
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
+    mocked.updateTask.mockResolvedValue({ status: "ok", data: original });
+    await renderWorkspace();
+
+    await chooseAction(1, "Edit #1");
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    // The merge criterion keeps its kind.
+    expect(within(form).getByLabelText("Criterion 1 kind of #1")).toBeDisabled();
+    fireEvent.change(within(form).getByLabelText("Criterion 2 text of #1"), {
+      target: { value: "Docs and changelog reviewed" },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "Add criterion to #1" }));
+    fireEvent.change(within(form).getByLabelText("Criterion 3 text of #1"), { target: { value: "Search answers" } });
+    fireEvent.change(within(form).getByLabelText("Criterion 3 kind of #1"), { target: { value: "url" } });
+    fireEvent.change(within(form).getByLabelText("Criterion 3 target of #1"), {
+      target: { value: "https://example.com/search" },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument());
+    expect(mocked.updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 1,
+        criteria: [
+          { id: 3, text: "Pull request merged into the base branch", kind: "pr_merged", target: null },
+          { id: 4, text: "Docs and changelog reviewed", kind: "manual", target: null },
+          { text: "Search answers", kind: "url", target: "https://example.com/search" },
+        ],
+      }),
+    );
   });
 
   it("asks before discarding unsaved edits of a task", async () => {
@@ -1772,14 +2233,14 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
     const title = within(form).getByLabelText("Title of #1");
-    expect(title).toHaveFocus();
+    await waitFor(() => expect(title).toHaveFocus());
     fireEvent.click(within(form).getByRole("button", { name: "Discard" }));
     expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1");
     const changed = screen.getByRole("form", { name: "Edit task #1" });
     fireEvent.change(within(changed).getByLabelText("Title of #1"), { target: { value: "Add sign-in" } });
     fireEvent.keyDown(within(changed).getByLabelText("Title of #1"), { key: "Escape" });
@@ -1793,6 +2254,76 @@ describe("App", () => {
     expect(mocked.updateTask).not.toHaveBeenCalled();
   });
 
+  it("closes inline forms on Escape and asks before discarding what was typed", async () => {
+    const started = task(1, 1, "Try a new cache", {
+      status: "in_progress",
+      branch: "feat/try-a-new-cache-1",
+      worktreePath: "D:\\wt\\toodo\\feat-try-a-new-cache-1",
+      herdrWorkspaceId: "w1",
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    const finished = task(2, 1, "Add storage", { status: "done", resolution: "merged" });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started, finished] });
+    await renderWorkspace();
+
+    await chooseAction(1, "Link issue to #1");
+    fireEvent.keyDown(screen.getByLabelText("Issue number of #1"), { key: "Escape" });
+    expect(screen.queryByRole("form", { name: "Issue form of #1" })).not.toBeInTheDocument();
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    // The details sheet keeps the note mounted while its form is closed.
+    const details = await openDetails("Add storage");
+    await chooseAction(2, "Add completion note to #2", details);
+    fireEvent.change(screen.getByLabelText("Completion note for #2"), { target: { value: "Shipped" } });
+    fireEvent.keyDown(screen.getByLabelText("Completion note for #2"), { key: "Escape" });
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Discard note of #2" })).getByRole("button", {
+        name: "Discard changes",
+      }),
+    );
+    expect(screen.queryByRole("form", { name: "Completion note form of #2" })).not.toBeInTheDocument();
+    // Opened again, the form starts out empty instead of asking.
+    await chooseAction(2, "Add completion note to #2", details);
+    expect(screen.getByLabelText("Completion note for #2")).toHaveValue("");
+    expect(screen.queryByRole("group", { name: "Discard note of #2" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText("Completion note for #2"), { key: "Escape" });
+    expect(screen.queryByRole("form", { name: "Completion note form of #2" })).not.toBeInTheDocument();
+
+    await chooseAction(1, "Conclude #1 without merging");
+    const conclusion = screen.getByRole("textbox", { name: "Conclusion of #1" });
+    fireEvent.change(conclusion, { target: { value: "Twice as slow" } });
+    fireEvent.keyDown(conclusion, { key: "Escape" });
+    const question = screen.getByRole("group", { name: "Discard conclusion of #1" });
+    expect(within(question).getByRole("button", { name: "Keep editing" })).toHaveFocus();
+    // A second Escape goes back to the form with the text kept.
+    fireEvent.keyDown(within(question).getByRole("button", { name: "Keep editing" }), { key: "Escape" });
+    expect(screen.getByRole("textbox", { name: "Conclusion of #1" })).toHaveValue("Twice as slow");
+    expect(screen.getByRole("textbox", { name: "Conclusion of #1" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(screen.queryByRole("form", { name: "Conclude #1" })).not.toBeInTheDocument();
+    expect(mocked.concludeTask).not.toHaveBeenCalled();
+  });
+
+  it("opens the phone menu as a modal drawer and returns focus when it closes", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    const open = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(open);
+    const menu = screen.getByRole("dialog", { name: "Menu" });
+    expect(menu).toHaveAttribute("aria-modal", "true");
+    expect(within(menu).getByRole("button", { name: "Close menu" })).toHaveFocus();
+    expect(open.closest("[inert]")).not.toBeNull();
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Menu" })).not.toBeInTheDocument();
+    expect(open.closest("[inert]")).toBeNull();
+    expect(open).toHaveFocus();
+  });
+
   it("keeps the timeline details open while its edit form has unsaved changes", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
@@ -1803,7 +2334,7 @@ describe("App", () => {
       data: [task(1, 1, "Add UI", { milestones: planned }), task(2, 1, "Write docs", { milestones: planned })],
     });
     await renderWorkspace();
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const bar = (title: string) =>
@@ -1814,7 +2345,7 @@ describe("App", () => {
 
     fireEvent.click(bar("Add UI"));
     const details = await within(timeline).findByRole("complementary", { name: "Task details" });
-    fireEvent.click(within(details).getByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1", details);
     const field = within(details).getByLabelText("Title of #1");
     fireEvent.change(field, { target: { value: "Add the UI" } });
 
@@ -1848,14 +2379,17 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
     await renderWorkspace();
 
-    expect(await screen.findByText("Steps form")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Edit #1" }));
+    // The row previews the first paragraph; the heading above it is left out.
+    await within(await taskList()).findByRole("button", { name: "Add login" });
+    expect(within(row("Add login")).getByText("form")).toBeInTheDocument();
+    expect(within(row("Add login")).queryByText(/Steps/)).not.toBeInTheDocument();
+    await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
     fireEvent.click(within(form).getByRole("button", { name: "Preview" }));
 
     const preview = within(form).getByRole("region", { name: "Preview of Description of #1" });
     expect(await within(preview).findByRole("heading", { name: "Steps" })).toBeInTheDocument();
-    expect(within(preview).getByRole("checkbox")).toBeChecked();
+    expect(within(preview).getByRole("img", { name: "Done" })).toBeInTheDocument();
     expect(within(form).queryByLabelText("Description of #1")).not.toBeInTheDocument();
     fireEvent.click(within(form).getByRole("button", { name: "Write" }));
     expect(within(form).getByLabelText("Description of #1")).toHaveValue("## Steps\n\n- [x] **form**");
@@ -1875,7 +2409,8 @@ describe("App", () => {
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
 
-    const add = await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    const details = await openDetails("Verify login");
+    const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
       data: [fix, { ...started, status: "planned", herdrWorkspaceId: null, dependsOn: [1] }],
@@ -1887,11 +2422,12 @@ describe("App", () => {
       }),
     );
 
-    expect(await screen.findByRole("note", { name: "Waiting prerequisites of #2" })).toHaveTextContent(
+    expect(await within(details).findByRole("note", { name: "Waiting prerequisites of #2" })).toHaveTextContent(
       "Waiting on #1",
     );
     expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
-    expect(screen.getByRole("button", { name: "Resume #2" })).toBeDisabled();
+    expect(within(details).getByRole("button", { name: "Resume #2" })).toBeDisabled();
+    expect(within(row("Verify login")).getByRole("note", { name: "Waiting prerequisites of #2" })).toBeInTheDocument();
   });
 
   it("asks whether to close the herdr workspace of a task an agent paused", async () => {
@@ -1913,7 +2449,7 @@ describe("App", () => {
     vi.mocked(isPermissionGranted).mockResolvedValue(true);
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     await renderWorkspace();
-    await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    await within(await taskList()).findByRole("button", { name: "Verify login" });
 
     // An agent adds the prerequisite through MCP, which leaves the workspace open.
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, paused] });
@@ -1997,6 +2533,106 @@ describe("App", () => {
     await waitFor(() => expect(mocked.focusAgentPane).toHaveBeenCalledTimes(2));
   });
 
+  it("shows related tasks in the details sheet and links and unlinks them", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage"),
+        task(2, 1, "Add UI"),
+        task(3, 1, "Write docs"),
+      ],
+    });
+    let relations = [{ taskId: 1, relatedId: 2 }];
+    mocked.listTaskRelations.mockImplementation(async () => ({
+      status: "ok",
+      data: structuredClone(relations),
+    }));
+    mocked.addTaskRelation.mockImplementation(
+      async (taskId: number, relatedId: number) => {
+        relations = [
+          ...relations,
+          {
+            taskId: Math.min(taskId, relatedId),
+            relatedId: Math.max(taskId, relatedId),
+          },
+        ];
+        return { status: "ok", data: null };
+      },
+    );
+    mocked.removeTaskRelation.mockImplementation(
+      async (taskId: number, relatedId: number) => {
+        relations = relations.filter(
+          (relation) =>
+            relation.taskId !== Math.min(taskId, relatedId) ||
+            relation.relatedId !== Math.max(taskId, relatedId),
+        );
+        return { status: "ok", data: null };
+      },
+    );
+    renderApp();
+
+    const timeline = await screen.findByRole("region", {
+      name: "Task timeline",
+    });
+    const bar = async (title: string) =>
+      (
+        await within(
+          timeline.querySelector(".react-flow__nodes") as HTMLElement,
+        ).findByText(title)
+      ).closest(".react-flow__node") as HTMLElement;
+    fireEvent.click(await bar("Add storage"));
+    const details = await within(timeline).findByRole("complementary", {
+      name: "Task details",
+    });
+    const related = await within(details).findByRole("list", {
+      name: "Related tasks of #1",
+    });
+    expect(within(related).getAllByRole("listitem")).toHaveLength(1);
+
+    // A chip opens the related task in the sheet.
+    fireEvent.click(
+      within(related).getByRole("button", { name: "Open related task #2" }),
+    );
+    expect(
+      await within(details).findByRole("heading", { name: "Add UI" }),
+    ).toBeInTheDocument();
+    // The link shows from both ends, and a task without links has no Related field.
+    expect(
+      await within(details).findByRole("list", { name: "Related tasks of #2" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(await bar("Write docs"));
+    expect(
+      await within(details).findByRole("heading", { name: "Write docs" }),
+    ).toBeInTheDocument();
+    expect(
+      within(details).queryByRole("region", { name: "Related" }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(within(details).getByLabelText("Add related task to #3"), {
+      target: { value: "1" },
+    });
+    await waitFor(() =>
+      expect(mocked.addTaskRelation).toHaveBeenCalledWith(3, 1),
+    );
+    const added = await within(details).findByRole("list", {
+      name: "Related tasks of #3",
+    });
+    fireEvent.click(
+      within(added).getByRole("button", {
+        name: "Remove related task #1 from #3",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocked.removeTaskRelation).toHaveBeenCalledWith(3, 1),
+    );
+    await waitFor(() =>
+      expect(
+        within(details).queryByRole("list", { name: "Related tasks of #3" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it("gathers tasks needing attention in the sidebar and shows one on the timeline", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
@@ -2054,7 +2690,30 @@ describe("App", () => {
     await waitFor(() => expect(within(attention).getAllByRole("listitem")).toHaveLength(2));
   });
 
-  it("shows the latest agent note in the list and every note in the task details", async () => {
+  it("opens the task a clicked notification asks for and drops it from the address", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
+    const milestones = { ...task(0, 1, "").milestones, plannedAt, startedAt: plannedAt + 3600 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { status: "in_progress", milestones }),
+        task(2, 1, "Fix redirect", { status: "in_progress", milestones }),
+      ],
+    });
+    window.history.replaceState(null, "", "/?task=2");
+
+    renderApp();
+
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    const details = await within(timeline).findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByRole("heading", { name: "Fix redirect" })).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+  });
+
+  it("puts a task whose agent reported a blocker under Needs attention and shows every note in the task details", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
     const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
@@ -2070,9 +2729,10 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [noted, task(2, 1, "Add logout")] });
     await renderWorkspace();
 
-    const latest = await screen.findByLabelText("Latest note of #1");
-    expect(latest).toHaveTextContent("BlockerNeed a test account for the provider+1 more");
-    expect(screen.queryByLabelText("Latest note of #2")).not.toBeInTheDocument();
+    const tasks = await taskList();
+    const attention = within(tasks).getByRole("list", { name: "Needs attention" });
+    expect(within(attention).getByRole("button", { name: "Add login" })).toBeInTheDocument();
+    expect(within(attention).queryByRole("button", { name: "Add logout" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
@@ -2100,17 +2760,20 @@ describe("App", () => {
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
     await screen.findByLabelText("Agent of #2");
-    const add = screen.getByRole("combobox", { name: "Add dependency to #2" });
+    const details = await openDetails("Verify login");
+    const add = () => within(details).getByRole("combobox", { name: "Add dependency to #2" });
 
-    fireEvent.change(add, { target: { value: "1" } });
+    fireEvent.change(add(), { target: { value: "1" } });
     const confirmation = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
     expect(confirmation).toHaveTextContent("Adding #1 as a prerequisite pauses #2");
+    // The question takes the place of the dependency row instead of pushing the row down.
+    expect(screen.queryByRole("group", { name: "Dependencies of #2" })).not.toBeInTheDocument();
     expect(mocked.addDependency).not.toHaveBeenCalled();
     fireEvent.click(within(confirmation).getByRole("button", { name: "Back" }));
     expect(screen.queryByRole("group", { name: "Confirm prerequisite of #2" })).not.toBeInTheDocument();
     expect(mocked.addDependency).not.toHaveBeenCalled();
 
-    fireEvent.change(add, { target: { value: "1" } });
+    fireEvent.change(add(), { target: { value: "1" } });
     fireEvent.click(
       within(await screen.findByRole("group", { name: "Confirm prerequisite of #2" })).getByRole("button", {
         name: "Pause and add",
@@ -2141,18 +2804,28 @@ describe("App", () => {
     mocked.deleteTask.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
 
-    const pause = await screen.findByRole("button", { name: "Pause #1" });
-    expect(screen.queryByRole("button", { name: "Delete #1" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for #1" }));
+    const pause = await screen.findByRole("menuitem", { name: "Pause #1" });
+    expect(screen.queryByRole("menuitem", { name: "Delete #1" })).not.toBeInTheDocument();
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [paused] });
     fireEvent.click(pause);
 
     expect(await screen.findByRole("button", { name: "Resume #1" })).toBeEnabled();
     expect(mocked.pauseTask).toHaveBeenCalledWith(1);
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Paused")).toBeInTheDocument();
-    expect(screen.getByLabelText("Timeline of #1")).toHaveTextContent(`Paused ${formatDate(1760200000)}`);
-    expect(screen.queryByRole("button", { name: "Pause #1" })).not.toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Paused")).toBeInTheDocument();
+    expect(row("Add login")).toHaveTextContent(`Paused ${formatWhen(1760200000)}`);
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete #1" }));
+    // Secondary actions sit in the More menu, Delete last and in the destructive style.
+    fireEvent.click(screen.getByRole("button", { name: "More actions for #1" }));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((item) => item.getAttribute("aria-label"))).toEqual([
+      "Show details of #1",
+      "Link issue to #1",
+      "Edit #1",
+      "Delete #1",
+    ]);
+    expect(items.at(-1)).toHaveClass("text-destructive");
+    fireEvent.click(items.at(-1) as HTMLElement);
     expect(mocked.deleteTask).not.toHaveBeenCalled();
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete #1" }));
@@ -2178,8 +2851,13 @@ describe("App", () => {
       .mockResolvedValueOnce({ status: "ok", data: null });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Delete #1" }));
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    await chooseAction(1, "Delete #1");
     expect(mocked.deleteTask).not.toHaveBeenCalled();
+    expect(screen.getByRole("group", { name: "Delete #1?" })).toHaveTextContent(
+      "Its worktree and herdr workspace are removed; the branch is kept.",
+    );
+    expect(screen.getByRole("button", { name: "Back" })).toHaveFocus();
     expect(screen.queryByRole("button", { name: /Remove worktree/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Force delete #1" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete #1" }));
@@ -2188,9 +2866,87 @@ describe("App", () => {
     expect(mocked.deleteTask).toHaveBeenCalledWith(1, false);
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     fireEvent.click(screen.getByRole("button", { name: "Force delete #1" }));
+    expect(screen.getByRole("group", { name: "Delete #1?" })).toHaveTextContent(
+      "removed with its modified and untracked files",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Confirm force delete #1" }));
 
     expect(await screen.findByText("No tasks in this workspace yet.")).toBeInTheDocument();
     expect(mocked.deleteTask).toHaveBeenLastCalledWith(1, true);
+  });
+
+  it("groups the list by status, needs attention first, with done work folded away", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Ship v1", { status: "done", resolution: "merged" }),
+        task(2, 1, "Plan docs", { dependsOn: [3] }),
+        task(3, 1, "Build API", { status: "in_progress" }),
+        task(4, 1, "Fix crash", { status: "in_review", pullRequestUrl: "https://github.com/acme/toodo/pull/4" }),
+        task(5, 1, "Add search"),
+        task(6, 1, "Add UI", {
+          status: "in_progress",
+          notes: [{ kind: "blocker", body: "Need an account", at: 1760000000 }],
+        }),
+      ],
+    });
+    await renderWorkspace();
+
+    const tasks = await taskList();
+    expect(within(tasks).getAllByRole("region").map((section) => section.getAttribute("aria-label"))).toEqual([
+      "Needs attention",
+      "In progress",
+      "Awaiting completion",
+      "Ready",
+      "Planned",
+      "Done",
+    ]);
+    const titles = (name: string) =>
+      within(within(tasks).getByRole("list", { name }))
+        .getAllByRole("listitem")
+        .map((item) => item.querySelector("[data-task-row] button")?.textContent);
+    expect(titles("Needs attention")).toEqual(["Add UI"]);
+    expect(titles("In progress")).toEqual(["Build API"]);
+    expect(titles("Awaiting completion")).toEqual(["Fix crash"]);
+    expect(titles("Ready")).toEqual(["Add search"]);
+    expect(titles("Planned")).toEqual(["Plan docs"]);
+
+    const done = within(tasks).getByRole("button", { name: "Done 1" });
+    expect(done).toHaveAttribute("aria-expanded", "false");
+    expect(within(tasks).queryByRole("list", { name: "Done" })).not.toBeInTheDocument();
+    fireEvent.click(done);
+    expect(done).toHaveAttribute("aria-expanded", "true");
+    expect(titles("Done")).toEqual(["Ship v1"]);
+  });
+
+  it("keeps base freshness failures off the rows and checks nothing without an origin", async () => {
+    const worktree = { status: "in_progress" as const, branch: "feat/x", worktreePath: "D:\\wt\\toodo\\x", herdrWorkspaceId: "w1" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Fetch fails", worktree), task(2, 1, "No origin", worktree)],
+    });
+    mocked.branchFreshness.mockImplementation((id) =>
+      Promise.resolve(
+        id === 1
+          ? { status: "error", error: { kind: "external", message: "git rev-list failed" } }
+          : { status: "ok", data: null },
+      ),
+    );
+    await renderWorkspace();
+
+    // The failed check is reported once, in the details, not repeated on the row.
+    let details = await openDetails("Fetch fails");
+    expect(await within(details).findByRole("note", { name: "Base freshness of #1" })).toHaveTextContent(
+      "Could not check whether the branch is behind its base",
+    );
+    expect(within(await taskList()).queryByText(/Could not check/)).not.toBeInTheDocument();
+    expect(within(await taskList()).queryByRole("note", { name: "Base freshness of #1" })).not.toBeInTheDocument();
+
+    details = await openDetails("No origin");
+    await waitFor(() => expect(mocked.branchFreshness).toHaveBeenCalledWith(2));
+    expect(within(details).queryByRole("note", { name: "Base freshness of #2" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("note", { name: "Base freshness of #2" })).not.toBeInTheDocument();
   });
 });

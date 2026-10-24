@@ -12,8 +12,8 @@ use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::events::{
-    AgentStatusState, AgentStatusesChanged, Notifier, PullRequestStatusesChanged, TasksChanged,
-    WorkspacesChanged, names,
+    AgentStatusState, AgentStatusesChanged, ChatChanged, MemoryChanged, Notifier,
+    PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
@@ -42,18 +42,24 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::machines::list_ssh_hosts,
             commands::machines::add_ssh_host,
             commands::machines::list_remote_directories,
+            commands::machines::list_directories,
             commands::tasks::list_tasks,
+            commands::tasks::list_task_relations,
+            commands::tasks::add_task_relation,
+            commands::tasks::remove_task_relation,
             commands::tasks::get_task,
             commands::tasks::create_task,
             commands::tasks::update_task,
             commands::tasks::pause_task,
             commands::tasks::set_completion_note,
+            commands::tasks::check_criterion,
             commands::tasks::delete_task,
             commands::tasks::add_dependency,
             commands::tasks::remove_dependency,
             commands::tasks::list_commit_records,
             commands::herdr::herdr_status,
             commands::herdr::start_task,
+            commands::herdr::ensure_task_workspace,
             commands::herdr::open_task_in_herdr,
             commands::herdr::focus_agent_pane,
             commands::herdr::restore_task_worktree,
@@ -76,10 +82,20 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::backup::list_backups,
             commands::backup::export_database,
             commands::backup::restore_database,
+            commands::memory::list_memory,
+            commands::memory::add_memory,
+            commands::memory::update_memory,
+            commands::memory::supersede_memory,
+            commands::backup::restore_backup,
+            commands::lead::get_lead,
+            commands::lead::list_chat_messages,
+            commands::lead::send_chat_message,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
             commands::events::WorkspacesChanged,
+            commands::events::MemoryChanged,
+            commands::events::ChatChanged,
             commands::events::AgentStatusesChanged,
             commands::events::PullRequestStatusesChanged,
             UpdateCheckRequested,
@@ -199,6 +215,7 @@ pub fn run() {
             ))));
             app.manage::<commands::events::AgentStatusState>(Mutex::default());
             app.manage::<commands::completion::PullRequestStatusState>(Mutex::default());
+            app.manage::<commands::lead::LeadStatusState>(Mutex::default());
             let runtime: Arc<AppHandle> = Arc::new(app.handle().clone());
             commands::events::spawn(runtime.clone())?;
             commands::backup::spawn(runtime.clone())?;
@@ -209,7 +226,7 @@ pub fn run() {
             ));
             match (&mcp.error, server) {
                 (None, Some((listener, token))) => {
-                    let router = mcp::router(runtime.clone(), token);
+                    let router = mcp::router(runtime.clone(), token, None);
                     tauri::async_runtime::spawn(async move {
                         if let Err(error) = mcp::serve(listener, router).await {
                             eprintln!("toodo: MCP server stopped: {error}");
@@ -256,6 +273,18 @@ impl Notifier for AppHandle {
                 "toodo: failed to emit {}: {error}",
                 names::WORKSPACES_CHANGED
             );
+        }
+    }
+
+    fn memory_changed(&self) {
+        if let Err(error) = MemoryChanged.emit(self) {
+            eprintln!("toodo: failed to emit {}: {error}", names::MEMORY_CHANGED);
+        }
+    }
+
+    fn chat_changed(&self) {
+        if let Err(error) = ChatChanged.emit(self) {
+            eprintln!("toodo: failed to emit {}: {error}", names::CHAT_CHANGED);
         }
     }
 
@@ -332,6 +361,8 @@ mod tests {
     fn event_names_match_the_server_ones() {
         assert_eq!(TasksChanged::NAME, names::TASKS_CHANGED);
         assert_eq!(WorkspacesChanged::NAME, names::WORKSPACES_CHANGED);
+        assert_eq!(MemoryChanged::NAME, names::MEMORY_CHANGED);
+        assert_eq!(ChatChanged::NAME, names::CHAT_CHANGED);
         assert_eq!(AgentStatusesChanged::NAME, names::AGENT_STATUSES_CHANGED);
         assert_eq!(
             PullRequestStatusesChanged::NAME,

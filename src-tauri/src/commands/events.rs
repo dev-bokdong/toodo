@@ -47,6 +47,17 @@ pub struct TasksChanged {
 #[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 pub struct WorkspacesChanged;
 
+/// Project memory entries changed outside the app's own forms, e.g. by an agent through
+/// MCP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
+pub struct MemoryChanged;
+
+/// A message of the chat with the lead was sent or answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
+pub struct ChatChanged;
+
 /// The agent statuses of tasks changed; carries all of them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
@@ -67,6 +78,8 @@ pub struct PullRequestStatusesChanged {
 pub mod names {
     pub const TASKS_CHANGED: &str = "tasks-changed";
     pub const WORKSPACES_CHANGED: &str = "workspaces-changed";
+    pub const MEMORY_CHANGED: &str = "memory-changed";
+    pub const CHAT_CHANGED: &str = "chat-changed";
     pub const AGENT_STATUSES_CHANGED: &str = "agent-statuses-changed";
     pub const PULL_REQUEST_STATUSES_CHANGED: &str = "pull-request-statuses-changed";
 }
@@ -94,6 +107,8 @@ fn all_statuses(by_machine: &HashMap<Machine, Vec<TaskAgentStatus>>) -> Vec<Task
 pub trait Notifier {
     fn tasks_changed(&self, workspace: model::WorkspaceId);
     fn workspaces_changed(&self);
+    fn memory_changed(&self);
+    fn chat_changed(&self);
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]);
     fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]);
 }
@@ -454,6 +469,10 @@ mod tests {
 
         fn workspaces_changed(&self) {}
 
+        fn memory_changed(&self) {}
+
+        fn chat_changed(&self) {}
+
         fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
             self.statuses.lock().unwrap().push(statuses.to_vec());
         }
@@ -489,6 +508,7 @@ mod tests {
                     description: String::new(),
                     estimate: None,
                     due_date: None,
+                    criteria: Vec::new(),
                 })
                 .unwrap();
             let checkout = TaskCheckout {

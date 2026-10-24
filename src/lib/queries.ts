@@ -5,8 +5,12 @@ import {
   events,
   type BackupSettings,
   type CommandError,
+  type CriterionId,
+  type LeadStatus,
   type Machine,
   type MachineSettings,
+  type MemoryContent,
+  type MemoryId,
   type NewSshHost,
   type NewTask,
   type NewWorkspace,
@@ -20,6 +24,10 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
+import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
+import { runsOnServer } from "@/lib/platform";
+import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
@@ -46,6 +54,8 @@ export const queryKeys = {
   workspaces: ["workspaces"] as const,
   /** Tasks of every workspace: dependencies cross workspaces, so they are loaded together. */
   tasks: ["task-list"] as const,
+  /** Related links between tasks; under "tasks", so a tasks-changed event refetches them. */
+  taskRelations: ["tasks", "relations"] as const,
   herdrStatus: ["herdr-status"] as const,
   agentStatuses: ["agent-statuses"] as const,
   pullRequestStatuses: ["pull-request-statuses"] as const,
@@ -53,6 +63,7 @@ export const queryKeys = {
   branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
+  taskPanes: (taskId: TaskId) => ["tasks", taskId, "panes"] as const,
   herdrMachines: ["herdr-machines"] as const,
   sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
@@ -60,9 +71,83 @@ export const queryKeys = {
   mcpServerInfo: ["mcp-server-info"] as const,
   mcpTunnels: ["mcp-tunnels"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
-  remoteDirectories: (machine: string, path: string | null) =>
-    ["remote-directories", machine, path] as const,
+  directories: (machine: Machine, path: string | null) => ["directories", machine, path] as const,
+  /** Memory entries of a workspace, or the shared ones for `null`. */
+  memory: (workspace: WorkspaceId | null, includeSuperseded: boolean) =>
+    ["memory", workspace, includeSuperseded] as const,
+  allMemory: ["memory"] as const,
+  lead: ["lead"] as const,
+  chatMessages: ["chat-messages"] as const,
 };
+
+/** The server's lead; the desktop app has none. Kept current by `lead-changed` events. */
+export function useLead() {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!runsOnServer) return;
+    const subscription = listen<LeadStatus>("lead-changed", ({ payload }) =>
+      queryClient.setQueryData(queryKeys.lead, payload),
+    );
+    return () => void subscription.then((unlisten) => unlisten());
+  }, [queryClient]);
+  return useQuery({
+    queryKey: queryKeys.lead,
+    queryFn: () => commands.getLead(),
+    enabled: runsOnServer,
+  });
+}
+
+/** The chat with the lead; kept current by `useHerdrEvents`. */
+export function useChatMessages(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.chatMessages,
+    queryFn: () => unwrap(commands.listChatMessages()),
+    enabled,
+  });
+}
+
+export function useSendChatMessage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ text, clientId }: { text: string; clientId: string }) =>
+      unwrap(commands.sendChatMessage(text, clientId)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages }),
+  });
+}
+
+export function useMemoryEntries(workspace: WorkspaceId | null, includeSuperseded: boolean) {
+  return useQuery({
+    queryKey: queryKeys.memory(workspace, includeSuperseded),
+    queryFn: () => unwrap(commands.listMemory(workspace, includeSuperseded)),
+  });
+}
+
+export function useAddMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, content }: { workspace: WorkspaceId | null; content: MemoryContent }) =>
+      unwrap(commands.addMemory(workspace, content)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
+  });
+}
+
+export function useUpdateMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, content }: { id: MemoryId; content: MemoryContent }) =>
+      unwrap(commands.updateMemory(id, content)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
+  });
+}
+
+export function useSupersedeMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, content }: { id: MemoryId; content: MemoryContent }) =>
+      unwrap(commands.supersedeMemory(id, content)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
+  });
+}
 
 /** Where agents reach Toodo's MCP server; fixed while the app runs. */
 export function useMcpServerInfo() {
@@ -124,6 +209,34 @@ export function useRestoreDatabase() {
   });
 }
 
+/** Replaces all data with a backup from Toodo's backup directory, by its file name. */
+export function useRestoreBackup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => unwrap(commands.restoreBackup(name)),
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+}
+
+/** Web build: downloads a snapshot of the server's database; resolves with its file name. */
+export function useDownloadExport() {
+  return useMutation({ mutationFn: downloadExport });
+}
+
+/** Web build: downloads a backup from the server's backup directory. */
+export function useDownloadBackup() {
+  return useMutation({ mutationFn: downloadBackup });
+}
+
+/** Web build: replaces all data on the server with an uploaded database file. */
+export function useUploadRestore() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: uploadRestore,
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+}
+
 /** Machines saved in herdr; refetched when the window regains focus. */
 export function useHerdrMachines() {
   return useQuery({
@@ -157,11 +270,30 @@ export function useAddSshHost() {
   });
 }
 
-/** Subdirectories of `path` on `machine`; `null` lists the login directory. */
-export function useRemoteDirectories(machine: string, path: string | null) {
+/**
+ * Subdirectories of `path` on `machine` (the server for `local` in the web build); `null`
+ * lists the home directory.
+ */
+export function useDirectories(machine: Machine, path: string | null) {
   return useQuery({
-    queryKey: queryKeys.remoteDirectories(machine, path),
-    queryFn: () => unwrap(commands.listRemoteDirectories(machine, path)),
+    queryKey: queryKeys.directories(machine, path),
+    queryFn: () => unwrap(commands.listDirectories(machine, path)),
+    retry: false,
+  });
+}
+
+/**
+ * The home directory of `machine`: listed through the server or over SSH, and asked of
+ * Windows for the desktop app's own machine, whose folders are not listed in the app.
+ */
+export function useHomeDirectory(machine: Machine) {
+  return useQuery({
+    queryKey: ["home-directory", machine] as const,
+    queryFn: async () =>
+      machine.kind === "local" && !runsOnServer
+        ? homeDir()
+        : (await unwrap(commands.listDirectories(machine, null))).path,
+    staleTime: Infinity,
     retry: false,
   });
 }
@@ -210,6 +342,7 @@ export function useWorkspaceBranches(workspace: WorkspaceId, enabled: boolean) {
 /**
  * How far a started task's branch is behind its base and whether its pull request conflicts.
  * Each check fetches the base from origin, so it runs every few minutes rather than on every render.
+ * `null` when the workspace repository has no origin to fall behind.
  */
 export function useBranchFreshness(taskId: TaskId, enabled: boolean) {
   return useQuery({
@@ -340,6 +473,8 @@ export function useHerdrEvents() {
       events.workspacesChanged.listen(() =>
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
+      events.memoryChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory })),
+      events.chatChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages })),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),
@@ -385,6 +520,18 @@ export function useOpenTaskInHerdr() {
   });
 }
 
+/**
+ * The panes of a started task's herdr workspace, which is opened again (without focus) when
+ * herdr no longer has it. Polled, since herdr reports no event for new panes.
+ */
+export function useTaskPanes(taskId: TaskId) {
+  return useQuery({
+    queryKey: queryKeys.taskPanes(taskId),
+    queryFn: () => unwrap(commands.ensureTaskWorkspace(taskId)),
+    refetchInterval: 15_000,
+  });
+}
+
 /** Focuses the pane of the agent working on a task, or its herdr workspace when no agent is recognized. */
 export function useFocusAgentPane() {
   return useMutation({
@@ -421,7 +568,11 @@ export function useOpenPullRequest() {
   });
 }
 
-/** Marks an `in_review` task `done` once its pull request is merged. */
+/**
+ * Completes an `in_progress` or `in_review` task once all its criteria are met; the backend
+ * checks the automatic ones again first. For a task with a manual criterion this is the
+ * confirmation that it is done.
+ */
 export function useCompleteTask() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -502,6 +653,18 @@ export function useCloseTaskWorkspace() {
   return useTasksMutation((id: TaskId) => unwrap(commands.closeTaskWorkspace(id)));
 }
 
+type CriterionCheck = { taskId: TaskId; criterionId: CriterionId; met: boolean; evidence: string | null };
+
+/**
+ * Checks or unchecks a manual criterion of a task that is not done. Checking the last one
+ * moves a started task to awaiting completion.
+ */
+export function useCheckCriterion() {
+  return useTasksMutation(({ taskId, criterionId, met, evidence }: CriterionCheck) =>
+    unwrap(commands.checkCriterion(taskId, criterionId, met, evidence)),
+  );
+}
+
 /** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */
 export function useDeleteTask() {
   return useTasksMutation(({ id, force }: { id: TaskId; force: boolean }) =>
@@ -518,6 +681,33 @@ export function useAddDependency() {
 
 export function useRemoveDependency() {
   return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.removeDependency(id, dependsOn)));
+}
+
+/** Every related link between tasks of any workspaces. */
+export function useTaskRelations() {
+  return useQuery({
+    queryKey: queryKeys.taskRelations,
+    queryFn: () => unwrap(commands.listTaskRelations()),
+  });
+}
+
+/** The link between `taskId` and `relatedId`, which may belong to another workspace. */
+type Relation = { taskId: TaskId; relatedId: TaskId };
+
+function useRelationMutation(mutationFn: (relation: Relation) => Promise<unknown>) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.taskRelations }),
+  });
+}
+
+export function useAddRelation() {
+  return useRelationMutation(({ taskId, relatedId }) => unwrap(commands.addTaskRelation(taskId, relatedId)));
+}
+
+export function useRemoveRelation() {
+  return useRelationMutation(({ taskId, relatedId }) => unwrap(commands.removeTaskRelation(taskId, relatedId)));
 }
 
 /** Links GitHub issue `number` of the workspace repository to a task; `null` unlinks it. */

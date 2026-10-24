@@ -13,8 +13,8 @@ describe("Markdown", () => {
     const { container } = render(<Markdown source={"## Plan\n\n- [x] done\n- [ ] next\n\n```ts\nconst a = 1;\n```"} />);
 
     expect(screen.getByRole("heading", { name: "Plan" })).toBeInTheDocument();
-    const boxes = screen.getAllByRole("checkbox");
-    expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([true, false]);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.getAllByRole("img").map((glyph) => glyph.getAttribute("aria-label"))).toEqual(["Done", "Not done"]);
     expect(container.querySelector("pre")).toHaveTextContent("const a = 1;");
   });
 

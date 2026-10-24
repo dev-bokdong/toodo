@@ -23,13 +23,16 @@ pub fn review_period(
 }
 
 /// Writes a report built by the frontend to `path`, replacing any file there. Only
-/// Markdown (`.md`) and CSV (`.csv`) files are written.
+/// Markdown (`.md`) and CSV (`.csv`) files are written. Desktop only: the web app
+/// downloads reports in the browser instead.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 #[cfg_attr(feature = "desktop", tauri::command)]
 #[cfg_attr(feature = "desktop", specta::specta)]
 pub fn save_report(path: String, contents: String) -> CommandResult<()> {
     write_report(Path::new(&path), &contents)
 }
 
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 fn write_report(path: &Path, contents: &str) -> CommandResult<()> {
     if !path.is_absolute() {
         return Err(CommandError::invalid_input(format!(
@@ -118,6 +121,7 @@ mod tests {
                     description: String::new(),
                     estimate: None,
                     due_date: None,
+                    criteria: Vec::new(),
                 })
                 .unwrap()
         };

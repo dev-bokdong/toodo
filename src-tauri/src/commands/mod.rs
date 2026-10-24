@@ -11,8 +11,10 @@ pub mod events;
 pub mod freshness;
 pub mod herdr;
 pub mod issues;
+pub mod lead;
 pub mod machines;
 pub mod mcp;
+pub mod memory;
 pub mod review;
 pub mod tasks;
 pub mod types;
@@ -126,6 +128,13 @@ impl CommandError {
             message: message.into(),
         }
     }
+
+    pub fn external(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommandErrorKind::External,
+            message: message.into(),
+        }
+    }
 }
 
 impl From<GitError> for CommandError {
@@ -194,6 +203,10 @@ impl From<StorageError> for CommandError {
         let kind = match &error {
             StorageError::WorkspaceNotFound(_)
             | StorageError::TaskNotFound(_)
+            | StorageError::CriterionNotFound { .. }
+            | StorageError::MemoryNotFound(_)
+            | StorageError::DeviceNotFound(_)
+            | StorageError::PushSubscriptionNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
                 CommandErrorKind::NotFound
             }
@@ -201,9 +214,13 @@ impl From<StorageError> for CommandError {
             | StorageError::WorkspaceHasDependents { .. }
             | StorageError::BaseBranchInReview { .. }
             | StorageError::Transition(_)
-            | StorageError::DependenciesNotDone(_) => CommandErrorKind::Rejected,
+            | StorageError::DependenciesNotDone(_)
+            | StorageError::CriteriaOfDoneTask(_)
+            | StorageError::AutomaticCriterion { .. }
+            | StorageError::MemorySuperseded { .. } => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)
+            | StorageError::MemoryTaskMismatch { .. }
             | StorageError::CommitTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
             StorageError::Io(_) => CommandErrorKind::External,

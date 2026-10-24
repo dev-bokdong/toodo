@@ -484,6 +484,30 @@ export function timelineAxis(
   return { ticks, majorTicks };
 }
 
+/** Generous width of an axis header label in its 10px font, left padding included. */
+export function axisLabelWidth(text: string): number {
+  return text.length * 6 + 6;
+}
+
+/**
+ * Where the label of a major tick starts, relative to the tick, or null to leave it out. The
+ * label of a period that began left of the screen (`viewLeft`) stays at the screen's left edge,
+ * and a label that would run into the Now label (`now`) moves past it; either way it must still
+ * fit inside its period, or it would be cut off at the edge or collide with the next one.
+ */
+export function majorLabelOffset(
+  tick: TimelineMajorTick,
+  width: number,
+  viewLeft: number,
+  now: { x: number; width: number } | null,
+): number | null {
+  let left = Math.max(tick.x, viewLeft);
+  if (now !== null && left < now.x + now.width && left + width > now.x) {
+    left = now.x + now.width;
+  }
+  return left + width > tick.right ? null : left - tick.x;
+}
+
 /**
  * Lays tasks out as a Gantt chart: one row per task, prerequisites before their dependents.
  * A task that has not started waits at `now`, pushed right past the bars of its unfinished
@@ -600,4 +624,19 @@ export function timelineYears(tasks: Task[], now: Timestamp): number[] {
   const planned = tasks.flatMap((task) => (task.milestones.plannedAt === null ? [] : [task.milestones.plannedAt]));
   const first = new Date(Math.min(now, ...planned) * 1000).getFullYear();
   return Array.from({ length: last - first + 1 }, (_, index) => last - index);
+}
+
+/**
+ * Where the timeline opens. Hour, Day and Week open on the newest work: the last row at the
+ * bottom, the Now line at the left edge. Hour needs this most, since its axis is so wide that
+ * the end of it, where Month opens, holds none of the work. Month fits the newest end on screen.
+ */
+export function openingViewport(
+  layout: Pick<TimelineLayout, "scale" | "nowX" | "width">,
+  panel: { visible: number; panel: number; height: number },
+): { x: number; y: number; zoom: 1 } {
+  if (layout.scale !== "month" && layout.nowX !== null) {
+    return { x: 16 - layout.nowX, y: Math.min(0, panel.panel - panel.height - 8), zoom: 1 };
+  }
+  return { x: Math.min(16, panel.visible - layout.width - 16), y: 0, zoom: 1 };
 }

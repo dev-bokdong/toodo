@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Crosshair, TriangleAlert, XIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, Crosshair, TriangleAlert } from "lucide-react";
+import { EmptyState } from "@/components/task-list";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
   BaseEdge,
@@ -20,6 +21,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AgentBadge } from "@/components/agent-badge";
+import { DetailsSheet } from "@/components/details-sheet";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +35,7 @@ import {
   useRemoveDependency,
 } from "@/lib/queries";
 import {
+  axisLabelWidth,
   canAddDependency,
   dependencyEdges,
   dependencyEditableStatuses,
@@ -40,6 +43,8 @@ import {
   isNotAdopted,
   isPaused,
   layoutTimeline,
+  majorLabelOffset,
+  openingViewport,
   waitingPrerequisites,
   relatedTasks,
   pausesStartedTask,
@@ -55,9 +60,20 @@ import {
 } from "@/lib/task-graph";
 import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
-import { activeSeconds, formatDate, reachedMilestones } from "@/lib/timeline";
+import { When } from "@/components/when";
+import { activeSeconds, reachedMilestones } from "@/lib/timeline";
 import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
-import { barStyles, nowLabel, nowLine, toneFill, toneMark, toneText } from "@/lib/status-styles";
+import {
+  barStyles,
+  nowLabel,
+  nowLine,
+  plannedOnName,
+  statusNames,
+  toneFill,
+  toneMark,
+  toneText,
+  type Tone,
+} from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
@@ -102,8 +118,11 @@ const sheetShare = 0.4;
 const sheetMargin = 16;
 /** Gap between a bar and a label drawn after it, because the label does not fit inside. */
 const labelGap = 8;
-/** Height of the label row at the top of a bar; due-date ticks leave it clear. */
-const labelRowHeight = 21;
+/** Space kept between a label's end and the panel's right edge, and the least a label may shrink to. */
+const labelEdgeGap = 8;
+const labelMinRoom = 96;
+/** Distance from the panel's left edge at which the label of a bar that starts off screen is pinned. */
+const pinnedLabelInset = 2;
 
 function sheetWidthIn(windowWidth: number): number {
   return Math.min(sheetWidth, Math.max(sheetMinWidth, windowWidth * sheetShare), windowWidth - 2 * sheetMargin);
@@ -137,8 +156,8 @@ const phaseStyles: Record<TimelinePhase, string> = {
 };
 
 const phaseLabels: Record<TimelinePhase, string> = {
-  in_progress: "In progress",
-  in_review: "In review",
+  in_progress: statusNames.in_progress,
+  in_review: statusNames.in_review,
 };
 
 
@@ -153,6 +172,9 @@ function useNow(): Timestamp {
   }, []);
   return now;
 }
+
+/** Lets the details sheet select another task on the timeline; `canOpen` is false for tasks the filters hide. */
+export type SheetNavigation = { open: (id: TaskId) => void; canOpen: (id: TaskId) => boolean };
 
 export function TaskGraph({
   tasks,
@@ -186,8 +208,12 @@ export function TaskGraph({
   shownTaskId?: TaskId | null;
   onTaskShown?: () => void;
   /** Details of the task selected on the timeline, with its actions. */
-  renderDetail: (task: Task) => ReactNode;
+  renderDetail: (task: Task, navigation: SheetNavigation) => ReactNode;
 }) {
+  // The legend starts closed on a phone, where it would push the chart below the first screen.
+  const [legendOpen, setLegendOpen] = useState(
+    () => typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 768px)").matches,
+  );
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const focusAgent = useFocusAgentPane();
@@ -204,6 +230,9 @@ export function TaskGraph({
   // select next, or `null` to close the sheet.
   const [discarding, setDiscarding] = useState<{ next: TaskId | null } | null>(null);
   const sheet = useRef<HTMLElement>(null);
+  // False while the arrow keys move the selection, so the details sheet they open leaves the
+  // focus on the bars for the next key.
+  const focusSheet = useRef(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A shown task selected before the timeline was ready, revealed once it is.
   const pendingReveal = useRef<TaskId | null>(null);
@@ -353,6 +382,7 @@ export function TaskGraph({
   function applySelection(next: TaskId | null) {
     setDiscarding(null);
     if (next === null) {
+      focusSheet.current = true;
       setSelectedTaskId(null);
     } else {
       select(next);
@@ -371,15 +401,43 @@ export function TaskGraph({
   const selected = dependencies.filter((edge) => selectedEdgeIds.has(edge.id) && editable(edge.target));
   const hoveredBar = layout.bars.find((bar) => bar.task.id === hovered?.id);
 
+  function opening() {
+    return openingViewport(layout, {
+      visible: container.current?.clientWidth ?? 0,
+      panel: container.current?.clientHeight ?? 0,
+      height,
+    });
+  }
+
   function showLatest(instance: ReactFlowInstance<BarNode>) {
     flow.current = instance;
-    const visible = container.current?.clientWidth ?? 0;
-    void instance.setViewport({ x: Math.min(16, visible - layout.width - 16), y: 0, zoom: 1 }).then(() => {
+    void instance.setViewport(opening()).then(() => {
       if (pendingReveal.current !== null) {
         reveal(pendingReveal.current, true);
         pendingReveal.current = null;
       }
     });
+  }
+
+  /** Pans to the bar that starts first, with its row at the top, so the history can be reached without a wheel. */
+  function showEarliest() {
+    const earliest = layout.bars.reduce<TimelineBar | undefined>(
+      (first, bar) => (first === undefined || bar.x < first.x ? bar : first),
+      undefined,
+    );
+    if (flow.current === null || earliest === undefined) {
+      return;
+    }
+    const lowest = Math.min(0, (container.current?.clientHeight ?? 0) - height - 8);
+    void flow.current.setViewport(
+      { x: 16 - earliest.x, y: Math.max(lowest, Math.min(0, -earliest.row * rowHeight)), zoom: 1 },
+      { duration: prefersReducedMotion() ? 0 : 200 },
+    );
+  }
+
+  /** Pans back to where the timeline opens: the Now line and the newest rows. */
+  function showToday() {
+    void flow.current?.setViewport(opening(), { duration: prefersReducedMotion() ? 0 : 200 });
   }
 
   function connect({ source, target }: Connection) {
@@ -470,6 +528,7 @@ export function TaskGraph({
     container.current
       .querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
       ?.focus({ preventScroll: true });
+    focusSheet.current = false;
     changeSelection(id);
   }
 
@@ -532,10 +591,30 @@ export function TaskGraph({
             </option>
           ))}
         </select>
-        <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 text-muted-foreground [&>li]:whitespace-nowrap">
+        {layout.bars.length > 0 && (
+          <div role="group" aria-label="Timeline position" className="flex gap-1">
+            <Button size="xs" variant="outline" onClick={showEarliest}>
+              <ChevronsLeft />
+              Earliest task
+            </Button>
+            <Button size="xs" variant="outline" disabled={layout.nowX === null} onClick={showToday}>
+              Today
+            </Button>
+          </div>
+        )}
+        <details
+          open={legendOpen}
+          onToggle={(event) => setLegendOpen(event.currentTarget.open)}
+          className="group min-w-0 text-muted-foreground open:basis-full"
+        >
+        <summary className="flex min-h-7 cursor-pointer list-none items-center gap-1 font-medium max-md:min-h-11 [&::-webkit-details-marker]:hidden">
+          <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+          Legend
+        </summary>
+        <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
           <li className="flex items-center gap-1">
             <span className="size-2 rotate-45 border border-muted-foreground" />
-            Planned
+            {plannedOnName}
           </li>
           <li className="flex items-center gap-1">
             <span className={cn("h-2 border-l-2", toneMark.attention)} />
@@ -547,11 +626,11 @@ export function TaskGraph({
           </li>
           <li className="flex items-center gap-1">
             <span className={cn("h-2 w-3 rounded-sm border", barStyles.blocked)} />
-            Blocked
+            {statusNames.planned}
           </li>
           <li className="flex items-center gap-1">
             <span className={cn("h-2 w-3 rounded-sm border", barStyles.ready)} />
-            Ready to start
+            {statusNames.ready}
           </li>
           {(Object.keys(phaseLabels) as TimelinePhase[]).map((phase) => (
             <li key={phase} className="flex items-center gap-1">
@@ -561,7 +640,7 @@ export function TaskGraph({
           ))}
           <li className="flex items-center gap-1">
             <span className={cn("h-2 w-3 rounded-sm border", barStyles.done)} />
-            Done
+            {statusNames.done}
           </li>
           <li className="flex items-center gap-1">
             <span className="h-3 border-l-2 border-muted-foreground" />
@@ -572,12 +651,16 @@ export function TaskGraph({
             Past due
           </li>
         </ul>
+        <p className="pb-1">
+          Tasks not started yet wait at the current time, after their prerequisites.
+          <span className="[@media(pointer:coarse)]:hidden">
+            {" "}Drag from a task's right handle to another task to make it a prerequisite. With a task selected, use the
+            arrow keys to move between rows.
+          </span>
+        </p>
+        </details>
       </div>
-      <div className="flex min-h-7 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>
-          Tasks not started yet wait at the current time, after their prerequisites. Drag from a task's right handle
-          to another task to make it a prerequisite. With a task selected, use the arrow keys to move between rows.
-        </span>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground empty:hidden">
         {selected.length > 0 && (
           <Button
             size="xs"
@@ -619,9 +702,21 @@ export function TaskGraph({
           className="min-w-0 flex-1 rounded-lg border"
         >
           {layout.bars.length === 0 ? (
-            <p className="p-3 text-sm text-muted-foreground">
-              {year === null ? "No planned tasks yet." : `No tasks in ${year}.`}
-            </p>
+            <EmptyState
+              title={year === null ? "No planned tasks yet." : `No tasks in ${year}.`}
+              hint={
+                year === null
+                  ? "Add a task in a workspace and it appears here on the timeline."
+                  : "Show every year to see the tasks planned or finished in other years."
+              }
+              action={
+                year === null ? undefined : (
+                  <Button size="sm" variant="outline" onClick={() => setYear(null)}>
+                    Show all years
+                  </Button>
+                )
+              }
+            />
           ) : (
             <ReactFlow
               key={`${scale}-${year ?? "all"}`}
@@ -687,44 +782,35 @@ export function TaskGraph({
         )}
         {selectedTask !== undefined && (
           // A floating sheet over the window's right side: the timeline keeps its full width and
-          // the details get room to wrap instead of being cut off.
-          <aside
+          // the details get room to wrap instead of being cut off. On a phone, a bottom sheet.
+          <DetailsSheet
             ref={sheet}
-            aria-label="Task details"
-            className="fixed inset-y-4 right-4 z-40 flex flex-col overflow-hidden rounded-xl border bg-card shadow-xl"
-            style={{
-              width: `min(${sheetWidth}px, max(${sheetMinWidth}px, ${sheetShare * 100}vw), calc(100vw - ${2 * sheetMargin}px))`,
-            }}
+            width={`min(${sheetWidth}px, max(${sheetMinWidth}px, ${sheetShare * 100}vw), calc(100vw - ${2 * sheetMargin}px))`}
+            takeFocus={focusSheet.current}
+            returnFocus={() =>
+              container.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${selectedTask.id}"]`)
+            }
+            onClose={() => changeSelection(null)}
+            banner={
+              discarding !== null && (
+                <div
+                  role="group"
+                  aria-label="Unsaved changes"
+                  className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
+                >
+                  <span className="min-w-0 flex-1">Discard your unsaved changes to #{selectedTask.id}?</span>
+                  <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(null)}>
+                    Keep editing
+                  </Button>
+                  <Button size="xs" variant="destructive" onClick={() => applySelection(discarding.next)}>
+                    Discard changes
+                  </Button>
+                </div>
+              )
+            }
           >
-            <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
-              <h3 className="text-xs font-medium text-muted-foreground">Task details</h3>
-              <Button
-                size="icon-xs"
-                variant="ghost"
-                aria-label="Close details"
-                title="Close details (Esc)"
-                onClick={() => changeSelection(null)}
-              >
-                <XIcon />
-              </Button>
-            </div>
-            {discarding !== null && (
-              <div
-                role="group"
-                aria-label="Unsaved changes"
-                className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
-              >
-                <span className="min-w-0 flex-1">Discard your unsaved changes to #{selectedTask.id}?</span>
-                <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(null)}>
-                  Keep editing
-                </Button>
-                <Button size="xs" variant="destructive" onClick={() => applySelection(discarding.next)}>
-                  Discard changes
-                </Button>
-              </div>
-            )}
-            <ul className="min-h-0 flex-1 overflow-y-auto">{renderDetail(selectedTask)}</ul>
-          </aside>
+            {renderDetail(selectedTask, { open: changeSelection, canOpen: (id) => placed.has(id) })}
+          </DetailsSheet>
         )}
         {layout.unplaced.length > 0 && (
               <aside aria-label="Tasks without a planned date" className="flex w-56 shrink-0 flex-col gap-1 text-xs">
@@ -787,6 +873,8 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
   const { from, to } = useVisibleRange();
   const { ticks, majorTicks } = timelineAxis(layout, from, to);
   const date = new Date(now * 1000);
+  const nowText = `Now ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const nowLabelBox = layout.nowX === null ? null : { x: layout.nowX, width: axisLabelWidth(nowText) };
   return (
     <div
       aria-hidden
@@ -794,21 +882,22 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
       style={{ height: axisHeight, zIndex: 5 }}
     >
       <div className="absolute left-0 top-0 h-full" style={{ transform: `translateX(${x}px)` }}>
-        {majorTicks.map((tick) => (
-          <div
-            key={tick.at}
-            className="absolute top-0 border-l border-border font-medium text-foreground"
-            style={{ left: tick.x, width: tick.right - tick.x, height: axisRowHeight }}
-          >
-            {/* Keep the label of a period that starts off screen at the left edge, while it fits. */}
-            <span
-              className="block whitespace-nowrap pl-1"
-              style={{ marginLeft: Math.max(0, Math.min(-x - tick.x, tick.right - tick.x - 80)) }}
+        {majorTicks.map((tick) => {
+          const offset = majorLabelOffset(tick, axisLabelWidth(tick.label), -x, nowLabelBox);
+          return (
+            <div
+              key={tick.at}
+              className="absolute top-0 border-l border-border font-medium text-foreground"
+              style={{ left: tick.x, width: tick.right - tick.x, height: axisRowHeight }}
             >
-              {tick.label}
-            </span>
-          </div>
-        ))}
+              {offset !== null && (
+                <span className="block whitespace-nowrap pl-1" style={{ marginLeft: offset }}>
+                  {tick.label}
+                </span>
+              )}
+            </div>
+          );
+        })}
         {ticks.map((tick) => (
           <div
             key={tick.at}
@@ -825,7 +914,7 @@ function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestam
               className={cn("block whitespace-nowrap bg-background pl-1 font-semibold", nowLabel)}
               style={{ height: axisRowHeight }}
             >
-              Now {pad(date.getHours())}:{pad(date.getMinutes())}
+              {nowText}
             </span>
           </div>
         )}
@@ -900,7 +989,9 @@ function TimelineTooltip({
           {milestones.map(({ label, at }) => (
             <div key={label} className="contents">
               <dt className="text-muted-foreground">{label}</dt>
-              <dd className="tabular-nums">{formatDate(at)}</dd>
+              <dd className="tabular-nums">
+                <When at={at} />
+              </dd>
             </div>
           ))}
           {active !== null && (
@@ -953,23 +1044,27 @@ function TimelineTooltip({
   );
 }
 
-/** A dependency line routed between the rows, so it shows even when the bars meet in time. */
+/**
+ * A dependency line routed between the rows, so it shows even when the bars meet in time.
+ *
+ * The line has no halo in the background color: a browser that darkens light pages itself
+ * (Samsung Internet's dark mode) leaves SVG strokes as they are, so a halo stays light on the
+ * darkened page, and the halos of the lines leaving one prerequisite merge into a thick band.
+ */
 function TimelineEdge({ sourceX, sourceY, targetX, targetY, markerEnd, style, interactionWidth }: EdgeProps) {
   const path = timelineEdgePath({ x: sourceX, y: sourceY }, { x: targetX, y: targetY }, rowHeight);
-  return (
-    <>
-      {/* A halo in the background color keeps the line apart from bar borders and crossing lines. */}
-      <path d={path} className="fill-none stroke-background" strokeWidth={5} style={{ opacity: style?.opacity }} />
-      <BaseEdge path={path} markerEnd={markerEnd} style={style} interactionWidth={interactionWidth} />
-    </>
-  );
+  return <BaseEdge path={path} markerEnd={markerEnd} style={style} interactionWidth={interactionWidth} />;
 }
 
 function TimelineBarView({
   data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, agentStatus, waitingOn, notAdopted, checkFreshness },
   selected,
+  positionAbsoluteX,
 }: NodeProps<BarNode>) {
   const { task, phases, blocks, pauses, pending, lead, dueX, dueState } = bar;
+  // How far the bar reaches left of the panel's edge; it changes, and re-renders the bar, only
+  // while the bar starts off screen.
+  const offScreen = useStore((state) => Math.max(0, pinnedLabelInset - positionAbsoluteX - state.transform[0]));
   // Shares the cached check of the task row, so the bar warns about the same base freshness.
   const freshness = useBranchFreshness(task.id, checkFreshness);
   const behindBase = checkFreshness && freshness.data ? freshnessWarning(freshness.data) : null;
@@ -981,6 +1076,8 @@ function TimelineBarView({
     behindBase,
   ].filter((warning): warning is string => typeof warning === "string");
   const severe = notAdopted.length > 0 || conflicting;
+  // Waiting alone is nothing to act on, so only a branch behind its base warns in amber.
+  const warningTone: Tone = severe ? "danger" : behindBase !== null ? "attention" : "neutral";
   // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
   const faded = isPaused(task) && !ready;
   const behindDue = dueState === "late" || dueState === "overdue";
@@ -995,12 +1092,24 @@ function TimelineBarView({
     if (element === null) {
       return;
     }
-    const minWidth = element.style.minWidth;
+    const { minWidth, maxWidth } = element.style;
     element.style.minWidth = "0";
+    element.style.maxWidth = "none";
     const natural = element.offsetWidth;
     element.style.minWidth = minWidth;
+    element.style.maxWidth = maxWidth;
     setLabelOutside(natural > bar.width);
   }, [bar.width, task.title, workspace, statusLabel, agentStatus]);
+  const labelLeft = labelOutside ? drawnWidth + labelGap - 6 : 0;
+  // A label that would start off screen is pinned to the panel's left edge, behind a chevron
+  // saying that the bar goes on to the left.
+  const pinned = labelLeft < offScreen;
+  const labelMargin = pinned ? offScreen : labelOutside ? labelLeft : 0;
+  // A label longer than the room left up to the panel's right edge ends with an ellipsis there
+  // instead of being cut off.
+  const room = useStore((state) =>
+    Math.max(labelMinRoom, Math.floor(state.width - positionAbsoluteX - state.transform[0] - labelMargin - labelEdgeGap)),
+  );
   return (
     <div
       data-dimmed={dimmed || undefined}
@@ -1064,48 +1173,48 @@ function TimelineBarView({
         </div>
       ))}
       {dueX !== null && (
-        // The end of the due day, past the bar's edges: a stub above it and a tick through its
-        // lower part, leaving the label row clear.
+        // The end of the due day: a line as tall as the bar, so it stays inside the row, drawn
+        // before the label so the label's chips cover it. Its hit area is wider than the line,
+        // so its own tooltip can be reached.
         <span
           aria-label={`Due date of #${task.id}`}
           title={`Due ${task.dueDate}`}
-          className="pointer-events-none absolute -inset-y-1 w-0.5"
-          style={{ left: dueX - 1 }}
+          data-due-mark
+          className="absolute inset-y-0 flex w-2 justify-center"
+          style={{ left: dueX - 4 }}
         >
-          {[
-            { top: 0, height: 4 },
-            { top: 4 + labelRowHeight, bottom: 0 },
-          ].map((segment) => (
-            <span
-              key={segment.top}
-              className={cn("absolute left-0 border-l-2", behindDue ? toneMark.danger : toneMark.neutral)}
-              style={segment}
-            />
-          ))}
+          <span className={cn("h-full border-l-2", behindDue ? toneMark.danger : toneMark.neutral)} />
         </span>
       )}
       {/* A halo in the background colour keeps grid lines and the Now line from crossing the letters. */}
       <div
         ref={label}
         className="relative flex items-center gap-1.5 whitespace-nowrap px-1.5 pt-1 text-xs text-card-foreground [text-shadow:0_0_3px_var(--background),0_0_3px_var(--background)]"
+        data-pinned={pinned || undefined}
         style={{
           width: "max-content",
-          ...(labelOutside ? { marginLeft: drawnWidth + labelGap - 6 } : { minWidth: "100%" }),
+          maxWidth: room,
+          ...(labelMargin > 0 ? { marginLeft: labelMargin } : { minWidth: "100%" }),
         }}
       >
+        {pinned && (
+          <ChevronLeft
+            role="img"
+            aria-label={`#${task.id} starts earlier`}
+            className="-ml-1 size-3.5 shrink-0 text-muted-foreground"
+          />
+        )}
         {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
         <TaskTypeBadge type={task.taskType} className="bg-card px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
-        <span className="font-semibold">{task.title}</span>
+        <span className="min-w-0 truncate font-semibold">{task.title}</span>
         {warnings.length > 0 && (
           <TriangleAlert
             role="img"
             aria-label={`Warnings of #${task.id}: ${warnings.join("; ")}`}
             data-severe={severe || undefined}
-            className={cn(
-              "size-3.5 shrink-0",
-              severe ? "text-rose-600 dark:text-rose-400" : "text-amber-600 dark:text-amber-400",
-            )}
+            data-tone={warningTone}
+            className={cn("size-3.5 shrink-0", toneText[warningTone])}
           >
             <title>{warnings.join("\n")}</title>
           </TriangleAlert>

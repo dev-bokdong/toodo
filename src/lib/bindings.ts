@@ -50,12 +50,28 @@ export const commands = {
 	 */
 	listRemoteDirectories: (machine: string, path: string | null) => typedError<RemoteDirectory, CommandError>(__TAURI_INVOKE("list_remote_directories", { machine, path })),
 	/**
+	 *  Subdirectories of `path` on `machine`, or of the home directory when `path` is absent.
+	 *  On the server, "Local" is the server, so `local` lists the server's own directories;
+	 *  the desktop app picks local folders with the system folder dialog and refuses it.
+	 */
+	listDirectories: (machine: Machine, path: string | null) => typedError<RemoteDirectory, CommandError>(__TAURI_INVOKE("list_directories", { machine, path })),
+	/**
 	 *  Tasks of every workspace ordered by ID, each with its dependencies, which may belong
 	 *  to another workspace.
 	 */
 	listTasks: () => typedError<Task[], CommandError>(__TAURI_INVOKE("list_tasks")),
+	/**  Every related link between tasks, which neither block nor wait on each other. */
+	listTaskRelations: () => typedError<TaskRelation[], CommandError>(__TAURI_INVOKE("list_task_relations")),
+	/**  Links two tasks, from any workspaces, as related; linking twice keeps one link. */
+	addTaskRelation: (taskId: TaskId, relatedId: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("add_task_relation", { taskId, relatedId })),
+	/**  Removes the related link between two tasks, given in either order. */
+	removeTaskRelation: (taskId: TaskId, relatedId: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("remove_task_relation", { taskId, relatedId })),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("get_task", { id })),
-	/**  Creates a `planned` task without dependencies. */
+	/**
+	 *  Creates a `planned` task without dependencies, with its completion criteria. The merge
+	 *  criterion depends on whether the repository has an `origin` remote, which git may
+	 *  check over `ssh`, so this runs off the main thread.
+	 */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(__TAURI_INVOKE("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(__TAURI_INVOKE("update_task", { task })),
 	/**
@@ -70,6 +86,12 @@ export const commands = {
 	 *  is its required conclusion.
 	 */
 	setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(__TAURI_INVOKE("set_completion_note", { id, note })),
+	/**
+	 *  Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
+	 *  with what shows it; blank evidence is none. A task in progress whose criteria are then
+	 *  all met awaits completion until it is completed.
+	 */
+	checkCriterion: (taskId: TaskId, criterionId: CriterionId, met: boolean, evidence: string | null) => typedError<Task, CommandError>(__TAURI_INVOKE("check_criterion", { taskId, criterionId, met, evidence })),
 	/**
 	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
@@ -95,6 +117,12 @@ export const commands = {
 	 *  base. A paused task resumes on its branch, in its worktree if it still has one.
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
+	/**
+	 *  Makes sure herdr has the workspace of a started task open without focusing it, opening
+	 *  the task's worktree again when herdr no longer has it, and lists the workspace's panes
+	 *  for the pane view.
+	 */
+	ensureTaskWorkspace: (id: TaskId) => typedError<TaskPane[], CommandError>(__TAURI_INVOKE("ensure_task_workspace", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
 	/**
 	 *  Focuses the pane of the agent working on a started task, the one that needs the user
@@ -128,9 +156,11 @@ export const commands = {
 	 */
 	openPullRequest: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("open_pull_request", { id })),
 	/**
-	 *  Moves an `in_review` task to `done` once its pull request is merged, which may make
-	 *  its dependents `ready`. The size, reviews, and commits of the pull request are
-	 *  recorded for reviews. Its herdr workspace is closed; the worktree stays on disk.
+	 *  Moves an `in_progress` or `in_review` task to `done` once its completion criteria are
+	 *  met, which also confirms a task with a manual criterion and may make its dependents
+	 *  ready. Toodo checks its automatic criteria first; a merged pull request's size,
+	 *  reviews, and commits are recorded for reviews. Its herdr workspace is closed; the
+	 *  worktree stays on disk. Rejected with the criteria that are not met.
 	 */
 	completeTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("complete_task", { id })),
 	/**
@@ -146,9 +176,24 @@ export const commands = {
 	 *  Counts the commits of the base branch (fetched from `origin` first) that the task's
 	 *  branch lacks, and asks GitHub whether its pull request, if any, merges without
 	 *  conflicts. A failing fetch or pull request lookup is reported in the result rather
-	 *  than failing the whole check.
+	 *  than failing the whole check. `None` when the workspace repository has no `origin`,
+	 *  since there is no shared base branch to fall behind.
 	 */
-	branchFreshness: (id: TaskId) => typedError<BranchFreshness, CommandError>(__TAURI_INVOKE("branch_freshness", { id })),
+	branchFreshness: (id: TaskId) => typedError<{
+	/**  The revision counted against: `origin/<base>` when it exists, else `<base>`. */
+	base: string,
+	/**  Commits on the base that the branch does not contain. */
+	behind: number,
+	/**  Why fetching `origin` failed; `behind` is then against the last fetched base. */
+	fetchError: string | null,
+	/**
+	 *  Whether the task's pull request merges without conflicts; `None` without a pull
+	 *  request or when it could not be read.
+	 */
+	mergeable: MergeState | null,
+	/**  Why the pull request could not be read. */
+	mergeableError: string | null,
+} | null, CommandError>(__TAURI_INVOKE("branch_freshness", { id })),
 	listPullRequestStatuses: () => __TAURI_INVOKE<TaskPullRequestStatus[]>("list_pull_request_statuses"),
 	/**
 	 *  Links issue `number` of the workspace repository to a task that is not done, after
@@ -173,7 +218,8 @@ export const commands = {
 	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(__TAURI_INVOKE("review_period", { start, end })),
 	/**
 	 *  Writes a report built by the frontend to `path`, replacing any file there. Only
-	 *  Markdown (`.md`) and CSV (`.csv`) files are written.
+	 *  Markdown (`.md`) and CSV (`.csv`) files are written. Desktop only: the web app
+	 *  downloads reports in the browser instead.
 	 */
 	saveReport: (path: string, contents: string) => typedError<null, CommandError>(__TAURI_INVOKE("save_report", { path, contents })),
 	getBackupSettings: () => __TAURI_INVOKE<BackupSettings>("get_backup_settings"),
@@ -184,18 +230,52 @@ export const commands = {
 	saveBackupSettings: (settings: BackupSettings) => typedError<BackupSettings, CommandError>(__TAURI_INVOKE("save_backup_settings", { settings })),
 	/**  Backups in Toodo's backup directory, newest first. */
 	listBackups: () => typedError<BackupEntry[], CommandError>(__TAURI_INVOKE("list_backups")),
-	/**  Writes a snapshot of the database to `path`, replacing any file there. */
+	/**
+	 *  Writes a snapshot of the database to `path`, replacing any file there. Desktop only:
+	 *  the server sends snapshots over HTTP instead of writing them at a path.
+	 */
 	exportDatabase: (path: string) => typedError<null, CommandError>(__TAURI_INVOKE("export_database", { path })),
 	/**
 	 *  Replaces all data with the backup at `path`. The current data is first saved as a
-	 *  pre-restore backup, which is returned.
+	 *  pre-restore backup, which is returned. Desktop only: the server takes uploads instead.
 	 */
 	restoreDatabase: (path: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_database", { path })),
+	/**
+	 *  The entries of the workspace, or the shared ones when `workspace_id` is `null`; the
+	 *  superseded ones too when `include_superseded`. Most recently changed first.
+	 */
+	listMemory: (workspaceId: number | null, includeSuperseded: boolean) => typedError<MemoryEntry[], CommandError>(__TAURI_INVOKE("list_memory", { workspaceId, includeSuperseded })),
+	/**  Adds an entry to the workspace, or a shared one when `workspace_id` is `null`. */
+	addMemory: (workspaceId: number | null, content: MemoryContent) => typedError<MemoryEntry, CommandError>(__TAURI_INVOKE("add_memory", { workspaceId, content })),
+	/**  Rewrites a current entry, e.g. to fix a mistake. Superseded entries cannot change. */
+	updateMemory: (id: MemoryId, content: MemoryContent) => typedError<MemoryEntry, CommandError>(__TAURI_INVOKE("update_memory", { id, content })),
+	/**
+	 *  Replaces a current entry with a new one in the same scope and returns the new entry;
+	 *  the old one stays as history.
+	 */
+	supersedeMemory: (id: MemoryId, content: MemoryContent) => typedError<MemoryEntry, CommandError>(__TAURI_INVOKE("supersede_memory", { id, content })),
+	/**
+	 *  Replaces all data with the backup named `name` in Toodo's backup directory (see
+	 *  [`list_backups`]). The current data is first saved as a pre-restore backup, which is
+	 *  returned.
+	 */
+	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_backup", { name })),
+	getLead: () => __TAURI_INVOKE<LeadStatus>("get_lead"),
+	/**  The latest messages of the chat with the lead, oldest first. */
+	listChatMessages: () => typedError<ChatMessage[], CommandError>(__TAURI_INVOKE("list_chat_messages")),
+	/**
+	 *  Types `text` into the lead's pane and stores it as the user's message. `client_id`,
+	 *  chosen by the client for each message, makes sending it again harmless: a message
+	 *  already stored under it is returned without typing it again.
+	 */
+	sendChatMessage: (text: string, clientId: string) => typedError<ChatMessage, CommandError>(__TAURI_INVOKE("send_chat_message", { text, clientId })),
 };
 
 /** Events */
 export const events = {
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
+	chatChanged: makeEvent<ChatChanged>("chat-changed"),
+	memoryChanged: makeEvent<MemoryChanged>("memory-changed"),
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	updateCheckRequested: makeEvent<UpdateCheckRequested>("update-check-requested"),
@@ -271,6 +351,41 @@ export type BranchList = {
 	fetchError: string | null,
 };
 
+export type ChatAuthor = "user" | "lead";
+
+/**  A message of the chat with the lead was sent or answered. */
+export type ChatChanged = null;
+
+/**  A message of the chat with the lead. */
+export type ChatMessage = {
+	id: number,
+	author: ChatAuthor,
+	/**  Markdown. */
+	body: string,
+	at: Timestamp,
+};
+
+/**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */
+export type CheckKind = 
+/**  Checked by the user or an agent, with evidence. */
+"manual" | 
+/**  The task's pull request is merged into the workspace base branch. */
+"pr_merged" | 
+/**  The task's pull request is open and all its checks passed. */
+"pr_open_ci_green" | 
+/**
+ *  The task branch is merged into the base branch in the repository itself, for
+ *  workspaces without an `origin` remote.
+ */
+"branch_merged_locally" | 
+/**  A GET of `target`, an http(s) URL, succeeds. */
+"url" | 
+/**  `target`, a shell command, exits with status 0 in the task worktree. */
+"command";
+
+/**  Who checked a criterion last. */
+export type CheckedBy = "user" | "agent" | "toodo";
+
 /**  Combined result of the CI checks of a pull request. */
 export type ChecksStatus = "passing" | "failing" | "pending";
 
@@ -306,6 +421,52 @@ export type CommitRecord = {
 	committedAt: number,
 };
 
+/**  A completion criterion of a task. */
+export type Criterion = {
+	id: CriterionId,
+	text: string,
+	kind: CheckKind,
+	/**
+	 *  The URL or command to check; for `branch_merged_locally`, the commit the branch
+	 *  started from once Toodo knows it.
+	 */
+	target: string | null,
+	state: CriterionState,
+	/**  What showed the last check's result, or why it failed. */
+	evidence: string | null,
+	checkedBy: CheckedBy | null,
+	checkedAt: Timestamp | null,
+};
+
+export type CriterionId = number;
+
+/**
+ *  A completion criterion given when creating or editing a task: an existing one by `id`
+ *  (only when editing), or a new one.
+ */
+export type CriterionInput = {
+	/**
+	 *  An existing criterion of the task, which keeps its state unless its kind or
+	 *  target changes; omit it for a new criterion.
+	 */
+	id?: CriterionId | null,
+	/**  What has to hold, in words, e.g. `The server answers /health`. */
+	text: string,
+	kind: CheckKind,
+	/**
+	 *  The http(s) URL of a `url` criterion or the shell command of a `command`
+	 *  criterion; omit it for other kinds.
+	 */
+	target?: string | null,
+};
+
+export type CriterionState = "pending" | "met" | 
+/**
+ *  The last automatic check failed, e.g. a command exited with an error; Toodo checks
+ *  it again.
+ */
+"failed";
+
 /**  The expected size of a task. */
 export type Estimate = {
 	unit: EstimateUnit,
@@ -339,6 +500,38 @@ export type HerdrStatus = {
 	/**  Whether the herdr server on this machine is running. */
 	running: boolean,
 	version: string | null,
+};
+
+/**  What the server is doing with the lead. */
+export type LeadState = 
+/**  No lead: the desktop app, or a server started with `TOODO_LEAD=off`. */
+"disabled" | 
+/**  The agent command was typed into the pane and has not shown up yet. */
+"starting" | "running" | 
+/**  The agent exited; it is started again once its backoff has passed. */
+"restarting" | 
+/**
+ *  The lead cannot run: herdr or git failed, or the agent keeps exiting right after
+ *  it starts. The server keeps trying.
+ */
+"failed";
+
+/**  The lead's workspace, pane, and state, for the chat panel. */
+export type LeadStatus = {
+	state: LeadState,
+	/**  The Toodo workspace the lead works in. */
+	workspaceId: WorkspaceId | null,
+	herdrWorkspaceId: string | null,
+	paneId: string | null,
+	/**  The agent herdr recognized in the pane, e.g. `omo`. */
+	agent: string | null,
+	agentStatus: AgentStatus | null,
+	/**  How often the server started the agent again since the server started. */
+	restarts: number,
+	/**  When the running agent was started, or first seen running. */
+	startedAt: Timestamp | null,
+	/**  Why the lead is failing or restarting. */
+	error: string | null,
 };
 
 /**  A GitHub issue of the workspace repository linked to a task. */
@@ -377,6 +570,51 @@ export type McpTunnel = {
 export type McpTunnelState = "connecting" | "open" | "retrying";
 
 /**
+ *  Project memory entries changed outside the app's own forms, e.g. by an agent through
+ *  MCP.
+ */
+export type MemoryChanged = null;
+
+/**  What a memory entry says, when it is added, edited, or replaced. */
+export type MemoryContent = {
+	kind: MemoryKind,
+	title: string,
+	/**  Markdown. */
+	body: string,
+	taskId: TaskId | null,
+};
+
+/**  A project memory entry: knowledge of one workspace, or shared by every workspace. */
+export type MemoryEntry = {
+	id: MemoryId,
+	/**  `null` for an entry shared by every workspace. */
+	workspaceId: WorkspaceId | null,
+	kind: MemoryKind,
+	title: string,
+	/**  Markdown. */
+	body: string,
+	/**  The task the entry came from. */
+	taskId: TaskId | null,
+	createdAt: Timestamp,
+	updatedAt: Timestamp,
+	/**  The entry that replaced this one; `null` while it is current. */
+	supersededBy: MemoryId | null,
+};
+
+export type MemoryId = number;
+
+/**  What a memory entry records. */
+export type MemoryKind = 
+/**  A choice that was made, and why. */
+"decision" | 
+/**  A standing rule to follow. */
+"rule" | 
+/**  Anything else worth knowing. */
+"note" | 
+/**  An overview, e.g. of the project's state or architecture. */
+"summary";
+
+/**
  *  Whether GitHub can merge a pull request into its base without conflicts; `unknown`
  *  until GitHub has computed it, and for a pull request that is no longer open.
  */
@@ -409,6 +647,14 @@ export type NewTask = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` for none. */
 	dueDate: string | null,
+	/**  Completion criteria in order; an `id` is not allowed here. */
+	criteria: CriterionInput[],
+	/**
+	 *  Whether to put the merge criterion first: the task's pull request is merged, or,
+	 *  in a repository without an `origin` remote, its branch is merged into the base
+	 *  branch locally. Ignored when `criteria` already has one of those.
+	 */
+	mergeCriterion: boolean,
 };
 
 export type NewWorkspace = {
@@ -522,6 +768,8 @@ export type Task = {
 	milestones: TaskMilestones,
 	/**  Notes agents left on the task through the MCP server, oldest first. */
 	notes: TaskNote[],
+	/**  What has to hold for the task to be done, in order. */
+	criteria: Criterion[],
 };
 
 /**
@@ -546,6 +794,11 @@ export type TaskEdit = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` clears the due date. */
 	dueDate: string | null,
+	/**
+	 *  The new completion criteria in order, which replace the current ones; `null`
+	 *  keeps them. The criteria of a done task cannot change.
+	 */
+	criteria: CriterionInput[] | null,
 };
 
 export type TaskEvent = {
@@ -576,6 +829,16 @@ export type TaskNote = {
 	at: Timestamp,
 };
 
+/**  A pane of a task's herdr workspace, for the pane view. */
+export type TaskPane = {
+	paneId: string,
+	/**  The agent herdr recognized in the pane, e.g. `claude`. */
+	agent: string | null,
+	agentStatus: AgentStatus | null,
+	/**  The pane's label, or else its terminal title. */
+	title: string | null,
+};
+
 /**
  *  CI and review state of the open pull request of an `in_review` task, as of the last
  *  background check.
@@ -585,6 +848,15 @@ export type TaskPullRequestStatus = {
 	/**  `null` when the pull request has no checks. */
 	checks: ChecksStatus | null,
 	review: ReviewStatus,
+};
+
+/**
+ *  A related link between two tasks, which may belong to different workspaces. The link
+ *  goes both ways; `task_id` is the lower ID.
+ */
+export type TaskRelation = {
+	taskId: TaskId,
+	relatedId: TaskId,
 };
 
 /**  How a `done` task ended. */
@@ -640,7 +912,12 @@ export type WorkspaceSource =
 /**  The location already holds a cloned repository. */
 { kind: "open" } | 
 /**  Clone `url` into the location, which must not exist or be empty. */
-{ kind: "clone"; url: string };
+{ kind: "clone"; url: string } | 
+/**
+ *  Make the location, a plain folder or one that does not exist yet, a new git
+ *  repository without a remote.
+ */
+{ kind: "init" };
 
 /**  Workspaces were added outside the app's own forms, e.g. by an agent through MCP. */
 export type WorkspacesChanged = null;

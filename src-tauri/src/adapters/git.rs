@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::process::{Command, Stdio};
 
-use crate::domain::model::{MachineLabel, WorkspaceLocation};
+use crate::domain::model::{HostPath, MachineLabel, WorkspaceLocation};
 use crate::domain::path::PosixPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,8 +136,8 @@ pub(super) fn describe(invocation: &Invocation) -> String {
         .join(" ")
 }
 
-/// Quotes one word for the POSIX shell that runs an SSH remote command.
-pub(super) fn shell_quote(word: &str) -> String {
+/// Quotes one word for a POSIX shell, such as the one that runs an SSH remote command.
+pub(crate) fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
@@ -168,6 +168,23 @@ impl Git {
     pub fn clone_repository(&self, url: &str, target: &WorkspaceLocation) -> Result<(), GitError> {
         let path = location_path(target);
         self.run(target, None, &["clone", "--", url, path])?;
+        Ok(())
+    }
+
+    /// Makes the location's path, a plain folder or one that does not exist yet, a git
+    /// repository whose first branch is `branch`. Running it on a repository leaves its
+    /// history and branches alone.
+    pub fn init_repository(
+        &self,
+        target: &WorkspaceLocation,
+        branch: &str,
+    ) -> Result<(), GitError> {
+        let initial_branch = format!("--initial-branch={branch}");
+        self.run(
+            target,
+            None,
+            &["init", "--quiet", &initial_branch, location_path(target)],
+        )?;
         Ok(())
     }
 
@@ -444,30 +461,31 @@ impl Git {
     }
 
     /// How many commits of the base branch `branch` lacks, read in the repository or
-    /// worktree at `dir`. When the repository has an `origin`, its `base` is fetched first
-    /// and counted against, since that is where prerequisites get merged; a failed fetch
-    /// (e.g. offline) counts against the last fetched state and reports the failure.
+    /// worktree at `dir`. The repository's `origin` is where prerequisites get merged, so its
+    /// `base` is fetched first and counted against; a failed fetch (e.g. offline) counts
+    /// against the last fetched state and reports the failure. `None` when the repository
+    /// has no `origin`: there is no shared base to fall behind.
     pub fn commits_behind(
         &self,
         location: &WorkspaceLocation,
         dir: &str,
         base: &str,
         branch: &str,
-    ) -> Result<BehindBase, GitError> {
+    ) -> Result<Option<BehindBase>, GitError> {
         let has_origin = self
             .run(location, Some(dir), &["remote"])?
             .lines()
             .any(|remote| remote.trim() == "origin");
-        let mut fetch_error = None;
-        let mut base_ref = base.to_owned();
-        if has_origin {
-            match self.run(location, Some(dir), &["fetch", "--quiet", "origin", base]) {
-                Ok(_) => {}
-                Err(error @ GitError::Failed { .. }) => fetch_error = Some(error.to_string()),
-                Err(error) => return Err(error),
-            }
-            base_ref = self.remote_tracking_or_local(location, dir, base)?;
+        if !has_origin {
+            return Ok(None);
         }
+        let mut fetch_error = None;
+        match self.run(location, Some(dir), &["fetch", "--quiet", "origin", base]) {
+            Ok(_) => {}
+            Err(error @ GitError::Failed { .. }) => fetch_error = Some(error.to_string()),
+            Err(error) => return Err(error),
+        }
+        let base_ref = self.remote_tracking_or_local(location, dir, base)?;
         let range = format!("{branch}..{base_ref}");
         let output = self.run(location, Some(dir), &["rev-list", "--count", &range, "--"])?;
         let behind = output
@@ -477,11 +495,11 @@ impl Git {
                 command: format!("git rev-list --count {range}"),
                 output: output.clone(),
             })?;
-        Ok(BehindBase {
+        Ok(Some(BehindBase {
             base: base_ref,
             behind,
             fetch_error,
-        })
+        }))
     }
 
     /// Pushes `branch` to `origin` and makes it the upstream of the local branch.
@@ -594,6 +612,130 @@ impl Git {
         Ok(())
     }
 
+    /// The commit `revision` points to in the repository of `repo`.
+    pub fn commit_of(&self, repo: &WorkspaceLocation, revision: &str) -> Result<String, GitError> {
+        let spec = format!("{revision}^{{commit}}");
+        let output = self.run(
+            repo,
+            Some(location_path(repo)),
+            &["rev-parse", "--verify", "--quiet", &spec],
+        )?;
+        Ok(output.trim().to_owned())
+    }
+
+    /// Whether `branch` has been merged into the local `base` branch of the repository of
+    /// `repo`, as merging it there without a remote does. `start` is the commit the branch
+    /// started from: a branch that has no commits of its own since then is not merged
+    /// work, even though `base` contains it. Without `start`, a branch that is ahead of
+    /// `base` reports where it forked, which callers keep as its start.
+    pub fn local_merge(
+        &self,
+        repo: &WorkspaceLocation,
+        branch: &str,
+        base: &str,
+        start: Option<&str>,
+    ) -> Result<LocalMerge, GitError> {
+        let path = Some(location_path(repo));
+        let local_branch = format!("refs/heads/{branch}");
+        match self.run(
+            repo,
+            path,
+            &["rev-parse", "--verify", "--quiet", &local_branch],
+        ) {
+            Ok(_) => {}
+            Err(GitError::Failed { .. }) => return Ok(LocalMerge::NoBranch),
+            Err(error) => return Err(error),
+        }
+        let count = |range: &str| -> Result<u32, GitError> {
+            let output = self.run(repo, path, &["rev-list", "--count", range])?;
+            output
+                .trim()
+                .parse()
+                .map_err(|_| GitError::UnexpectedOutput {
+                    command: format!("git rev-list --count {range}"),
+                    output: output.trim().to_owned(),
+                })
+        };
+        let ahead = count(&format!("refs/heads/{base}..{local_branch}"))?;
+        if ahead > 0 {
+            let start = match start {
+                Some(start) => start.to_owned(),
+                None => self
+                    .run(repo, path, &["merge-base", base, &local_branch])?
+                    .trim()
+                    .to_owned(),
+            };
+            return Ok(LocalMerge::NotMerged { ahead, start });
+        }
+        let Some(start) = start else {
+            return Ok(LocalMerge::StartUnknown);
+        };
+        match count(&format!("{start}..{local_branch}"))? {
+            0 => Ok(LocalMerge::NoCommits),
+            commits => Ok(LocalMerge::Merged { commits }),
+        }
+    }
+
+    /// Runs `command` with the shell of the machine that hosts `location` in the directory
+    /// `dir` there: `cmd.exe` for Windows paths, `sh` otherwise. Returns its standard
+    /// output; a non-zero exit status is a [`GitError::Failed`] with its standard error.
+    pub fn run_command(
+        &self,
+        location: &WorkspaceLocation,
+        dir: &str,
+        command: &str,
+    ) -> Result<String, GitError> {
+        let invocation = match location {
+            WorkspaceLocation::Local {
+                path: HostPath::Windows(_),
+            } => Invocation {
+                program: "cmd",
+                args: vec![
+                    "/D".to_owned(),
+                    "/S".to_owned(),
+                    "/C".to_owned(),
+                    format!("cd /d \"{dir}\" && {command}"),
+                ],
+            },
+            WorkspaceLocation::Local {
+                path: HostPath::Posix(_),
+            } => Invocation {
+                program: "sh",
+                args: vec![
+                    "-c".to_owned(),
+                    format!("cd {} && {command}", shell_quote(dir)),
+                ],
+            },
+            WorkspaceLocation::Ssh { machine, .. } => {
+                ssh_invocation(machine, format!("cd {} && {command}", shell_quote(dir)))
+            }
+        };
+        self.runner.run(&invocation)
+    }
+
+    /// Fetches `url` with `curl` on this machine, following redirects; fails unless the
+    /// final response has a 2xx or 3xx status.
+    pub fn fetch_url(&self, url: &str) -> Result<(), GitError> {
+        let discard = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        self.runner.run(&Invocation {
+            program: "curl",
+            args: [
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--location",
+                "--max-time",
+                "30",
+                "--output",
+                discard,
+                url,
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        })?;
+        Ok(())
+    }
+
     /// Whether the repository of the workspace at `repo` has an `origin` remote.
     pub fn has_origin(&self, repo: &WorkspaceLocation) -> Result<bool, GitError> {
         Ok(self
@@ -638,6 +780,22 @@ pub struct BranchList {
     pub names: Vec<String>,
     /// Why fetching `origin` failed, when it did.
     pub fetch_error: Option<String>,
+}
+
+/// What [`Git::local_merge`] found about a task branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalMerge {
+    /// The repository has no such branch.
+    NoBranch,
+    /// The branch has `ahead` commits the base does not contain; it started at `start`.
+    NotMerged { ahead: u32, start: String },
+    /// The base contains the branch, which has `commits` commits since its start.
+    Merged { commits: u32 },
+    /// The base contains the branch, which has no commits since its start.
+    NoCommits,
+    /// The base contains the branch, but where the branch started is not known, so
+    /// whether it had commits of its own is not either.
+    StartUnknown,
 }
 
 /// Where [`Git::task_branch_start`] starts a new task branch.
@@ -1337,6 +1495,7 @@ mod tests {
         ]);
         let behind = git
             .commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1")
+            .unwrap()
             .unwrap();
         assert_eq!(
             behind,
@@ -1374,6 +1533,7 @@ mod tests {
         ]);
         let behind = git
             .commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1")
+            .unwrap()
             .unwrap();
         assert_eq!(behind.base, "origin/main");
         assert_eq!(behind.behind, 0);
@@ -1381,22 +1541,23 @@ mod tests {
     }
 
     #[test]
-    fn commits_behind_without_origin_counts_against_the_local_base() {
-        let (git, runner) = git(vec![Ok(String::new()), Ok("2\n".to_owned())]);
+    fn commits_behind_without_origin_reports_nothing() {
+        let (git, runner) = git(vec![Ok("upstream\n".to_owned())]);
         let behind = git
             .commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1")
             .unwrap();
-        assert_eq!(behind.base, "main");
-        assert_eq!(behind.behind, 2);
-        assert_eq!(
-            runner.invocations.lock().unwrap()[1].args[4],
-            "feat/x-1..main"
-        );
+        assert_eq!(behind, None);
+        assert_eq!(runner.invocations.lock().unwrap().len(), 1);
     }
 
     #[test]
     fn commits_behind_rejects_a_count_that_is_not_a_number() {
-        let (git, _) = git(vec![Ok(String::new()), Ok("many\n".to_owned())]);
+        let (git, _) = git(vec![
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+            Ok("abc\n".to_owned()),
+            Ok("many\n".to_owned()),
+        ]);
         assert!(matches!(
             git.commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1"),
             Err(GitError::UnexpectedOutput { .. })

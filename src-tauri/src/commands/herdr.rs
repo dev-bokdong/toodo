@@ -7,14 +7,15 @@
 
 use super::State;
 
-use super::types::{HerdrStatus, Task, TaskId};
+use super::types::{HerdrStatus, Task, TaskId, TaskPane};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree};
+use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree, PaneAgent};
+use crate::domain::criteria::{CheckKind, CriterionState};
 use crate::domain::model::{self, Machine, WorkspaceLocation};
 use crate::domain::naming;
 use crate::domain::status::TaskStatus;
-use crate::storage::StorageError;
+use crate::storage::{CriterionCheck, StorageError};
 
 #[cfg_attr(feature = "desktop", tauri::command(async))]
 #[cfg_attr(feature = "desktop", specta::specta)]
@@ -37,6 +38,20 @@ pub fn start_task(
     id: TaskId,
 ) -> CommandResult<Task> {
     Ok((&start(&storage, &git, &herdr, id.into())?).into())
+}
+
+/// Makes sure herdr has the workspace of a started task open without focusing it, opening
+/// the task's worktree again when herdr no longer has it, and lists the workspace's panes
+/// for the pane view.
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+#[cfg_attr(feature = "desktop", specta::specta)]
+pub fn ensure_task_workspace(
+    storage: State<'_, StorageState>,
+    herdr: State<'_, HerdrState>,
+    id: TaskId,
+) -> CommandResult<Vec<TaskPane>> {
+    let found = ensure_workspace(&storage, &herdr, id.into())?;
+    Ok(found.panes.iter().map(TaskPane::from).collect())
 }
 
 #[cfg_attr(feature = "desktop", tauri::command(async))]
@@ -95,7 +110,7 @@ pub(crate) fn start(
     herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let (workspace, mut checkout, resumed, kept_worktree) = {
+    let (workspace, mut checkout, resumed, kept_worktree, start_unknown) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -114,7 +129,23 @@ pub(crate) fn start(
         if let Some(branch) = task.branch {
             checkout.branch = branch;
         }
-        (workspace, checkout, resumed, task.worktree_path)
+        // A local merge criterion tells merged work from a branch nobody committed to
+        // by the commit the branch started at.
+        let start_unknown: Vec<_> = task
+            .criteria
+            .iter()
+            .filter(|criterion| {
+                criterion.kind == CheckKind::BranchMergedLocally && criterion.target.is_none()
+            })
+            .map(|criterion| criterion.id)
+            .collect();
+        (
+            workspace,
+            checkout,
+            resumed,
+            task.worktree_path,
+            start_unknown,
+        )
     };
     let machine = workspace.location.machine();
     let repository = match &workspace.location {
@@ -140,6 +171,7 @@ pub(crate) fn start(
     // herdr checks out an existing branch as is and ignores the base.
     let mut fetch_failure = None;
     let mut created_branch = false;
+    let mut start_checks = Vec::new();
     let base = match source {
         Some(source) => source,
         None => {
@@ -150,6 +182,22 @@ pub(crate) fn start(
             let start = git.task_branch_start(&workspace.location, base)?;
             created_branch =
                 git.create_task_branch(&workspace.location, &checkout.branch, &start.start)?;
+            if created_branch && !start_unknown.is_empty() {
+                let commit = git
+                    .commit_of(&workspace.location, &checkout.branch)
+                    .inspect_err(|_| {
+                        let _ = git.delete_branch(&workspace.location, &checkout.branch);
+                    })?;
+                start_checks = start_unknown
+                    .iter()
+                    .map(|&id| CriterionCheck {
+                        id,
+                        state: CriterionState::Pending,
+                        evidence: None,
+                        target: Some(commit.clone()),
+                    })
+                    .collect();
+            }
             fetch_failure = start.fetch_failure;
             start.start
         }
@@ -173,7 +221,10 @@ pub(crate) fn start(
             }
         })?;
     let mut storage = lock(storage);
-    let started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
+    let mut started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
+    if !start_checks.is_empty() {
+        started = storage.record_criterion_checks(id, &start_checks)?.0;
+    }
     let Some(failure) = fetch_failure else {
         return Ok(started);
     };
@@ -245,38 +296,124 @@ fn restore(
     Ok(lock(storage).restore_task_worktree(id, &checkout.path, &herdr_workspace_id)?)
 }
 
-/// Focuses the herdr workspace of a started task. When herdr no longer has it, e.g. the
-/// user closed it, the task's worktree is opened again and the new workspace remembered.
-fn open(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<()> {
-    let (location, worktree_path, herdr_workspace_id) = {
-        let storage = lock(storage);
-        let task = storage
-            .get_task(id)?
-            .ok_or(StorageError::TaskNotFound(id))?;
-        let herdr_workspace_id = task.herdr_workspace_id.ok_or_else(|| {
-            CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
-        })?;
-        let workspace = storage
-            .get_workspace(task.workspace_id)?
-            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (workspace.location, task.worktree_path, herdr_workspace_id)
+/// Where the herdr workspace of a started task is.
+struct TaskWorkspace {
+    location: WorkspaceLocation,
+    worktree_path: Option<model::HostPath>,
+    herdr_workspace_id: String,
+}
+
+fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<TaskWorkspace> {
+    let storage = lock(storage);
+    let task = storage
+        .get_task(id)?
+        .ok_or(StorageError::TaskNotFound(id))?;
+    let herdr_workspace_id = task.herdr_workspace_id.ok_or_else(|| {
+        CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
+    })?;
+    let workspace = storage
+        .get_workspace(task.workspace_id)?
+        .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+    Ok(TaskWorkspace {
+        location: workspace.location,
+        worktree_path: task.worktree_path,
+        herdr_workspace_id,
+    })
+}
+
+/// Opens the worktree of a task whose herdr workspace herdr no longer has, e.g. because
+/// the user closed it, without focusing it, and remembers the new workspace. `missing` is
+/// the error to report for a task without a worktree.
+fn reopen(
+    storage: &StorageState,
+    herdr: &Herdr,
+    id: model::TaskId,
+    target: &TaskWorkspace,
+    missing: impl FnOnce() -> CommandError,
+) -> CommandResult<String> {
+    let Some(path) = &target.worktree_path else {
+        return Err(missing());
     };
-    let machine: Machine = location.machine();
-    match herdr.focus_workspace(&machine, &herdr_workspace_id) {
+    let repository = match &target.location {
+        WorkspaceLocation::Local { path } => path.as_str(),
+        WorkspaceLocation::Ssh { path, .. } => path.as_str(),
+    };
+    let machine = target.location.machine();
+    let reopened = herdr.open_worktree(&machine, repository, &path.to_string())?;
+    lock(storage).set_task_herdr_workspace(id, &reopened)?;
+    Ok(reopened)
+}
+
+/// Focuses the herdr workspace of a started task. When herdr no longer has it, the task's
+/// worktree is opened again like [`ensure_workspace`] and then focused.
+fn open(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<()> {
+    let target = task_workspace(storage, id)?;
+    let machine: Machine = target.location.machine();
+    match herdr.focus_workspace(&machine, &target.herdr_workspace_id) {
         Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {
-            let Some(path) = worktree_path else {
-                return Err(error.into());
-            };
-            let repository = match &location {
-                WorkspaceLocation::Local { path } => path.as_str(),
-                WorkspaceLocation::Ssh { path, .. } => path.as_str(),
-            };
-            let reopened = herdr.open_worktree(&machine, repository, &path.to_string())?;
-            lock(storage).set_task_herdr_workspace(id, &reopened)?;
+            let reopened = reopen(storage, herdr, id, &target, || error.into())?;
             Ok(herdr.focus_workspace(&machine, &reopened)?)
         }
         result => Ok(result?),
     }
+}
+
+/// The herdr workspace of a started task with its panes.
+#[derive(Debug)]
+pub(crate) struct WorkspacePanes {
+    pub machine: Machine,
+    pub panes: Vec<PaneAgent>,
+}
+
+/// The panes of the herdr workspace of a started task, as herdr lists them now; none
+/// when herdr no longer has the workspace.
+pub(crate) fn task_panes(
+    storage: &StorageState,
+    herdr: &Herdr,
+    id: model::TaskId,
+) -> CommandResult<WorkspacePanes> {
+    let target = task_workspace(storage, id)?;
+    let machine = target.location.machine();
+    let panes = workspace_panes(herdr, &machine, &target.herdr_workspace_id)?;
+    Ok(WorkspacePanes { machine, panes })
+}
+
+fn workspace_panes(
+    herdr: &Herdr,
+    machine: &Machine,
+    workspace_id: &str,
+) -> Result<Vec<PaneAgent>, HerdrError> {
+    Ok(herdr
+        .list_panes(machine)?
+        .into_iter()
+        .filter(|pane| pane.workspace_id == workspace_id)
+        .collect())
+}
+
+/// Makes sure herdr has the workspace of a started task open, without focusing it: a
+/// workspace herdr no longer has (it lists none of its panes) is opened again from the
+/// task's worktree. Returns the workspace's panes.
+fn ensure_workspace(
+    storage: &StorageState,
+    herdr: &Herdr,
+    id: model::TaskId,
+) -> CommandResult<WorkspacePanes> {
+    let found = task_panes(storage, herdr, id)?;
+    if !found.panes.is_empty() {
+        return Ok(found);
+    }
+    let target = task_workspace(storage, id)?;
+    let reopened = reopen(storage, herdr, id, &target, || {
+        CommandError::rejected(format!(
+            "herdr no longer has the workspace of task {id}, and the task has no worktree to \
+             open again"
+        ))
+    })?;
+    let panes = workspace_panes(herdr, &found.machine, &reopened)?;
+    Ok(WorkspacePanes {
+        machine: found.machine,
+        panes,
+    })
 }
 
 fn focus_agent(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<()> {
@@ -506,6 +643,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap();
         if let Some(settings) = settings {
@@ -790,6 +928,7 @@ mod tests {
                     description: String::new(),
                     estimate: None,
                     due_date: None,
+                    criteria: Vec::new(),
                 })
                 .unwrap();
             storage
@@ -1555,6 +1694,71 @@ mod tests {
     }
 
     #[test]
+    fn ensure_lists_the_panes_of_an_open_workspace_without_focusing_it() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(vec![
+            Ok(CREATED.to_owned()),
+            pane_list(&[
+                ("w9:p1", "w9", "blocked"),
+                ("w27:p1", "w27", "working"),
+                ("w27:p2", "w27", "unknown"),
+            ]),
+        ]);
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        let found = ensure_workspace(&fixture.storage, &herdr, fixture.task.id).unwrap();
+
+        let panes: Vec<&str> = found
+            .panes
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect();
+        assert_eq!(panes, ["w27:p1", "w27:p2"]);
+        assert_eq!(found.machine, Machine::Local);
+        assert_eq!(invocations(&runner).len(), 2);
+    }
+
+    #[test]
+    fn ensure_reopens_a_workspace_herdr_no_longer_has_without_focusing_it() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let opened = r#"{"id":"cli:worktree:open","result":{"workspace":{"workspace_id":"w40"}}}"#;
+        let (herdr, runner) = herdr(vec![
+            Ok(CREATED.to_owned()),
+            pane_list(&[("w9:p1", "w9", "idle")]),
+            Ok(opened.to_owned()),
+            pane_list(&[("w9:p1", "w9", "idle"), ("w40:p1", "w40", "unknown")]),
+        ]);
+        start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
+
+        let found = ensure_workspace(&fixture.storage, &herdr, fixture.task.id).unwrap();
+
+        let panes: Vec<&str> = found
+            .panes
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect();
+        assert_eq!(panes, ["w40:p1"]);
+        let invocations = invocations(&runner);
+        assert_eq!(invocations[2].args[..2], ["worktree", "open"]);
+        assert!(invocations[2].args.contains(&"--no-focus".to_owned()));
+        assert!(
+            !invocations
+                .iter()
+                .any(|invocation| invocation.args.contains(&"focus".to_owned()))
+        );
+        assert_eq!(stored(&fixture).herdr_workspace_id.as_deref(), Some("w40"));
+    }
+
+    #[test]
+    fn ensure_rejects_a_task_without_a_workspace() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (herdr, runner) = herdr(Vec::new());
+        let error = ensure_workspace(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(invocations(&runner).is_empty());
+    }
+
+    #[test]
     fn focus_agent_focuses_the_pane_whose_agent_needs_the_user_most() {
         let fixture = local_fixture(Some(r"D:\wt"));
         let (herdr, runner) = herdr(vec![
@@ -1627,6 +1831,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap()
     }

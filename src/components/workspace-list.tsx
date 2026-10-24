@@ -1,9 +1,10 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useId, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Download, FolderOpen, Laptop, Plus, Server, X } from "lucide-react";
+import { Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
+import { normalizePath, shortPath } from "@/lib/paths";
 import { runsOnServer } from "@/lib/platform";
 import {
   useAddHerdrMachine,
@@ -11,26 +12,50 @@ import {
   useCreateWorkspace,
   useDeleteWorkspace,
   useHerdrMachines,
+  useHomeDirectory,
   useSshHosts,
   useWorkspaces,
 } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { reachability, subscribeReachability, unreachableCause } from "@/web/connection";
 
 export const inputClass =
-  "h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+  "h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-sm outline-none max-md:h-11 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
 /** A small select for toolbars and inline pickers. */
 export const compactSelectClass =
-  "h-6 rounded-md border border-input bg-background px-1.5 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50";
+  "h-6 rounded-md border border-input bg-background px-1.5 text-xs outline-none max-md:h-11 max-md:px-2.5 max-md:text-sm focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50";
 
 export function describeLocation(location: WorkspaceLocation): string {
-  return location.kind === "local" ? location.path : `${location.machine}:${location.path}`;
+  const path = normalizePath(location.path);
+  return location.kind === "local" ? path : `${location.machine}:${path}`;
+}
+
+/** The location with only the last folders of its path. */
+export function shortLocation(location: WorkspaceLocation): string {
+  const path = shortPath(location.path);
+  return location.kind === "local" ? path : `${location.machine}:${path}`;
 }
 
 /** SSH host of a herdr machine, or `null` for this computer. */
 type MachineKey = string | null;
 
 type Mode = WorkspaceSource["kind"];
+
+/**
+ * How each way of adding a workspace on a machine is offered and submitted. The buttons are
+ * text only, so the three of them leave room for the machine name in the narrow sidebar.
+ */
+const modes: Record<Mode, { label: string; title: string; submit: string; pending: string }> = {
+  clone: { label: "Clone", title: "Clone a repository", submit: "Clone workspace", pending: "Cloning..." },
+  open: { label: "Open", title: "Open a cloned repository", submit: "Open workspace", pending: "Opening..." },
+  init: {
+    label: "Init",
+    title: "Make a folder a new git repository",
+    submit: "Init workspace",
+    pending: "Initializing...",
+  },
+};
 
 function machineKeyOf(location: WorkspaceLocation): MachineKey {
   return location.kind === "local" ? null : location.machine;
@@ -48,6 +73,39 @@ function joinLocal(base: string, name: string): string {
   return /[\\/]$/.test(base) ? `${base}${name}` : `${base}\\${name}`;
 }
 
+/** `path` ending in a separator, ready for a folder name to be typed after it. */
+function withSeparator(path: string, local: boolean): string {
+  if (/[\\/]$/.test(path)) return path;
+  return local && !runsOnServer ? `${path}\\` : `${path}/`;
+}
+
+/** A field with a visible label above it and optional help text below. */
+function Field({
+  label,
+  help,
+  children,
+}: {
+  label: string;
+  help?: string;
+  children: (ids: { id: string; describedBy: string | undefined }) => ReactNode;
+}) {
+  const id = useId();
+  const helpId = `${id}-help`;
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-xs text-muted-foreground">
+        {label}
+      </label>
+      {children({ id, describedBy: help ? helpId : undefined })}
+      {help && (
+        <p id={helpId} className="text-xs text-muted-foreground">
+          {help}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function baseName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
 }
@@ -63,6 +121,8 @@ type WorkspaceListProps = {
 
 export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   const workspaces = useWorkspaces();
+  const reach = useSyncExternalStore(subscribeReachability, reachability);
+  const serverDown = reach === "unreachable" || reach === "retrying";
   const herdrMachines = useHerdrMachines();
   const [adding, setAdding] = useState<{ machine: MachineKey; mode: Mode } | null>(null);
   const [addingMachine, setAddingMachine] = useState(false);
@@ -88,7 +148,8 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         </Button>
       </div>
 
-      {addingMachine && (
+      {addingMachine && runsOnServer && <AddMachineHelp onClose={() => setAddingMachine(false)} />}
+      {addingMachine && !runsOnServer && (
         <AddMachineForm
           saved={saved.map((machine) => machine.target)}
           onAdded={() => setAddingMachine(false)}
@@ -100,11 +161,19 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
           Failed to list herdr machines: {herdrMachines.error.message}
         </p>
       )}
-      {workspaces.isPending && <p className="text-sm text-muted-foreground">Loading workspaces...</p>}
-      {workspaces.isError && (
-        <p role="alert" className="text-sm text-destructive">
-          Failed to load workspaces: {workspaces.error.message}
-        </p>
+      {workspaces.isPending && !serverDown && (
+        <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+      )}
+      {(workspaces.isError || (workspaces.isPending && serverDown)) && (
+        <div role="alert" className="flex flex-col items-start gap-2 text-sm text-destructive">
+          <p>
+            Failed to load workspaces:{" "}
+            {workspaces.error?.message ?? (unreachableCause() || "The Toodo server does not answer.")}
+          </p>
+          <Button size="xs" variant="outline" onClick={() => void workspaces.refetch()}>
+            Retry now
+          </Button>
+        </div>
       )}
       {workspaces.data?.length === 0 && adding === null && (
         <p className="text-sm text-muted-foreground">No workspaces yet.</p>
@@ -129,18 +198,17 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
                     <span className="truncate">{label}</span>
                     {problem && <span className="ml-1.5 font-normal text-destructive">{problem}</span>}
                   </h3>
-                  {(["clone", "open"] as const).map((mode) => (
+                  {(["clone", "open", "init"] as const).map((mode) => (
                     <Button
                       key={mode}
                       size="xs"
-                      variant={active === mode ? "secondary" : "ghost"}
-                      aria-label={`${mode === "clone" ? "Clone" : "Open"} on ${label}`}
+                      variant={active === mode ? "secondary" : "outline"}
+                      aria-label={`${modes[mode].label} on ${label}`}
                       aria-pressed={active === mode}
-                      title={mode === "clone" ? "Clone a repository" : "Open a cloned repository"}
+                      title={modes[mode].title}
                       onClick={() => setAdding(active === mode ? null : { machine, mode })}
                     >
-                      {mode === "clone" ? <Download /> : <FolderOpen />}
-                      {mode === "clone" ? "Clone" : "Open"}
+                      {modes[mode].label}
                     </Button>
                   ))}
                 </div>
@@ -202,7 +270,9 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           className="flex min-w-0 flex-1 flex-col px-2.5 py-1.5 text-left"
         >
           <span className="truncate text-sm font-medium">{workspace.name}</span>
-          <span className="truncate text-xs text-muted-foreground">{workspace.location.path}</span>
+          <span className="truncate text-xs text-muted-foreground" title={describeLocation(workspace.location)}>
+            {shortPath(workspace.location.path)}
+          </span>
         </button>
         {!confirming && (
           <Button
@@ -210,7 +280,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
             variant="ghost"
             aria-label={`Remove ${workspace.name}`}
             title="Remove the workspace and its tasks from Toodo"
-            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
+            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
             onClick={() => {
               deleteWorkspace.reset();
               setConfirming(true);
@@ -243,6 +313,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           )}
           <div className="flex gap-1">
             <Button
+              changesData
               size="xs"
               variant="destructive"
               aria-label={`Confirm remove ${workspace.name}`}
@@ -269,6 +340,49 @@ export function escapeCloses(close: () => void, busy = false) {
       close();
     }
   };
+}
+
+const ADD_MACHINE_COMMAND = "herdr machine add <host>";
+
+/** The server cannot open a terminal for `herdr machine add`, so the user runs it on the server. */
+function AddMachineHelp({ onClose }: { onClose: () => void }) {
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(ADD_MACHINE_COMMAND);
+      setNotice("Copied the command.");
+    } catch (error) {
+      setNotice(`Could not copy: ${String(error)}`);
+    }
+  }
+
+  return (
+    <section
+      aria-label="Add machine"
+      className="flex flex-col gap-2 rounded-lg border p-2"
+      onKeyDown={escapeCloses(onClose)}
+    >
+      <p className="text-xs text-muted-foreground">
+        herdr asks questions in a terminal, which the Toodo server cannot open. Run this command in a terminal on the
+        server, replacing <code>&lt;host&gt;</code> with an SSH host from its ~/.ssh/config, then reload the machine
+        list here.
+      </p>
+      <div className="flex flex-col items-start gap-1">
+        <code className="max-w-full rounded bg-muted px-1.5 py-1 text-xs" aria-label="Add machine command">
+          {ADD_MACHINE_COMMAND}
+        </code>
+        <Button type="button" size="sm" variant="outline" onClick={() => void copy()}>
+          Copy command
+        </Button>
+      </div>
+      {notice && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {notice}
+        </p>
+      )}
+    </section>
+  );
 }
 
 function AddMachineForm({ saved, onAdded, onCancel }: { saved: string[]; onAdded: () => void; onCancel: () => void }) {
@@ -397,14 +511,20 @@ type NewWorkspaceFormProps = {
 function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFormProps) {
   const createWorkspace = useCreateWorkspace();
   const [url, setUrl] = useState("");
-  const [folder, setFolder] = useState("");
+  const [folderDraft, setFolder] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [browsing, setBrowsing] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
 
   const cloning = mode === "clone";
-  const effectiveName = name ?? (cloning ? repositoryName(url) : baseName(folder));
+  const home = useHomeDirectory(machine === null ? { kind: "local" } : { kind: "ssh", label: machine }).data;
+  // A clone makes a new folder under home. Open and Init name the repository's own folder,
+  // so they start inside home, and the folder has to be finished before submitting.
+  const startFolder = home === undefined ? "" : cloning ? home : withSeparator(home, machine === null);
+  const folder = folderDraft ?? startFolder;
+  const folderUntouched = !cloning && folderDraft === null;
+  const effectiveName = name ?? (cloning ? repositoryName(url) : folderUntouched ? "" : baseName(folder));
   const folderLabel = cloning ? "Parent folder" : "Folder";
   const path =
     cloning && folder.trim() && effectiveName.trim()
@@ -413,8 +533,12 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
         : joinPosix(folder.trim(), effectiveName.trim())
       : folder.trim();
 
+  // The desktop app picks local folders with the system dialog; everything else, the
+  // server's own folders included, is browsed in the app.
+  const browsesInApp = machine !== null || runsOnServer;
+
   async function browse() {
-    if (machine !== null) {
+    if (browsesInApp) {
       setBrowsing((open) => !open);
       return;
     }
@@ -431,7 +555,7 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
     event.preventDefault();
     const location: WorkspaceLocation =
       machine === null ? { kind: "local", path } : { kind: "ssh", machine, path };
-    const source: WorkspaceSource = cloning ? { kind: "clone", url } : { kind: "open" };
+    const source: WorkspaceSource = mode === "clone" ? { kind: "clone", url } : { kind: mode };
     createWorkspace.mutate(
       { name: effectiveName, location, source, defaultBaseBranch: baseBranch.trim() || null },
       { onSuccess: onCreated },
@@ -441,39 +565,43 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
   return (
     <form
       onSubmit={submit}
-      aria-label={`${cloning ? "Clone" : "Open"} workspace on ${machine ?? "Local"}`}
+      aria-label={`${modes[mode].label} workspace on ${machine ?? "Local"}`}
       className="flex flex-col gap-2 rounded-lg border p-2"
       onKeyDown={escapeCloses(onCancel, createWorkspace.isPending)}
     >
       {cloning && (
-        <input
-          className={inputClass}
-          placeholder="Repository URL"
-          aria-label="Repository URL"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          required
-        />
+        <Field label="Repository URL">
+          {({ id }) => (
+            <input
+              id={id}
+              className={inputClass}
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              required
+            />
+          )}
+        </Field>
       )}
-      <div className="flex gap-1">
-        <input
-          className={inputClass}
-          placeholder={machine === null && !runsOnServer ? "C:\\dev" : "/home/me/dev"}
-          aria-label={folderLabel}
-          value={folder}
-          onChange={(e) => setFolder(e.target.value)}
-          required
-        />
-        {/* The browser cannot show the server's folders; the path is typed instead. */}
-        {!(machine === null && runsOnServer) && (
-          <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={machine === null ? undefined : browsing}>
-            Browse...
-          </Button>
+      <Field label={folderLabel} help={cloning ? undefined : "The repository's own folder."}>
+        {({ id, describedBy }) => (
+          <div className="flex gap-1">
+            <input
+              id={id}
+              className={inputClass}
+              aria-describedby={describedBy}
+              value={folder}
+              onChange={(e) => setFolder(e.target.value)}
+              required
+            />
+            <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={browsesInApp ? browsing : undefined}>
+              Browse...
+            </Button>
+          </div>
         )}
-      </div>
-      {browsing && machine !== null && (
+      </Field>
+      {browsing && browsesInApp && (
         <RemoteFolderBrowser
-          machine={machine}
+          machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
           initialPath={folder}
           onSelect={(picked) => {
             setFolder(picked);
@@ -487,35 +615,41 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
           {pickError}
         </p>
       )}
-      <input
-        className={inputClass}
-        placeholder="Name"
-        aria-label="Name"
-        value={effectiveName}
-        onChange={(e) => setName(e.target.value)}
-        required
-      />
-      {cloning && path && <p className="truncate text-xs text-muted-foreground" title={path}>Clones into {path}</p>}
-      <input
-        className={inputClass}
-        placeholder="Base branch (detected if empty)"
-        aria-label="Base branch"
-        value={baseBranch}
-        onChange={(e) => setBaseBranch(e.target.value)}
-      />
+      <Field label="Name">
+        {({ id }) => (
+          <input
+            id={id}
+            className={inputClass}
+            value={effectiveName}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+        )}
+      </Field>
+      {cloning && folder.trim() && effectiveName.trim() && <p className="truncate text-xs text-muted-foreground" title={path}>Clones into {path}</p>}
+      {mode === "init" && (
+        <p className="text-xs text-muted-foreground">
+          The folder is created if it does not exist and becomes a git repository without a remote.
+        </p>
+      )}
+      <Field label="Base branch" help={mode === "init" ? "Uses main if empty." : "Detected from the repository if empty."}>
+        {({ id, describedBy }) => (
+          <input
+            id={id}
+            className={inputClass}
+            aria-describedby={describedBy}
+            value={baseBranch}
+            onChange={(e) => setBaseBranch(e.target.value)}
+          />
+        )}
+      </Field>
       {createWorkspace.isError && (
         <p role="alert" className="text-xs text-destructive">
           {createWorkspace.error.message}
         </p>
       )}
-      <Button type="submit" size="sm" disabled={createWorkspace.isPending}>
-        {createWorkspace.isPending
-          ? cloning
-            ? "Cloning..."
-            : "Opening..."
-          : cloning
-            ? "Clone workspace"
-            : "Open workspace"}
+      <Button type="submit" size="sm" disabled={createWorkspace.isPending || folderUntouched}>
+        {createWorkspace.isPending ? modes[mode].pending : modes[mode].submit}
       </Button>
     </form>
   );

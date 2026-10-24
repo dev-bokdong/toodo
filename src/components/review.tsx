@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { CalendarCheck, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/task-list";
 import { inputClass } from "@/components/workspace-list";
-import type { ReviewEntry, ReviewOutcome, Workspace } from "@/lib/bindings";
+import type { ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
 import { runsOnServer } from "@/lib/platform";
 import { useReview, useSaveReport, useWorkspaces } from "@/lib/queries";
 import {
@@ -36,6 +39,7 @@ import {
   type ReviewPeriod,
 } from "@/lib/review";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
+import { When } from "@/components/when";
 import { formatDate } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -66,7 +70,61 @@ function download(name: string, contents: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-export function Review() {
+/** The pull request number of a GitHub pull request URL. */
+function pullRequestNumber(url: string): string | null {
+  return /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
+}
+
+/** Report actions in one menu, so the controls fit a phone in two rows. */
+function ExportMenu({ disabled, children }: { disabled: boolean; children: (close: () => void) => React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return (
+    <div ref={root} className="relative">
+      <Button size="sm" aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}>
+        <Download />
+        <span className="max-md:sr-only">Export</span>
+      </Button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Export review"
+          className="absolute right-0 z-10 mt-1 flex w-48 flex-col rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          {children(() => setOpen(false))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({ onSelect, children }: { onSelect: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onSelect}
+      className="rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted max-md:min-h-11"
+    >
+      {children}
+    </button>
+  );
+}
+
+export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const [period, setPeriod] = useState<ReviewPeriod>(() => periodContaining("week", formatDate(Date.now() / 1000)));
   const [notice, setNotice] = useState<string | null>(null);
   const { start, end } = periodBounds(period);
@@ -140,7 +198,7 @@ export function Review() {
       </header>
 
       <div className="flex flex-wrap items-center gap-2">
-        <div role="group" aria-label="Review period" className="flex rounded-md border p-0.5">
+        <div role="group" aria-label="Review period" className="flex rounded-md border p-0.5 max-md:w-full">
           {periodKinds.map(({ kind, label }) => (
             <Button
               key={kind}
@@ -155,14 +213,14 @@ export function Review() {
         </div>
         {period.kind === "week" && (
           <>
-            <label htmlFor="week-start" className="text-xs text-muted-foreground">
+            <label htmlFor="week-start" className="text-xs text-muted-foreground max-md:sr-only">
               Week starting
             </label>
             <input
               id="week-start"
               type="date"
               required
-              className={cn(inputClass, "w-40")}
+              className={cn(inputClass, "w-40 max-md:w-0 max-md:min-w-0 max-md:flex-1")}
               value={period.from}
               onChange={(e) => e.target.value && moveTo(weekStarting(e.target.value))}
             />
@@ -170,7 +228,7 @@ export function Review() {
         )}
         {period.kind === "custom" && (
           <>
-            <label htmlFor="review-from" className="text-xs text-muted-foreground">
+            <label htmlFor="review-from" className="text-xs text-muted-foreground max-md:sr-only">
               From
             </label>
             <input
@@ -182,7 +240,7 @@ export function Review() {
               value={period.from}
               onChange={(e) => e.target.value && e.target.value <= period.to && moveTo({ ...period, from: e.target.value })}
             />
-            <label htmlFor="review-to" className="text-xs text-muted-foreground">
+            <label htmlFor="review-to" className="text-xs text-muted-foreground max-md:sr-only">
               To
             </label>
             <input
@@ -199,11 +257,23 @@ export function Review() {
         {period.kind !== "week" && period.kind !== "custom" && (
           <span className="px-1 text-sm font-medium">{periodLabel(period)}</span>
         )}
-        <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
-          Previous {noun}
+        <Button
+          size="icon-sm"
+          variant="outline"
+          aria-label={`Previous ${noun}`}
+          title={`Previous ${noun}`}
+          onClick={() => moveTo(shiftPeriod(period, -1))}
+        >
+          <ChevronLeft />
         </Button>
-        <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, 1))}>
-          Next {noun}
+        <Button
+          size="icon-sm"
+          variant="outline"
+          aria-label={`Next ${noun}`}
+          title={`Next ${noun}`}
+          onClick={() => moveTo(shiftPeriod(period, 1))}
+        >
+          <ChevronRight />
         </Button>
         {period.kind !== "custom" && (
           <Button
@@ -211,33 +281,49 @@ export function Review() {
             variant="ghost"
             onClick={() => moveTo(periodContaining(period.kind, formatDate(Date.now() / 1000)))}
           >
-            This {noun}
+            <CalendarCheck className="md:hidden" aria-hidden />
+            <span className="max-md:sr-only">This {noun}</span>
           </Button>
         )}
+        <div className="ml-auto">
+          <ExportMenu disabled={!review.data || saveReport.isPending}>
+            {(close) => (
+              <>
+                <MenuItem
+                  onSelect={() => {
+                    close();
+                    if (review.data) void copyMarkdown(review.data);
+                  }}
+                >
+                  Copy as Markdown
+                </MenuItem>
+                <MenuItem
+                  onSelect={() => {
+                    close();
+                    if (review.data) void saveAs("md", review.data);
+                  }}
+                >
+                  Save as Markdown
+                </MenuItem>
+                <MenuItem
+                  onSelect={() => {
+                    close();
+                    if (review.data) void saveAs("csv", review.data);
+                  }}
+                >
+                  Save as CSV
+                </MenuItem>
+              </>
+            )}
+          </ExportMenu>
+        </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled={!review.data} onClick={() => review.data && void copyMarkdown(review.data)}>
-          Copy as Markdown
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!review.data || saveReport.isPending}
-          onClick={() => review.data && void saveAs("md", review.data)}
-        >
-          Save as Markdown
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!review.data || saveReport.isPending}
-          onClick={() => review.data && void saveAs("csv", review.data)}
-        >
-          Save as CSV
-        </Button>
-        {notice && <p className="text-xs text-muted-foreground">{notice}</p>}
-      </div>
+      {notice && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {notice}
+        </p>
+      )}
 
       {review.isPending && <p className="text-sm text-muted-foreground">Loading the review...</p>}
       {review.isError && (
@@ -246,7 +332,15 @@ export function Review() {
         </p>
       )}
       {review.data?.length === 0 && (
-        <p className="text-sm text-muted-foreground">No recorded activity in this {noun}.</p>
+        <EmptyState
+          title={`No recorded activity in this ${noun}.`}
+          hint="Pick another period to look at earlier work."
+          action={
+            <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
+              Show the {noun} before
+            </Button>
+          }
+        />
       )}
       {review.data && review.data.length > 0 && (
         <ReviewSummaryPanel period={period} entries={review.data} workspaces={workspaces.data ?? []} />
@@ -263,27 +357,30 @@ export function Review() {
             <ul className="flex flex-col divide-y rounded-lg border">
               {group.entries.map(({ task, at, commits }) => (
                 <li key={task.id} className="flex flex-col gap-1 px-3 py-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <TaskTypeBadge type={task.taskType} />
-                    <span className="truncate text-sm font-medium">{task.title}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">#{task.id}</span>
+                    <button
+                      type="button"
+                      aria-label={`Open #${task.id} ${task.title}`}
+                      title={task.title}
+                      onClick={() => onShowTask?.(task.id)}
+                      className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:underline max-md:min-h-11"
+                    >
+                      {task.title}
+                    </button>
                     {task.resolution === "not_adopted" && (
                       <span className={notAdoptedChip}>Not adopted</span>
                     )}
-                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                      {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; {formatDate(at)}
+                    {task.pullRequestUrl && (
+                      <PullRequestLink url={task.pullRequestUrl} stats={task.pullRequest} />
+                    )}
+                    <span className="shrink-0 text-xs text-muted-foreground max-md:hidden">
+                      {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; <When at={at} />
                     </span>
                   </div>
-                  {task.pullRequestUrl && (
-                    <p className="truncate text-xs">
-                      <span className="text-muted-foreground">Pull request </span>
-                      <span className="select-all font-mono">{task.pullRequestUrl}</span>
-                      {task.pullRequest && (
-                        <span className="text-muted-foreground"> &middot; {pullRequestStats(task.pullRequest)}</span>
-                      )}
-                    </p>
-                  )}
                   {task.completionNote && (
-                    <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line text-xs">
+                    <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
                       {task.completionNote}
                     </p>
                   )}
@@ -303,6 +400,26 @@ export function Review() {
           </section>
         ))}
     </section>
+  );
+}
+
+function PullRequestLink({ url, stats }: { url: string; stats: ReviewEntry["task"]["pullRequest"] }) {
+  const number = pullRequestNumber(url);
+  const open = (event: { preventDefault: () => void }) => {
+    event.preventDefault();
+    openUrl(url).catch((error: unknown) => console.error(`Failed to open ${url}`, error));
+  };
+  return (
+    <a
+      href={url}
+      title={stats ? `${url} \u00b7 ${pullRequestStats(stats)}` : url}
+      aria-label={number ? `Pull request #${number}` : "Pull request"}
+      onClick={open}
+      onAuxClick={open}
+      className="shrink-0 text-xs text-primary underline underline-offset-2 hover:no-underline max-md:inline-flex max-md:min-h-11 max-md:items-center"
+    >
+      {number ? `#${number}` : "PR"}
+    </a>
   );
 }
 
@@ -373,9 +490,9 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
                   >
                     {adopted ? "Adopted" : "Not adopted"}
                   </span>
-                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{formatDate(at)}</span>
+                  <When className="ml-auto shrink-0 text-xs text-muted-foreground" at={at} />
                 </div>
-                <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line text-xs">
+                <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
                   {task.completionNote ?? <span className="text-muted-foreground">No conclusion written.</span>}
                 </p>
               </li>
@@ -428,8 +545,10 @@ function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewE
           <ul aria-label="Late tasks" className="flex flex-col gap-1">
             {plan.late.map((late) => (
               <li key={late.task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
-                <TaskTypeBadge type={late.task.taskType} />
-                <span className="truncate font-medium">{late.task.title}</span>
+                <span className="flex min-w-0 max-w-full items-center gap-2">
+                  <TaskTypeBadge type={late.task.taskType} />
+                  <span className="truncate font-medium">{late.task.title}</span>
+                </span>
                 <span className={cn("ml-auto shrink-0 text-xs", toneText.danger)}>{lateDetails(late)}</span>
               </li>
             ))}
@@ -457,13 +576,13 @@ function ReviewSummaryPanel({
         {summary.outcomes.map(({ outcome, count }) => (
           <div key={outcome} className="flex flex-col">
             <dt className="text-xs text-muted-foreground">{outcomeLabels[outcome]}</dt>
-            <dd className={cn("text-lg font-semibold", outcomeStyles[outcome])}>{count}</dd>
+            <dd className="text-lg font-semibold">{count}</dd>
           </div>
         ))}
         {summary.notAdopted > 0 && (
           <div className="flex flex-col">
             <dt className="text-xs text-muted-foreground">Not adopted</dt>
-            <dd className={cn("text-lg font-semibold", toneText.neutral)}>{summary.notAdopted}</dd>
+            <dd className="text-lg font-semibold">{summary.notAdopted}</dd>
           </div>
         )}
         <div className="flex flex-col">

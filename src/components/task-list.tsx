@@ -1,14 +1,18 @@
-import { lazy, Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import {
   Check,
+  ChevronDown,
+  Circle,
+  CircleCheck,
   CircleDot,
   CircleSlash,
+  CircleX,
   Crosshair,
   FolderGit2,
-  GitBranch,
   GitMerge,
   GitPullRequest,
   Inbox,
+  PanelRight,
   Pause,
   Pencil,
   Play,
@@ -23,13 +27,31 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
-import { compactSelectClass, inputClass, describeLocation, escapeCloses } from "@/components/workspace-list";
+import {
+  compactSelectClass,
+  inputClass,
+  describeLocation,
+  escapeCloses,
+  shortLocation,
+} from "@/components/workspace-list";
+import { PathLabel } from "@/components/path-label";
+import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
+import { DetailsSheet } from "@/components/details-sheet";
 import { AgentBadge } from "@/components/agent-badge";
+import type { SheetNavigation } from "@/components/task-graph";
 import { PullRequestBadges } from "@/components/pull-request-badge";
 import { TaskTypeBadge } from "@/components/task-type-badge";
+import { CollapsibleForm } from "@/components/collapsible-form";
 import { MarkdownEditor } from "@/components/markdown-editor";
+import { MoreMenu, type Action } from "@/components/more-menu";
 import type {
   AgentMerge,
+  CheckKind,
+  CheckedBy,
+  Criterion,
+  CriterionId,
+  CriterionInput,
+  CriterionState,
   Estimate,
   EstimateUnit,
   MergedWith,
@@ -46,9 +68,11 @@ import {
   IssueLinkFailure,
   machineOf,
   useAddDependency,
+  useAddRelation,
   useAgentStatuses,
   useCloseTaskWorkspace,
   useBranchFreshness,
+  useCheckCriterion,
   usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
@@ -66,10 +90,12 @@ import {
   usePauseTask,
   useRefreshCommitRecords,
   useRemoveDependency,
+  useRemoveRelation,
   useRestoreTaskWorktree,
   useSaveMachineSettings,
   useSetCompletionNote,
   useStartTask,
+  useTaskRelations,
   useTasks,
   useUpdateTask,
   useUpdateWorkspace,
@@ -89,42 +115,41 @@ import {
 } from "@/lib/task-graph";
 import {
   emptyTaskFilter,
+  groupTasks,
   isFilterActive,
   matchesFilter,
   shownStatus,
   shownStatuses,
+  taskGroupNames,
   type ShownStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { formatDate, reachedMilestones } from "@/lib/timeline";
-import { markdownPreview } from "@/lib/markdown";
+import { needsAttention } from "@/lib/attention";
+import { formatFull, formatWhen, reachedMilestones } from "@/lib/timeline";
+import { When } from "@/components/when";
+import { firstParagraph, markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
+import { normalizePath, shortPath } from "@/lib/paths";
 import { runsOnServer } from "@/lib/platform";
-import { toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
+import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
+import { reachability, subscribeReachability } from "@/web/connection";
 
 const Markdown = lazy(() => import("@/components/markdown"));
 // The timeline pulls in React Flow, so it loads only when it is first shown.
 const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
+// Pane views are streamed by `toodo-server`, so only the web build has them (and xterm.js).
+const PaneView = import.meta.env.MODE === "web" ? lazy(() => import("@/components/pane-view")) : null;
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
-const statusLabels: Record<ShownStatus, string> = {
-  planned: "Planned",
-  ready: "Ready",
-  paused: "Paused",
-  in_progress: "In progress",
-  in_review: "In review",
-  done: "Done",
-  not_adopted: "Not adopted",
-};
-
 /**
- * The status of `task`, naming a planned task that can be started now "Ready", one that was
- * worked on before "Paused" and a task concluded without merging "Not adopted".
+ * The status of `task`, naming a planned task that can be started now "Ready", one still
+ * waiting on a prerequisite "Blocked", one that was worked on before "Paused" and a task
+ * concluded without merging "Not adopted".
  */
 function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
-  return statusLabels[shownStatus(task, byId)];
+  return statusNames[shownStatus(task, byId)];
 }
 
 const statusStyles: Record<TaskStatus, string> = {
@@ -197,6 +222,11 @@ export function TaskList({
   const [view, setView] = useState<"list" | "timeline">("timeline");
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
   const [taskFilter, setTaskFilter] = useState<TaskFilter>(emptyTaskFilter);
+  const agentStatuses = useAgentStatuses();
+  const pullRequestStatuses = usePullRequestStatuses();
+  // Done tasks are folded away until asked for, or while a search or filter is narrowing the list.
+  const [doneShown, setDoneShown] = useState<boolean | null>(null);
+  const [detailId, setDetailId] = useState<TaskId | null>(null);
   const names = new Map(workspaces.data?.map((entry) => [entry.id, entry.name]));
   const context: TaskContext = {
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
@@ -234,8 +264,8 @@ export function TaskList({
         );
 
   return (
-    <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4">
-      <header>
+    <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4 max-md:gap-3">
+      <header className="flex flex-col max-md:gap-2">
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
           {workspace?.name ?? "All workspaces"}
         </h2>
@@ -245,7 +275,7 @@ export function TaskList({
             <AgentMergeSetting workspace={workspace} />
           </>
         ) : (
-          <p className="text-sm text-muted-foreground">Tasks of every workspace and the dependencies between them.</p>
+          <p className="text-sm text-muted-foreground max-md:hidden">Tasks of every workspace and the dependencies between them.</p>
         )}
       </header>
 
@@ -273,7 +303,7 @@ export function TaskList({
         <>
           <div className="flex flex-wrap items-center gap-2">
             {workspace === null && (
-              <div role="group" aria-label="Task view" className="flex gap-1">
+              <div role="group" aria-label="Task view" className="flex gap-1 max-md:gap-2">
                 {(["timeline", "list"] as const).map((option) => (
                   <Button
                     key={option}
@@ -313,17 +343,67 @@ export function TaskList({
               hint="Change the search text, status, or type, or clear the filters."
             />
           ) : !showTimeline ? (
-            <ul aria-label="Tasks" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
-              {filtered.map((task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  tasks={allTasks.data}
-                  context={context}
-                  showWorkspace={workspace === null}
-                />
-              ))}
-            </ul>
+            <>
+            <div role="region" aria-label="Tasks" className="flex flex-col gap-4">
+              {groupTasks(
+                filtered,
+                context.byId,
+                needsAttention(filtered, agentStatuses.data ?? [], pullRequestStatuses.data ?? []).map((item) => item.task.id),
+              ).map(({ group, tasks: grouped }) => {
+                const collapsed = group === "done" && !(doneShown ?? isFilterActive(taskFilter));
+                const name = taskGroupNames[group];
+                const count = <span className="tabular-nums font-normal">{grouped.length}</span>;
+                return (
+                  <section key={group} aria-label={name} className="flex flex-col gap-2">
+                    <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                      {group === "done" ? (
+                        <button
+                          type="button"
+                          aria-expanded={!collapsed}
+                          className="flex items-center gap-1.5 rounded-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
+                          onClick={() => setDoneShown(collapsed)}
+                        >
+                          <ChevronDown aria-hidden className={cn("size-4 transition-transform", collapsed && "-rotate-90")} />
+                          {name} {count}
+                        </button>
+                      ) : (
+                        <>
+                          {name} {count}
+                        </>
+                      )}
+                    </h3>
+                    {!collapsed && (
+                      <ul aria-label={name} className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
+                        {grouped.map((task) => (
+                          <TaskRow
+                            key={task.id}
+                            task={task}
+                            tasks={allTasks.data}
+                            context={context}
+                            showWorkspace={workspace === null}
+                            onShowDetails={() => setDetailId(task.id)}
+                          />
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+              {detailId !== null && context.byId.has(detailId) && (
+                <TaskDetailsSheet onClose={() => setDetailId(null)}>
+                  <TaskRow
+                    key={detailId}
+                    task={context.byId.get(detailId)!}
+                    tasks={allTasks.data}
+                    context={context}
+                    showWorkspace
+                    detailed
+                    navigation={{ open: setDetailId, canOpen: (id) => context.byId.has(id) }}
+                  />
+                </TaskDetailsSheet>
+              )}
+            </>
           ) : (
             <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
               <TaskGraph
@@ -340,7 +420,7 @@ export function TaskList({
                 onScaleChange={onTimelineScaleChange}
                 shownTaskId={shownTask?.id ?? null}
                 onTaskShown={() => onTaskShown?.()}
-                renderDetail={(selected) => (
+                renderDetail={(selected, navigation) => (
                   <TaskRow
                     key={selected.id}
                     task={selected}
@@ -348,6 +428,7 @@ export function TaskList({
                     context={context}
                     showWorkspace
                     detailed
+                    navigation={navigation}
                   />
                 )}
               />
@@ -359,15 +440,78 @@ export function TaskList({
   );
 }
 
+/**
+ * The details sheet of the task list, like the timeline's. Escape, the close button, or a swipe
+ * down closes it, after asking when an edit form in it has unsaved changes.
+ */
+function TaskDetailsSheet({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+  const sheet = useRef<HTMLElement>(null);
+  const [discarding, setDiscarding] = useState(false);
+
+  function close() {
+    if (sheet.current?.querySelector("form[data-dirty]")) {
+      setDiscarding(true);
+    } else {
+      onClose();
+    }
+  }
+
+  useEffect(() => {
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("[role=menu]")) {
+        return;
+      }
+      if (discarding) {
+        setDiscarding(false);
+      } else if (!(event.target instanceof HTMLElement && event.target.closest("input, textarea, select"))) {
+        close();
+      }
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  });
+
+  return (
+    <DetailsSheet
+      ref={sheet}
+      width="min(480px, max(360px, 40vw), calc(100vw - 32px))"
+      onClose={close}
+      banner={
+        discarding && (
+          <div
+            role="group"
+            aria-label="Unsaved changes"
+            className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
+          >
+            <span className="min-w-0 flex-1">Discard your unsaved changes?</span>
+            <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(false)}>
+              Keep editing
+            </Button>
+            <Button size="xs" variant="destructive" onClick={onClose}>
+              Discard changes
+            </Button>
+          </div>
+        )
+      }
+    >
+      {children}
+    </DetailsSheet>
+  );
+}
+
 /** Search text and status and type filters narrowing the task list and the timeline. */
 function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (filter: TaskFilter) => void }) {
   return (
-    <div role="search" aria-label="Task filters" className="flex flex-1 flex-wrap items-center justify-end gap-2">
+    <div
+      role="search"
+      aria-label="Task filters"
+      className="flex flex-1 flex-wrap items-center justify-end gap-2 max-md:grid max-md:basis-full max-md:grid-cols-2"
+    >
       <input
         type="search"
         aria-label="Search tasks"
         placeholder="Search title or description"
-        className={cn(compactSelectClass, "w-56")}
+        className={cn(compactSelectClass, "w-56 max-md:col-span-2 max-md:w-full")}
         value={filter.query}
         onChange={(event) => onChange({ ...filter, query: event.target.value })}
       />
@@ -382,7 +526,7 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
         <option value="all">All statuses</option>
         {shownStatuses.map((status) => (
           <option key={status} value={status}>
-            {statusLabels[status]}
+            {statusNames[status]}
           </option>
         ))}
       </select>
@@ -421,6 +565,16 @@ const confirmLabels: Record<Confirmation, string> = {
   "force-delete": "Confirm force delete",
 };
 
+/** What a delete of task `id` removes, as asked before it runs. */
+function deleteQuestion(action: Confirmation, id: TaskId, removableWorktree: boolean): string {
+  if (action === "force-delete") {
+    return `Force delete #${id}? Its worktree is removed with its modified and untracked files, and its herdr workspace is closed; the branch is kept.`;
+  }
+  return removableWorktree
+    ? `Delete #${id}? Its worktree and herdr workspace are removed; the branch is kept.`
+    : `Delete #${id} and its history from Toodo?`;
+}
+
 function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
   const milestones = reachedMilestones(task.milestones);
   if (milestones.length === 0) {
@@ -434,7 +588,7 @@ function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
             <div key={label} className="contents">
               <dt className="text-muted-foreground">{label}</dt>
               <dd>
-                <time dateTime={new Date(at * 1000).toISOString()}>{new Date(at * 1000).toLocaleString()}</time>
+                <When at={at} />
               </dd>
             </div>
           ))}
@@ -445,9 +599,7 @@ function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
   return (
     <p aria-label={`Timeline of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
       {milestones.map(({ label, at }) => (
-        <time key={label} dateTime={new Date(at * 1000).toISOString()} title={new Date(at * 1000).toLocaleString()}>
-          {`${label} ${formatDate(at)}`}
-        </time>
+        <When key={label} at={at} prefix={`${label} `} />
       ))}
     </p>
   );
@@ -459,14 +611,20 @@ function TaskRow({
   context,
   showWorkspace,
   detailed = false,
+  navigation,
+  onShowDetails,
 }: {
   task: Task;
   /** Tasks of every workspace; any of them can become a prerequisite. */
   tasks: Task[];
   context: TaskContext;
   showWorkspace: boolean;
-  /** Shown on its own, as in the timeline's details sheet: nothing is cut off and fields are labeled. */
+  /** Shown on its own, as in the details sheet: nothing is cut off and fields are labeled. */
   detailed?: boolean;
+  /** Opens another task in the sheet; lets related-task chips jump to their task. */
+  navigation?: SheetNavigation;
+  /** Opens the details sheet of the task; rows show only a summary. */
+  onShowDetails?: () => void;
 }) {
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
@@ -488,6 +646,7 @@ function TaskRow({
   const [keepingWorkspace, setKeepingWorkspace] = useState(false);
   const [concluding, setConcluding] = useState(false);
   const [linkingIssue, setLinkingIssue] = useState(false);
+  const [addingNote, setAddingNote] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
   // A prerequisite that would pause this started task, waiting for confirmation.
   const [confirmingPrerequisite, setConfirmingPrerequisite] = useState<TaskId | null>(null);
@@ -501,6 +660,12 @@ function TaskRow({
     : undefined;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
+  const criteriaMet = task.criteria.every((criterion) => criterion.state === "met");
+  // Every criterion is met and one is checked by hand: the user confirms that the task is done.
+  const awaitingConfirmation =
+    inReview && task.criteria.length > 0 && criteriaMet && task.criteria.some((criterion) => criterion.kind === "manual");
+  // A started task completes once its criteria are met, or right away when it has none.
+  const completable = inReview || (task.status === "in_progress" && criteriaMet);
   const paused = isPaused(task);
   const startable = task.status === "planned" && dependenciesDone(task, context.byId);
   // Prerequisites concluded without merging: this task cannot build on them.
@@ -542,8 +707,220 @@ function TaskRow({
     deleteTask.mutate({ id: task.id, force: action === "force-delete" }, { onSettled: () => setConfirming(null) });
   }
 
+  // Actions in a fixed order; the first applicable of the main ones is the task's next action.
+  const herdrBlocked = task.herdrWorkspaceId !== null && !herdrRunning;
+  const start: Action | null =
+    task.status === "planned"
+      ? {
+          key: "start", changesData: true,
+          label: startTask.isPending ? "Starting..." : paused ? "Resume" : "Start",
+          ariaLabel: `${paused ? "Resume" : "Start"} #${task.id}`,
+          icon: <Play />,
+          title: startable
+            ? undefined
+            : notAdopted.length > 0
+              ? "A dependency was not adopted; remove it to start"
+              : "Waits until all its dependencies are done",
+          disabled: !startable || !herdrRunning || startTask.isPending,
+          onSelect: () => startTask.mutate(task.id),
+        }
+      : null;
+  const restore: Action | null =
+    active && task.worktreePath === null && task.branch !== null
+      ? {
+          key: "restore", changesData: true,
+          label: restoreWorktree.isPending ? "Restoring..." : "Restore worktree",
+          ariaLabel: `Restore worktree of #${task.id}`,
+          icon: <FolderGit2 />,
+          title: `Check out ${task.branch} into a new worktree and open it in herdr`,
+          disabled: !herdrRunning || restoreWorktree.isPending,
+          onSelect: () => restoreWorktree.mutate(task.id),
+        }
+      : null;
+  const confirmCompletion: Action | null = awaitingConfirmation
+    ? {
+        key: "confirm", changesData: true,
+        label: completeTask.isPending ? "Completing..." : "Confirm completion",
+        ariaLabel: `Confirm completion of #${task.id}`,
+        icon: <Check />,
+        title: "Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept",
+        disabled: finishing || herdrBlocked,
+        onSelect: () => completeTask.mutate(task.id),
+      }
+    : null;
+  const openPr: Action | null =
+    hasWorktree && !inReview
+      ? {
+          key: "open-pr", changesData: true,
+          label: openPullRequest.isPending ? "Pushing..." : "Open PR",
+          ariaLabel: `Open pull request for #${task.id}`,
+          icon: <GitPullRequest />,
+          disabled: finishing,
+          onSelect: () => openPullRequest.mutate(task.id),
+        }
+      : null;
+  const complete: Action | null =
+    completable && !awaitingConfirmation
+      ? {
+          key: "complete", changesData: true,
+          label: completeTask.isPending ? "Completing..." : "Complete",
+          ariaLabel: `Complete #${task.id}`,
+          icon: <Check />,
+          title:
+            task.criteria.length === 0
+              ? "Complete the task; its herdr workspace is closed and the worktree kept"
+              : "Check the criteria again and complete the task once all are met; its herdr workspace is closed and the worktree kept",
+          disabled: finishing || herdrBlocked,
+          onSelect: () => completeTask.mutate(task.id),
+        }
+      : null;
+  const push: Action | null =
+    hasWorktree && inReview
+      ? {
+          key: "push", changesData: true,
+          label: openPullRequest.isPending ? "Pushing..." : "Push to PR",
+          ariaLabel: `Push #${task.id} to its pull request`,
+          icon: <Upload />,
+          disabled: finishing,
+          onSelect: () => openPullRequest.mutate(task.id),
+        }
+      : null;
+  const openInHerdr: Action | null =
+    active && task.herdrWorkspaceId
+      ? {
+          key: "open", changesData: true,
+          label: "Open in herdr",
+          ariaLabel: `Open #${task.id} in herdr`,
+          icon: <SquareTerminal />,
+          disabled: !herdrRunning || openTask.isPending,
+          onSelect: () => openTask.mutate(task.id),
+        }
+      : null;
+  const focusPane: Action | null =
+    detailed && active && task.herdrWorkspaceId && agentStatus
+      ? {
+          key: "focus", changesData: true,
+          label: "Focus agent pane",
+          ariaLabel: `Focus agent pane of #${task.id}`,
+          icon: <Crosshair />,
+          title: "Focus the herdr pane of the agent working on this task",
+          disabled: !herdrRunning || focusAgent.isPending,
+          onSelect: () => focusAgent.mutate(task.id),
+        }
+      : null;
+  const refresh: Action | null = hasWorktree
+    ? {
+        key: "refresh", changesData: true,
+        label: refreshCommits.isPending ? "Refreshing..." : "Refresh commits",
+        ariaLabel: `Refresh commits of #${task.id}`,
+        icon: <RefreshCw className={cn(refreshCommits.isPending && "animate-spin")} />,
+        disabled: finishing,
+        onSelect: () => refreshCommits.mutate(task.id),
+      }
+    : null;
+  const conclude: Action | null = active
+    ? {
+        key: "conclude",
+        label: "Conclude",
+        ariaLabel: `Conclude #${task.id} without merging`,
+        icon: <CircleSlash />,
+        title: "Finish without merging, e.g. research whose result is not adopted; an open pull request is closed",
+        disabled: finishing || herdrBlocked,
+        onSelect: () => setConcluding(true),
+      }
+    : null;
+  const primary = [start, restore, confirmCompletion, openPr, complete, openInHerdr].find((action) => action !== null) ?? null;
+  const others = [start, restore, confirmCompletion, openPr, complete, push, openInHerdr, focusPane, refresh, conclude].filter(
+    (action): action is Action => action !== null && action !== primary,
+  );
+  // Secondary actions always sit in the "More" menu, Delete last.
+  const secondaryActions: (Action | null)[] = [
+    !final && task.issue === null && !linkingIssue
+      ? {
+          key: "link-issue",
+          label: "Link issue",
+          ariaLabel: `Link issue to #${task.id}`,
+          icon: <CircleDot />,
+          title: "Link a GitHub issue; the pull request closes it on merge",
+          onSelect: () => setLinkingIssue(true),
+        }
+      : null,
+    !final ? { key: "edit", label: "Edit", ariaLabel: `Edit #${task.id}`, icon: <Pencil />, onSelect: () => setEditing(true) } : null,
+    active
+      ? {
+          key: "pause", changesData: true,
+          label: "Pause",
+          ariaLabel: `Pause #${task.id}`,
+          icon: <Pause />,
+          title: "Pause: stop working on the task; it keeps its branch, worktree, and pull request and can be resumed",
+          disabled: pauseTask.isPending,
+          onSelect: () => pauseTask.mutate(task.id),
+        }
+      : null,
+    final && task.completionNote === null && !addingNote
+      ? {
+          key: "add-note",
+          label: "Add note",
+          ariaLabel: `Add completion note to #${task.id}`,
+          icon: <StickyNote />,
+          onSelect: () => setAddingNote(true),
+        }
+      : null,
+    deletableStatuses.includes(task.status)
+      ? {
+          key: "delete",
+          label: "Delete",
+          ariaLabel: `Delete #${task.id}`,
+          icon: <Trash2 />,
+          title: removableWorktree
+            ? "Delete the task and remove its worktree and herdr workspace; the branch is kept"
+            : "Delete",
+          disabled: removableWorktree && !herdrRunning,
+          destructive: true,
+          onSelect: () => setConfirming("delete"),
+        }
+      : null,
+  ];
+  const secondary = secondaryActions.filter((action): action is Action => action !== null);
+  const details: Action | null = onShowDetails
+    ? {
+        key: "details",
+        label: "Details",
+        ariaLabel: `Show details of #${task.id}`,
+        icon: <PanelRight />,
+        onSelect: onShowDetails,
+      }
+    : null;
+  // In the details sheet the main actions are buttons; in a row only the next action is.
+  const menu = detailed ? secondary : [...(details ? [details] : []), ...others, ...secondary];
+  const latest = reachedMilestones(task.milestones).at(-1);
+  const metCriteria = task.criteria.filter((criterion) => criterion.state === "met").length;
+  const failedCriteria = task.criteria.filter((criterion) => criterion.state === "failed").length;
+  const preview = detailed ? "" : firstParagraph(task.description);
+
+  function actionButton(action: Action, variant: "default" | "outline") {
+    return (
+      <Button
+        key={action.key}
+        size="xs"
+        variant={variant}
+        changesData={action.changesData}
+        aria-label={action.ariaLabel}
+        title={action.title}
+        disabled={action.disabled}
+        onClick={action.onSelect}
+      >
+        {action.icon}
+        {action.label}
+      </Button>
+    );
+  }
+
   return (
-    <li className={cn("flex flex-col", detailed ? "gap-3 p-4" : "gap-1.5 px-4 py-3")}>
+    <li
+      data-task-row={detailed ? undefined : task.id}
+      className={cn("flex flex-col", detailed ? "gap-3 p-4" : "gap-1.5 px-4 py-3 max-md:gap-2")}
+    >
       {editing ? (
         <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex min-w-0 items-center gap-2">
@@ -555,7 +932,7 @@ function TaskRow({
         </div>
       ) : (
         <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
-          <div className={cn("flex min-w-0 items-center gap-2", detailed && "flex-wrap")}>
+          <div className={cn("flex min-w-0 items-center gap-2", detailed ? "flex-wrap" : "max-md:flex-wrap max-md:gap-y-1")}>
             <StatusBadge task={task} byId={context.byId} />
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             {showWorkspace && (
@@ -565,9 +942,15 @@ function TaskRow({
             )}
             <TaskTypeBadge type={task.taskType} />
             {!detailed && (
-              <span className="min-w-0 flex-1 truncate text-sm font-semibold" title={task.title}>
+              // The title opens the details sheet. Below md it gets a line of its own under the chips.
+              <button
+                type="button"
+                className="break-words-keep line-clamp-2 min-w-0 cursor-pointer rounded-sm text-left text-base font-semibold outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50 max-md:order-last max-md:min-h-11 max-md:basis-full md:flex-1 md:text-sm"
+                title={task.title}
+                onClick={onShowDetails}
+              >
                 {task.title}
-              </span>
+              </button>
             )}
             {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
@@ -575,28 +958,69 @@ function TaskRow({
           {detailed && <h3 className="break-words-keep text-base font-semibold leading-snug">{task.title}</h3>}
           {detailed && task.description.trim() && (
             <Suspense
-              fallback={<p className="whitespace-pre-line break-words text-sm text-muted-foreground">{task.description}</p>}
+              fallback={<p className="whitespace-pre-line break-words-keep text-sm text-muted-foreground">{task.description}</p>}
             >
               <Markdown source={task.description} />
             </Suspense>
           )}
-          {!detailed && markdownPreview(task.description) && (
-            <p className="line-clamp-2 text-xs text-muted-foreground">{markdownPreview(task.description)}</p>
+          {preview && <p className="break-words-keep line-clamp-2 text-sm text-muted-foreground">{preview}</p>}
+          {!detailed && (
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground empty:hidden">
+              {notAdopted.length > 0 && (
+                <span role="note" aria-label={`Blocked prerequisites of #${task.id}`} className={toneText.attention}>
+                  {notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", ")} not adopted
+                </span>
+              )}
+              {waitingOn.length > 0 && (
+                <span role="note" aria-label={`Waiting prerequisites of #${task.id}`} className={toneText.neutral}>
+                  Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
+                </span>
+              )}
+              {task.dueDate !== null && <DueDate task={task} />}
+              {hasWorktree && <FreshnessWarning taskId={task.id} />}
+              {!final && task.criteria.length > 0 && (
+                <span>
+                  {metCriteria}/{task.criteria.length} criteria met
+                </span>
+              )}
+              {!final && failedCriteria > 0 && (
+                <span className={cn("font-medium", toneText.danger)}>{failedCriteria} failed</span>
+              )}
+              {latest && (
+                <When at={latest.at} prefix={`${latest.label} `} />
+              )}
+            </p>
           )}
         </div>
       )}
-      {(task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
+      {detailed && !editing && <TaskCriteria task={task} detailed />}
+      {/* The question takes the place of the dependency row, so the lines below stay put. */}
+      {confirmingPrerequisite !== null ? (
+        <PrerequisiteConfirmation
+          taskId={task.id}
+          prerequisite={taskRef(confirmingPrerequisite, task.workspaceId, context)}
+          pending={addDependency.isPending}
+          onConfirm={() =>
+            addDependency.mutate(
+              { id: task.id, dependsOn: confirmingPrerequisite },
+              { onSettled: () => setConfirmingPrerequisite(null) },
+            )
+          }
+          onCancel={() => setConfirmingPrerequisite(null)}
+        />
+      ) : (
+        detailed && (task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
         <div
           role="group"
           aria-label={`Dependencies of #${task.id}`}
-          className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
+          className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground max-md:gap-2"
         >
           {task.dependsOn.length > 0 && <span>Depends on</span>}
           {task.dependsOn.map((id) => (
             <span
               key={id}
               className={cn(
-                "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 tabular-nums",
+                "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 tabular-nums max-md:h-auto max-md:pr-0",
                 context.byId.get(id)?.status === "done" && "line-through decoration-muted-foreground/60",
                 notAdopted.includes(id) && toneOutline.attention,
               )}
@@ -612,7 +1036,7 @@ function TaskRow({
                   type="button"
                   aria-label={`Remove dependency #${id} from #${task.id}`}
                   title="Remove dependency"
-                  className="rounded-sm p-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  className="flex items-center justify-center self-stretch rounded-sm p-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50 max-md:size-11"
                   disabled={changingDependencies}
                   onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
                 >
@@ -656,22 +1080,9 @@ function TaskRow({
             </select>
           )}
         </div>
+        )
       )}
-      {confirmingPrerequisite !== null && (
-        <PrerequisiteConfirmation
-          taskId={task.id}
-          prerequisite={taskRef(confirmingPrerequisite, task.workspaceId, context)}
-          pending={addDependency.isPending}
-          onConfirm={() =>
-            addDependency.mutate(
-              { id: task.id, dependsOn: confirmingPrerequisite },
-              { onSettled: () => setConfirmingPrerequisite(null) },
-            )
-          }
-          onCancel={() => setConfirmingPrerequisite(null)}
-        />
-      )}
-      {notAdopted.length > 0 && (
+      {detailed && notAdopted.length > 0 && (
         <p
           role="note"
           aria-label={`Blocked prerequisites of #${task.id}`}
@@ -682,11 +1093,11 @@ function TaskRow({
           start this task.
         </p>
       )}
-      {waitingOn.length > 0 && (
+      {detailed && waitingOn.length > 0 && (
         <p
           role="note"
           aria-label={`Waiting prerequisites of #${task.id}`}
-          className={cn("text-xs", paused ? toneText.attention : toneText.neutral)}
+          className={cn("text-xs", toneText.neutral)}
         >
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
@@ -700,9 +1111,14 @@ function TaskRow({
           onKeep={() => setKeepingWorkspace(true)}
         />
       )}
-      {hasWorktree && <BranchFreshnessNote taskId={task.id} />}
-      <TaskPlan task={task} />
-      <TaskTimeline task={task} detailed={detailed} />
+      {detailed && hasWorktree && <BranchFreshnessNote taskId={task.id} />}
+      {detailed && <TaskPlan task={task} />}
+      {detailed && <TaskTimeline task={task} detailed />}
+      {detailed && active && task.herdrWorkspaceId && PaneView && (
+        <Suspense fallback={null}>
+          <PaneView task={task} />
+        </Suspense>
+      )}
       {detailed && task.branch && (
         <DetailField label="Branch">
           <span className="break-all font-mono select-all">{task.branch}</span>
@@ -710,7 +1126,12 @@ function TaskRow({
       )}
       {detailed && task.worktreePath && (
         <DetailField label="Worktree">
-          <span className="break-all font-mono select-all">{task.worktreePath}</span>
+          <PathLabel
+            label={`worktree path of #${task.id}`}
+            full={normalizePath(task.worktreePath)}
+            short={shortPath(task.worktreePath)}
+            className="font-mono"
+          />
         </DetailField>
       )}
       {detailed && task.pullRequestUrl && (
@@ -723,44 +1144,23 @@ function TaskRow({
           )}
         </DetailField>
       )}
-      {!detailed && task.branch && (
-        <p
-          className="flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground"
-          title={task.worktreePath ?? undefined}
-        >
-          <GitBranch aria-hidden className="size-3 shrink-0" />
-          <span className="truncate">
-            {task.branch}
-            {task.worktreePath && ` \u00b7 ${task.worktreePath}`}
-          </span>
-        </p>
-      )}
-      {!detailed && task.pullRequestUrl && (
-        <p className="flex min-w-0 items-center gap-1 text-xs">
-          <GitPullRequest aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-          <span className="sr-only">Pull request </span>
-          <span className="truncate select-all font-mono">{task.pullRequestUrl}</span>
-          {task.pullRequest && (
-            <span aria-label={`Pull request of #${task.id}`} className="shrink-0 text-muted-foreground">
-              {pullRequestStats(task.pullRequest)}
-            </span>
-          )}
-        </p>
-      )}
-      {task.mergedWith && (
+      {detailed && task.mergedWith && (
         <ShippedWith
           task={task}
           mergedWith={task.mergedWith}
           through={task.mergedWith.taskId === null ? null : taskRef(task.mergedWith.taskId, task.workspaceId, context)}
-          detailed={detailed}
+          detailed
         />
       )}
-      {(task.issue !== null || linkingIssue) && (
+      {((detailed && task.issue !== null) || linkingIssue) && (
         <TaskIssue task={task} detailed={detailed} linking={linkingIssue} onDone={() => setLinkingIssue(false)} />
       )}
-      <CommitList task={task} detailed={detailed} />
-      <TaskNotes task={task} detailed={detailed} />
-      {final && !editing && <CompletionNote task={task} />}
+      {detailed && <RelatedTasks task={task} tasks={tasks} context={context} navigation={navigation} />}
+      {detailed && <CommitList task={task} detailed />}
+      {detailed && <TaskNotes task={task} detailed />}
+      {final && !editing && (detailed || addingNote) && (
+        <CompletionNote task={task} adding={addingNote} onAdded={() => setAddingNote(false)} />
+      )}
       {actionError && (
         <p role="alert" className="text-xs text-destructive">
           {actionError.message}
@@ -768,118 +1168,23 @@ function TaskRow({
       )}
       {concluding && !editing && <ConcludeForm task={task} onDone={() => setConcluding(false)} />}
       {!editing && !concluding && (
-        <div className="flex flex-wrap items-center gap-1">
-          {task.status === "planned" && (
-            <Button
-              size="xs"
-              aria-label={`${paused ? "Resume" : "Start"} #${task.id}`}
-              title={
-                startable
-                  ? undefined
-                  : notAdopted.length > 0
-                    ? "A dependency was not adopted; remove it to start"
-                    : "Waits until all its dependencies are done"
-              }
-              disabled={!startable || !herdrRunning || startTask.isPending}
-              onClick={() => startTask.mutate(task.id)}
-            >
-              <Play />
-              {startTask.isPending ? "Starting..." : paused ? "Resume" : "Start"}
-            </Button>
-          )}
-          {active && task.worktreePath === null && task.branch !== null && (
-            <Button
-              size="xs"
-              variant="outline"
-              aria-label={`Restore worktree of #${task.id}`}
-              title={`Check out ${task.branch} into a new worktree and open it in herdr`}
-              disabled={!herdrRunning || restoreWorktree.isPending}
-              onClick={() => restoreWorktree.mutate(task.id)}
-            >
-              <FolderGit2 />
-              {restoreWorktree.isPending ? "Restoring..." : "Restore worktree"}
-            </Button>
-          )}
-          {active && task.herdrWorkspaceId && (
-            <Button
-              size="xs"
-              variant="outline"
-              aria-label={`Open #${task.id} in herdr`}
-              disabled={!herdrRunning || openTask.isPending}
-              onClick={() => openTask.mutate(task.id)}
-            >
-              <SquareTerminal />
-              Open in herdr
-            </Button>
-          )}
-          {detailed && active && task.herdrWorkspaceId && agentStatus && (
-            <Button
-              size="xs"
-              variant="outline"
-              aria-label={`Focus agent pane of #${task.id}`}
-              title="Focus the herdr pane of the agent working on this task"
-              disabled={!herdrRunning || focusAgent.isPending}
-              onClick={() => focusAgent.mutate(task.id)}
-            >
-              <Crosshair />
-              Focus agent pane
-            </Button>
-          )}
-          {hasWorktree && (
-            <>
-              <Button
-                size="xs"
-                variant="outline"
-                aria-label={`Refresh commits of #${task.id}`}
-                disabled={finishing}
-                onClick={() => refreshCommits.mutate(task.id)}
-              >
-                <RefreshCw className={cn(refreshCommits.isPending && "animate-spin")} />
-                {refreshCommits.isPending ? "Refreshing..." : "Refresh commits"}
-              </Button>
-              <Button
-                size="xs"
-                variant={inReview ? "outline" : "default"}
-                aria-label={inReview ? `Push #${task.id} to its pull request` : `Open pull request for #${task.id}`}
-                disabled={finishing}
-                onClick={() => openPullRequest.mutate(task.id)}
-              >
-                {inReview ? <Upload /> : <GitPullRequest />}
-                {openPullRequest.isPending ? "Pushing..." : inReview ? "Push to PR" : "Open PR"}
-              </Button>
-            </>
-          )}
-          {inReview && (
-            <Button
-              size="xs"
-              aria-label={`Complete #${task.id}`}
-              title="Complete the task once its pull request is merged; its herdr workspace is closed and the worktree kept"
-              disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
-              onClick={() => completeTask.mutate(task.id)}
-            >
-              <Check />
-              {completeTask.isPending ? "Completing..." : "Complete"}
-            </Button>
-          )}
-          {active && (
-            <Button
-              size="xs"
-              variant="outline"
-              aria-label={`Conclude #${task.id} without merging`}
-              title="Finish without merging, e.g. research whose result is not adopted; an open pull request is closed"
-              disabled={finishing || (task.herdrWorkspaceId !== null && !herdrRunning)}
-              onClick={() => setConcluding(true)}
-            >
-              <CircleSlash />
-              Conclude
-            </Button>
-          )}
+        <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
+          {primary && actionButton(primary, detailed ? "default" : "outline")}
+          {detailed && others.map((action) => actionButton(action, "outline"))}
           <div
-            className="ml-auto flex items-center gap-0.5"
+            role={confirming ? "group" : undefined}
+            aria-label={confirming ? `Delete #${task.id}?` : undefined}
+            className={cn(
+              "ml-auto flex items-center gap-1 max-md:gap-2",
+              confirming && "basis-full flex-wrap justify-end",
+            )}
             onKeyDown={confirming ? escapeCloses(() => setConfirming(null), deleteTask.isPending) : undefined}
           >
             {confirming ? (
               <>
+                <span className="min-w-0 flex-1 basis-48 text-xs">
+                  {deleteQuestion(confirming, task.id, removableWorktree)}
+                </span>
                 <Button
                   size="xs"
                   variant="destructive"
@@ -897,40 +1202,6 @@ function TaskRow({
               </>
             ) : (
               <>
-                {!final && task.issue === null && !linkingIssue && (
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label={`Link issue to #${task.id}`}
-                    title="Link a GitHub issue; the pull request closes it on merge"
-                    onClick={() => setLinkingIssue(true)}
-                  >
-                    <CircleDot />
-                  </Button>
-                )}
-                {!final && (
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label={`Edit #${task.id}`}
-                    title="Edit"
-                    onClick={() => setEditing(true)}
-                  >
-                    <Pencil />
-                  </Button>
-                )}
-                {active && (
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label={`Pause #${task.id}`}
-                    title="Pause: stop working on the task; it keeps its branch, worktree, and pull request and can be resumed"
-                    disabled={pauseTask.isPending}
-                    onClick={() => pauseTask.mutate(task.id)}
-                  >
-                    <Pause />
-                  </Button>
-                )}
                 {dirtyWorktree && (
                   <Button
                     size="xs"
@@ -943,29 +1214,44 @@ function TaskRow({
                     Force delete
                   </Button>
                 )}
-                {deletableStatuses.includes(task.status) && (
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label={`Delete #${task.id}`}
-                    title={
-                      removableWorktree
-                        ? "Delete the task and remove its worktree and herdr workspace; the branch is kept"
-                        : "Delete"
-                    }
-                    className="hover:text-destructive"
-                    disabled={removableWorktree && !herdrRunning}
-                    onClick={() => setConfirming("delete")}
-                  >
-                    <Trash2 />
-                  </Button>
-                )}
+                {menu.length > 0 && <MoreMenu label={`More actions for #${task.id}`} actions={menu} />}
               </>
             )}
           </div>
         </div>
       )}
     </li>
+  );
+}
+
+/** The due date of a task, flagged when it is late or overdue. */
+function DueDate({ task }: { task: Task }) {
+  const state = dueState(task, Date.now() / 1000);
+  const behind = state === "late" || state === "overdue";
+  return (
+    <span data-due-state={state ?? undefined} className={cn(behind && cn("font-medium", toneText.danger))}>
+      {state === null || state === "upcoming" ? "Due" : dueStateLabels[state]} {task.dueDate}
+    </span>
+  );
+}
+
+/** A row's short warning that its branch is behind its base or conflicts; nothing while it is fresh or unchecked. */
+function FreshnessWarning({ taskId }: { taskId: TaskId }) {
+  const freshness = useBranchFreshness(taskId, true);
+  const warning = freshness.data ? freshnessWarning(freshness.data) : null;
+  if (!freshness.data || warning === null) {
+    return null;
+  }
+  const conflicting = freshness.data.mergeable === "conflicting";
+  return (
+    <span
+      role="note"
+      aria-label={`Base freshness of #${taskId}`}
+      data-conflicting={conflicting || undefined}
+      className={conflicting ? toneText.danger : toneText.attention}
+    >
+      {warning}
+    </span>
   );
 }
 
@@ -1051,8 +1337,13 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
     dueDate: task.dueDate ?? "",
   }));
   const [plan, setPlan] = useState<PlanDraft>(initialPlan);
-  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
+  const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
   const estimate = planEstimate(plan);
+  // Unchanged criteria are not sent, so a save never touches the ones checked so far.
+  const criteriaChanged =
+    JSON.stringify(criterionInputs(criteria)) !== JSON.stringify(criterionInputs(initialCriteria));
+  const criteriaInvalid = criteria.some((draft) => targetProblem(draft) !== null);
   // The timeline asks before closing a details sheet whose edit form is marked dirty.
   const dirty =
     taskType !== task.taskType ||
@@ -1060,19 +1351,13 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
     description !== task.description ||
     plan.estimate !== initialPlan.estimate ||
     plan.estimateUnit !== initialPlan.estimateUnit ||
-    plan.dueDate !== initialPlan.dueDate;
-
-  function discard() {
-    if (dirty) {
-      setConfirmingDiscard(true);
-    } else {
-      onDone();
-    }
-  }
+    plan.dueDate !== initialPlan.dueDate ||
+    criteriaChanged;
+  const guard = useDiscardGuard(dirty, onDone, updateTask.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (estimate === undefined) return;
+    if (estimate === undefined || criteriaInvalid) return;
     updateTask.mutate(
       {
         id: task.id,
@@ -1081,6 +1366,8 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         description: description.trim(),
         estimate,
         dueDate: plan.dueDate || null,
+        // The criteria of a done task cannot change.
+        criteria: criteriaChanged && task.status !== "done" ? criterionInputs(criteria) : null,
       },
       { onSuccess: onDone },
     );
@@ -1091,11 +1378,8 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
       onSubmit={submit}
       aria-label={`Edit task #${task.id}`}
       data-dirty={dirty || undefined}
-      className="flex flex-col gap-1"
-      onKeyDown={escapeCloses(
-        () => (confirmingDiscard ? setConfirmingDiscard(false) : discard()),
-        updateTask.isPending,
-      )}
+      className="flex flex-col gap-1 max-md:gap-2"
+      onKeyDown={guard.onKeyDown}
     >
       <div className="flex gap-2">
         <select
@@ -1126,26 +1410,25 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         onChange={setDescription}
       />
       <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} />
-      {confirmingDiscard ? (
-        <div
-          role="group"
-          aria-label={`Discard changes to #${task.id}`}
-          className="flex flex-wrap items-center gap-1 text-xs"
-        >
-          <span className="mr-1">Discard your changes to #{task.id}?</span>
-          <Button type="button" size="xs" variant="outline" autoFocus onClick={() => setConfirmingDiscard(false)}>
-            Keep editing
-          </Button>
-          <Button type="button" size="xs" variant="destructive" onClick={onDone}>
-            Discard changes
-          </Button>
+      {task.status !== "done" && (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">Completion criteria</span>
+          <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
         </div>
+      )}
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard changes to #${task.id}`}
+          question={`Discard your changes to #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
       ) : (
-        <div className="flex gap-1">
-          <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined}>
+        <div className="flex gap-1 max-md:gap-2">
+          <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined || criteriaInvalid}>
             {updateTask.isPending ? "Saving..." : "Save"}
           </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={discard}>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
             Discard
           </Button>
         </div>
@@ -1166,6 +1449,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
 function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const concludeTask = useConcludeTask();
   const [note, setNote] = useState("");
+  const guard = useDiscardGuard(note.trim() !== "", onDone, concludeTask.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1177,7 +1461,7 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
       onSubmit={submit}
       aria-label={`Conclude #${task.id}`}
       className="flex flex-col gap-1"
-      onKeyDown={escapeCloses(onDone, concludeTask.isPending)}
+      onKeyDown={guard.onKeyDown}
     >
       <p className="text-xs text-muted-foreground">
         Finish #{task.id} without merging. It is marked not adopted, its pull request is closed with the
@@ -1192,15 +1476,29 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
         required
         autoFocus
       />
-      <div className="flex gap-1">
-        <Button type="submit" size="xs" disabled={concludeTask.isPending || note.trim() === ""}>
-          <CircleSlash />
-          {concludeTask.isPending ? "Concluding..." : "Conclude without merge"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
-          Back
-        </Button>
-      </div>
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard conclusion of #${task.id}`}
+          question={`Discard your conclusion of #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button
+            type="submit"
+            size="xs"
+            variant="destructive"
+            disabled={concludeTask.isPending || note.trim() === ""}
+          >
+            <CircleSlash />
+            {concludeTask.isPending ? "Concluding..." : "Conclude without merge"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
       {concludeTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {concludeTask.error.message}
@@ -1210,12 +1508,29 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
   );
 }
 
-/** The completion note of a done task, which reviews include, or a button to write one. */
-function CompletionNote({ task }: { task: Task }) {
+/**
+ * The completion note of a done task, with a pencil to edit it. Without a note it shows
+ * nothing until `adding`, set from the task's "Add note" action.
+ */
+function CompletionNote({ task, adding, onAdded }: { task: Task; adding: boolean; onAdded: () => void }) {
   const setNote = useSetCompletionNote();
-  const [editing, setEditing] = useState(false);
+  const [editingNote, setEditing] = useState(false);
   const [note, setNoteText] = useState("");
   const saved = task.completionNote ?? "";
+  const editing = editingNote || adding;
+
+  function close() {
+    setEditing(false);
+    onAdded();
+  }
+  const guard = useDiscardGuard(
+    note.trim() !== saved.trim(),
+    () => {
+      setNoteText(saved);
+      close();
+    },
+    setNote.isPending,
+  );
 
   function edit() {
     setNoteText(saved);
@@ -1224,25 +1539,14 @@ function CompletionNote({ task }: { task: Task }) {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setNote.mutate({ id: task.id, note }, { onSuccess: () => setEditing(false) });
+    setNote.mutate({ id: task.id, note }, { onSuccess: close });
   }
 
   if (!editing) {
-    return task.completionNote === null ? (
-      <Button
-        size="xs"
-        variant="outline"
-        className="self-start"
-        aria-label={`Add completion note to #${task.id}`}
-        onClick={edit}
-      >
-        <StickyNote />
-        Add note
-      </Button>
-    ) : (
+    return task.completionNote === null ? null : (
       <div className="flex items-start gap-1 rounded-md bg-muted/60 px-2 py-1">
         <StickyNote aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-        <p aria-label={`Completion note of #${task.id}`} className="min-w-0 flex-1 whitespace-pre-line text-xs">
+        <p aria-label={`Completion note of #${task.id}`} className="min-w-0 flex-1 whitespace-pre-line break-words-keep text-xs">
           {task.completionNote}
         </p>
         <Button
@@ -1258,7 +1562,12 @@ function CompletionNote({ task }: { task: Task }) {
     );
   }
   return (
-    <form onSubmit={submit} aria-label={`Completion note form of #${task.id}`} className="flex flex-col gap-1">
+    <form
+      onSubmit={submit}
+      aria-label={`Completion note form of #${task.id}`}
+      className="flex flex-col gap-1"
+      onKeyDown={guard.onKeyDown}
+    >
       <textarea
         className={cn(inputClass, "h-auto min-h-16 py-1.5")}
         aria-label={`Completion note for #${task.id}`}
@@ -1267,19 +1576,28 @@ function CompletionNote({ task }: { task: Task }) {
         onChange={(e) => setNoteText(e.target.value)}
         autoFocus
       />
-      <div className="flex gap-1">
-        <Button
-          type="submit"
-          size="xs"
-          // The conclusion of work that was not adopted cannot be cleared.
-          disabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
-        >
-          {setNote.isPending ? "Saving..." : "Save note"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={() => setEditing(false)}>
-          Discard
-        </Button>
-      </div>
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard note of #${task.id}`}
+          question={`Discard your note for #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button
+            type="submit"
+            size="xs"
+            // The conclusion of work that was not adopted cannot be cleared.
+            disabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
+          >
+            {setNote.isPending ? "Saving..." : "Save note"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Discard
+          </Button>
+        </div>
+      )}
       {setNote.isError && (
         <p role="alert" className="text-xs text-destructive">
           {setNote.error.message}
@@ -1318,6 +1636,14 @@ function TaskIssue({
   const pending = linkIssue.isPending || createIssue.isPending;
   const error = linkIssue.error ?? createIssue.error;
   const editable = task.status !== "done";
+  const guard = useDiscardGuard(
+    number.trim() !== "",
+    () => {
+      setNumber("");
+      onDone();
+    },
+    pending,
+  );
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1339,6 +1665,7 @@ function TaskIssue({
       </span>
       {editable && (
         <Button
+          changesData
           size="icon-xs"
           variant="ghost"
           aria-label={`Unlink issue from #${task.id}`}
@@ -1352,7 +1679,12 @@ function TaskIssue({
     </p>
   ) : (
     linking && (
-      <form onSubmit={submit} aria-label={`Issue form of #${task.id}`} className="flex flex-wrap items-center gap-1">
+      <form
+        onSubmit={submit}
+        aria-label={`Issue form of #${task.id}`}
+        className="flex flex-wrap items-center gap-1"
+        onKeyDown={guard.onKeyDown}
+      >
         <input
           className={cn(inputClass, "h-7 w-28")}
           inputMode="numeric"
@@ -1362,24 +1694,36 @@ function TaskIssue({
           onChange={(e) => setNumber(e.target.value)}
           autoFocus
         />
-        <Button type="submit" size="xs" disabled={parsed === null || pending}>
-          {linkIssue.isPending ? "Linking..." : "Link"}
-        </Button>
-        <Button
-          type="button"
-          size="xs"
-          variant="outline"
-          aria-label={`Create issue for #${task.id}`}
-          title="Open a GitHub issue with the title and description of this task and link it"
-          disabled={pending}
-          onClick={() => createIssue.mutate(task.id, { onSuccess: onDone })}
-        >
-          <Plus />
-          {createIssue.isPending ? "Creating..." : "Create issue"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
-          Discard
-        </Button>
+        {guard.asking ? (
+          <DiscardConfirm
+            label={`Discard issue number of #${task.id}`}
+            question="Discard the issue number?"
+            onKeep={guard.keep}
+            onDiscard={guard.discard}
+          />
+        ) : (
+          <>
+            <Button type="submit" size="xs" disabled={parsed === null || pending}>
+              {linkIssue.isPending ? "Linking..." : "Link"}
+            </Button>
+            <Button
+              changesData
+              type="button"
+              size="xs"
+              variant="outline"
+              aria-label={`Create issue for #${task.id}`}
+              title="Open a GitHub issue with the title and description of this task and link it"
+              disabled={pending}
+              onClick={() => createIssue.mutate(task.id, { onSuccess: onDone })}
+            >
+              <Plus />
+              {createIssue.isPending ? "Creating..." : "Create issue"}
+            </Button>
+            <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+              Discard
+            </Button>
+          </>
+        )}
       </form>
     )
   );
@@ -1499,6 +1843,111 @@ function DetailField({ label, children }: { label: string; children: ReactNode }
   );
 }
 
+/**
+ * Related tasks of the details sheet: earlier work an agent or the owner linked, in any
+ * workspace. Links neither block nor wait. Without links only the add control shows.
+ */
+function RelatedTasks({
+  task,
+  tasks,
+  context,
+  navigation,
+}: {
+  task: Task;
+  tasks: Task[];
+  context: TaskContext;
+  navigation?: SheetNavigation;
+}) {
+  const relations = useTaskRelations();
+  const addRelation = useAddRelation();
+  const removeRelation = useRemoveRelation();
+  const related = (relations.data ?? [])
+    .flatMap(({ taskId, relatedId }) => (taskId === task.id ? [relatedId] : relatedId === task.id ? [taskId] : []))
+    .filter((id) => context.byId.has(id));
+  const candidates = tasks.filter((other) => other.id !== task.id && !related.includes(other.id));
+  const groups = [...new Set([task.workspaceId, ...candidates.map((other) => other.workspaceId)])]
+    .map((workspaceId) => ({ workspaceId, tasks: candidates.filter((other) => other.workspaceId === workspaceId) }))
+    .filter((group) => group.tasks.length > 0);
+  const busy = addRelation.isPending || removeRelation.isPending;
+  const failure = addRelation.error ?? removeRelation.error;
+  if (related.length === 0 && groups.length === 0) {
+    return null;
+  }
+  const picker = groups.length > 0 && (
+    <select
+      aria-label={`Add related task to #${task.id}`}
+      className={cn(compactSelectClass, "max-w-48")}
+      value=""
+      disabled={busy}
+      onChange={(event) => {
+        if (event.target.value) {
+          addRelation.mutate({ taskId: task.id, relatedId: Number(event.target.value) });
+        }
+      }}
+    >
+      <option value="">Add related task...</option>
+      {groups.map((group) => (
+        <optgroup key={group.workspaceId} label={context.workspaceName(group.workspaceId)}>
+          {group.tasks.map((other) => (
+            <option key={other.id} value={other.id}>
+              #{other.id} {other.title}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  );
+  const error = failure && (
+    <p role="alert" className="text-destructive">
+      {failure.message}
+    </p>
+  );
+  if (related.length === 0) {
+    return (
+      <div className="flex flex-col gap-1 text-xs">
+        {picker}
+        {error}
+      </div>
+    );
+  }
+  return (
+    <DetailField label="Related">
+      <ul aria-label={`Related tasks of #${task.id}`} className="flex flex-wrap items-center gap-1 max-md:gap-2">
+        {related.map((id) => {
+          const other = context.byId.get(id);
+          const label = taskRef(id, task.workspaceId, context);
+          return (
+            <li key={id} className="inline-flex h-6 min-w-0 items-center rounded-md border max-md:h-11 max-md:gap-2 max-md:border-0">
+              <button
+                type="button"
+                aria-label={`Open related task ${label}`}
+                title={other?.title}
+                className="h-full min-w-0 max-w-56 truncate rounded-l-md px-1.5 tabular-nums hover:bg-muted max-md:rounded-md max-md:border max-md:px-3 disabled:cursor-default disabled:hover:bg-transparent"
+                disabled={navigation === undefined || !navigation.canOpen(id)}
+                onClick={() => navigation?.open(id)}
+              >
+                {label} {other?.title}
+              </button>
+              <button
+                type="button"
+                aria-label={`Remove related task #${id} from #${task.id}`}
+                title="Remove related task"
+                className="flex h-full items-center justify-center rounded-r-md p-1 text-muted-foreground hover:bg-muted max-md:w-11 max-md:rounded-md max-md:border hover:text-foreground disabled:opacity-50"
+                disabled={busy}
+                onClick={() => removeRelation.mutate({ taskId: task.id, relatedId: id })}
+              >
+                <X className="size-3" />
+              </button>
+            </li>
+          );
+        })}
+        {picker}
+      </ul>
+      {error}
+    </DetailField>
+  );
+}
+
 function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
   const recorded = task.status !== "planned" || isPaused(task);
   const commits = useCommitRecords(task.id, recorded);
@@ -1518,7 +1967,7 @@ function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
       {commits.data.map((commit) => (
         <li key={commit.sha} className="flex gap-2 text-xs" title={commit.author}>
           <code className="shrink-0 text-muted-foreground">{commit.sha.slice(0, 7)}</code>
-          <span className={detailed ? "min-w-0 break-words" : "truncate"}>{commit.message.split("\n", 1)[0]}</span>
+          <span className={detailed ? "min-w-0 break-words-keep" : "truncate"}>{commit.message.split("\n", 1)[0]}</span>
         </li>
       ))}
     </ul>
@@ -1557,7 +2006,7 @@ function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
       <p
         aria-label={`Latest note of #${task.id}`}
         className="flex min-w-0 items-center gap-1.5 text-xs"
-        title={new Date(latest.at * 1000).toLocaleString()}
+        title={formatFull(latest.at)}
       >
         <NoteKindBadge kind={latest.kind} />
         <span className="min-w-0 truncate text-muted-foreground">{markdownPreview(latest.body)}</span>
@@ -1574,11 +2023,9 @@ function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
           <li key={index} className="flex flex-col gap-0.5">
             <div className="flex items-center gap-1.5">
               <NoteKindBadge kind={note.kind} />
-              <time className="text-muted-foreground" dateTime={new Date(note.at * 1000).toISOString()}>
-                {new Date(note.at * 1000).toLocaleString()}
-              </time>
+              <When className="text-muted-foreground" at={note.at} />
             </div>
-            <Suspense fallback={<p className="whitespace-pre-line break-words">{note.body}</p>}>
+            <Suspense fallback={<p className="whitespace-pre-line break-words-keep">{note.body}</p>}>
               <Markdown source={note.body} />
             </Suspense>
           </li>
@@ -1589,7 +2036,17 @@ function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
 }
 
 /** A dashed placeholder for a list with nothing in it yet. */
-export function EmptyState({ title, hint, icon }: { title: string; hint?: string; icon?: ReactNode }) {
+export function EmptyState({
+  title,
+  hint,
+  icon,
+  action,
+}: {
+  title: string;
+  hint?: string;
+  icon?: ReactNode;
+  action?: ReactNode;
+}) {
   return (
     <div className="flex flex-col items-center gap-1 rounded-xl border border-dashed px-6 py-10 text-center">
       <span aria-hidden className="mb-1 text-muted-foreground [&_svg]:size-6">
@@ -1597,6 +2054,7 @@ export function EmptyState({ title, hint, icon }: { title: string; hint?: string
       </span>
       <p className="text-sm font-medium">{title}</p>
       {hint && <p className="max-w-sm text-xs text-muted-foreground">{hint}</p>}
+      {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }
@@ -1608,6 +2066,9 @@ export function EmptyState({ title, hint, icon }: { title: string; hint?: string
 function AgentMergeSetting({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
   const value = updateWorkspace.isPending ? updateWorkspace.variables.agentMerge : workspace.agentMerge;
+  // Saved on change, so it waits, like the buttons that change data, while the server is away.
+  const reach = useSyncExternalStore(subscribeReachability, reachability);
+  const serverDown = reach === "unreachable" || reach === "retrying";
 
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
@@ -1618,7 +2079,7 @@ function AgentMergeSetting({ workspace }: { workspace: Workspace }) {
         id="agent-merge"
         className={cn(compactSelectClass, "max-w-72")}
         value={value}
-        disabled={updateWorkspace.isPending}
+        disabled={updateWorkspace.isPending || serverDown}
         onChange={(e) => updateWorkspace.mutate({ ...workspace, agentMerge: e.target.value as AgentMerge })}
       >
         <option value="never">Never, stop at the pull request</option>
@@ -1645,7 +2106,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
   const createBaseBranch = useCreateBaseBranch();
   const tasks = useTasks();
-  // An open pull request targets the current branch, so it stays while a task is in review.
+  // An open pull request targets the current branch, so it stays while a task awaits completion.
   const inReview = tasks.data?.filter((task) => task.workspaceId === workspace.id && task.status === "in_review");
   const locked = inReview === undefined || inReview.length > 0;
   const [draft, setDraft] = useState<string | null>(null);
@@ -1660,6 +2121,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   const canSave =
     !pending && (draft === NEW_BRANCH ? name !== "" && !names.includes(name) && newFrom !== "" : draft !== current);
   const error = updateWorkspace.error ?? createBaseBranch.error;
+  const guard = useDiscardGuard(draft === NEW_BRANCH && name !== "", () => setDraft(null), pending);
 
   function open() {
     updateWorkspace.reset();
@@ -1682,8 +2144,9 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
 
   if (draft === null) {
     return (
-      <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
-        <span className="truncate">{location} &middot; base</span>
+      <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground max-md:flex-wrap">
+        <PathLabel label="workspace path" full={location} short={shortLocation(workspace.location)} />
+        <span className="shrink-0">&middot; base</span>
         <code className="text-foreground">{workspace.defaultBaseBranch}</code>
         <Button
           size="xs"
@@ -1695,9 +2158,9 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
           Change
         </Button>
         {inReview && inReview.length > 0 && (
-          <span className="truncate text-xs">
-            Locked while {inReview.map((task) => `#${task.id}`).join(", ")} {inReview.length > 1 ? "are" : "is"} in
-            review
+          <span className="text-xs max-md:basis-full md:truncate">
+            Locked while {inReview.map((task) => `#${task.id}`).join(", ")} {inReview.length > 1 ? "are" : "is"}{" "}
+            awaiting completion
           </span>
         )}
       </p>
@@ -1705,7 +2168,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label="Base branch" className="flex flex-col gap-1.5">
+    <form onSubmit={submit} aria-label="Base branch" className="flex flex-col gap-1.5" onKeyDown={guard.onKeyDown}>
       <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
         <span className="truncate">{location} &middot;</span>
         <label htmlFor="base-branch" className="shrink-0">
@@ -1760,14 +2223,23 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
           {names.includes(name) && <span className="text-xs">Branch {name} already exists; pick it above.</span>}
         </div>
       )}
-      <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" variant="outline" disabled={!canSave}>
-          {draft === NEW_BRANCH ? "Create and save" : "Save"}
-        </Button>
-        <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
-          Discard
-        </Button>
-      </div>
+      {guard.asking ? (
+        <DiscardConfirm
+          label="Discard new branch name"
+          question="Discard the new branch name?"
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex items-center gap-2">
+          <Button type="submit" size="sm" variant="outline" disabled={!canSave}>
+            {draft === NEW_BRANCH ? "Create and save" : "Save"}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
+            Discard
+          </Button>
+        </div>
+      )}
       <p className="text-xs text-muted-foreground">
         New task branches start from this branch and pull requests target it.
         {draft === NEW_BRANCH && " The new branch is pushed to origin."}
@@ -1804,6 +2276,11 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   const saved = settings.data?.worktreeRoot ?? "";
   const machineName = machine.kind === "local" ? (runsOnServer ? "the server" : "this computer") : machine.label;
   const error = settings.error ?? saveSettings.error;
+  const closeChange = () => {
+    setDraft(null);
+    setChanging(false);
+  };
+  const guard = useDiscardGuard(draft !== null && draft.trim() !== saved, closeChange, saveSettings.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1837,18 +2314,19 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
     <form
       onSubmit={submit}
       aria-label="Worktree root"
+      onKeyDown={changing ? guard.onKeyDown : undefined}
       className={cn(
         "flex flex-col gap-1.5 rounded-xl border p-3",
         settings.isSuccess && !saved && "border-amber-300 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30",
       )}
     >
-      <div className="flex items-center gap-2">
-        <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 max-md:flex-wrap">
+        <label htmlFor="worktree-root" className="shrink-0 text-xs text-muted-foreground max-md:basis-full">
           Worktree root on {machineName}
         </label>
         <input
           id="worktree-root"
-          className={cn(inputClass, "font-mono")}
+          className={cn(inputClass, "font-mono max-md:min-w-0 max-md:flex-1")}
           placeholder={machine.kind === "local" && !runsOnServer ? "D:\\worktrees" : "/srv/worktrees"}
           value={draft ?? saved}
           onChange={(e) => setDraft(e.target.value)}
@@ -1857,20 +2335,20 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         <Button type="submit" size="sm" variant="outline" disabled={draft === null || saveSettings.isPending}>
           Save
         </Button>
-        {changing && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setDraft(null);
-              setChanging(false);
-            }}
-          >
+        {changing && !guard.asking && (
+          <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
             Discard
           </Button>
         )}
       </div>
+      {guard.asking && (
+        <DiscardConfirm
+          label="Discard worktree root change"
+          question="Discard the new worktree root?"
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      )}
       {settings.isSuccess && !saved && (
         <p className="text-xs text-muted-foreground">Set a worktree root to start tasks on this machine.</p>
       )}
@@ -1947,20 +2425,376 @@ function PlanFields({
 /** A task's estimate and due date, the due date in red once it is missed. */
 function TaskPlan({ task }: { task: Task }) {
   if (task.estimate === null && task.dueDate === null) return null;
-  const state = dueState(task, Date.now() / 1000);
-  const behind = state === "late" || state === "overdue";
   return (
     <p aria-label={`Plan of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
       {task.estimate !== null && <span>Estimate {formatEstimate(task.estimate)}</span>}
-      {task.dueDate !== null && (
-        <span
-          data-due-state={state ?? undefined}
-          className={cn(behind && cn("font-medium", toneText.danger))}
-        >
-          {state === null || state === "upcoming" ? "Due" : dueStateLabels[state]} {task.dueDate}
-        </span>
-      )}
+      {task.dueDate !== null && <DueDate task={task} />}
     </p>
+  );
+}
+
+const criterionKindLabels: Record<CheckKind, string> = {
+  manual: "Manual",
+  url: "URL responds",
+  command: "Command succeeds",
+  pr_open_ci_green: "PR open with green CI",
+  pr_merged: "PR merged",
+  branch_merged_locally: "Merged locally",
+};
+
+/**
+ * Kinds the criteria editor offers. The merge criterion (`pr_merged`, or
+ * `branch_merged_locally` in a repository without `origin`) comes from "Done when merged"
+ * when the task is created and keeps its kind when the task is edited.
+ */
+const editableCriterionKinds: CheckKind[] = ["manual", "url", "command", "pr_open_ci_green"];
+
+/** Kinds checked against a target their author gives: the URL to fetch or the command to run. */
+function takesTarget(kind: CheckKind): boolean {
+  return kind === "url" || kind === "command";
+}
+
+/** A row of the criteria editor; `id` is set for an existing criterion of the edited task. */
+type CriterionDraft = { key: number; id: CriterionId | null; text: string; kind: CheckKind; target: string };
+
+/** Tells editor rows apart, so removing one keeps the values and focus of the others. */
+let lastCriterionKey = 0;
+
+/** A new, empty row, or a row holding the existing `criterion`. */
+function criterionDraft(criterion?: Criterion): CriterionDraft {
+  lastCriterionKey += 1;
+  if (criterion === undefined) {
+    return { key: lastCriterionKey, id: null, text: "", kind: "manual", target: "" };
+  }
+  // The target of a merged-locally criterion is the commit Toodo found, not one to edit.
+  const target = takesTarget(criterion.kind) ? (criterion.target ?? "") : "";
+  return { key: lastCriterionKey, id: criterion.id, text: criterion.text, kind: criterion.kind, target };
+}
+
+/** The rows with a text, in order, as the backend takes them; blank rows are left out. */
+function criterionInputs(drafts: CriterionDraft[]): CriterionInput[] {
+  return drafts
+    .filter((draft) => draft.text.trim() !== "")
+    .map((draft) => ({
+      ...(draft.id === null ? {} : { id: draft.id }),
+      text: draft.text.trim(),
+      kind: draft.kind,
+      target: takesTarget(draft.kind) ? draft.target.trim() : null,
+    }));
+}
+
+/** Why the backend would reject the target of a row, or null when it takes it. */
+function targetProblem(draft: CriterionDraft): string | null {
+  if (draft.text.trim() === "") return null;
+  const target = draft.target.trim();
+  if (draft.kind === "url" && !/^https?:\/\/\S*$/.test(target)) return "Enter an http:// or https:// URL";
+  if (draft.kind === "command" && target === "") return "Enter the command to run";
+  return null;
+}
+
+/**
+ * The completion criteria of a new or an edited task: one row per criterion with what has
+ * to hold, how it is checked, and the URL or command a check runs against. In the edit form
+ * of a task, `taskId` ends the labels with ` of #id`.
+ */
+function CriteriaEditor({
+  criteria,
+  onChange,
+  taskId,
+}: {
+  criteria: CriterionDraft[];
+  onChange: (criteria: CriterionDraft[]) => void;
+  taskId?: TaskId;
+}) {
+  // The row just added gets the focus.
+  const [addedKey, setAddedKey] = useState<number | null>(null);
+  const of = taskId === undefined ? "" : ` of #${taskId}`;
+  const update = (key: number, change: Partial<CriterionDraft>) =>
+    onChange(criteria.map((draft) => (draft.key === key ? { ...draft, ...change } : draft)));
+
+  function add() {
+    const draft = criterionDraft();
+    setAddedKey(draft.key);
+    onChange([...criteria, draft]);
+  }
+
+  return (
+    <div className="flex flex-col gap-1 max-md:gap-2">
+      {criteria.length > 0 && (
+        <ol className="flex flex-col gap-1 max-md:gap-2">
+          {criteria.map((draft, index) => {
+            const n = index + 1;
+            const problem = targetProblem(draft);
+            const fixedKind = !editableCriterionKinds.includes(draft.kind);
+            return (
+              // Below md each criterion is a block: its text on the first line, kind and remove on the next.
+              <li
+                key={draft.key}
+                className="flex flex-wrap items-center gap-1 max-md:grid max-md:grid-cols-[1rem_1fr_auto] max-md:gap-2 max-md:rounded-lg max-md:border max-md:p-2"
+              >
+                <span aria-hidden className="w-4 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                  {n}
+                </span>
+                <input
+                  className={cn(inputClass, "h-7 flex-1 basis-48 max-md:col-span-2")}
+                  aria-label={`Criterion ${n} text${of}`}
+                  placeholder="What has to hold, e.g. Docs updated"
+                  value={draft.text}
+                  onChange={(e) => update(draft.key, { text: e.target.value })}
+                  autoFocus={draft.key === addedKey}
+                />
+                <select
+                  aria-label={`Criterion ${n} kind${of}`}
+                  className={cn(compactSelectClass, "h-7 max-md:col-start-2 max-md:row-start-2")}
+                  value={draft.kind}
+                  disabled={fixedKind}
+                  title={fixedKind ? "The merge criterion keeps its kind" : "How the criterion is checked"}
+                  onChange={(e) => update(draft.key, { kind: e.target.value as CheckKind })}
+                >
+                  {(fixedKind ? [draft.kind] : editableCriterionKinds).map((kind) => (
+                    <option key={kind} value={kind}>
+                      {criterionKindLabels[kind]}
+                    </option>
+                  ))}
+                </select>
+                {takesTarget(draft.kind) && (
+                  <input
+                    className={cn(
+                      inputClass,
+                      "h-7 flex-1 basis-40 font-mono max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20",
+                    )}
+                    aria-label={`Criterion ${n} target${of}`}
+                    aria-invalid={problem !== null}
+                    title={
+                      problem ??
+                      (draft.kind === "url"
+                        ? "Toodo checks that a GET of this URL succeeds"
+                        : "Toodo checks that this command exits with 0 in the task worktree")
+                    }
+                    placeholder={draft.kind === "url" ? "https://example.com/health" : "npm test"}
+                    value={draft.target}
+                    onChange={(e) => update(draft.key, { target: e.target.value })}
+                  />
+                )}
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label={`Remove criterion ${n}${of}`}
+                  title="Remove criterion"
+                  className="max-md:col-start-3 max-md:row-start-2"
+                  onClick={() => onChange(criteria.filter((other) => other.key !== draft.key))}
+                >
+                  <X />
+                </Button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      <Button
+        type="button"
+        size="xs"
+        variant="ghost"
+        className="self-start"
+        aria-label={taskId === undefined ? undefined : `Add criterion to #${taskId}`}
+        onClick={add}
+      >
+        <Plus />
+        Add criterion
+      </Button>
+    </div>
+  );
+}
+
+const criterionStateLabels: Record<CriterionState, string> = { pending: "Pending", met: "Met", failed: "Failed" };
+
+/** Green once met, rose only when the last check failed. */
+const criterionStateStyles: Record<CriterionState, string> = {
+  pending: toneText.neutral,
+  met: toneText.success,
+  failed: toneText.danger,
+};
+
+const checkedByLabels: Record<CheckedBy, string> = { user: "you", agent: "an agent", toodo: "Toodo" };
+
+function CriterionMarker({ state }: { state: CriterionState }) {
+  const Icon = state === "met" ? CircleCheck : state === "failed" ? CircleX : Circle;
+  return (
+    <span
+      role="img"
+      aria-label={criterionStateLabels[state]}
+      className={cn("flex size-4 shrink-0 items-center justify-center", criterionStateStyles[state])}
+    >
+      <Icon aria-hidden className="size-3.5" />
+    </span>
+  );
+}
+
+/** Who checked a criterion last and when, or null when nobody has. */
+function checkedByText(criterion: Criterion): string | null {
+  if (criterion.checkedBy === null) return null;
+  const at = criterion.checkedAt === null ? "" : ` ${formatWhen(criterion.checkedAt)}`;
+  return `Checked by ${checkedByLabels[criterion.checkedBy]}${at}`;
+}
+
+/**
+ * What has to hold for the task to be done, each criterion with its state. A list row keeps
+ * every criterion to one line; the details sheet adds targets, evidence, and who checked.
+ */
+function TaskCriteria({ task, detailed }: { task: Task; detailed: boolean }) {
+  const criteria = task.criteria;
+  if (criteria.length === 0) {
+    return null;
+  }
+  const list = (
+    <ul aria-label={`Criteria of #${task.id}`} className="flex flex-col gap-0.5">
+      {criteria.map((criterion) => (
+        <CriterionItem key={criterion.id} task={task} criterion={criterion} detailed={detailed} />
+      ))}
+    </ul>
+  );
+  if (!detailed) {
+    return list;
+  }
+  const met = criteria.filter((criterion) => criterion.state === "met").length;
+  return <DetailField label={`Criteria (${met} of ${criteria.length} met)`}>{list}</DetailField>;
+}
+
+/**
+ * One criterion of a task. A manual one of a task that is not done is a checkbox: checking
+ * asks for optional evidence before it is saved, unchecking saves right away.
+ */
+function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: Criterion; detailed: boolean }) {
+  const checkCriterion = useCheckCriterion();
+  // The evidence form of a check that is not saved yet.
+  const [writing, setWriting] = useState(false);
+  const [evidence, setEvidence] = useState("");
+  const checkable = criterion.kind === "manual" && task.status !== "done";
+  const checkedBy = checkedByText(criterion);
+  const target = takesTarget(criterion.kind) ? criterion.target : null;
+
+  function cancel() {
+    setWriting(false);
+    setEvidence("");
+  }
+  const guard = useDiscardGuard(evidence.trim() !== "", cancel, checkCriterion.isPending);
+
+  function toggle(checked: boolean) {
+    if (writing) {
+      cancel();
+    } else if (checked) {
+      checkCriterion.reset();
+      setWriting(true);
+    } else {
+      checkCriterion.mutate({ taskId: task.id, criterionId: criterion.id, met: false, evidence: null });
+    }
+  }
+
+  function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    checkCriterion.mutate(
+      { taskId: task.id, criterionId: criterion.id, met: true, evidence: evidence.trim() || null },
+      { onSuccess: cancel },
+    );
+  }
+
+  return (
+    <li data-criterion-state={criterion.state} className="flex min-w-0 flex-col gap-0.5 text-xs">
+      <div
+        className="flex min-w-0 items-center gap-1.5"
+        title={detailed ? undefined : [checkedBy, criterion.evidence, target].filter(Boolean).join("\n") || undefined}
+      >
+        {checkable ? (
+          <>
+            <label className="flex size-4 shrink-0 items-center justify-center max-md:-mx-3.5 max-md:size-11">
+              <input
+                type="checkbox"
+                aria-label={`Check criterion ${criterion.id} of #${task.id}`}
+                checked={criterion.state === "met" || writing}
+                disabled={checkCriterion.isPending}
+                onChange={(e) => toggle(e.target.checked)}
+              />
+            </label>
+            {/* An unchecked box alone cannot tell a failed check from a pending one. */}
+            {criterion.state === "failed" && <CriterionMarker state="failed" />}
+          </>
+        ) : (
+          <CriterionMarker state={criterion.state} />
+        )}
+        <span
+          className={cn(
+            "min-w-0",
+            detailed ? "break-words-keep" : "truncate",
+            criterion.state === "failed" && toneText.danger,
+          )}
+        >{criterion.text}</span>
+        {criterion.kind !== "manual" && (
+          <span className="shrink-0 rounded-md bg-muted px-1.5 text-muted-foreground">
+            {criterionKindLabels[criterion.kind]}
+          </span>
+        )}
+        {!detailed && criterion.evidence && (
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{criterion.evidence}</span>
+        )}
+      </div>
+      {detailed && target && <code className="ml-5.5 break-all text-muted-foreground">{target}</code>}
+      {detailed && (criterion.evidence || checkedBy) && (
+        <p className="ml-5.5 whitespace-pre-line break-words-keep text-muted-foreground">
+          {criterion.evidence}
+          {criterion.evidence && checkedBy && " \u00b7 "}
+          {criterion.checkedBy !== null && (
+            <>
+              Checked by {checkedByLabels[criterion.checkedBy]}
+              {criterion.checkedAt !== null && (
+                <>
+                  {" "}
+                  <When at={criterion.checkedAt} />
+                </>
+              )}
+            </>
+          )}
+        </p>
+      )}
+      {writing && (
+        <form
+          onSubmit={save}
+          className="ml-5.5 flex flex-wrap items-center gap-1"
+          onKeyDown={guard.onKeyDown}
+        >
+          <input
+            className={cn(inputClass, "h-7 flex-1 basis-48")}
+            aria-label={`Evidence for criterion ${criterion.id}`}
+            placeholder="Evidence (optional), e.g. a link or what you checked"
+            value={evidence}
+            onChange={(e) => setEvidence(e.target.value)}
+            autoFocus
+          />
+          {guard.asking ? (
+            <DiscardConfirm
+              label={`Discard evidence for criterion ${criterion.id}`}
+              question="Discard the evidence?"
+              onKeep={guard.keep}
+              onDiscard={guard.discard}
+            />
+          ) : (
+            <>
+              <Button type="submit" size="xs" disabled={checkCriterion.isPending}>
+                {checkCriterion.isPending ? "Saving..." : "Save"}
+              </Button>
+              <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+                Cancel
+              </Button>
+            </>
+          )}
+        </form>
+      )}
+      {checkCriterion.isError && (
+        <p role="alert" className="ml-5.5 text-destructive">
+          {checkCriterion.error.message}
+        </p>
+      )}
+    </li>
   );
 }
 
@@ -1969,6 +2803,10 @@ export type TaskDraft = {
   title: string;
   description: string;
   issue: string;
+  /** Rows of the criteria editor; blank ones are left out when the task is added. */
+  criteria: CriterionDraft[];
+  /** Whether the backend puts the merge criterion first. */
+  mergeCriterion: boolean;
 } & PlanDraft;
 
 const emptyDraft: TaskDraft = {
@@ -1976,6 +2814,8 @@ const emptyDraft: TaskDraft = {
   title: "",
   description: "",
   issue: "",
+  criteria: [],
+  mergeCriterion: true,
   estimate: "",
   estimateUnit: "hours",
   dueDate: "",
@@ -1991,10 +2831,12 @@ function NewTaskForm({
   onChange: (draft: TaskDraft) => void;
 }) {
   const createTask = useCreateTask();
+  const [expanded, setExpanded] = useState(false);
   const { taskType, title, description, issue } = draft;
   const issueNumber = parseIssueNumber(issue);
   const invalidIssue = issue.trim() !== "" && issueNumber === null;
   const estimate = planEstimate(draft);
+  const criteriaInvalid = draft.criteria.some((criterion) => targetProblem(criterion) !== null);
   const setTaskType = (value: TaskType) => onChange({ ...draft, taskType: value });
   const setTitle = (value: string) => onChange({ ...draft, title: value });
   const setDescription = (value: string) => onChange({ ...draft, description: value });
@@ -2002,8 +2844,11 @@ function NewTaskForm({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (estimate === undefined) return;
-    const added = () => onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "" });
+    if (estimate === undefined || criteriaInvalid) return;
+    const added = () => {
+      onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "", criteria: [] });
+      setExpanded(false);
+    };
     createTask.mutate(
       {
         workspaceId: workspace.id,
@@ -2012,6 +2857,8 @@ function NewTaskForm({
         description,
         estimate,
         dueDate: draft.dueDate || null,
+        criteria: criterionInputs(draft.criteria),
+        mergeCriterion: draft.mergeCriterion,
         issue: issueNumber,
       },
       {
@@ -2023,66 +2870,85 @@ function NewTaskForm({
   }
 
   return (
-    <form
-      onSubmit={submit}
-      aria-label="New task"
-      className="flex flex-col gap-2 rounded-xl border bg-card p-3 shadow-xs"
-    >
+    <CollapsibleForm label="New task" expanded={expanded} onExpandedChange={setExpanded} onSubmit={submit}>
       <div className="flex gap-2">
-        <select
-          aria-label="Task type"
-          className={cn(inputClass, "w-28 font-mono")}
-          value={taskType}
-          onChange={(e) => setTaskType(e.target.value as TaskType)}
-        >
-          {taskTypes.map((type) => (
-            <option key={type} value={type}>
-              {type}
-            </option>
-          ))}
-        </select>
+        {expanded && (
+          <select
+            aria-label="Task type"
+            className={cn(inputClass, "w-28 shrink-0 font-mono")}
+            value={taskType}
+            onChange={(e) => setTaskType(e.target.value as TaskType)}
+          >
+            {taskTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </select>
+        )}
         <input
-          className={inputClass}
-          placeholder="Task title"
+          className={cn(inputClass, "min-w-0")}
+          placeholder={expanded ? "Task title" : "New task"}
           aria-label="Task title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           required
         />
-        <Button type="submit" disabled={createTask.isPending || invalidIssue || estimate === undefined}>
+        <Button type="submit" disabled={createTask.isPending || invalidIssue || estimate === undefined || criteriaInvalid}>
           <Plus />
           Add task
         </Button>
       </div>
-      <div className="flex items-start gap-2">
-        <MarkdownEditor
-          label="Description"
-          placeholder="Description (optional, Markdown)"
-          value={description}
-          onChange={setDescription}
-          className="flex-1"
-        />
-        <input
-          className={cn(inputClass, "mt-7 w-36 shrink-0")}
-          inputMode="numeric"
-          placeholder="Issue # (optional)"
-          aria-label="Issue number"
-          aria-invalid={invalidIssue}
-          title="An issue of the workspace repository; the pull request closes it on merge"
-          value={issue}
-          onChange={(e) => setIssue(e.target.value)}
-        />
-      </div>
-      <PlanFields
-        suffix=""
-        plan={draft}
-        onChange={(plan) => onChange({ ...draft, ...plan })}
-      />
+      {expanded && (
+        <>
+          <div className="flex items-start gap-2">
+            <MarkdownEditor
+              label="Description"
+              placeholder="Description (optional, Markdown)"
+              value={description}
+              onChange={setDescription}
+              className="flex-1"
+            />
+            <input
+              className={cn(inputClass, "mt-7 w-36 shrink-0 max-md:mt-13")}
+              inputMode="numeric"
+              placeholder="Issue # (optional)"
+              aria-label="Issue number"
+              aria-invalid={invalidIssue}
+              title="An issue of the workspace repository; the pull request closes it on merge"
+              value={issue}
+              onChange={(e) => setIssue(e.target.value)}
+            />
+          </div>
+          <PlanFields
+            suffix=""
+            plan={draft}
+            onChange={(plan) => onChange({ ...draft, ...plan })}
+          />
+          <div className="flex flex-col gap-1 border-t pt-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-medium text-muted-foreground">Completion criteria</span>
+              <label
+                className="flex items-center gap-1.5 max-md:min-h-11"
+                title="Add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
+              >
+                <input
+                  type="checkbox"
+                  checked={draft.mergeCriterion}
+                  onChange={(e) => onChange({ ...draft, mergeCriterion: e.target.checked })}
+                />
+                Done when merged
+              </label>
+            </div>
+            <CriteriaEditor criteria={draft.criteria} onChange={(criteria) => onChange({ ...draft, criteria })} />
+          </div>
+        </>
+      )}
       {createTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {createTask.error.message}
         </p>
       )}
-    </form>
+    </CollapsibleForm>
   );
 }

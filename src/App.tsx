@@ -1,21 +1,45 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
+import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, MessagesSquare, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
+import { DevicesPanel } from "@/components/devices-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
+import { InstallBanner } from "@/components/install-banner";
+import { LeadChat, UnreadBadge } from "@/components/lead-chat";
+import { MemoryPanel, type MemoryDraft } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
+import { NotificationsPanel } from "@/components/notifications-panel";
 import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
-import { commands, type WorkspaceId } from "@/lib/bindings";
+import { commands, type TaskId, type WorkspaceId } from "@/lib/bindings";
+import { unreadCount, useReadUpTo } from "@/lib/chat";
 import { runsOnServer } from "@/lib/platform";
-import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
+import { useChatMessages, useHerdrEvents, useLead, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
+import { listenForOpenTask } from "@/web/push";
+
+/** Wraps Tab and Shift+Tab around the ends of a modal, so focus cannot leave it. */
+function keepFocusIn(container: HTMLElement | null, event: KeyboardEvent) {
+  if (container === null) return;
+  const focusable = [
+    ...container.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, summary, [tabindex]"),
+  ].filter((element) => !element.matches(":disabled, [tabindex='-1']") && element.getClientRects().length > 0);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const inside = active instanceof Node && container.contains(active);
+  if (event.shiftKey ? !inside || active === first : !inside || active === last) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  }
+}
 
 export default function App() {
   const appInfo = useQuery({
@@ -26,15 +50,67 @@ export default function App() {
   useHerdrEvents();
   const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
   const [reviewing, setReviewing] = useState(false);
-  // On narrow screens the sidebar is a drawer over the content.
+  const [sharedMemory, setSharedMemory] = useState(false);
+  const [chatting, setChatting] = useState(false);
+  const lead = useLead();
+  const hasLead = lead.data !== undefined && lead.data.state !== "disabled";
+  const chat = useChatMessages(hasLead);
+  const readUpTo = useReadUpTo();
+  const unread = chatting ? 0 : unreadCount(chat.data ?? [], readUpTo);
+  // Whether a workspace shows its tasks or its memory; kept across workspaces.
+  const [workspaceView, setWorkspaceView] = useState<"tasks" | "memory">("tasks");
+  const openPage = (page: "review" | "memory" | "chat" | null) => {
+    setReviewing(page === "review");
+    setSharedMemory(page === "memory");
+    setChatting(page === "chat");
+    setMenuOpen(false);
+  };
+  // On narrow screens the sidebar is a modal drawer over the content.
   const [menuOpen, setMenuOpen] = useState(false);
+  const openMenuButton = useRef<HTMLButtonElement>(null);
+  const closeMenuButton = useRef<HTMLButtonElement>(null);
+  const menuWasOpen = useRef(false);
+  const drawer = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (menuOpen) closeMenuButton.current?.focus();
+    else if (menuWasOpen.current) openMenuButton.current?.focus();
+    menuWasOpen.current = menuOpen;
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // An inline form in the drawer handles its own Escape first.
+      if (event.key === "Escape" && !event.defaultPrevented) setMenuOpen(false);
+      if (event.key === "Tab") keepFocusIn(drawer.current, event);
+    };
+    // Past the md breakpoint (48rem) the sidebar is no drawer, so nothing may stay inert.
+    const onResize = () => {
+      if (window.innerWidth >= 768) setMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [menuOpen]);
   // Kept here so switching workspaces or views does not reset them.
   const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
   const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
   const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
+  // Keyed by workspace, or null for shared memory.
+  const [memoryDrafts, setMemoryDrafts] = useState<ReadonlyMap<WorkspaceId | null, MemoryDraft>>(new Map());
+  const setMemoryDraft = (id: WorkspaceId | null, draft: MemoryDraft) =>
+    setMemoryDrafts((current) => new Map(current).set(id, draft));
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
-  const showingAll = selectedId === "all" && !reviewing;
+  const showTask = (id: TaskId) => {
+    setSelectedId("all");
+    openPage(null);
+    setShownTask({ id });
+  };
+  // A clicked notification of the web build opens its task.
+  useEffect(() => listenForOpenTask(showTask), []);
+  const onPage = reviewing || sharedMemory || chatting;
+  const showingAll = selectedId === "all" && !onPage;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
 
@@ -44,6 +120,10 @@ export default function App() {
         <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
       )}
       <aside
+        ref={drawer}
+        role={menuOpen ? "dialog" : undefined}
+        aria-modal={menuOpen || undefined}
+        aria-label={menuOpen ? "Menu" : undefined}
         className={cn(
           "flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground",
           "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-lg",
@@ -65,31 +145,43 @@ export default function App() {
             size="icon-sm"
             className="ml-auto md:hidden"
             aria-label="Close menu"
+            ref={closeMenuButton}
             onClick={() => setMenuOpen(false)}
           >
             <X />
           </Button>
         </div>
-        <NeedsAttention
-          onShow={(id) => {
-            setSelectedId("all");
-            setReviewing(false);
-            setShownTask({ id });
-            setMenuOpen(false);
-          }}
-        />
+        <NeedsAttention onShow={showTask} />
         <nav className="flex flex-col gap-0.5">
+          {hasLead && (
+            <Button
+              variant={chatting ? "secondary" : "ghost"}
+              className="justify-start"
+              aria-pressed={chatting}
+              onClick={() => openPage("chat")}
+            >
+              <MessagesSquare />
+              Lead chat
+              <UnreadBadge count={unread} />
+            </Button>
+          )}
           <Button
             variant={reviewing ? "secondary" : "ghost"}
             className="justify-start"
             aria-pressed={reviewing}
-            onClick={() => {
-              setReviewing(true);
-              setMenuOpen(false);
-            }}
+            onClick={() => openPage("review")}
           >
             <ChartColumn />
             Review
+          </Button>
+          <Button
+            variant={sharedMemory ? "secondary" : "ghost"}
+            className="justify-start"
+            aria-pressed={sharedMemory}
+            onClick={() => openPage("memory")}
+          >
+            <BookMarked />
+            Shared memory
           </Button>
           <Button
             variant={showingAll ? "secondary" : "ghost"}
@@ -98,8 +190,7 @@ export default function App() {
             disabled={!workspaces.data?.length}
             onClick={() => {
               setSelectedId("all");
-              setReviewing(false);
-              setMenuOpen(false);
+              openPage(null);
             }}
           >
             <Layers />
@@ -107,15 +198,16 @@ export default function App() {
           </Button>
         </nav>
         <WorkspaceList
-          selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
+          selectedId={onPage || showingAll ? null : (selected?.id ?? null)}
           onSelect={(id) => {
             setSelectedId(id);
-            setReviewing(false);
-            setMenuOpen(false);
+            openPage(null);
           }}
         />
         <div className="mt-auto flex flex-col gap-2">
           <AgentAccessPanel />
+          {runsOnServer && <DevicesPanel />}
+          {runsOnServer && <NotificationsPanel />}
           <BackupPanel />
         </div>
         <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1">
@@ -128,18 +220,38 @@ export default function App() {
           </div>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col" inert={menuOpen}>
         <header className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden">
-          <Button variant="ghost" size="icon-sm" aria-label="Open menu" onClick={() => setMenuOpen(true)}>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Open menu"
+            ref={openMenuButton}
+            onClick={() => setMenuOpen(true)}
+          >
             <Menu />
           </Button>
           <span className="font-semibold tracking-tight">Toodo</span>
+          {hasLead && !chatting && (
+            <Button variant="ghost" size="sm" className="ml-auto" aria-label="Open lead chat" onClick={() => openPage("chat")}>
+              <MessagesSquare />
+              <UnreadBadge count={unread} />
+            </Button>
+          )}
         </header>
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
-          {!runsOnServer && <UpdateBanner />}
+          {runsOnServer ? <InstallBanner /> : <UpdateBanner />}
           <HerdrBanner />
-          {reviewing ? (
-            <Review />
+          {chatting && lead.data ? (
+            <LeadChat lead={lead.data} />
+          ) : reviewing ? (
+            <Review onShowTask={showTask} />
+          ) : sharedMemory ? (
+            <MemoryPanel
+              workspace={null}
+              draft={memoryDrafts.get(null)}
+              onDraftChange={(draft) => setMemoryDraft(null, draft)}
+            />
           ) : showingAll && workspaces.data?.length ? (
             <TaskList
               key="all"
@@ -150,20 +262,46 @@ export default function App() {
               onTaskShown={() => setShownTask(null)}
             />
           ) : selected ? (
-            <TaskList
-              key={selected.id}
-              workspace={selected}
-              timelineScale={timelineScale}
-              onTimelineScaleChange={setTimelineScale}
-              draft={drafts.get(selected.id)}
-              onDraftChange={(draft) => setDraft(selected.id, draft)}
-            />
+            <div className="flex flex-1 flex-col gap-4">
+              <div role="group" aria-label="Workspace view" className="flex gap-1 max-md:gap-2">
+                {(["tasks", "memory"] as const).map((view) => (
+                  <Button
+                    key={view}
+                    size="sm"
+                    variant={workspaceView === view ? "secondary" : "ghost"}
+                    aria-pressed={workspaceView === view}
+                    onClick={() => setWorkspaceView(view)}
+                  >
+                    {view === "tasks" ? <ListTodo /> : <BookMarked />}
+                    {view === "tasks" ? "Tasks" : "Memory"}
+                  </Button>
+                ))}
+              </div>
+              {workspaceView === "memory" ? (
+                <MemoryPanel
+                  key={selected.id}
+                  workspace={selected}
+                  draft={memoryDrafts.get(selected.id)}
+                  onDraftChange={(draft) => setMemoryDraft(selected.id, draft)}
+                />
+              ) : (
+                <TaskList
+                  key={selected.id}
+                  workspace={selected}
+                  timelineScale={timelineScale}
+                  onTimelineScaleChange={setTimelineScale}
+                  draft={drafts.get(selected.id)}
+                  onDraftChange={(draft) => setDraft(selected.id, draft)}
+                />
+              )}
+            </div>
           ) : (
-            !workspaces.isPending && (
+            // A failed load is explained, with a retry, in the sidebar's workspace list.
+            !workspaces.isPending && !workspaces.isError && (
               <EmptyState
                 icon={<FolderPlus />}
                 title="Create a workspace to start planning tasks."
-                hint={`Clone a repository or open one already cloned, on ${runsOnServer ? "the server" : "this computer"} or a saved herdr machine.`}
+                hint={`Clone a repository, open one already cloned, or make a folder a new repository, on ${runsOnServer ? "the server" : "this computer"} or a saved herdr machine.`}
               />
             )
           )}

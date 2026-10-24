@@ -12,13 +12,14 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::Services;
+use crate::commands::events::Notifier;
 use crate::commands::types::{
-    BackupSettings, Machine, MachineSettings, NewSshHost, NewTask, NewWorkspace, TaskEdit, TaskId,
-    Timestamp, Workspace, WorkspaceId,
+    BackupSettings, CriterionId, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost,
+    NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, review, tasks, workspaces,
+    herdr, issues, lead, machines, mcp, memory, review, tasks, workspaces,
 };
 
 /// What running a command gave.
@@ -35,7 +36,7 @@ pub enum Reply {
 }
 
 impl Reply {
-    fn value(value: impl Serialize) -> Self {
+    pub(super) fn value(value: impl Serialize) -> Self {
         match serde_json::to_value(value) {
             Ok(value) => Self::Done(value),
             Err(error) => Self::Failed(CommandError::internal(format!(
@@ -44,7 +45,7 @@ impl Reply {
         }
     }
 
-    fn result(result: CommandResult<impl Serialize>) -> Self {
+    pub(super) fn result(result: CommandResult<impl Serialize>) -> Self {
         match result {
             Ok(value) => Self::value(value),
             Err(error) => Self::Failed(error),
@@ -76,7 +77,7 @@ impl IntoResponse for Reply {
     }
 }
 
-fn json(status: StatusCode, body: &impl Serialize) -> Response {
+pub(super) fn json(status: StatusCode, body: &impl Serialize) -> Response {
     match serde_json::to_vec(body) {
         Ok(body) => (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
@@ -96,7 +97,11 @@ pub async fn handle(
             Err(error) => return Reply::BadArguments(error.to_string()),
         }
     };
-    dispatch(services, &command, args).await
+    let reply = dispatch(services.clone(), &command, args).await;
+    // Changes the user makes in the app are not news to them: notifications only report
+    // what changed on its own (agents, pull requests, background checks).
+    services.push.tasks_seen();
+    reply
 }
 
 fn parse<T: DeserializeOwned>(args: serde_json::Value) -> Result<T, Reply> {
@@ -195,10 +200,25 @@ commands!(s => {
     "list_remote_directories"(machine: String, path: Option<String>) => async Reply::result(
         machines::list_remote_directories(State(&s.ssh), machine, path).await
     );
+    "list_directories"(machine: Machine, path: Option<String>) => async Reply::result(
+        machines::list_directories(State(&s.ssh), machine, path).await
+    );
 
     "list_tasks"() => sync Reply::result(tasks::list_tasks(State(&s.storage)));
+    "list_task_relations"() => sync Reply::result(tasks::list_task_relations(State(&s.storage)));
+    "add_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
+        tasks::add_task_relation(State(&s.storage), task_id, related_id)
+    );
+    "remove_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
+        tasks::remove_task_relation(State(&s.storage), task_id, related_id)
+    );
     "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(&s.storage), id));
-    "create_task"(task: NewTask) => sync Reply::result(tasks::create_task(State(&s.storage), task));
+    "create_task"(task: NewTask) => sync Reply::result(
+        tasks::create_task(State(&s.storage), State(&s.git), task)
+    );
+    "check_criterion"(task_id: TaskId, criterion_id: CriterionId, met: bool, evidence: Option<String>) => sync Reply::result(
+        tasks::check_criterion(State(&s.storage), task_id, criterion_id, met, evidence)
+    );
     "update_task"(task: TaskEdit) => sync Reply::result(tasks::update_task(State(&s.storage), task));
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
@@ -219,6 +239,9 @@ commands!(s => {
 
     "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));
     "start_task"(id: TaskId) => sync Reply::result(herdr::start_task(State(&s.storage), State(&s.git), State(&s.herdr), id));
+    "ensure_task_workspace"(id: TaskId) => sync Reply::result(
+        herdr::ensure_task_workspace(State(&s.storage), State(&s.herdr), id)
+    );
     "open_task_in_herdr"(id: TaskId) => sync Reply::result(
         herdr::open_task_in_herdr(State(&s.storage), State(&s.herdr), id)
     );
@@ -239,7 +262,7 @@ commands!(s => {
         completion::open_pull_request(State(&s.storage), State(&s.git), State(&s.github), id)
     );
     "complete_task"(id: TaskId) => sync Reply::result(
-        completion::complete_task(State(&s.storage), State(&s.github), State(&s.herdr), id)
+        completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id)
     );
     "conclude_task"(id: TaskId, note: String) => sync Reply::result(
         completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)
@@ -261,11 +284,18 @@ commands!(s => {
     "mcp_server_info"() => sync Reply::value(mcp::mcp_server_info(State(&s.mcp)));
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
 
+    "get_lead"() => sync Reply::value(lead::get_lead(State(&s.lead)));
+    "list_chat_messages"() => sync Reply::result(lead::list_chat_messages(State(&s.storage)));
+    "send_chat_message"(text: String, client_id: String) => sync {
+        let sent = lead::send_chat_message(State(&s.storage), State(&s.herdr), State(&s.lead), text, client_id);
+        if sent.is_ok() {
+            s.chat_changed();
+        }
+        Reply::result(sent)
+    };
+
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::review_period(State(&s.storage), start, end)
-    );
-    "save_report"(path: String, contents: String) => sync Reply::result(
-        review::save_report(path, contents)
     );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
@@ -273,9 +303,21 @@ commands!(s => {
         backup::save_backup_settings(State(&s.storage), State(&s.backups), settings)
     );
     "list_backups"() => sync Reply::result(backup::list_backups(State(&s.backups)));
-    "export_database"(path: String) => sync Reply::result(backup::export_database(State(&s.storage), path));
-    "restore_database"(path: String) => sync Reply::result(
-        backup::restore_database(State(&s.storage), State(&s.backups), path)
+    "restore_backup"(name: String) => sync Reply::result(
+        backup::restore_backup(State(&s.storage), State(&s.backups), name)
+    );
+
+    "list_memory"(workspace_id: Option<WorkspaceId>, include_superseded: bool) => sync Reply::result(
+        memory::list_memory(State(&s.storage), workspace_id, include_superseded)
+    );
+    "add_memory"(workspace_id: Option<WorkspaceId>, content: MemoryContent) => sync Reply::result(
+        memory::add_memory(State(&s.storage), workspace_id, content)
+    );
+    "update_memory"(id: MemoryId, content: MemoryContent) => sync Reply::result(
+        memory::update_memory(State(&s.storage), id, content)
+    );
+    "supersede_memory"(id: MemoryId, content: MemoryContent) => sync Reply::result(
+        memory::supersede_memory(State(&s.storage), id, content)
     );
 });
 
@@ -284,6 +326,11 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    /// Commands of the bindings that only the desktop app runs, because they read or write
+    /// a path on the client's machine: the web app downloads reports in the browser and
+    /// moves database files over `/api/backups` instead.
+    const DESKTOP_ONLY: &[&str] = &["export_database", "restore_database", "save_report"];
 
     /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.
     fn bound_commands() -> BTreeSet<String> {
@@ -314,7 +361,10 @@ mod tests {
             "{bound:?}"
         );
         let served: BTreeSet<String> = COMMANDS.iter().map(|name| (*name).to_owned()).collect();
-        assert_eq!(served, bound);
+        let desktop_only: BTreeSet<String> =
+            DESKTOP_ONLY.iter().map(|name| (*name).to_owned()).collect();
+        assert!(desktop_only.is_subset(&bound), "{desktop_only:?}");
+        assert_eq!(served, &bound - &desktop_only);
     }
 
     #[test]

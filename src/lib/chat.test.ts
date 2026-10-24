@@ -1,0 +1,22 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ChatMessage } from "@/lib/bindings";
+import { markRead, unreadCount } from "@/lib/chat";
+
+const message = (id: number, author: ChatMessage["author"]): ChatMessage => ({ id, author, body: `m${id}`, at: id });
+
+describe("chat read mark", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("counts only the lead's replies after the read mark", () => {
+    const messages = [message(1, "user"), message(2, "lead"), message(3, "user"), message(4, "lead")];
+    expect(unreadCount(messages, 0)).toBe(2);
+    expect(unreadCount(messages, 2)).toBe(1);
+    expect(unreadCount(messages, 4)).toBe(0);
+  });
+
+  it("never moves the read mark back", () => {
+    markRead(5);
+    markRead(3);
+    expect(localStorage.getItem("toodo-chat-read")).toBe("5");
+  });
+});

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useId, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
@@ -21,17 +21,17 @@ export function MarkdownEditor({
   className?: string;
 }) {
   const [previewing, setPreviewing] = useState(false);
+  const hint = useId();
 
   return (
-    <div className={cn("flex min-w-0 flex-col gap-1", className)}>
-      <div role="group" aria-label={`Mode of ${label}`} className="flex gap-0.5">
+    <div className={cn("flex min-w-0 flex-col gap-1 max-md:gap-2", className)}>
+      <div role="group" aria-label={`Mode of ${label}`} className="flex gap-0.5 max-md:gap-2">
         <Button type="button" size="xs" variant={previewing ? "ghost" : "default"} aria-pressed={!previewing} onClick={() => setPreviewing(false)}>
           Write
         </Button>
         <Button type="button" size="xs" variant={previewing ? "default" : "ghost"} aria-pressed={previewing} onClick={() => setPreviewing(true)}>
           Preview
         </Button>
-        <span className="ml-auto self-center text-xs text-muted-foreground">Markdown</span>
       </div>
       {previewing ? (
         <div
@@ -40,7 +40,7 @@ export function MarkdownEditor({
           className="min-h-16 rounded-lg border border-input px-2.5 py-1.5"
         >
           {value.trim() ? (
-            <Suspense fallback={<p className="whitespace-pre-line text-sm text-muted-foreground">{value}</p>}>
+            <Suspense fallback={<p className="whitespace-pre-line break-words-keep text-sm text-muted-foreground">{value}</p>}>
               <Markdown source={value} />
             </Suspense>
           ) : (
@@ -49,14 +49,18 @@ export function MarkdownEditor({
         </div>
       ) : (
         <textarea
-          className={cn(inputClass, "h-auto min-h-16 resize-y py-1.5")}
+          className={cn(inputClass, "h-auto min-h-16 resize-y py-1.5 max-md:h-auto")}
           rows={3}
           placeholder={placeholder}
           aria-label={label}
+          aria-describedby={hint}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />
       )}
+      <p id={hint} className="text-xs text-muted-foreground">
+        Markdown supported
+      </p>
     </div>
   );
 }

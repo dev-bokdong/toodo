@@ -42,6 +42,32 @@ into a performance report.
 Toodo can also run as a server on a Linux machine with herdr, used from a browser; see
 [docs/server.md](docs/server.md).
 
+## End-to-End Tests
+
+`e2e/` holds Playwright tests that drive the web app (the `--mode web` build) against a
+scratch `toodo-server`. Every test starts its own server on a free loopback port with a
+temporary data directory, so a run never touches the data of a real server and never binds
+the default server ports. The servers run without a lead (`TOODO_LEAD=off`), and a run
+fails when it leaves a new workspace open in the herdr of the machine (`e2e/herdr-guard.ts`).
+CI runs the suite on pull requests into `dev`
+(`.github/workflows/e2e.yml`).
+
+To run it locally (Node, Rust, and a Linux machine; the Windows app is not involved):
+
+```sh
+npm ci
+npx playwright install chromium                       # once
+(cd src-tauri && cargo build --no-default-features --features server --bin toodo-server)
+npx vite build --mode web --outDir dist-web
+npm run test:e2e
+```
+
+Rebuild the server after Rust changes and the web app after frontend changes; the tests use
+the last builds. Pass Playwright options after `--`, for example
+`npm run test:e2e -- e2e/timeline.spec.ts --headed`. `TOODO_SERVER_BIN` points the tests at
+another `toodo-server` binary and `TOODO_E2E_WEB_DIR` at another web build. After a failure,
+`npx playwright show-report` opens the report.
+
 ## Tech Stack
 
 Tauri 2, Rust (tokio), React + TypeScript, React Flow, SQLite.

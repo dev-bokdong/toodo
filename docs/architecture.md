@@ -96,7 +96,7 @@ A unit of work inside a workspace.
 | `estimate` | Optional expected size: an amount greater than 0 in `hours`, `days` (24 hours), `weeks` (7 days), or `months` (30 days) of active work. Reviews compare it with the task's active time. |
 | `dueDate` | Optional calendar day (`YYYY-MM-DD`) the task should be done by. It is met when the task is completed before the end of that day in local time. |
 | `status` | See [workflow.md](workflow.md#task-states). |
-| `resolution` | How a `done` task ended: `merged` (completed by its merged pull request) or `not_adopted` (concluded without merging); `null` for every other status. Tasks done before Toodo recorded it are `merged`. |
+| `resolution` | How a `done` task ended: `merged` (completed once its completion criteria were met, e.g. by its merged pull request) or `not_adopted` (concluded without merging); `null` for every other status. Tasks done before Toodo recorded it are `merged`. |
 | `dependsOn` | IDs of tasks that must be completed first. |
 | `branch` | Branch created for the task's worktree. |
 | `worktreePath` | Directory of the task's worktree. |
@@ -107,6 +107,7 @@ A unit of work inside a workspace.
 | `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
 | `mergedWith` | For a task `done` as merged through the pull request of another task (see [workflow.md](workflow.md#7c-complete-through-another-tasks-pull-request)): that pull request's URL and the task that owns it (`null` once that task is deleted); `null` otherwise. |
 | `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
+| `criteria` | Completion criteria in order: text, check kind (`manual`, `pr_merged`, `pr_open_ci_green`, `branch_merged_locally`, `url`, `command`), target (URL or command), state (`pending`, `met`, `failed`), evidence, and who checked it when. Stored in `task_criteria`; see [workflow.md](workflow.md#completion-criteria). |
 | `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
 
 ### Task Timeline
@@ -131,7 +132,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   | --- | --- |
   | `plannedAt` | The first event (task creation). |
   | `startedAt` | The first move to `in_progress`; resuming a paused task keeps it. |
-  | `reviewAt` | The first move to `in_review` (pull request opened). |
+  | `reviewAt` | The first move to `in_review` (pull request opened, or every criterion met with a manual one awaiting confirmation). |
   | `completedAt` | The move to `done`. |
   | `pausedAt` | The latest move back to `planned` after `startedAt`, cleared when the task is started again. |
 
@@ -171,6 +172,28 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   from the lower task ID to the higher one, and deleting a task drops its links.
 - Related links are set through MCP only (`add_related` / `remove_related`); the app
   does not show them yet.
+
+### Project Memory
+
+Durable knowledge an agent reads before it acts and writes as it learns, so a restarted
+agent can continue from Toodo alone. Table `memory_entries`:
+
+| Field | Description |
+| --- | --- |
+| `workspace_id` | The workspace the entry is about; `NULL` for an entry shared by every workspace (standing preferences and cross-project rules). Deleting the workspace deletes its entries. |
+| `kind` | `decision` (a choice and why), `rule` (to follow), `note`, or `summary`. |
+| `title`, `body` | A one-line statement (required) and Markdown details. |
+| `task_id` | The task the entry came from, optional; for a workspace entry it must belong to that workspace. Deleting the task clears it. |
+| `created_at`, `updated_at` | Timestamps; editing moves `updated_at`. |
+| `superseded_by` | The entry that replaced this one; `NULL` while it is current. |
+
+- Editing rewrites a current entry in place, for fixes that keep its meaning.
+- Superseding adds the replacement in the same scope and points the old entry at it;
+  the old entry is kept as history and can no longer change. Lists show current
+  entries unless superseded ones are asked for.
+- The app shows it as the Memory view of each workspace (beside Tasks) and as Shared
+  memory in the sidebar: read, add, edit, supersede, and show superseded entries.
+  Commands `list_memory`, `add_memory`, `update_memory`, and `supersede_memory`.
 
 ### CommitRecord
 
@@ -219,7 +242,11 @@ workspaces are still drawn, dimmed and labeled with their workspace.
   also placed to the right of its prerequisites' bars, so a chain of waiting tasks reads
   left to right from the current time. Its bar is as long as its estimate at the current
   scale, or a small fixed box without one; its label sits past the bar's right end when
-  it does not fit inside.
+  it does not fit inside. The label of a bar that starts left of the visible range is
+  pinned to the left edge behind a chevron, so rows stay readable while their bars are
+  cut off.
+- "Earliest task" pans to the bar that starts first, and "Today" back to where the
+  timeline opens.
 - Dependency edges run from the prerequisite's bar to the dependent's bar.
 - The visible range can be zoomed (hour, day, week, month) and narrowed to a period such
   as a calendar year, the unit of a performance report.
@@ -227,8 +254,8 @@ workspaces are still drawn, dimmed and labeled with their workspace.
   status history existed) are listed beside the timeline instead of on it.
 - Dependencies can still be added and removed in this view, with the same rules as in
   the task list.
-- A task with a due date gets a vertical marker at the end of its due day, and the axis
-  reaches far enough to show it. A task done after that day, or still open past it, is
+- A task with a due date gets a vertical marker at the end of its due day, inside its
+  row and behind its label, and the axis reaches far enough to show it. A task done after that day, or still open past it, is
   outlined in red, and so is its marker.
 
 ## Review
@@ -433,6 +460,16 @@ machine; see [server.md](server.md).
     Every word is quoted (FTS5) or escaped (`LIKE`), so operators, `*`, quotes, and
     parentheses are plain text. Triggers on `tasks`, `task_notes`, and
     `pull_request_snapshots` keep the index in sync with every write.
+  - `list_memory`, `search_memory`, `get_memory`, `add_memory`, `update_memory`, and
+    `supersede_memory` read and write [project memory](#project-memory). They take an
+    optional `workspace_id` (none means the shared entries) and `include_shared` to add
+    the shared entries to a workspace's; `include_superseded` adds the history, and
+    `get_memory` returns the entries an entry replaced. Search matches every word as a
+    substring of the title or body (`LIKE`, escaped). Writes emit `MemoryChanged` so
+    the app refreshes. The instructions and the `toodo` skill tell agents to read a
+    workspace's memory with the shared entries before acting, to record durable
+    decisions and conventions, and to supersede an entry that no longer holds instead
+    of contradicting it.
   - `start_task`, `complete_task`, and `conclude_task` run the app's own commands
     (`commands::herdr::start`, `commands::completion::complete` and `conclude`) on a
     blocking thread, with the same adapters, checks, and status history, and emit

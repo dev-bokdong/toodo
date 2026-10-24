@@ -2,9 +2,10 @@
 //! version is stored in `PRAGMA user_version`. Never edit a released migration; append
 //! a new one instead.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{Result, StorageError};
+use crate::domain::criteria::{CheckKind, CheckedBy, CriterionState, done_when_items};
 
 pub(super) const MIGRATIONS: &[&str] = &[
     // Version 1: initial schema. AUTOINCREMENT keeps workspace and task IDs from being
@@ -322,7 +323,167 @@ pub(super) const MIGRATIONS: &[&str] = &[
         REFERENCES tasks (id) ON DELETE SET NULL
         CHECK (merged_with_task_id IS NULL OR merged_with_pull_request_url IS NOT NULL);
     ",
+    // Version 14: project memory. Entries belong to one workspace, or to none, which
+    // makes them shared by every workspace. Replacing an entry keeps it, pointing at its
+    // replacement through `superseded_by`; current entries have none.
+    "
+    CREATE TABLE memory_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id INTEGER REFERENCES workspaces (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('decision', 'rule', 'note', 'summary')),
+        title TEXT NOT NULL CHECK (trim(title) <> ''),
+        body TEXT NOT NULL DEFAULT '',
+        task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        superseded_by INTEGER REFERENCES memory_entries (id) ON DELETE SET NULL,
+        CHECK (superseded_by IS NULL OR superseded_by <> id)
+    );
+    CREATE INDEX memory_entries_workspace_id ON memory_entries (workspace_id);
+    CREATE INDEX memory_entries_superseded_by ON memory_entries (superseded_by);
+    ",
+    // Version 15: devices that use toodo-server, each with its own access token, stored
+    // only as a SHA-256 hash. Revoked devices are kept, so their id stays unique.
+    "
+    CREATE TABLE devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL CHECK (trim(label) <> ''),
+        token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        revoked_at INTEGER
+    );
+    ",
+    // Version 16: completion criteria. A task is done once every criterion is met; Toodo
+    // checks every kind but `manual` on its own. `target` holds the URL or command to
+    // check, or the commit a `branch_merged_locally` branch started from. Existing tasks
+    // get theirs from the data step [`import_criteria`].
+    "
+    CREATE TABLE task_criteria (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        text TEXT NOT NULL CHECK (trim(text) <> ''),
+        kind TEXT NOT NULL CHECK (kind IN ('manual', 'pr_merged', 'pr_open_ci_green',
+            'branch_merged_locally', 'url', 'command')),
+        target TEXT,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'met', 'failed')),
+        evidence TEXT,
+        checked_by TEXT CHECK (checked_by IN ('user', 'agent', 'toodo')),
+        checked_at INTEGER,
+        CHECK (CASE kind
+            WHEN 'url' THEN target IS NOT NULL
+            WHEN 'command' THEN target IS NOT NULL
+            WHEN 'branch_merged_locally' THEN 1
+            ELSE target IS NULL END)
+    );
+    CREATE INDEX task_criteria_task_id ON task_criteria (task_id, position);
+    ",
+    // Version 17: the Web Push subscription of each device, with the kinds of
+    // notification it wants. A device has at most one (its browser's), and an endpoint
+    // belongs to one device.
+    "
+    CREATE TABLE push_subscriptions (
+        device_id INTEGER PRIMARY KEY REFERENCES devices (id) ON DELETE CASCADE,
+        endpoint TEXT NOT NULL UNIQUE CHECK (endpoint LIKE 'https://%'),
+        p256dh BLOB NOT NULL CHECK (length(p256dh) = 65),
+        auth BLOB NOT NULL CHECK (length(auth) = 16),
+        agent INTEGER NOT NULL DEFAULT 1 CHECK (agent IN (0, 1)),
+        pull_requests INTEGER NOT NULL DEFAULT 1 CHECK (pull_requests IN (0, 1)),
+        completion INTEGER NOT NULL DEFAULT 1 CHECK (completion IN (0, 1)),
+        created_at INTEGER NOT NULL
+    );
+    ",
+    // Version 18: the conversation with the lead in the chat panel. A client names each
+    // message it sends, so sending it again does not repeat it.
+    "
+    CREATE TABLE chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        author TEXT NOT NULL CHECK (author IN ('user', 'lead')),
+        body TEXT NOT NULL CHECK (trim(body) <> ''),
+        client_id TEXT UNIQUE CHECK (client_id IS NULL OR author = 'user'),
+        at INTEGER NOT NULL
+    );
+    ",
 ];
+
+/// Data steps that run right after the SQL of the migration to the given version, for
+/// changes SQL alone cannot make.
+type DataStep = fn(&Transaction<'_>) -> Result<()>;
+
+const DATA_STEPS: &[(i64, DataStep)] = &[(16, import_criteria)];
+
+/// Gives every existing task the criteria it had so far: its pull request is merged
+/// (met for tasks done as merged, through their own or another task's pull request),
+/// followed by the `- [ ]` and `- [x]` items of the `Done when` section of its
+/// description as manual criteria, checked items met. The description stays as it is.
+fn import_criteria(tx: &Transaction<'_>) -> Result<()> {
+    let tasks = {
+        let mut statement = tx.prepare(
+            "SELECT t.id, t.description, t.status = 'done' AND t.resolution = 'merged',
+                 coalesce(t.merged_with_pull_request_url, t.pull_request_url),
+                 (SELECT max(e.at) FROM task_events e
+                  WHERE e.task_id = t.id AND e.status = 'done')
+             FROM tasks t ORDER BY t.id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut insert = tx.prepare(
+        "INSERT INTO task_criteria (task_id, position, text, kind, state, evidence,
+             checked_by, checked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    for (id, description, merged, pull_request_url, done_at) in tasks {
+        let (state, evidence, checked_by, checked_at) = if merged {
+            (
+                CriterionState::Met,
+                pull_request_url,
+                Some(CheckedBy::Toodo.as_str()),
+                done_at,
+            )
+        } else {
+            (CriterionState::Pending, None, None, None)
+        };
+        insert.execute(params![
+            id,
+            0,
+            "Pull request merged into the base branch",
+            CheckKind::PullRequestMerged.as_str(),
+            state.as_str(),
+            evidence,
+            checked_by,
+            checked_at
+        ])?;
+        for (position, (text, checked)) in (1_i64..).zip(done_when_items(&description)) {
+            let (state, evidence) = if checked {
+                (CriterionState::Met, Some("Checked in the task description"))
+            } else {
+                (CriterionState::Pending, None)
+            };
+            insert.execute(params![
+                id,
+                position,
+                text,
+                CheckKind::Manual.as_str(),
+                state.as_str(),
+                evidence,
+                None::<&str>,
+                None::<i64>
+            ])?;
+        }
+    }
+    Ok(())
+}
 
 pub(super) const LATEST_VERSION: i64 = MIGRATIONS.len() as i64;
 
@@ -346,7 +507,11 @@ pub(super) fn migrate(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
     for (index, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
         tx.execute_batch(sql)?;
-        tx.pragma_update(None, "user_version", index as i64 + 1)?;
+        let version = index as i64 + 1;
+        for (_, step) in DATA_STEPS.iter().filter(|(after, _)| *after == version) {
+            step(&tx)?;
+        }
+        tx.pragma_update(None, "user_version", version)?;
     }
     let violation: Option<String> = tx
         .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
@@ -1031,5 +1196,186 @@ mod tests {
                 None
             )
         );
+    }
+
+    #[test]
+    fn version_16_turns_done_when_items_into_criteria_after_the_pull_request() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..15] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 15).unwrap();
+        conn.execute_batch(
+            r"
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            INSERT INTO tasks (workspace_id, type, title, description, status, resolution,
+                    pull_request_url)
+                VALUES (1, 'feat', 'Open', '## Purpose
+- [ ] not this
+
+## Done when
+- [ ] Tests pass
+- [x] Docs updated
+', 'in_progress', NULL, NULL),
+                (1, 'fix', 'Shipped', 'No sections', 'done', 'merged',
+                    'https://github.com/acme/toodo/pull/7'),
+                (1, 'rnd', 'Dropped', '', 'done', 'not_adopted', NULL);
+            INSERT INTO task_events (task_id, status, at) VALUES (2, 'done', 50);
+            ",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        type Row = (String, String, String, Option<String>, Option<i64>);
+        let criteria = |task: i64| -> Vec<Row> {
+            let mut statement = conn
+                .prepare(
+                    "SELECT text, kind, state, evidence, checked_at FROM task_criteria
+                     WHERE task_id = ?1 ORDER BY position",
+                )
+                .unwrap();
+            statement
+                .query_map([task], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let merged = "Pull request merged into the base branch".to_owned();
+        assert_eq!(
+            criteria(1),
+            vec![
+                (
+                    merged.clone(),
+                    "pr_merged".into(),
+                    "pending".into(),
+                    None,
+                    None
+                ),
+                (
+                    "Tests pass".into(),
+                    "manual".into(),
+                    "pending".into(),
+                    None,
+                    None
+                ),
+                (
+                    "Docs updated".into(),
+                    "manual".into(),
+                    "met".into(),
+                    Some("Checked in the task description".into()),
+                    None
+                ),
+            ]
+        );
+        assert_eq!(
+            criteria(2),
+            vec![(
+                merged.clone(),
+                "pr_merged".into(),
+                "met".into(),
+                Some("https://github.com/acme/toodo/pull/7".into()),
+                Some(50)
+            )]
+        );
+        assert_eq!(
+            criteria(3),
+            vec![(merged, "pr_merged".into(), "pending".into(), None, None)]
+        );
+        for invalid in [
+            "INSERT INTO task_criteria (task_id, position, text, kind) VALUES (1, 9, 'x', 'url')",
+            "INSERT INTO task_criteria (task_id, position, text, kind, target)
+                 VALUES (1, 9, 'x', 'manual', 'y')",
+            "INSERT INTO task_criteria (task_id, position, text, kind) VALUES (1, 9, ' ', 'manual')",
+        ] {
+            assert!(conn.execute(invalid, []).is_err(), "{invalid}");
+        }
+        conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+        assert!(criteria(1).is_empty());
+    }
+
+    #[test]
+    fn version_17_keeps_devices_without_subscriptions_and_drops_them_with_the_device() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..16] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 16).unwrap();
+        conn.execute(
+            "INSERT INTO devices (label, token_hash, created_at, last_seen_at)
+             VALUES ('Phone', ?1, 1, 1)",
+            ["0".repeat(64)],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM push_subscriptions", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(count(&conn), 0);
+        let insert = |endpoint: &str, p256dh: usize, auth: usize| {
+            conn.execute(
+                "INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth, created_at)
+                 VALUES (1, ?1, ?2, ?3, 2)",
+                params![endpoint, vec![4u8; p256dh], vec![1u8; auth]],
+            )
+        };
+        assert!(insert("http://push.example/1", 65, 16).is_err());
+        assert!(insert("https://push.example/1", 64, 16).is_err());
+        assert!(insert("https://push.example/1", 65, 15).is_err());
+        insert("https://push.example/1", 65, 16).unwrap();
+        let settings: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT agent, pull_requests, completion FROM push_subscriptions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(settings, (1, 1, 1));
+        conn.execute("DELETE FROM devices WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(count(&conn), 0);
+    }
+
+    #[test]
+    fn version_18_starts_an_empty_chat_that_keeps_one_message_per_client_id() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..17] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 17).unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let insert = |author: &str, body: &str, client_id: Option<&str>| {
+            conn.execute(
+                "INSERT INTO chat_messages (author, body, client_id, at) VALUES (?1, ?2, ?3, 1)",
+                params![author, body, client_id],
+            )
+        };
+        assert!(insert("user", "Hi", Some("c1")).is_ok());
+        assert!(insert("user", "Hi", Some("c1")).is_err());
+        assert!(insert("lead", "Hello", None).is_ok());
+        assert!(insert("lead", "Hello", Some("c2")).is_err());
+        assert!(insert("user", " ", None).is_err());
+        assert!(insert("dori", "Hi", None).is_err());
     }
 }

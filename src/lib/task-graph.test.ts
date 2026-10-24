@@ -5,6 +5,8 @@ import {
   dependenciesDone,
   dependencyEdges,
   layoutTimeline,
+  majorLabelOffset,
+  openingViewport,
   relatedTasks,
   pausesStartedTask,
   timelineAxis,
@@ -35,6 +37,7 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     resolution: null,
     completionNote: null,
     notes: [],
+    criteria: [],
     timeline: [],
     milestones: {
       plannedAt: null,
@@ -394,6 +397,47 @@ describe("layoutTimeline", () => {
       Array.from({ length: 12 }, (_, month) => `2026-${String(month + 1).padStart(2, "0")}`),
     );
     expect(axis.majorTicks).toEqual([{ at: jan(1), x: 0, right: 365 * 3, label: "2026" }]);
+  });
+});
+
+describe("majorLabelOffset", () => {
+  const tick = { at: 0, x: 0, right: 400, label: "2026-10" };
+
+  it("keeps the label of a period that began off screen at the left edge", () => {
+    expect(majorLabelOffset(tick, 50, -100, null)).toBe(0);
+    expect(majorLabelOffset(tick, 50, 120, null)).toBe(120);
+  });
+
+  it("leaves out a label that would be cut off where its period ends", () => {
+    expect(majorLabelOffset(tick, 50, 360, null)).toBeNull();
+  });
+
+  it("moves a label that would run into the Now label past it", () => {
+    expect(majorLabelOffset(tick, 50, 120, { x: 136, width: 60 })).toBe(196);
+    expect(majorLabelOffset(tick, 50, 120, { x: 300, width: 60 })).toBe(120);
+  });
+
+  it("leaves out a label that has no room left after the Now label", () => {
+    expect(majorLabelOffset(tick, 50, 120, { x: 320, width: 60 })).toBe(120);
+    expect(majorLabelOffset(tick, 50, 300, { x: 316, width: 60 })).toBeNull();
+  });
+});
+
+describe("openingViewport", () => {
+  const panel = { visible: 1000, panel: 400, height: 600 };
+
+  it("opens Hour, Day and Week with Now at the left edge and the last row at the bottom", () => {
+    for (const scale of ["hour", "day", "week"] as const) {
+      expect(openingViewport({ scale, nowX: 50000, width: 96000 }, panel)).toEqual({ x: 16 - 50000, y: -208, zoom: 1 });
+    }
+  });
+
+  it("opens Month on the newest end of the axis", () => {
+    expect(openingViewport({ scale: "month", nowX: 200, width: 3000 }, panel)).toEqual({ x: -2016, y: 0, zoom: 1 });
+  });
+
+  it("falls back to the newest end of the axis when Now is outside it", () => {
+    expect(openingViewport({ scale: "hour", nowX: null, width: 96000 }, panel)).toEqual({ x: -95016, y: 0, zoom: 1 });
   });
 });
 

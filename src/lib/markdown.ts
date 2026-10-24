@@ -17,6 +17,39 @@ function inline(text: string): string {
   );
 }
 
+const heading = /^\s*#{1,6}(\s|$)/;
+
+/**
+ * The first paragraph of a Markdown description as preview text: headings are skipped rather
+ * than run into the text, so a description written as `## Purpose` followed by a paragraph
+ * previews that paragraph. Fenced code blocks are skipped too.
+ */
+export function firstParagraph(source: string): string {
+  const paragraph: string[] = [];
+  let inFence = false;
+  for (const line of source.split(/\r?\n/)) {
+    if (fence.test(line)) {
+      inFence = !inFence;
+      if (paragraph.length > 0) {
+        break;
+      }
+      continue;
+    }
+    if (inFence) {
+      continue;
+    }
+    const ends = line.trim() === "" || heading.test(line) || rule.test(line);
+    if (ends) {
+      if (paragraph.length > 0) {
+        break;
+      }
+      continue;
+    }
+    paragraph.push(line);
+  }
+  return markdownPreview(paragraph.join("\n"));
+}
+
 /** The text of a Markdown description without its syntax, on one line. */
 export function markdownPreview(source: string): string {
   return source

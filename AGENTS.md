@@ -81,7 +81,9 @@ Layout:
     build has exactly one of them.
   - `src-tauri/src/desktop.rs`: Tauri builder, tauri-specta command registration, tray.
   - `src-tauri/src/server/`: headless Linux server: commands over HTTP (`rpc.rs`), events
-    over SSE, MCP, and the web build on one port; see `docs/server.md`.
+    over SSE, MCP, Web Push notifications (`push/`), and the web build on one port, plus
+    the lead agent it keeps running in herdr (`lead.rs`, prompt in `lead-prompt.md`); see
+    `docs/server.md`.
   - `src-tauri/src/commands/`: commands exposed to the frontend, registered with Tauri by
     the desktop app and called over HTTP by the server; they take `commands::State`
     (Tauri state or a plain reference). `types.rs` holds
@@ -113,6 +115,8 @@ Run from the repository root unless noted. Package manager is npm.
   `scripts/package-server.sh`)
 - Test (frontend): `npm test`
 - Test (Rust, also regenerates `src/lib/bindings.ts`): `cargo test` in `src-tauri/`
+- Test (web UI end to end): `npm run test:e2e`, after building the server and `dist-web/`; see
+  the "End-to-End Tests" section of `README.md`
 - Typecheck (frontend): `npm run typecheck`
 - Web build for the server: `npm run build:web` (into `dist-web/`); dev against a running
   server: `npm run dev:web`

@@ -17,10 +17,11 @@ import {
   formatEstimate,
   secondsPastDue,
 } from "@/lib/plan";
+import { statusNames } from "@/lib/status-styles";
 
 export const outcomeLabels: Record<ReviewOutcome, string> = {
   completed: "Completed",
-  opened_for_review: "Opened for review",
+  opened_for_review: statusNames.in_review,
   started: "Started",
   worked_on: "Worked on",
   planned: "Planned",
@@ -551,7 +552,7 @@ export const durationLabels = {
   leadTime: "Median lead time (planned to completed)",
   cycleTime: "Median cycle time (started to completed)",
   activeTime: "Median active time (started to completed, without pauses)",
-  reviewTime: "Median review time (in review to merged)",
+  reviewTime: "Median review time (awaiting completion to merged)",
 } as const;
 
 /** The review of `period` as Markdown, for pasting into a report; due dates are judged at `now`. */
@@ -662,7 +663,7 @@ const csvColumns = [
   "Resolution",
   "Planned",
   "Started",
-  "In review",
+  "Awaiting completion",
   "Completed",
   "Merged",
   "Pull request",
