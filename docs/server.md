@@ -10,8 +10,8 @@ the `server` feature instead of the Tauri shell, and is used locally on that mac
 - SQLite storage in the server's data directory.
 
 It also serves the commands of the desktop app as an HTTP API with a server-sent event
-stream (see [API](#api)). An optional web build of the frontend can use them from a
-browser (see [Web App](#web-app)); a normal install leaves it out.
+stream (see [API](#api)), and the web build of the frontend, an installable web app (PWA)
+that uses them from a browser (see [Web App](#web-app)).
 
 Everything is served on one port, `127.0.0.1:47616` by default. The default is not the
 desktop app's MCP port, 47615, on purpose: the desktop app keeps
@@ -34,8 +34,8 @@ The server is not a backend for the desktop app: each keeps its own database.
 
 `toodo-server` and the Windows app share one version and one release: every GitHub
 release `vX.Y.Z` carries the Windows installers and
-`toodo-server-vX.Y.Z-linux-x86_64.tar.gz` (the `toodo-server` binary for x86_64 Linux)
-with its `.sha256`, built from the same commit. `toodo-server --version` prints the
+`toodo-server-vX.Y.Z-linux-x86_64.tar.gz` (the `toodo-server` binary for x86_64 Linux and,
+under `web/`, the web app) with its `.sha256`, built from the same commit. `toodo-server --version` prints the
 version, so an installed server compares directly with a release and with the Windows
 app's version. See "Releases and Updates" in the README for how a release is made.
 
@@ -52,9 +52,10 @@ The script needs no checkout in this mode; fetch it alone with
 `gh api repos/dev-bokdong/toodo/contents/scripts/install-server.sh --jq .content | base64 -d`
 if there is none. It downloads the server asset of the release with `gh`, checks its
 sha256 and that the binary reports the release's version, installs it to
-`~/.local/bin/toodo-server`, writes the systemd user service `toodo-server.service` (see
-[systemd](#systemd)), restarts it, and checks that it answers (`/api` without a token is
-`401`). It prints where the MCP token is, never the token.
+`~/.local/bin/toodo-server` and the web app to `~/.local/share/toodo-server-web`, writes the
+systemd user service `toodo-server.service` (see [systemd](#systemd)), restarts it, and
+checks that it answers (`/api` without a token is `401`, `/` is the web app). It prints
+where the tokens are, never the tokens.
 
 - `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version, for example
   the Windows app's.
@@ -66,7 +67,8 @@ To update, run it again with the same options; the database and tokens in the da
 directory are kept.
 
 Releases before the server was published (0.9.3 and older) have no server asset; build
-those from a checkout.
+those from a checkout. Releases before the web app was published carry the binary only;
+the script then serves the API and MCP only.
 
 ### From a Checkout
 
@@ -80,8 +82,8 @@ scripts/install-server.sh
 ```
 
 - `--with-web`: also build the web app (needs Node.js and npm), install it to
-  `~/.local/share/toodo-server-web`, and serve it (see [Web App](#web-app)). Releases carry
-  no web app, so this works from a checkout only.
+  `~/.local/share/toodo-server-web`, and serve it (see [Web App](#web-app)). A release
+  carries its web app already, so this option is for checkout builds only.
 
 ## Build
 
@@ -118,8 +120,8 @@ token, delete its file and restart the server.
 
 **Treat `web-token` like a password to the server account.** It opens every command of
 the app, including ones that write `~/.ssh/config` (which can run commands through
-`ProxyCommand`), save reports, and export or restore the database at any path the server's
-user can reach. Whoever holds it can run code as that user. `mcp-token` gives the MCP
+`ProxyCommand`), list the server's directories, and download or replace the whole
+database. Whoever holds it can run code as that user. `mcp-token` gives the MCP
 tools only, but still lets an agent start, complete, and conclude tasks.
 
 The server speaks plain HTTP. Keep the default loopback address; never expose the port.
@@ -149,7 +151,8 @@ server keeps open to them.
 Run it as the user who runs herdr, so it finds herdr's socket, `~/.ssh/config`, and the
 `gh` login. `scripts/install-server.sh` writes
 `~/.config/systemd/user/toodo-server.service` like this, with `PATH` taken from where it
-found `herdr`, `gh`, `git`, and `ssh` (and `TOODO_WEB_DIR` added with `--with-web`):
+found `herdr`, `gh`, `git`, and `ssh` (and `TOODO_WEB_DIR` added when it installs the web
+app):
 
 ```ini
 [Unit]
@@ -176,10 +179,24 @@ the `Wants=` is ignored. To set the service up by hand, run
 
 ## Web App
 
-A web build of the frontend exists for using the server from a browser. Install it with
-`scripts/install-server.sh --with-web` (or `npm ci && npm run build:web` into `dist-web/`
-and `TOODO_WEB_DIR` pointing at it). The browser asks for `web-token` once and keeps it in
-local storage. Reach the loopback port through an SSH tunnel
+The web build of the frontend uses the server from a browser. A release install serves it
+(`scripts/install-server.sh --release ...`); from a checkout, use `--with-web`, or
+`npm ci && npm run build:web` into `dist-web/` with `TOODO_WEB_DIR` pointing at it. The
+browser asks for `web-token` once and keeps it in local storage.
+
+It is an installable web app (PWA): browsers offer to install it from the server URL, and
+it then opens in its own window. Browsers install web apps only from a secure origin:
+`https://`, or `http://127.0.0.1` and `http://localhost`. The build carries a web app
+manifest (`/manifest.webmanifest`, icons under `/pwa/`) and a service worker (`/sw.js`)
+that caches the app shell, the built HTML, scripts, styles, and icons, so the app starts
+without the network. It never caches or answers `/api` or `/mcp`: everything the app
+shows comes from the server. Each build has its own cache, which replaces the previous
+one once no window uses it any more.
+
+On the server, "Local" is the server itself, so the web app browses the server's
+directories (from the server user's home) when you pick a folder for a workspace. Reports
+are downloaded in the browser, and database backups are downloaded and uploaded (see
+[API](#api)). Reach the loopback port through an SSH tunnel
 (`ssh -L 47616:127.0.0.1:47616 <server>`, then `http://127.0.0.1:47616`); anything that
 puts it on a network needs its own authentication in front, since the web token opens the
 whole server account.
@@ -204,8 +221,23 @@ drops, the web app reconnects and refetches everything.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
   desktop app's events.
+- `GET /api/backups/export`: a consistent snapshot of the database, as an
+  `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
+- `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
+  file name `list_backups` reports; `404` for any other name.
+- `POST /api/backups/restore`: replaces all data with the Toodo database sent as the
+  request body (`application/octet-stream`, at most 256 MB, else `413`). The current data
+  is saved as a pre-restore backup first, which is the JSON result, like `restore_backup`.
+  A file that is not a Toodo database is `422` and changes nothing.
 
-Both require `Authorization: Bearer <web-token>`; `/mcp` requires the MCP token. The web
+Commands that read or write a path on the desktop app's own machine are not served:
+`save_report` (the web app downloads reports instead), `export_database`, and
+`restore_database` (replaced by the endpoints above and the `restore_backup { name }`
+command). `list_directories { machine, path }` lists directories on the server for
+`{ "kind": "local" }` and on an SSH machine for `{ "kind": "ssh", "label": ... }`;
+`add_herdr_machine` is refused, since `herdr machine add` asks questions in a terminal.
+
+All of them require `Authorization: Bearer <web-token>`; `/mcp` requires the MCP token. The web
 build swaps the Tauri modules for `src/web/`, so the generated bindings in
 `src/lib/bindings.ts` serve both apps; a test checks that the server routes every command
 they invoke.
