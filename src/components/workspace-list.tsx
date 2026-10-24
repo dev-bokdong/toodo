@@ -334,8 +334,8 @@ function AddMachineHelp({ onClose }: { onClose: () => void }) {
         server, replacing <code>&lt;host&gt;</code> with an SSH host from its ~/.ssh/config, then reload the machine
         list here.
       </p>
-      <div className="flex items-center gap-1">
-        <code className="min-w-0 flex-1 break-all rounded bg-muted px-1.5 py-1 text-xs" aria-label="Add machine command">
+      <div className="flex flex-col items-start gap-1">
+        <code className="max-w-full rounded bg-muted px-1.5 py-1 text-xs" aria-label="Add machine command">
           {ADD_MACHINE_COMMAND}
         </code>
         <Button type="button" size="sm" variant="outline" onClick={() => void copy()}>
