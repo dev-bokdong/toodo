@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, type FormEvent } from "react";
-import { BookMarked } from "lucide-react";
+import { BookMarked, Pencil } from "lucide-react";
 
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { EmptyState } from "@/components/task-list";
@@ -101,8 +101,14 @@ function MemoryItem({ entry }: { entry: MemoryEntry }) {
         <h3 className="min-w-0 flex-1 font-medium break-words">{entry.title}</h3>
         {!superseded && mode === "view" && (
           <div className="flex gap-1">
-            <Button size="xs" variant="ghost" aria-label={`Edit memory entry #${entry.id}`} onClick={() => setMode("edit")}>
-              Edit
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label={`Edit memory entry #${entry.id}`}
+              title="Edit"
+              onClick={() => setMode("edit")}
+            >
+              <Pencil />
             </Button>
             <Button
               size="xs"

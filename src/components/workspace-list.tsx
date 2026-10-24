@@ -159,7 +159,7 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
                     <Button
                       key={mode}
                       size="xs"
-                      variant={active === mode ? "secondary" : "ghost"}
+                      variant={active === mode ? "secondary" : "outline"}
                       aria-label={`${modes[mode].label} on ${label}`}
                       aria-pressed={active === mode}
                       title={modes[mode].title}
