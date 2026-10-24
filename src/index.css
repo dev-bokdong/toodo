@@ -152,6 +152,21 @@
 }
 
 /*
+ * The halo under a dependency line is a 5px stroke in the page background. A browser that darkens
+ * light pages itself (Samsung Internet's dark mode) recolors backgrounds but leaves SVG strokes
+ * alone, so a `--background` halo turns into a thick white band. The `Canvas` system color is
+ * darkened together with the page, and equals `--background` in the light theme; the dark theme
+ * keeps the exact token (`light-dark()` cannot tell the two apart: the browser's darkening picks
+ * its dark branch too).
+ */
+.dependency-halo {
+  stroke: Canvas;
+}
+.dark .dependency-halo {
+  stroke: var(--background);
+}
+
+/*
  * Timeline bars: React Flow removes the focus outline of nodes, so a bar reached with Tab gets
  * its own. Handles show only where a dependency can be drawn from, so they never cover labels.
  */
