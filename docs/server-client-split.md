@@ -339,7 +339,7 @@ So a pane view mirrors **screen snapshots**. It does not relay a byte stream.
 Endpoint:
 
 ```
-GET /api/panes/stream?machine=<local|ssh-host>&pane=<pane_id>&ticket=<ticket>   (Upgrade: websocket)
+GET /api/panes/stream?ticket=<ticket>   (Upgrade: websocket; the ticket names the pane)
 ```
 
 Messages are JSON text frames:
@@ -347,8 +347,9 @@ Messages are JSON text frames:
 ```jsonc
 // server -> client
 { "type": "frame", "seq": 41, "cols": 120, "rows": 40, "ansi": "<visible screen>" }
-{ "type": "status", "agent": "working" }          // from pane.agent_status_changed
-{ "type": "closed", "reason": "pane_exited" }     // then the server closes the socket
+{ "type": "control", "on": true }                // answers the client's control message
+{ "type": "error", "message": "..." }            // e.g. input while read-only
+{ "type": "closed", "reason": "pane_closed" }     // then the server closes the socket
 // client -> server
 { "type": "text", "text": "yes\n" }               // pane.send_text
 { "type": "keys", "keys": ["esc"] }               // pane.send_keys
@@ -359,15 +360,19 @@ Server side (`PaneMirror`):
 
 - There is one mirror per `(machine, pane)`, reference-counted by viewers. It is
   created on the first viewer and dropped shortly after the last one leaves.
-- It keeps a long-lived herdr socket connection for requests: the local socket, or
-  `ssh -W <socket>` for SSH machines, as `SshSocket` does
-  (`src-tauri/src/adapters/herdr_events.rs:154`). Spawning `herdr --machine ...` per read
-  would cost an ssh handshake per frame.
-- It reads `pane.read --source visible --format ansi` when a `pane.updated` event
-  arrives, and polls (for example every 250 ms, backing off to 2 s while unchanged) as a
-  fallback if events do not cover output. It hashes the frame and sends it only when it
-  changed. Frames are full screens, so a late joiner or a dropped frame needs no replay,
-  and the next frame is complete.
+- It talks to the herdr socket directly: the local socket, or `ssh -W <socket>` for SSH
+  machines, as `SshSocket` does (`src-tauri/src/adapters/herdr_events.rs`). herdr 0.9.5
+  answers one request per connection and then closes it, so every request opens a new
+  connection; for SSH machines they share one SSH connection through OpenSSH
+  multiplexing (`ControlMaster=auto`, `ControlPersist=60`), so only the first pays the
+  handshake. Spawning `herdr --machine ...` per read would cost a process and an ssh
+  handshake per frame.
+- It reads `pane.read` (`source: visible`, `format: ansi`) and `pane.layout` (for the
+  size), every 250 ms while the screen changes, backing off to 2 s while it does not;
+  input asks for a read at once. It sends a frame only when the screen or size changed.
+  Frames are full screens, so a late joiner or a dropped frame needs no replay, and the
+  next frame is complete. (`pane.read` reports a `revision`, but it stayed 0 on herdr
+  0.9.5, so frames are compared instead.)
 - A slow client gets the newest frame only. Intermediate frames are skipped, the same
   as the event stream's "fall behind, resync" rule.
 - The client renders frames with xterm.js (reset, then write the ANSI screen).
@@ -418,8 +423,10 @@ resyncs, and a POST per message is fine at chat rates.
 - **WebSocket**: browsers cannot set `Authorization` on a WebSocket. Use a short-lived
   ticket:
   1. `POST /api/stream-tickets` with the bearer token and
-     `{ "machine": ..., "pane": ... }` returns `{ "ticket": string, "expiresAt": number }`.
-     The ticket is random, single-use, valid for 30 s, and bound to that pane.
+     `{ "taskId": ..., "paneId": ... }` returns `{ "ticket": string, "expiresAt": number }`.
+     The server checks that herdr lists the pane in the task's herdr workspace and finds
+     the machine from the task. The ticket is random, single-use, valid for 30 s, and
+     bound to that pane.
   2. The client opens the WebSocket with `?ticket=`. The server consumes the ticket
      before the upgrade and rejects reuse.
 

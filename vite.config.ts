@@ -58,7 +58,9 @@ export default defineConfig(({ mode }) => ({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
-    proxy: mode === "web" ? { "/api": server, "/mcp": server } : undefined,
+    // `ws` passes the pane view's WebSocket through; the Host header stays the dev server's,
+    // which is what the server compares the Origin with.
+    proxy: mode === "web" ? { "/api": { target: server, ws: true }, "/mcp": server } : undefined,
   },
 
   test: {

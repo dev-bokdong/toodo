@@ -139,6 +139,10 @@ pub struct PaneAgent {
     pub pane_id: String,
     pub workspace_id: String,
     pub status: AgentStatus,
+    /// The agent herdr recognized in the pane, e.g. `claude`.
+    pub agent: Option<String>,
+    /// The pane's label, or else its terminal title.
+    pub title: Option<String>,
 }
 
 /// A git worktree to create and open as a herdr workspace.
@@ -198,6 +202,8 @@ impl Herdr {
                 // Statuses added by a newer herdr are shown as unknown.
                 status: AgentStatus::parse(row.get("agent_status")?.as_str()?)
                     .unwrap_or(AgentStatus::Unknown),
+                agent: text(row, "agent"),
+                title: text(row, "label").or_else(|| text(row, "terminal_title_stripped")),
             })
         };
         parse(&invocation, &output)?
@@ -485,6 +491,14 @@ fn workspace_id(invocation: &Invocation, output: &str) -> Result<String, HerdrEr
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| unexpected(invocation, output))
+}
+
+/// The non-empty string at `key` of `row`.
+fn text(row: &Value, key: &str) -> Option<String> {
+    row.get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
 }
 
 fn parse(invocation: &Invocation, output: &str) -> Result<Value, HerdrError> {
@@ -906,8 +920,8 @@ mod tests {
     fn panes_are_listed_with_their_agent_status() {
         let (herdr, runner) = herdr(vec![
             Ok(r#"{"id":"cli:pane:list","result":{"panes":[
-                {"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},
-                {"agent_status":"unknown","pane_id":"w1:p2","workspace_id":"w1"},
+                {"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1","label":"fix tests","terminal_title_stripped":"claude"},
+                {"agent_status":"unknown","pane_id":"w1:p2","workspace_id":"w1","label":null,"terminal_title_stripped":"me@box:~"},
                 {"agent_status":"sleeping","pane_id":"w2:p1","workspace_id":"w2"}]}}"#
                 .to_owned()),
             Ok(r#"{"id":"cli:pane:list","result":{"panes":[{"pane_id":"w1:p1"}]}}"#.to_owned()),
@@ -916,12 +930,21 @@ mod tests {
             pane_id: pane_id.to_owned(),
             workspace_id: workspace_id.to_owned(),
             status,
+            agent: None,
+            title: None,
         };
         assert_eq!(
             herdr.list_panes(&Machine::Local).unwrap(),
             [
-                pane("w1:p1", "w1", AgentStatus::Working),
-                pane("w1:p2", "w1", AgentStatus::Unknown),
+                PaneAgent {
+                    agent: Some("claude".to_owned()),
+                    title: Some("fix tests".to_owned()),
+                    ..pane("w1:p1", "w1", AgentStatus::Working)
+                },
+                PaneAgent {
+                    title: Some("me@box:~".to_owned()),
+                    ..pane("w1:p2", "w1", AgentStatus::Unknown)
+                },
                 pane("w2:p1", "w2", AgentStatus::Unknown),
             ]
         );

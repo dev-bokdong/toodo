@@ -111,6 +111,12 @@ export const commands = {
 	 *  base. A paused task resumes on its branch, in its worktree if it still has one.
 	 */
 	startTask: (id: TaskId) => typedError<Task, CommandError>(__TAURI_INVOKE("start_task", { id })),
+	/**
+	 *  Makes sure herdr has the workspace of a started task open without focusing it, opening
+	 *  the task's worktree again when herdr no longer has it, and lists the workspace's panes
+	 *  for the pane view.
+	 */
+	ensureTaskWorkspace: (id: TaskId) => typedError<TaskPane[], CommandError>(__TAURI_INVOKE("ensure_task_workspace", { id })),
 	openTaskInHerdr: (id: TaskId) => typedError<null, CommandError>(__TAURI_INVOKE("open_task_in_herdr", { id })),
 	/**
 	 *  Focuses the pane of the agent working on a started task, the one that needs the user
@@ -744,6 +750,16 @@ export type TaskNote = {
 	/**  Markdown. */
 	body: string,
 	at: Timestamp,
+};
+
+/**  A pane of a task's herdr workspace, for the pane view. */
+export type TaskPane = {
+	paneId: string,
+	/**  The agent herdr recognized in the pane, e.g. `claude`. */
+	agent: string | null,
+	agentStatus: AgentStatus | null,
+	/**  The pane's label, or else its terminal title. */
+	title: string | null,
 };
 
 /**

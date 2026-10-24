@@ -223,7 +223,10 @@ whole server account. To open it from a phone, see
 
 The event stream (`/api/events`) is a long-lived server-sent event response with a
 keep-alive comment every 15 seconds; a proxy in front must not buffer it. When the stream
-drops, the web app reconnects and refetches everything.
+drops, the web app reconnects and refetches everything. The pane view's WebSocket
+(`/api/panes/stream`) needs the proxy to pass WebSocket upgrades through, with the
+browser's `Host` (or `X-Forwarded-Host`), since the server only accepts upgrades whose
+`Origin` matches it.
 
 ### Off the Machine: Cloudflare Tunnel and Access
 
@@ -343,6 +346,17 @@ Things to know:
   name or one over 80 characters is `422`.
 - `POST /api/devices/{id}/revoke`: revokes the device for good and returns it; `404` for
   an unknown id. Revoking it again keeps the first revocation time.
+- `POST /api/stream-tickets` with `{ "taskId", "paneId" }`: a ticket for the pane view of
+  a pane in the task's herdr workspace, `{ "ticket", "expiresAt" }` (Unix seconds). A pane
+  outside that workspace is `404`. The ticket opens one stream within 30 seconds.
+- `GET /api/panes/stream?ticket=<ticket>`: the WebSocket of the pane view, authorized by
+  the ticket instead of the token; `401` for an unknown, used, or expired ticket and `403`
+  for an `Origin` other than the server's own or the desktop app's. The server sends
+  `{ "type": "frame", "seq", "cols", "rows", "ansi" }` whenever the pane's screen
+  changes, and `{ "type": "closed", "reason" }` before it closes. The view is read-only
+  until the client sends `{ "type": "control", "on": true }` (answered with the same);
+  then `{ "type": "text", "text" }` and `{ "type": "keys", "keys": [...] }` reach the
+  pane. Messages are at most 64 KB. The server logs one line per control session.
 
 Commands that read or write a path on the desktop app's own machine are not served:
 `save_report` (the web app downloads reports instead), `export_database`, and
@@ -351,8 +365,8 @@ command). `list_directories { machine, path }` lists directories on the server f
 `{ "kind": "local" }` and on an SSH machine for `{ "kind": "ssh", "label": ... }`;
 `add_herdr_machine` is refused, since `herdr machine add` asks questions in a terminal.
 
-All of them require `Authorization: Bearer <token>` with the shared web token or the token
-of a device that is not revoked; `/mcp` requires the MCP token. The web
+All of them except the pane stream require `Authorization: Bearer <token>` with the shared web
+token or the token of a device that is not revoked; `/mcp` requires the MCP token. The web
 build swaps the Tauri modules for `src/web/`, so the generated bindings in
 `src/lib/bindings.ts` serve both apps; a test checks that the server routes every command
 they invoke.
