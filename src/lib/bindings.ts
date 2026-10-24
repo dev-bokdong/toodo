@@ -239,6 +239,7 @@ export const commands = {
 	 *  returned.
 	 */
 	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_backup", { name })),
+	getLead: () => __TAURI_INVOKE<LeadStatus>("get_lead"),
 };
 
 /** Events */
@@ -455,6 +456,38 @@ export type HerdrStatus = {
 	/**  Whether the herdr server on this machine is running. */
 	running: boolean,
 	version: string | null,
+};
+
+/**  What the server is doing with the lead. */
+export type LeadState = 
+/**  No lead: the desktop app, or a server started with `TOODO_LEAD=off`. */
+"disabled" | 
+/**  The agent command was typed into the pane and has not shown up yet. */
+"starting" | "running" | 
+/**  The agent exited; it is started again once its backoff has passed. */
+"restarting" | 
+/**
+ *  The lead cannot run: herdr or git failed, or the agent keeps exiting right after
+ *  it starts. The server keeps trying.
+ */
+"failed";
+
+/**  The lead's workspace, pane, and state, for the chat panel. */
+export type LeadStatus = {
+	state: LeadState,
+	/**  The Toodo workspace the lead works in. */
+	workspaceId: WorkspaceId | null,
+	herdrWorkspaceId: string | null,
+	paneId: string | null,
+	/**  The agent herdr recognized in the pane, e.g. `omo`. */
+	agent: string | null,
+	agentStatus: AgentStatus | null,
+	/**  How often the server started the agent again since the server started. */
+	restarts: number,
+	/**  When the running agent was started, or first seen running. */
+	startedAt: Timestamp | null,
+	/**  Why the lead is failing or restarting. */
+	error: string | null,
 };
 
 /**  A GitHub issue of the workspace repository linked to a task. */

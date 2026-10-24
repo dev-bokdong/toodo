@@ -143,6 +143,24 @@ pub struct PaneAgent {
     pub agent: Option<String>,
     /// The pane's label, or else its terminal title.
     pub title: Option<String>,
+    /// The working directory of the pane's shell.
+    pub cwd: Option<String>,
+}
+
+/// The shell of a local herdr pane and the process group in its foreground.
+#[cfg(feature = "server")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneProcess {
+    pub shell_pid: u32,
+    pub foreground_pid: u32,
+}
+
+#[cfg(feature = "server")]
+impl PaneProcess {
+    /// Whether a command runs in the foreground, rather than the shell waiting for input.
+    pub fn busy(&self) -> bool {
+        self.foreground_pid != self.shell_pid
+    }
 }
 
 /// A git worktree to create and open as a herdr workspace.
@@ -204,6 +222,7 @@ impl Herdr {
                     .unwrap_or(AgentStatus::Unknown),
                 agent: text(row, "agent"),
                 title: text(row, "label").or_else(|| text(row, "terminal_title_stripped")),
+                cwd: text(row, "cwd"),
             })
         };
         parse(&invocation, &output)?
@@ -211,6 +230,34 @@ impl Herdr {
             .and_then(Value::as_array)
             .and_then(|rows| rows.iter().map(pane).collect())
             .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// The shell and foreground process group of a pane of the local herdr server.
+    #[cfg(feature = "server")]
+    pub fn pane_process(&self, pane_id: &str) -> Result<PaneProcess, HerdrError> {
+        let invocation = invocation(None, &["pane", "process-info", "--pane", pane_id]);
+        let output = self.runner.run(&invocation)?;
+        let info = parse(&invocation, &output)?;
+        let pid = |key: &str| {
+            info.pointer(&format!("/result/process_info/{key}"))
+                .and_then(Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+        };
+        match (pid("shell_pid"), pid("foreground_process_group_id")) {
+            (Some(shell_pid), Some(foreground_pid)) => Ok(PaneProcess {
+                shell_pid,
+                foreground_pid,
+            }),
+            _ => Err(unexpected(&invocation, &output)),
+        }
+    }
+
+    /// Types `command` into the shell of a pane of the local herdr server and runs it.
+    #[cfg(feature = "server")]
+    pub fn run_in_pane(&self, pane_id: &str, command: &str) -> Result<(), HerdrError> {
+        let invocation = invocation(None, &["pane", "run", pane_id, command]);
+        self.runner.run(&invocation)?;
+        Ok(())
     }
 
     /// Creates the worktree on `machine` and opens it as a herdr workspace without
@@ -920,7 +967,7 @@ mod tests {
     fn panes_are_listed_with_their_agent_status() {
         let (herdr, runner) = herdr(vec![
             Ok(r#"{"id":"cli:pane:list","result":{"panes":[
-                {"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1","label":"fix tests","terminal_title_stripped":"claude"},
+                {"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1","label":"fix tests","terminal_title_stripped":"claude","cwd":"/src/app"},
                 {"agent_status":"unknown","pane_id":"w1:p2","workspace_id":"w1","label":null,"terminal_title_stripped":"me@box:~"},
                 {"agent_status":"sleeping","pane_id":"w2:p1","workspace_id":"w2"}]}}"#
                 .to_owned()),
@@ -932,6 +979,7 @@ mod tests {
             status,
             agent: None,
             title: None,
+            cwd: None,
         };
         assert_eq!(
             herdr.list_panes(&Machine::Local).unwrap(),
@@ -939,6 +987,7 @@ mod tests {
                 PaneAgent {
                     agent: Some("claude".to_owned()),
                     title: Some("fix tests".to_owned()),
+                    cwd: Some("/src/app".to_owned()),
                     ..pane("w1:p1", "w1", AgentStatus::Working)
                 },
                 PaneAgent {
