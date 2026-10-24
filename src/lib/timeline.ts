@@ -16,6 +16,33 @@ export function formatDate(at: Timestamp): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+const relativeFormat = new Intl.RelativeTimeFormat("en", { numeric: "auto", style: "short" });
+const WEEK_SECONDS = 7 * 24 * 3600;
+
+/**
+ * The one way the app shows a moment: relative within 7 days ("5 min. ago"), a short date
+ * ("Oct 12", with the year when it is not this one) otherwise. Never shows seconds; pair it
+ * with `formatFull` in a tooltip.
+ */
+export function formatWhen(at: Timestamp, now: Timestamp = Date.now() / 1000): string {
+  const diff = at - now;
+  const age = Math.abs(diff);
+  if (age < 60) return "just now";
+  if (age < WEEK_SECONDS) {
+    const [value, unit]: [number, Intl.RelativeTimeFormatUnit] =
+      age < 3600 ? [Math.trunc(diff / 60), "minute"] : age < 86400 ? [Math.trunc(diff / 3600), "hour"] : [Math.trunc(diff / 86400), "day"];
+    return relativeFormat.format(value, unit);
+  }
+  const date = new Date(at * 1000);
+  const sameYear = date.getFullYear() === new Date(now * 1000).getFullYear();
+  return date.toLocaleDateString("en", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
+/** The full local date and time of `at` without seconds, for tooltips and detail views. */
+export function formatFull(at: Timestamp): string {
+  return new Date(at * 1000).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" });
+}
+
 export type WorkState = "in_progress" | "in_review" | "paused";
 
 /** A stretch of a task's history in one state; `end` is null while the task is still in it. */

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import type { ChatMessage, LeadStatus } from "@/lib/bindings";
 import { markRead, newClientId } from "@/lib/chat";
 import { useChatMessages, useSendChatMessage } from "@/lib/queries";
+import { When } from "@/components/when";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
@@ -168,9 +169,7 @@ function Message({ message }: { message: ChatMessage }) {
           </Suspense>
         )}
       </div>
-      <time className="text-xs text-muted-foreground" dateTime={sentAt.toISOString()}>
-        {mine ? "You" : "Lead"}, {sentAt.toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
-      </time>
+      <When className="text-xs text-muted-foreground" at={sentAt.getTime() / 1000} prefix={mine ? "You, " : "Lead, "} />
     </li>
   );
 }

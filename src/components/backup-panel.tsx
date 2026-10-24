@@ -3,6 +3,8 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { Button } from "@/components/ui/button";
 import type { BackupEntry, BackupSettings } from "@/lib/bindings";
 import { runsOnServer } from "@/lib/platform";
+import { formatFull } from "@/lib/timeline";
+import { When } from "@/components/when";
 import {
   useBackupSettings,
   useBackups,
@@ -23,9 +25,6 @@ function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-function formatTime(seconds: number): string {
-  return new Date(seconds * 1000).toLocaleString();
-}
 
 function formatSize(bytes: number): string {
   return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -184,7 +183,7 @@ export function BackupPanel() {
           {backups.data?.map((backup) => (
             <li key={backup.path} className="flex flex-wrap items-center justify-between gap-1 text-xs" title={backup.path}>
               <span className="min-w-0">
-                <span className="block truncate">{formatTime(backup.createdAt)}</span>
+                <When className="block truncate" at={backup.createdAt} />
                 <span className="text-muted-foreground">
                   {kindLabels[backup.kind]} · {formatSize(backup.sizeBytes)}
                 </span>
@@ -195,7 +194,7 @@ export function BackupPanel() {
                     changesData
                     size="xs"
                     variant="outline"
-                    aria-label={`Download backup from ${formatTime(backup.createdAt)}`}
+                    aria-label={`Download backup from ${formatFull(backup.createdAt)}`}
                     disabled={downloadBackup.isPending}
                     onClick={() => {
                       setNotice(null);
@@ -208,7 +207,7 @@ export function BackupPanel() {
                 <Button
                   size="xs"
                   variant="outline"
-                  aria-label={`Restore this backup from ${formatTime(backup.createdAt)}`}
+                  aria-label={`Restore this backup from ${formatFull(backup.createdAt)}`}
                   onClick={() => {
                     setNotice(null);
                     setConfirming({ kind: "backup", path: backup.path });

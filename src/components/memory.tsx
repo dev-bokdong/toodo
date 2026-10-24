@@ -8,7 +8,7 @@ import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { inputClass } from "@/components/workspace-list";
 import type { MemoryContent, MemoryEntry, MemoryKind, Workspace } from "@/lib/bindings";
 import { useAddMemory, useMemoryEntries, useSupersedeMemory, useUpdateMemory } from "@/lib/queries";
-import { formatDate } from "@/lib/timeline";
+import { When } from "@/components/when";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
@@ -148,7 +148,7 @@ function MemoryItem({ entry }: { entry: MemoryEntry }) {
         />
       )}
       <p className="text-xs text-muted-foreground">
-        #{entry.id} · updated {formatDate(entry.updatedAt)}
+        #{entry.id} · updated <When at={entry.updatedAt} />
         {entry.taskId !== null && ` · from task #${entry.taskId}`}
         {superseded && ` · superseded by #${entry.supersededBy}`}
       </p>

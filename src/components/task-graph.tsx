@@ -59,7 +59,8 @@ import {
 } from "@/lib/task-graph";
 import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
-import { activeSeconds, formatDate, reachedMilestones } from "@/lib/timeline";
+import { When } from "@/components/when";
+import { activeSeconds, reachedMilestones } from "@/lib/timeline";
 import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
 import {
   barStyles,
@@ -991,7 +992,9 @@ function TimelineTooltip({
           {milestones.map(({ label, at }) => (
             <div key={label} className="contents">
               <dt className="text-muted-foreground">{label}</dt>
-              <dd className="tabular-nums">{formatDate(at)}</dd>
+              <dd className="tabular-nums">
+                <When at={at} />
+              </dd>
             </div>
           ))}
           {active !== null && (
