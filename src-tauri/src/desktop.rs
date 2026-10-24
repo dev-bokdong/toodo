@@ -42,6 +42,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::machines::list_ssh_hosts,
             commands::machines::add_ssh_host,
             commands::machines::list_remote_directories,
+            commands::machines::list_directories,
             commands::tasks::list_tasks,
             commands::tasks::get_task,
             commands::tasks::create_task,
@@ -80,6 +81,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::memory::add_memory,
             commands::memory::update_memory,
             commands::memory::supersede_memory,
+            commands::backup::restore_backup,
         ])
         .events(collect_events![
             commands::events::TasksChanged,

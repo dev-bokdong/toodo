@@ -1,13 +1,18 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import type { BackupEntry, BackupSettings } from "@/lib/bindings";
+import { runsOnServer } from "@/lib/platform";
 import {
   useBackupSettings,
   useBackups,
+  useDownloadBackup,
+  useDownloadExport,
   useExportDatabase,
+  useRestoreBackup,
   useRestoreDatabase,
   useSaveBackupSettings,
+  useUploadRestore,
 } from "@/lib/queries";
 
 const inputClass = "h-7 w-16 rounded-md border bg-background px-2 text-sm";
@@ -31,17 +36,40 @@ const kindLabels: Record<BackupEntry["kind"], string> = {
   preRestore: "Before restore",
 };
 
+/** What a confirmed restore replaces the data with. */
+type RestoreSource =
+  | { kind: "path"; path: string }
+  | { kind: "backup"; path: string }
+  | { kind: "upload"; file: File };
+
+function sourceName(source: RestoreSource): string {
+  return source.kind === "upload" ? source.file.name : fileName(source.path);
+}
+
 export function BackupPanel() {
   const backups = useBackups();
   const exportDatabase = useExportDatabase();
+  const downloadExport = useDownloadExport();
+  const downloadBackup = useDownloadBackup();
   const restoreDatabase = useRestoreDatabase();
-  const [confirming, setConfirming] = useState<string | null>(null);
+  const restoreBackup = useRestoreBackup();
+  const uploadRestore = useUploadRestore();
+  const upload = useRef<HTMLInputElement>(null);
+  const [confirming, setConfirming] = useState<RestoreSource | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
+
+  const exporting = exportDatabase.isPending || downloadExport.isPending;
+  const restoring = restoreDatabase.isPending || restoreBackup.isPending || uploadRestore.isPending;
 
   async function exportToFile() {
     setNotice(null);
     setDialogError(null);
+    if (runsOnServer) {
+      // The server sends a snapshot and the browser downloads it.
+      downloadExport.mutate(undefined, { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
+      return;
+    }
     try {
       const date = new Date().toISOString().slice(0, 10);
       const path = await saveDialog({
@@ -59,6 +87,10 @@ export function BackupPanel() {
   async function pickBackup() {
     setNotice(null);
     setDialogError(null);
+    if (runsOnServer) {
+      upload.current?.click();
+      return;
+    }
     try {
       const path = await openDialog({
         title: "Restore database",
@@ -66,47 +98,71 @@ export function BackupPanel() {
         directory: false,
         filters: databaseFilters,
       });
-      if (typeof path === "string") setConfirming(path);
+      if (typeof path === "string") setConfirming({ kind: "path", path });
     } catch (error) {
       setDialogError(`Could not open the file dialog: ${String(error)}`);
     }
   }
 
-  function restore(path: string) {
+  function restore(source: RestoreSource) {
     setNotice(null);
-    restoreDatabase.mutate(path, {
-      onSuccess: (safety) => {
+    const options = {
+      onSuccess: (safety: BackupEntry) => {
         setConfirming(null);
-        setNotice(`Restored ${fileName(path)}. The previous data was saved as ${fileName(safety.path)}.`);
+        setNotice(`Restored ${sourceName(source)}. The previous data was saved as ${fileName(safety.path)}.`);
       },
-    });
+    };
+    if (source.kind === "upload") uploadRestore.mutate(source.file, options);
+    else if (source.kind === "backup") restoreBackup.mutate(fileName(source.path), options);
+    else restoreDatabase.mutate(source.path, options);
   }
 
-  const error = exportDatabase.error ?? restoreDatabase.error ?? backups.error;
+  const error =
+    exportDatabase.error ??
+    downloadExport.error ??
+    downloadBackup.error ??
+    restoreDatabase.error ??
+    restoreBackup.error ??
+    uploadRestore.error ??
+    backups.error;
 
   return (
     <details className="group rounded-lg border p-2">
       <summary className="cursor-pointer text-xs font-medium uppercase text-muted-foreground">Backups</summary>
       <section aria-label="Backups" className="mt-2 flex flex-col gap-2">
         <div className="flex gap-1">
-          <Button size="sm" variant="outline" onClick={exportToFile} disabled={exportDatabase.isPending}>
-            {exportDatabase.isPending ? "Exporting..." : "Export..."}
+          <Button size="sm" variant="outline" onClick={exportToFile} disabled={exporting}>
+            {exporting ? "Exporting..." : "Export..."}
           </Button>
-          <Button size="sm" variant="outline" onClick={pickBackup} disabled={restoreDatabase.isPending}>
+          <Button size="sm" variant="outline" onClick={pickBackup} disabled={restoring}>
             Restore...
           </Button>
+          {runsOnServer && (
+            <input
+              ref={upload}
+              type="file"
+              accept=".sqlite3,.db"
+              aria-label="Database file to restore"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) setConfirming({ kind: "upload", file });
+              }}
+            />
+          )}
         </div>
         {confirming && (
           <div role="alertdialog" aria-label="Confirm restore" className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
             <p className="text-xs break-words">
-              Replace all workspaces and tasks with <span className="font-medium">{fileName(confirming)}</span>? The
+              Replace all workspaces and tasks with <span className="font-medium">{sourceName(confirming)}</span>? The
               current data is backed up first.
             </p>
             <div className="flex gap-1">
-              <Button size="xs" variant="destructive" onClick={() => restore(confirming)} disabled={restoreDatabase.isPending}>
-                {restoreDatabase.isPending ? "Restoring..." : "Replace data"}
+              <Button size="xs" variant="destructive" onClick={() => restore(confirming)} disabled={restoring}>
+                {restoring ? "Restoring..." : "Replace data"}
               </Button>
-              <Button size="xs" variant="ghost" onClick={() => setConfirming(null)} disabled={restoreDatabase.isPending}>
+              <Button size="xs" variant="ghost" onClick={() => setConfirming(null)} disabled={restoring}>
                 Cancel
               </Button>
             </div>
@@ -133,17 +189,33 @@ export function BackupPanel() {
                   {kindLabels[backup.kind]} · {formatSize(backup.sizeBytes)}
                 </span>
               </span>
-              <Button
-                size="xs"
-                variant="ghost"
-                aria-label={`Restore backup from ${formatTime(backup.createdAt)}`}
-                onClick={() => {
-                  setNotice(null);
-                  setConfirming(backup.path);
-                }}
-              >
-                Restore
-              </Button>
+              <span className="flex shrink-0 gap-0.5">
+                {runsOnServer && (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`Download backup from ${formatTime(backup.createdAt)}`}
+                    disabled={downloadBackup.isPending}
+                    onClick={() => {
+                      setNotice(null);
+                      downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
+                    }}
+                  >
+                    Download
+                  </Button>
+                )}
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  aria-label={`Restore backup from ${formatTime(backup.createdAt)}`}
+                  onClick={() => {
+                    setNotice(null);
+                    setConfirming({ kind: "backup", path: backup.path });
+                  }}
+                >
+                  Restore
+                </Button>
+              </span>
             </li>
           ))}
         </ul>

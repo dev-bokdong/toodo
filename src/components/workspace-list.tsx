@@ -413,8 +413,12 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
         : joinPosix(folder.trim(), effectiveName.trim())
       : folder.trim();
 
+  // The desktop app picks local folders with the system dialog; everything else, the
+  // server's own folders included, is browsed in the app.
+  const browsesInApp = machine !== null || runsOnServer;
+
   async function browse() {
-    if (machine !== null) {
+    if (browsesInApp) {
       setBrowsing((open) => !open);
       return;
     }
@@ -464,16 +468,13 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
           onChange={(e) => setFolder(e.target.value)}
           required
         />
-        {/* The browser cannot show the server's folders; the path is typed instead. */}
-        {!(machine === null && runsOnServer) && (
-          <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={machine === null ? undefined : browsing}>
-            Browse...
-          </Button>
-        )}
+        <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={browsesInApp ? browsing : undefined}>
+          Browse...
+        </Button>
       </div>
-      {browsing && machine !== null && (
+      {browsing && browsesInApp && (
         <RemoteFolderBrowser
-          machine={machine}
+          machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
           initialPath={folder}
           onSelect={(picked) => {
             setFolder(picked);

@@ -43,6 +43,7 @@ server = [
   "tokio/rt-multi-thread",
   "tokio/signal",
   "tokio/sync",
+  "tokio/fs",
   "dep:tower-http",
   "dep:futures-util",
 ]

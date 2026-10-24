@@ -6,12 +6,14 @@
 //! - `POST /api/rpc/<command>` runs a command (see [`rpc`]).
 //! - `GET /api/events` streams `tasks-changed`, `agent-statuses-changed`, and
 //!   `pull-request-statuses-changed` events with JSON data.
+//! - `/api/backups/...` moves database files in and out (see [`files`]).
 //! - `/mcp` is the MCP endpoint, as in the desktop app.
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
 //! `/api` requires the web access token and `/mcp` the MCP access token as a bearer token;
 //! both are created in the data directory on first start.
 
+mod files;
 mod rpc;
 
 use std::convert::Infallible;
@@ -20,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -128,6 +131,8 @@ pub struct Services {
     mcp: ServerStatus,
     tunnels: TunnelsState,
     events: broadcast::Sender<ServerEvent>,
+    /// The largest database file `POST /api/backups/restore` accepts, in bytes.
+    restore_limit: u64,
 }
 
 impl Services {
@@ -257,6 +262,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         },
         tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port))),
         events: broadcast::channel(EVENT_BUFFER).0,
+        restore_limit: files::RESTORE_LIMIT,
     });
     events::spawn(services.clone())?;
     backup::spawn(services.clone())?;
@@ -327,6 +333,13 @@ fn router(
     let api = Router::new()
         .route("/api/rpc/{command}", post(rpc::handle))
         .route("/api/events", get(event_stream))
+        .route("/api/backups/export", get(files::export))
+        // The handler streams the body to disk and enforces its own limit.
+        .route(
+            "/api/backups/restore",
+            post(files::restore).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/backups/{name}", get(files::download))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .route_layer(middleware::from_fn_with_state(
             Arc::new(web_token),
@@ -412,6 +425,8 @@ mod tests {
         );
     }
 
+    const TEST_RESTORE_LIMIT: u64 = 1024 * 1024;
+
     fn services(data_dir: &Path) -> Arc<Services> {
         Arc::new(Services {
             storage: Mutex::new(Storage::open_in_memory().unwrap()),
@@ -430,6 +445,7 @@ mod tests {
             },
             tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
             events: broadcast::channel(EVENT_BUFFER).0,
+            restore_limit: TEST_RESTORE_LIMIT,
         })
     }
 
@@ -452,9 +468,15 @@ mod tests {
     }
 
     fn serve_router(web_dir: Option<&Path>) -> (SocketAddr, tempfile::TempDir) {
+        let (address, temp, _) = serve_services(web_dir);
+        (address, temp)
+    }
+
+    fn serve_services(web_dir: Option<&Path>) -> (SocketAddr, tempfile::TempDir, Arc<Services>) {
         let temp = tempfile::tempdir().unwrap();
+        let services = services(temp.path());
         let app = router(
-            services(temp.path()),
+            services.clone(),
             "web".to_owned(),
             "agent".to_owned(),
             web_dir,
@@ -468,7 +490,7 @@ mod tests {
                 .unwrap()
                 .block_on(mcp::serve(listener, app))
         });
-        (address, temp)
+        (address, temp, services)
     }
 
     #[test]
@@ -544,6 +566,187 @@ mod tests {
         assert!(status(address, "GET", "/tasks/1", None).contains(" 200 "));
         assert!(status(address, "GET", "/api/nothing", None).contains(" 401 "));
         assert!(status(address, "GET", "/api/nothing", Some("web")).contains(" 404 "));
+    }
+
+    /// Sends `head` (request line and headers, without the blank line) and `body`; returns
+    /// the status line, the headers, and the body of the response. A server that answers
+    /// before reading the whole body may close the connection while it is being sent.
+    fn exchange(address: SocketAddr, head: &str, body: &[u8]) -> (String, String, Vec<u8>) {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .write_all(format!("{head}\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes())
+            .unwrap();
+        drop(stream.write_all(body));
+        let mut response = Vec::new();
+        drop(stream.read_to_end(&mut response));
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a response head");
+        let head = String::from_utf8(response[..split].to_vec()).unwrap();
+        let (status, headers) = head.split_once("\r\n").unwrap_or((&head, ""));
+        (
+            status.to_owned(),
+            headers.to_ascii_lowercase(),
+            response[split + 4..].to_vec(),
+        )
+    }
+
+    fn get(address: SocketAddr, path: &str, token: Option<&str>) -> (String, String, Vec<u8>) {
+        let authorization = token
+            .map(|token| format!("\r\nAuthorization: Bearer {token}"))
+            .unwrap_or_default();
+        exchange(address, &format!("GET {path} HTTP/1.1{authorization}"), b"")
+    }
+
+    fn upload(address: SocketAddr, token: &str, body: &[u8]) -> (String, String, Vec<u8>) {
+        exchange(
+            address,
+            &format!(
+                "POST /api/backups/restore HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\
+                 Content-Type: application/octet-stream\r\nContent-Length: {}",
+                body.len()
+            ),
+            body,
+        )
+    }
+
+    fn add_workspace(services: &Services, name: &str) {
+        use crate::domain::model::WorkspaceLocation;
+        use crate::domain::path::PosixPath;
+        crate::commands::lock(&services.storage)
+            .create_workspace(&crate::storage::NewWorkspace {
+                name: name.to_owned(),
+                location: WorkspaceLocation::Local {
+                    path: PosixPath::parse(&format!("/srv/{name}")).unwrap().into(),
+                },
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+    }
+
+    fn workspace_names(services: &Services) -> Vec<String> {
+        crate::commands::lock(&services.storage)
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.name)
+            .collect()
+    }
+
+    const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
+
+    #[test]
+    fn database_files_round_trip_over_http() {
+        let (address, temp, services) = serve_services(None);
+        add_workspace(&services, "before");
+
+        let (status, headers, export) = get(address, "/api/backups/export", Some("web"));
+        assert!(status.contains(" 200 "), "{status}");
+        assert!(
+            headers.contains("content-type: application/vnd.sqlite3"),
+            "{headers}"
+        );
+        assert!(
+            headers.contains("content-disposition: attachment; filename=\"toodo-backup-"),
+            "{headers}"
+        );
+        assert!(export.starts_with(SQLITE_MAGIC));
+
+        add_workspace(&services, "after");
+        let (status, _, body) = upload(address, "web", &export);
+        assert!(status.contains(" 200 "), "{status}");
+        let safety: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(safety["kind"], "preRestore");
+        assert_eq!(workspace_names(&services), ["before"]);
+
+        // The pre-restore backup downloads by name and brings the newer data back.
+        let name = Path::new(safety["path"].as_str().unwrap())
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (status, headers, saved) = get(address, &format!("/api/backups/{name}"), Some("web"));
+        assert!(status.contains(" 200 "), "{status}");
+        assert!(
+            headers.contains(&format!("filename=\"{name}\"")),
+            "{headers}"
+        );
+        assert!(upload(address, "web", &saved).0.contains(" 200 "));
+        assert_eq!(workspace_names(&services), ["before", "after"]);
+
+        // Snapshots and uploads leave nothing behind in the backup directory.
+        let leftovers: Vec<String> = std::fs::read_dir(temp.path().join("backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with('.'))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn bad_uploads_and_names_change_nothing() {
+        let (address, _temp, services) = serve_services(None);
+        add_workspace(&services, "toodo");
+
+        let (status, _, body) = upload(address, "web", &b"not a database ".repeat(400));
+        assert!(status.contains(" 422 "), "{status}");
+        assert!(String::from_utf8_lossy(&body).contains("invalidInput"));
+
+        let declared = exchange(
+            address,
+            &format!(
+                "POST /api/backups/restore HTTP/1.1\r\nAuthorization: Bearer web\r\n\
+                 Content-Length: {}",
+                TEST_RESTORE_LIMIT + 1
+            ),
+            b"",
+        );
+        assert!(declared.0.contains(" 413 "), "{}", declared.0);
+
+        // Without a length up front, the limit applies while the body arrives.
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut chunked = Vec::new();
+        for _ in 0..20 {
+            chunked.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+            chunked.extend_from_slice(&chunk);
+            chunked.extend_from_slice(b"\r\n");
+        }
+        chunked.extend_from_slice(b"0\r\n\r\n");
+        let streamed = exchange(
+            address,
+            "POST /api/backups/restore HTTP/1.1\r\nAuthorization: Bearer web\r\n\
+             Transfer-Encoding: chunked",
+            &chunked,
+        );
+        assert!(streamed.0.contains(" 413 "), "{}", streamed.0);
+
+        for name in [
+            "toodo.sqlite3",
+            "..%2Ftoodo.sqlite3",
+            "toodo-auto-20261014-093005.sqlite3",
+        ] {
+            let (status, _, _) = get(address, &format!("/api/backups/{name}"), Some("web"));
+            assert!(status.contains(" 404 "), "{name}: {status}");
+        }
+        assert!(
+            get(address, "/api/backups/export", None)
+                .0
+                .contains(" 401 ")
+        );
+        assert!(upload(address, "agent", b"").0.contains(" 401 "));
+        assert_eq!(workspace_names(&services), ["toodo"]);
+    }
+
+    #[test]
+    fn commands_that_take_client_paths_are_not_served() {
+        let (address, _temp) = serve_router(None);
+        for command in ["save_report", "export_database", "restore_database"] {
+            let status = status(address, "POST", &format!("/api/rpc/{command}"), Some("web"));
+            assert!(status.contains(" 404 "), "{command}: {status}");
+        }
     }
 
     #[test]

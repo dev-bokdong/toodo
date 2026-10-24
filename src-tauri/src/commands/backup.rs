@@ -52,6 +52,32 @@ impl Backups {
         *self.settings.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The backup named `name` in the backup directory, as [`list_backups`] lists it. Any
+    /// other name, such as a path, is not found.
+    pub fn backup_path(&self, name: &str) -> CommandResult<PathBuf> {
+        let missing = || CommandError::not_found(format!("no backup named {name:?}"));
+        if backup::parse_file_name(name).is_none() {
+            return Err(missing());
+        }
+        let path = self.dir.join(name);
+        if path.is_file() {
+            Ok(path)
+        } else {
+            Err(missing())
+        }
+    }
+
+    /// A new path in the backup directory for a file on its way in or out, such as an
+    /// uploaded backup; [`list_backups`] does not list it. The caller removes it.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn scratch_path(&self, purpose: &str) -> io::Result<PathBuf> {
+        fs::create_dir_all(&self.dir)?;
+        let mut random = [0_u8; 8];
+        getrandom::fill(&mut random).map_err(io::Error::other)?;
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        Ok(self.dir.join(format!(".{purpose}-{suffix}.sqlite3")))
+    }
+
     fn save_settings(&self, settings: backup::BackupSettings) -> io::Result<()> {
         let json = serde_json::to_string_pretty(&BackupSettings::from(settings))
             .map_err(io::Error::other)?;
@@ -75,6 +101,7 @@ fn read_settings(path: &Path) -> Result<backup::BackupSettings, String> {
     backup::BackupSettings::try_from(settings).map_err(|error| error.message)
 }
 
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 fn absolute_path(path: &str) -> CommandResult<&Path> {
     let path = Path::new(path);
     if path.is_absolute() {
@@ -117,7 +144,9 @@ pub fn list_backups(backups: State<'_, Backups>) -> CommandResult<Vec<BackupEntr
     Ok(types::map_all(&storage::list_backups(&backups.dir)?))
 }
 
-/// Writes a snapshot of the database to `path`, replacing any file there.
+/// Writes a snapshot of the database to `path`, replacing any file there. Desktop only:
+/// the server sends snapshots over HTTP instead of writing them at a path.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 #[cfg_attr(feature = "desktop", tauri::command)]
 #[cfg_attr(feature = "desktop", specta::specta)]
 pub fn export_database(storage: State<'_, StorageState>, path: String) -> CommandResult<()> {
@@ -125,7 +154,8 @@ pub fn export_database(storage: State<'_, StorageState>, path: String) -> Comman
 }
 
 /// Replaces all data with the backup at `path`. The current data is first saved as a
-/// pre-restore backup, which is returned.
+/// pre-restore backup, which is returned. Desktop only: the server takes uploads instead.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 #[cfg_attr(feature = "desktop", tauri::command)]
 #[cfg_attr(feature = "desktop", specta::specta)]
 pub fn restore_database(
@@ -133,7 +163,55 @@ pub fn restore_database(
     backups: State<'_, Backups>,
     path: String,
 ) -> CommandResult<BackupEntry> {
-    Ok((&restore(&storage, &backups, absolute_path(&path)?)?).into())
+    restore_file(&storage, &backups, absolute_path(&path)?)
+}
+
+/// Replaces all data with the backup named `name` in Toodo's backup directory (see
+/// [`list_backups`]). The current data is first saved as a pre-restore backup, which is
+/// returned.
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
+pub fn restore_backup(
+    storage: State<'_, StorageState>,
+    backups: State<'_, Backups>,
+    name: String,
+) -> CommandResult<BackupEntry> {
+    restore_named(&storage, &backups, &name)
+}
+
+fn restore_named(
+    storage: &StorageState,
+    backups: &Backups,
+    name: &str,
+) -> CommandResult<BackupEntry> {
+    restore_file(storage, backups, &backups.backup_path(name)?)
+}
+
+/// Replaces all data with the Toodo database at `path`, after saving the current data as
+/// a pre-restore backup, which is returned.
+pub fn restore_file(
+    storage: &StorageState,
+    backups: &Backups,
+    path: &Path,
+) -> CommandResult<BackupEntry> {
+    Ok((&restore(storage, backups, path)?).into())
+}
+
+/// Writes a consistent snapshot of the database to a new file in the backup directory and
+/// returns its path; the caller removes it.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub fn export_snapshot(storage: &StorageState, backups: &Backups) -> CommandResult<PathBuf> {
+    let path = backups
+        .scratch_path("export")
+        .map_err(|error| CommandError::internal(format!("cannot export: {error}")))?;
+    lock(storage).export_to(&path)?;
+    Ok(path)
+}
+
+/// The file name a snapshot of the database is saved under, with today's date (UTC).
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub fn export_file_name(storage: &StorageState) -> String {
+    backup::export_file_name(lock(storage).now())
 }
 
 fn restore(storage: &StorageState, backups: &Backups, path: &Path) -> storage::Result<BackupFile> {
@@ -372,6 +450,50 @@ mod tests {
             Backups::load(&fixture.data_dir).settings(),
             backup::BackupSettings::default()
         );
+    }
+
+    #[test]
+    fn backups_are_restored_by_name_from_the_backup_directory_only() {
+        let fixture = Fixture::new();
+        let backups = Backups::load(&fixture.data_dir);
+        fixture.add_workspace("before");
+        let saved = lock(&fixture.storage)
+            .backup_into(&backups.dir, BackupKind::Automatic)
+            .unwrap();
+        fixture.add_workspace("after");
+        let name = saved.path.file_name().unwrap().to_str().unwrap().to_owned();
+
+        let safety = restore_named(&fixture.storage, &backups, &name).unwrap();
+
+        assert_eq!(safety.kind, types::BackupKind::PreRestore);
+        assert_eq!(fixture.workspace_names(), ["before"]);
+        let database = fixture.data_dir.join("toodo.sqlite3");
+        for name in [
+            "toodo.sqlite3".to_owned(),
+            "../toodo.sqlite3".to_owned(),
+            database.display().to_string(),
+            backup::file_name(BackupKind::Automatic, 0),
+        ] {
+            let error = restore_named(&fixture.storage, &backups, &name).unwrap_err();
+            assert_eq!(
+                error.kind,
+                super::super::CommandErrorKind::NotFound,
+                "{name}"
+            );
+        }
+        assert_eq!(fixture.workspace_names(), ["before"]);
+    }
+
+    #[test]
+    fn snapshots_are_not_listed_as_backups() {
+        let fixture = Fixture::new();
+        let backups = Backups::load(&fixture.data_dir);
+        fixture.add_workspace("toodo");
+        let snapshot = export_snapshot(&fixture.storage, &backups).unwrap();
+        assert!(snapshot.starts_with(&backups.dir));
+        assert!(storage::list_backups(&backups.dir).unwrap().is_empty());
+        restore_file(&fixture.storage, &backups, &snapshot).unwrap();
+        assert_eq!(fixture.workspace_names(), ["toodo"]);
     }
 
     #[test]

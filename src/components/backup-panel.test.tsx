@@ -14,6 +14,7 @@ vi.mock("@/lib/bindings", () => ({
     saveBackupSettings: vi.fn(),
     exportDatabase: vi.fn(),
     restoreDatabase: vi.fn(),
+    restoreBackup: vi.fn(),
   },
 }));
 
@@ -93,8 +94,8 @@ describe("BackupPanel", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("restores a listed backup and shows a rejected backup's error", async () => {
-    mocked.restoreDatabase.mockResolvedValue({
+  it("restores a listed backup by name and shows a rejected backup's error", async () => {
+    mocked.restoreBackup.mockResolvedValue({
       status: "error",
       error: { kind: "invalidInput", message: "invalid backup x: not a Toodo database" },
     });
@@ -105,7 +106,8 @@ describe("BackupPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Replace data" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("not a Toodo database");
-    expect(mocked.restoreDatabase).toHaveBeenCalledWith(automatic.path);
+    expect(mocked.restoreBackup).toHaveBeenCalledWith("toodo-auto-20261014-093005.sqlite3");
+    expect(mocked.restoreDatabase).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });

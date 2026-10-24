@@ -35,7 +35,7 @@ pub enum Reply {
 }
 
 impl Reply {
-    fn value(value: impl Serialize) -> Self {
+    pub(super) fn value(value: impl Serialize) -> Self {
         match serde_json::to_value(value) {
             Ok(value) => Self::Done(value),
             Err(error) => Self::Failed(CommandError::internal(format!(
@@ -44,7 +44,7 @@ impl Reply {
         }
     }
 
-    fn result(result: CommandResult<impl Serialize>) -> Self {
+    pub(super) fn result(result: CommandResult<impl Serialize>) -> Self {
         match result {
             Ok(value) => Self::value(value),
             Err(error) => Self::Failed(error),
@@ -195,6 +195,9 @@ commands!(s => {
     "list_remote_directories"(machine: String, path: Option<String>) => async Reply::result(
         machines::list_remote_directories(State(&s.ssh), machine, path).await
     );
+    "list_directories"(machine: Machine, path: Option<String>) => async Reply::result(
+        machines::list_directories(State(&s.ssh), machine, path).await
+    );
 
     "list_tasks"() => sync Reply::result(tasks::list_tasks(State(&s.storage)));
     "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(&s.storage), id));
@@ -264,16 +267,15 @@ commands!(s => {
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::review_period(State(&s.storage), start, end)
     );
-    "save_report"(path: String, contents: String) => sync Reply::result(
-        review::save_report(path, contents)
-    );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
     "save_backup_settings"(settings: BackupSettings) => sync Reply::result(
         backup::save_backup_settings(State(&s.storage), State(&s.backups), settings)
     );
     "list_backups"() => sync Reply::result(backup::list_backups(State(&s.backups)));
-    "export_database"(path: String) => sync Reply::result(backup::export_database(State(&s.storage), path));
+    "restore_backup"(name: String) => sync Reply::result(
+        backup::restore_backup(State(&s.storage), State(&s.backups), name)
+    );
 
     "list_memory"(workspace_id: Option<WorkspaceId>, include_superseded: bool) => sync Reply::result(
         memory::list_memory(State(&s.storage), workspace_id, include_superseded)
@@ -287,9 +289,6 @@ commands!(s => {
     "supersede_memory"(id: MemoryId, content: MemoryContent) => sync Reply::result(
         memory::supersede_memory(State(&s.storage), id, content)
     );
-    "restore_database"(path: String) => sync Reply::result(
-        backup::restore_database(State(&s.storage), State(&s.backups), path)
-    );
 });
 
 #[cfg(test)]
@@ -297,6 +296,11 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    /// Commands of the bindings that only the desktop app runs, because they read or write
+    /// a path on the client's machine: the web app downloads reports in the browser and
+    /// moves database files over `/api/backups` instead.
+    const DESKTOP_ONLY: &[&str] = &["export_database", "restore_database", "save_report"];
 
     /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.
     fn bound_commands() -> BTreeSet<String> {
@@ -327,7 +331,10 @@ mod tests {
             "{bound:?}"
         );
         let served: BTreeSet<String> = COMMANDS.iter().map(|name| (*name).to_owned()).collect();
-        assert_eq!(served, bound);
+        let desktop_only: BTreeSet<String> =
+            DESKTOP_ONLY.iter().map(|name| (*name).to_owned()).collect();
+        assert!(desktop_only.is_subset(&bound), "{desktop_only:?}");
+        assert_eq!(served, &bound - &desktop_only);
     }
 
     #[test]
