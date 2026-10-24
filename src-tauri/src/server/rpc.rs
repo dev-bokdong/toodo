@@ -18,7 +18,7 @@ use crate::commands::types::{
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, memory, review, tasks, workspaces,
+    herdr, issues, lead, machines, mcp, memory, review, tasks, workspaces,
 };
 
 /// What running a command gave.
@@ -275,6 +275,8 @@ commands!(s => {
 
     "mcp_server_info"() => sync Reply::value(mcp::mcp_server_info(State(&s.mcp)));
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
+
+    "get_lead"() => sync Reply::value(lead::get_lead(State(&s.lead)));
 
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::review_period(State(&s.storage), start, end)

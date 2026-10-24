@@ -81,7 +81,8 @@ Layout:
     build has exactly one of them.
   - `src-tauri/src/desktop.rs`: Tauri builder, tauri-specta command registration, tray.
   - `src-tauri/src/server/`: headless Linux server: commands over HTTP (`rpc.rs`), events
-    over SSE, MCP, Web Push notifications (`push/`), and the web build on one port; see
+    over SSE, MCP, Web Push notifications (`push/`), and the web build on one port, plus
+    the lead agent it keeps running in herdr (`lead.rs`, prompt in `lead-prompt.md`); see
     `docs/server.md`.
   - `src-tauri/src/commands/`: commands exposed to the frontend, registered with Tauri by
     the desktop app and called over HTTP by the server; they take `commands::State`

@@ -14,6 +14,8 @@
 //!   workspace over a WebSocket (see [`panes`]); the stream takes a ticket instead of the
 //!   token.
 //! - `/mcp` is the MCP endpoint, as in the desktop app.
+//! - `get_lead` and the `lead-changed` event report the lead, an agent the server keeps
+//!   running in herdr (see [`lead`]).
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
 //! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
@@ -22,6 +24,7 @@
 
 mod devices;
 mod files;
+mod lead;
 mod panes;
 mod push;
 mod rpc;
@@ -52,6 +55,7 @@ use crate::commands::events::{
     self, AgentStatusState, AgentStatusesChanged, MemoryChanged, Notifier,
     PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
 };
+use crate::commands::lead::LeadStatusState;
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{
     GitHubState, GitState, HerdrState, Runtime, SshConfigState, SshState, StorageState,
@@ -88,7 +92,13 @@ Environment:
                   without it only the API and MCP are served
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
-                  (default https://github.com/dev-bokdong/toodo)";
+                  (default https://github.com/dev-bokdong/toodo)
+  TOODO_LEAD      off to run no lead agent in herdr (default on)
+  TOODO_LEAD_COMMAND
+                  shell command that starts the lead agent (default: omo)
+  TOODO_LEAD_MODEL
+                  model for the lead, as $TOODO_LEAD_MODEL in the command
+  TOODO_LEAD_DIR  the lead's workspace (default $TOODO_DATA_DIR/lead)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -97,6 +107,8 @@ pub struct Config {
     pub web_dir: Option<PathBuf>,
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
+    /// `None` when the lead is turned off.
+    pub lead: Option<lead::LeadConfig>,
 }
 
 impl Config {
@@ -128,11 +140,13 @@ impl Config {
             }
             None => push::DEFAULT_SUBJECT.to_owned(),
         };
+        let lead = lead::LeadConfig::from_env(&var, &data_dir)?;
         Ok(Self {
             listen,
             data_dir,
             web_dir,
             push_subject,
+            lead,
         })
     }
 }
@@ -162,6 +176,7 @@ pub struct Services {
     restore_limit: u64,
     panes: panes::Panes,
     push: push::Push,
+    lead: LeadStatusState,
 }
 
 impl Services {
@@ -299,9 +314,16 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         events: broadcast::channel(EVENT_BUFFER).0,
         restore_limit: files::RESTORE_LIMIT,
         push,
+        lead: LeadStatusState::default(),
     });
     push::spawn(services.clone())?;
     events::spawn(services.clone())?;
+    if let Some(lead) = config.lead.clone() {
+        let data_dir = std::fs::canonicalize(&config.data_dir)?;
+        let supervisor =
+            lead::Supervisor::new(lead, data_dir, services.mcp.url.clone(), mcp_token.clone());
+        lead::spawn(services.clone(), supervisor)?;
+    }
     backup::spawn(services.clone())?;
     completion::spawn(services.clone())?;
     tunnels::spawn(services.clone(), services.tunnels.clone())?;
@@ -512,6 +534,7 @@ mod tests {
             events: broadcast::channel(EVENT_BUFFER).0,
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
+            lead: LeadStatusState::default(),
         })
     }
 

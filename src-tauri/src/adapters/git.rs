@@ -136,8 +136,8 @@ pub(super) fn describe(invocation: &Invocation) -> String {
         .join(" ")
 }
 
-/// Quotes one word for the POSIX shell that runs an SSH remote command.
-pub(super) fn shell_quote(word: &str) -> String {
+/// Quotes one word for a POSIX shell, such as the one that runs an SSH remote command.
+pub(crate) fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 

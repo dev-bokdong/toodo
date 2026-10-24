@@ -109,6 +109,10 @@ toodo-server
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
+| `TOODO_LEAD` | `on` | `off` runs no lead (see [Lead](#lead)) |
+| `TOODO_LEAD_COMMAND` | omo (see below) | Shell command that starts the lead agent |
+| `TOODO_LEAD_MODEL` | none | Model for the lead, passed to the command as `$TOODO_LEAD_MODEL` |
+| `TOODO_LEAD_DIR` | `$TOODO_DATA_DIR/lead` | The lead's workspace |
 
 On first start the data directory gets two access tokens:
 
@@ -198,6 +202,51 @@ contents of `mcp-token`):
 
 Agents on the server's SSH machines reach the same URL through the reverse tunnels the
 server keeps open to them.
+
+### Lead
+
+The server keeps one lead agent running in herdr. People talk to it in its pane (or
+through the pane view), and it turns their requests into Toodo tasks, starts them, runs
+coding agents in their worktrees, and follows them up, with Toodo as its only record of
+the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
+
+- **Workspace.** On first start the server creates `TOODO_LEAD_DIR` as a new git
+  repository without a remote and adds it as the workspace "Lead". The lead keeps
+  briefs, research, and scratch files there and never pushes it. Deleting the workspace
+  in Toodo only makes the server add it again on its next check; the files stay.
+- **Pane.** The server opens the workspace in herdr and runs the agent in its pane. Every
+  5 seconds it checks the pane: when the pane's shell is back in the foreground, the
+  agent has exited and is started again in the same pane. An agent that exits within a
+  minute of starting is retried after 10 s, 30 s, 1 min, 2 min, then every 5 min, and
+  after three such exits in a row the lead is reported `failed`. A closed pane or herdr
+  workspace is opened again. After a server restart an agent still running in the pane
+  is kept, not started a second time.
+- **Command.** The server writes `lead-start` (owner-only, `0600`) and `lead-prompt.md`
+  to the data directory and types `sh <data dir>/lead-start` into the pane. The launcher
+  exports `TOODO_MCP_URL`, `TOODO_MCP_TOKEN`, `TOODO_LEAD_MODEL`, `TOODO_LEAD_PROMPT`
+  (the prompt file), and `TOODO_LEAD_DIR`, changes to the workspace, and runs
+  `TOODO_LEAD_COMMAND` with `sh`. The default runs omo:
+
+  ```sh
+  omo --approve ${TOODO_LEAD_MODEL:+--model "$TOODO_LEAD_MODEL"} \
+    --append-system-prompt "$TOODO_LEAD_PROMPT"
+  ```
+
+  Another agent works the same way, for example
+  `claude ${TOODO_LEAD_MODEL:+--model "$TOODO_LEAD_MODEL"} --append-system-prompt "$(cat "$TOODO_LEAD_PROMPT")"`.
+- **MCP.** The server writes this server's entry, named `toodo`, into the workspace's
+  `.omo/mcp.json` (omo, `bearerTokenEnv`) and `.mcp.json` (Claude Code, an
+  `Authorization` header with `${TOODO_MCP_TOKEN}`), keeping other servers in those
+  files. Neither file holds the token, which only the launcher's environment carries, so
+  the lead reaches its own server even when another Toodo server uses a different token.
+  A `toodo` server in the agent's global configuration takes precedence over the project
+  one in omo; remove it, or point it at this server, on the machine the lead runs on.
+
+`get_lead` returns the lead's status for the chat panel: `{ state, workspaceId,
+herdrWorkspaceId, paneId, agent, agentStatus, restarts, startedAt, error }`, where `state`
+is `disabled`, `starting`, `running`, `restarting`, or `failed`. The `lead-changed` event
+carries the same object whenever it changes. The desktop app has no lead, and always
+reports `disabled`.
 
 ### systemd
 
@@ -364,7 +413,8 @@ Things to know:
   is `404` and malformed arguments `400`, both with a text body.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
-  desktop app's events.
+  desktop app's events, and `lead-changed` with the result of `get_lead` (see
+  [Lead](#lead)).
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
