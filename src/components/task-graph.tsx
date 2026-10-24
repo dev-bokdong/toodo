@@ -374,7 +374,13 @@ export function TaskGraph({
   function showLatest(instance: ReactFlowInstance<BarNode>) {
     flow.current = instance;
     const visible = container.current?.clientWidth ?? 0;
-    void instance.setViewport({ x: Math.min(16, visible - layout.width - 16), y: 0, zoom: 1 }).then(() => {
+    const panel = container.current?.clientHeight ?? 0;
+    // Day and Week open on the newest work: the last row at the bottom, the Now line at the left edge.
+    const nowX = scale === "day" || scale === "week" ? layout.nowX : null;
+    const viewport = nowX !== null
+      ? { x: 16 - nowX, y: Math.min(0, panel - height - 8), zoom: 1 }
+      : { x: Math.min(16, visible - layout.width - 16), y: 0, zoom: 1 };
+    void instance.setViewport(viewport).then(() => {
       if (pendingReveal.current !== null) {
         reveal(pendingReveal.current, true);
         pendingReveal.current = null;
