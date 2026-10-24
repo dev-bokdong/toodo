@@ -229,6 +229,28 @@ describe("push on this device", () => {
     expect(push.pushActive()).toBe(false);
   });
 
+  it("leaves to the server only the alerts it pushes for this device's settings", async () => {
+    const browser = browserSubscription("https://push.example/a");
+    installServiceWorker(browser);
+    const all = { ...settings, pullRequests: true };
+    serve({
+      "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings } }),
+      "PUT /api/push/settings": () => json({ endpoint: browser.endpoint, settings: all }),
+      "DELETE /api/push/subscription": () => json(null),
+    });
+    const push = await freshPush();
+    const covered = (...titles: string[]) => titles.map((title) => push.pushCovers(title));
+    const titles = ["Agent needs input", "CI failed", "Task awaiting completion", "Task paused by a new prerequisite", "Task done"];
+
+    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+    await push.getPushState();
+    expect(covered(...titles)).toEqual([true, false, true, false, false]);
+    await push.saveSettings(all);
+    expect(covered(...titles)).toEqual([true, true, true, false, false]);
+    await push.disablePush();
+    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+  });
+
   it("saves the settings of this device", async () => {
     const fetch = serve({ "PUT /api/push/settings": () => json({ endpoint: "https://push.example/a", settings }) });
     const push = await freshPush();

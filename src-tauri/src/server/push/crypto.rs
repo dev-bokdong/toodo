@@ -30,8 +30,13 @@ const RECORD_SIZE: u32 = 4096;
 
 const TAG_LEN: usize = 16;
 
-/// The largest plaintext that fits in one record.
-pub const MAX_PLAINTEXT: usize = RECORD_SIZE as usize - TAG_LEN - 1;
+/// The header before the record: salt, record size, key id length, and the key id (the
+/// sender's uncompressed P-256 public key).
+const HEADER_LEN: usize = 16 + 4 + 1 + P256DH_LEN;
+
+/// The largest plaintext of a message push services must accept: 4096 bytes in all,
+/// header included (RFC 8291, section 4), which leaves 3993.
+pub const MAX_PLAINTEXT: usize = 4096 - HEADER_LEN - TAG_LEN - 1;
 
 /// The application server's signing key, kept as PKCS#8 in a file only the owner can read.
 pub struct VapidKey {
@@ -301,6 +306,23 @@ mod tests {
             br#"{"title":"Hi"}"#
         );
         assert!(encrypt(&ua_public, &auth, &vec![b'x'; MAX_PLAINTEXT + 1]).is_err());
+    }
+
+    /// Push services need only accept 4096-byte messages (RFC 8030, section 7.2), header
+    /// included (RFC 8291, section 4).
+    #[test]
+    fn the_longest_message_fits_in_4096_bytes() {
+        let rng = SystemRandom::new();
+        let receiver =
+            agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).unwrap();
+        let ua_public: [u8; P256DH_LEN] = receiver
+            .compute_public_key()
+            .unwrap()
+            .as_ref()
+            .try_into()
+            .unwrap();
+        let message = encrypt(&ua_public, &[3; AUTH_LEN], &vec![b'x'; MAX_PLAINTEXT]).unwrap();
+        assert_eq!(message.len(), 4096);
     }
 
     #[test]

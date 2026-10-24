@@ -43,11 +43,32 @@ export function pushSupport(): PushSupport {
   return apple && !installed ? "needs-install" : "unsupported";
 }
 
-let active = false;
+/** The settings of this device's subscription, null while the server does not push to it. */
+let pushed: PushSettings | null = null;
 
-/** Whether the server pushes alerts to this device, so the page need not show them as well. */
+/** Whether the server pushes alerts to this device. */
 export function pushActive(): boolean {
-  return active;
+  return pushed !== null;
+}
+
+/**
+ * The titles of the alerts the page also raises, by the setting that has the server push them
+ * (see `src-tauri/src/server/push/alerts.rs`). Every other alert only the page shows.
+ */
+const pushedTitles: Record<keyof PushSettings, readonly string[]> = {
+  agent: ["Agent needs input", "Agent finished"],
+  pullRequests: ["CI failed", "CI passed", "Changes requested", "Pull request approved"],
+  completion: ["Task awaiting completion"],
+};
+
+/** Whether the server pushes the alert titled `title` to this device, so the page need not show it as well. */
+export function pushCovers(title: string): boolean {
+  return (
+    pushed !== null &&
+    (Object.keys(pushedTitles) as (keyof PushSettings)[]).some(
+      (kind) => pushed?.[kind] === true && pushedTitles[kind].includes(title),
+    )
+  );
 }
 
 export function decodeBase64Url(text: string): Uint8Array<ArrayBuffer> {
@@ -108,7 +129,7 @@ export async function getPushState(): Promise<PushState> {
       : browser.endpoint === server.subscription?.endpoint
         ? server.subscription
         : await sendSubscription(browser);
-  active = subscription !== null;
+  pushed = subscription?.settings ?? null;
   return { publicKey: server.publicKey, permission: Notification.permission, subscription };
 }
 
@@ -133,7 +154,7 @@ export async function enablePush(
     (await pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }));
   try {
     const sent = await sendSubscription(subscription);
-    active = true;
+    pushed = sent.settings;
     return sent;
   } catch (error) {
     // A subscription the server refused would be sent again, and refused, on every start.
@@ -149,7 +170,7 @@ export async function enablePush(
 export async function disablePush(): Promise<void> {
   const subscription = await (await registration())?.pushManager.getSubscription();
   await subscription?.unsubscribe();
-  active = false;
+  pushed = null;
   await apiRequest("/api/push/subscription", { method: "DELETE" });
 }
 
@@ -159,7 +180,9 @@ export async function saveSettings(settings: PushSettings): Promise<ServerSubscr
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
   });
-  return (await response.json()) as ServerSubscription;
+  const saved = (await response.json()) as ServerSubscription;
+  pushed = saved.settings;
+  return saved;
 }
 
 export async function sendTest(): Promise<void> {
