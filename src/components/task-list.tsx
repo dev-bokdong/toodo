@@ -2031,7 +2031,7 @@ function NewTaskForm({
       <div className="flex gap-2">
         <select
           aria-label="Task type"
-          className={cn(inputClass, "w-28 font-mono")}
+          className={cn(inputClass, "w-28 shrink-0 font-mono")}
           value={taskType}
           onChange={(e) => setTaskType(e.target.value as TaskType)}
         >
@@ -2042,7 +2042,7 @@ function NewTaskForm({
           ))}
         </select>
         <input
-          className={inputClass}
+          className={cn(inputClass, "min-w-0")}
           placeholder="Task title"
           aria-label="Task title"
           value={title}
