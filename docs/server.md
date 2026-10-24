@@ -239,13 +239,22 @@ browser asks for `web-token` and a device name once, registers itself as a devic
 keeps its device token in local storage.
 
 It is an installable web app (PWA): browsers offer to install it from the server URL, and
-it then opens in its own window. Browsers install web apps only from a secure origin:
+it then opens in its own window. The app offers it as well: a banner installs it in
+browsers that can (Chrome, Edge), and on iPhone and iPad it explains *Share > Add to Home
+Screen*; dismissing the banner hides it on that browser for good. Browsers install web apps only from a secure origin:
 `https://`, or `http://127.0.0.1` and `http://localhost`. The build carries a web app
 manifest (`/manifest.webmanifest`, icons under `/pwa/`) and a service worker (`/sw.js`)
 that caches the app shell, the built HTML, scripts, styles, and icons, so the app starts
 without the network. It never caches or answers `/api` or `/mcp`: everything the app
 shows comes from the server. Each build has its own cache, which replaces the previous
 one once no window uses it any more.
+
+When the server does not answer (it is down, the device is offline, or a proxy in front of
+it answers with its own 502-504 or 520-530 error page), the app shows an offline screen
+over itself instead of a broken page, and the service worker starts the cached app instead
+of showing such an error page. The app checks again after 2 s, doubling up to 30 s, at
+once when the device comes back online or the app is shown again, and on *Try again*;
+once the server answers, the screen goes away and everything is loaded again.
 
 On the server, "Local" is the server itself, so the web app browses the server's
 directories (from the server user's home) when you pick a folder for a workspace. Reports

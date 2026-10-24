@@ -5,6 +5,7 @@ import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { DevicesPanel } from "@/components/devices-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
+import { InstallBanner } from "@/components/install-banner";
 import { MemoryPanel } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
 import { NotificationsPanel } from "@/components/notifications-panel";
@@ -155,7 +156,7 @@ export default function App() {
           <span className="font-semibold tracking-tight">Toodo</span>
         </header>
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
-          {!runsOnServer && <UpdateBanner />}
+          {runsOnServer ? <InstallBanner /> : <UpdateBanner />}
           <HerdrBanner />
           {reviewing ? (
             <Review />
