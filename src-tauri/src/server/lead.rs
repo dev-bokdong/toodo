@@ -13,8 +13,10 @@
 //! Claude Code that read the token from the environment, so no file in it holds the token.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, io, thread};
 
 use serde_json::{Value, json};
@@ -46,6 +48,8 @@ const MCP_SERVER: &str = "toodo";
 const TOKEN_VARIABLE: &str = "TOODO_MCP_TOKEN";
 
 const CHECK_PERIOD: Duration = Duration::from_secs(5);
+/// How long a stopping server waits for a check in progress to finish.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Seconds a launched agent has to show up in the pane's foreground.
 const START_GRACE: i64 = 20;
 /// Seconds after which a running agent no longer counts as a failed start.
@@ -356,29 +360,72 @@ impl Supervisor {
 
 /// Checks the lead every few seconds on a thread of its own, publishing its status in
 /// `services` and as a [`LEAD_CHANGED`] event whenever it changes.
-pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<()> {
-    thread::Builder::new()
+pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<Checks> {
+    every(CHECK_PERIOD, move || {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                elapsed.as_secs().try_into().unwrap_or(i64::MAX)
+            });
+        let status = supervisor.check(&services.storage, &services.git, &services.herdr, now);
+        if let Some(previous) = publish(&services.lead, &status) {
+            if (previous.state, &previous.error) != (status.state, &status.error) {
+                let reason = status.error.as_deref().unwrap_or("");
+                println!("toodo-server: lead {:?} {reason}", status.state);
+            }
+            services.emit(LEAD_CHANGED, &status);
+        }
+    })
+}
+
+/// The thread that checks the lead, until it is stopped.
+pub struct Checks {
+    stopped: Arc<AtomicBool>,
+    thread: thread::Thread,
+    /// Disconnects when the thread ends.
+    ended: mpsc::Receiver<()>,
+}
+
+impl Checks {
+    /// Stops the checks, waiting up to `timeout` for one in progress to finish so that the
+    /// published status names every herdr workspace a check opened. Returns whether the
+    /// thread ended in time.
+    pub fn stop(&self, timeout: Duration) -> bool {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.thread.unpark();
+        matches!(
+            self.ended.recv_timeout(timeout),
+            Err(RecvTimeoutError::Disconnected)
+        )
+    }
+}
+
+/// Runs `check` on a thread of its own, then again `period` after each run, until stopped.
+fn every(period: Duration, mut check: impl FnMut() + Send + 'static) -> io::Result<Checks> {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let (end, ended) = mpsc::channel::<()>();
+    let stop = stopped.clone();
+    let handle = thread::Builder::new()
         .name("lead".to_owned())
         .spawn(move || {
-            loop {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |elapsed| {
-                        elapsed.as_secs().try_into().unwrap_or(i64::MAX)
-                    });
-                let status =
-                    supervisor.check(&services.storage, &services.git, &services.herdr, now);
-                if let Some(previous) = publish(&services.lead, &status) {
-                    if (previous.state, &previous.error) != (status.state, &status.error) {
-                        let reason = status.error.as_deref().unwrap_or("");
-                        println!("toodo-server: lead {:?} {reason}", status.state);
+            let _end = end;
+            while !stop.load(Ordering::SeqCst) {
+                check();
+                let next = Instant::now() + period;
+                while !stop.load(Ordering::SeqCst) {
+                    let left = next.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
                     }
-                    services.emit(LEAD_CHANGED, &status);
+                    thread::park_timeout(left);
                 }
-                thread::sleep(CHECK_PERIOD);
             }
         })?;
-    Ok(())
+    Ok(Checks {
+        stopped,
+        thread: handle.thread().clone(),
+        ended,
+    })
 }
 
 /// Closes the lead's herdr workspace (and with it the agent) when the server stops, so a
@@ -487,18 +534,28 @@ fn claude_mcp(url: &str) -> Value {
     })
 }
 
-/// Sets this server's entry in the MCP configuration at `file`, keeping other servers.
+/// Sets this server's entry in the MCP configuration at `file`, keeping other servers. A
+/// file that is not a JSON object with an object `mcpServers` (say, one with comments) is
+/// left alone and reported, rather than replaced along with the servers it lists.
 fn merge_mcp_config(file: &Path, server: Value) -> io::Result<()> {
+    let unreadable = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a JSON object with an object mcpServers; fix or remove it",
+        )
+    };
     let mut config = match fs::read_to_string(file) {
         Ok(text) => serde_json::from_str::<Value>(&text)
             .ok()
             .filter(Value::is_object)
-            .unwrap_or_else(|| json!({})),
+            .ok_or_else(unreadable)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => json!({}),
         Err(error) => return Err(error),
     };
-    if !config.get("mcpServers").is_some_and(Value::is_object) {
-        config["mcpServers"] = json!({});
+    match config.get("mcpServers") {
+        None => config["mcpServers"] = json!({}),
+        Some(servers) if servers.is_object() => {}
+        Some(_) => return Err(unreadable()),
     }
     config["mcpServers"][MCP_SERVER] = server;
     if let Some(parent) = file.parent() {
@@ -680,6 +737,41 @@ mod tests {
             read(&claude)["mcpServers"]["toodo"]["headers"]["Authorization"],
             "Bearer ${TOODO_MCP_TOKEN}"
         );
+    }
+
+    #[test]
+    fn an_mcp_configuration_that_is_not_plain_json_is_reported_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("comments.json", "// mine\n{\"mcpServers\":{\"docs\":{}}}\n"),
+            ("servers.json", "{\"mcpServers\":[\"docs\"]}"),
+        ] {
+            let file = dir.path().join(name);
+            fs::write(&file, text).unwrap();
+            let error = merge_mcp_config(&file, omo_mcp("http://127.0.0.1:1/mcp")).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{name}");
+            assert_eq!(fs::read_to_string(&file).unwrap(), text, "{name}");
+        }
+    }
+
+    #[test]
+    fn stopping_the_checks_waits_for_the_one_in_progress_and_runs_no_more() {
+        let (entered, check_entered) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let runs = Arc::new(Mutex::new(0));
+        let counted = runs.clone();
+        let checks = every(Duration::ZERO, move || {
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            *counted.lock().unwrap() += 1;
+        })
+        .unwrap();
+        check_entered.recv().unwrap();
+        // The check cannot finish before it is released.
+        assert!(!checks.stop(Duration::from_millis(50)));
+        release.send(()).unwrap();
+        assert!(checks.stop(Duration::from_secs(60)));
+        assert_eq!(*runs.lock().unwrap(), 1);
     }
 
     fn herdr_output(json: Value) -> Result<String, crate::adapters::git::GitError> {

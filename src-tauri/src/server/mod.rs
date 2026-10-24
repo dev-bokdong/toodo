@@ -318,12 +318,15 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     });
     push::spawn(services.clone())?;
     events::spawn(services.clone())?;
-    if let Some(lead) = config.lead.clone() {
-        let data_dir = std::fs::canonicalize(&config.data_dir)?;
-        let supervisor =
-            lead::Supervisor::new(lead, data_dir, services.mcp.url.clone(), mcp_token.clone());
-        lead::spawn(services.clone(), supervisor)?;
-    }
+    let lead_checks = match config.lead.clone() {
+        Some(lead) => {
+            let data_dir = std::fs::canonicalize(&config.data_dir)?;
+            let supervisor =
+                lead::Supervisor::new(lead, data_dir, services.mcp.url.clone(), mcp_token.clone());
+            Some(lead::spawn(services.clone(), supervisor)?)
+        }
+        None => None,
+    };
     backup::spawn(services.clone())?;
     completion::spawn(services.clone())?;
     tunnels::spawn(services.clone(), services.tunnels.clone())?;
@@ -358,7 +361,13 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .shut_down();
-    lead::close(&services.lead, &services.herdr);
+    // Stop the checks first: one in progress may be opening the lead's workspace.
+    if let Some(checks) = lead_checks {
+        if !checks.stop(lead::STOP_TIMEOUT) {
+            eprintln!("toodo-server: the lead's check is still running; closing its workspace");
+        }
+        lead::close(&services.lead, &services.herdr);
+    }
     Ok(served?)
 }
 

@@ -221,7 +221,8 @@ the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
   after three such exits in a row the lead is reported `failed`. A closed pane or herdr
   workspace is opened again. After a server restart an agent still running in the pane
   is kept, not started a second time. When the server stops (Ctrl+C or SIGTERM) it
-  closes the lead's herdr workspace, ending the agent; the next start opens it again.
+  stops checking, waiting up to 10 s for a check in progress, then closes the lead's
+  herdr workspace, ending the agent; the next start opens it again.
 - **Command.** The server writes `lead-start` (owner-only, `0600`) and `lead-prompt.md`
   to the data directory and types `sh <data dir>/lead-start` into the pane. The launcher
   exports `TOODO_MCP_URL`, `TOODO_MCP_TOKEN`, `TOODO_LEAD_MODEL`, `TOODO_LEAD_PROMPT`
@@ -238,7 +239,8 @@ the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
 - **MCP.** The server writes this server's entry, named `toodo`, into the workspace's
   `.omo/mcp.json` (omo, `bearerTokenEnv`) and `.mcp.json` (Claude Code, an
   `Authorization` header with `${TOODO_MCP_TOKEN}`), keeping other servers in those
-  files. Neither file holds the token, which only the launcher's environment carries, so
+  files. A file that is not plain JSON (comments included) is left alone and the lead is
+  reported `failed` until it is fixed or removed. Neither file holds the token, which only the launcher's environment carries, so
   the lead reaches its own server even when another Toodo server uses a different token.
   A `toodo` server in the agent's global configuration takes precedence over the project
   one in omo; remove it, or point it at this server, on the machine the lead runs on.
