@@ -6,9 +6,10 @@ describe("ConnectionGate", () => {
     vi.unstubAllGlobals();
   });
 
-  it("covers the app while the server is unreachable and uncovers it once it answers", async () => {
+  it("warns while the server is unreachable, pauses data changes, and clears once it answers", async () => {
     vi.resetModules();
     const { serverFetch } = await import("@/web/connection");
+    const { Button } = await import("@/components/ui/button");
     const { ConnectionGate } = await import("@/components/offline-screen");
     let up = false;
     vi.stubGlobal(
@@ -21,6 +22,8 @@ describe("ConnectionGate", () => {
     render(
       <ConnectionGate>
         <input aria-label="Draft" defaultValue="typed before the outage" />
+        <Button changesData>Save</Button>
+        <Button>Look</Button>
       </ConnectionGate>,
     );
 
@@ -28,14 +31,18 @@ describe("ConnectionGate", () => {
       await serverFetch("/api/rpc/list_tasks").catch(() => {});
     });
 
-    const dialog = await screen.findByRole("alertdialog", { name: "Can't reach the Toodo server" });
-    expect(screen.getByLabelText("Draft").closest("[inert]")).not.toBeNull();
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent("Can't reach the Toodo server");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Look" })).toBeEnabled();
 
     up = true;
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry now" }));
 
-    await vi.waitFor(() => expect(dialog).not.toBeInTheDocument());
-    expect(screen.getByLabelText("Draft")).toHaveValue("typed before the outage");
-    expect(screen.getByLabelText("Draft").closest("[inert]")).toBeNull();
+    await vi.waitFor(() => expect(banner).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Draft")).toHaveValue(
+      "typed before the outage",
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });
 });
