@@ -5,9 +5,12 @@ This document describes how a task moves from planning to a pull request.
 ## Task States
 
 ```
-          Start / Resume          Open PR             merged
+          Start / Resume        Open PR, or all          criteria met
+                                criteria met with        (+ confirm when
+                                a manual one             one is manual)
 planned -----------------> in_progress ---------> in_review ---------> done (merged)
-   ^                           |                      |
+   ^                           |   |                  |
+   |                           |   +-- all criteria met, all automatic --> done (merged)
    +------------ Pause --------+----------------------+
                                |                      |
                                +------ Conclude ------+---------------> done (not_adopted)
@@ -17,8 +20,8 @@ planned -----------------> in_progress ---------> in_review ---------> done (mer
 | --- | --- |
 | `planned` | Nobody works on the task: it was not started yet, or it was paused. |
 | `in_progress` | A worktree exists and implementation is happening in herdr. |
-| `in_review` | The task branch is pushed and its pull request is open, waiting to be merged. |
-| `done` | Finished. Its `resolution` says how: `merged` (the pull request is merged; dependents can start from the updated base branch) or `not_adopted` (concluded without merging, see step 7b; dependents stay blocked). |
+| `in_review` | Awaiting completion, shown as "Awaiting completion": the task's pull request is open, waiting for its merge, or every completion criterion is met and one of them is manual, waiting for someone to confirm it. |
+| `done` | Finished. Its `resolution` says how: `merged` (its completion criteria are met, e.g. its pull request is merged; dependents can start from the updated base branch) or `not_adopted` (concluded without merging, see step 7b; dependents stay blocked). |
 
 Whether a `planned` task can be started is not a state: it can be started once every
 task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**), and its dependencies can change while it
@@ -56,6 +59,68 @@ Every state change is recorded with its time in the task's status history, which
 the timeline view and year-end reports (see
 [architecture.md](architecture.md#task-timeline)).
 
+## Completion Criteria
+
+A task is done when its completion criteria are met, not only when a pull request is
+merged, so research and errands fit too. Criteria are structured data on the task (the
+`task_criteria` table), never parsed from its description. Each has a text, a check kind,
+a state (`pending`, `met`, or `failed`), the evidence of its last check, and who checked
+it when (`user`, `agent`, or `toodo`):
+
+| Kind | Checked by | Met when |
+| --- | --- | --- |
+| `manual` | the user in the app, or an agent through MCP (`check_criterion`, evidence required) | someone checks it |
+| `pr_merged` | Toodo | the task's pull request is merged into the base branch |
+| `pr_open_ci_green` | Toodo | the task's pull request is open and all its checks passed (or it is merged) |
+| `branch_merged_locally` | Toodo | the task branch has commits since it started and the local base branch contains it |
+| `url` | Toodo | `curl --fail --location` of its target, an http(s) URL, succeeds |
+| `command` | Toodo | its target, a shell command, exits with status 0 in the task worktree (`cmd.exe` for Windows paths, `sh` elsewhere, over `ssh` for SSH workspaces) |
+
+Criteria are set when the task is created, in the app or through MCP (`create_task`), and
+can be edited later (`update_task`) until the task is done: a kept criterion keeps its
+state unless its kind or target changes. Unless its author opts out, a new task gets the
+merge criterion first: `pr_merged` when the repository has an `origin` remote,
+`branch_merged_locally` otherwise. `branch_merged_locally` keeps the commit the branch
+started from (read when Toodo creates the branch, or the fork point once the branch is
+ahead of its base), so a branch nobody committed to does not count as merged.
+
+Toodo checks the automatic criteria of every `in_progress` and `in_review` task in the
+background check (step 7), once a minute, and when a task is completed. A met automatic
+criterion stays met. A `command` criterion runs only once every other criterion is met, or
+when the task is completed, so a slow command does not run every minute while the work
+goes on. A failed check marks its criterion `failed` with the reason as evidence and is
+retried; a pull request that cannot be read changes nothing, as before.
+
+The transition rule:
+
+- Every criterion met and all of them automatic: the task is `done` right away (step 7).
+- Every criterion met and one of them manual: an `in_progress` task moves to
+  `in_review` and awaits completion until someone confirms it ("Confirm completion" in
+  the app, or `complete_task`). Unchecking a criterion afterwards keeps it there;
+  confirming needs every criterion met.
+- A task without criteria is completed only by confirming it.
+
+Completing a task ("Complete"/"Confirm completion", `complete_task`) re-checks its
+automatic criteria first and is rejected with the criteria that are not met. Done tasks
+keep their criteria as a record; they cannot change.
+
+When the database was migrated to criteria, every existing task got the `pr_merged`
+criterion (met for tasks done as merged), followed by the `- [ ]` and `- [x]` items of the
+`## Done when` section of its description as manual criteria, checked items met. The
+description itself stays as it was. A task of a workspace without `origin` that was
+created before can switch its merge criterion to `branch_merged_locally` by editing it.
+
+## Workspaces Without a Remote
+
+Every workspace is a git repository, but it does not need an `origin` remote. Without
+one Toodo uses local git only: task branches start from the local base branch (step 3),
+nothing is pushed, no pull request is opened, and `gh` never runs. The task's
+`branch_merged_locally` criterion is met once the task branch is merged into the base
+branch in the repository itself (`git merge` there, by the user or by an agent whose
+workspace allows agents to merge), which completes the task. Concluding (step 7b) works
+the same, without the pull request lookup. "Open PR" is rejected because there is no
+GitHub repository to open it on.
+
 ## Lifecycle
 
 ### 1. Register a workspace
@@ -67,6 +132,11 @@ machine (its SSH target plus POSIX path), and one of two sources:
   empty directory.
 - **Open**: the path already holds a cloned repository. Toodo checks it with
   `git rev-parse --show-toplevel` and records the repository root.
+- **Init**: the path is a plain folder, or does not exist yet. Toodo runs
+  `git init --initial-branch=<base> <path>` (`main` unless the user entered a base branch)
+  and records the repository root. The repository has no remote, so its tasks use local
+  git only (see Workspaces Without a Remote); its first task start creates the
+  `Initial commit` (step 3).
 
 A remote machine is added once from the sidebar: the user picks a host from `~/.ssh/config`
 (or adds a new `Host` entry) and Toodo runs `herdr machine add <host>` in a console window
@@ -222,7 +292,12 @@ check on it passed.
 
 ### 7. Complete the task
 
-When the user completes an `in_review` task, Toodo reads the state, base branch, and
+A task completes when its completion criteria are met (see Completion Criteria). For the
+default `pr_merged` criterion this is the pull request flow below; other criteria are
+checked the same way, and a task without a pull request records the commits of its
+branch since it started instead of a pull request snapshot.
+
+When the user completes an `in_review` task with a pull request, Toodo reads the state, base branch, and
 merge time of its pull request (`gh pr view <url> --json url,state,baseRefName,mergedAt`). A pull request into
 another branch than the workspace base branch is rejected. Only a merged pull request
 completes the task. Toodo first reads what reviews need about it (`gh pr view <url> --json

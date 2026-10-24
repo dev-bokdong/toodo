@@ -96,7 +96,7 @@ A unit of work inside a workspace.
 | `estimate` | Optional expected size: an amount greater than 0 in `hours`, `days` (24 hours), `weeks` (7 days), or `months` (30 days) of active work. Reviews compare it with the task's active time. |
 | `dueDate` | Optional calendar day (`YYYY-MM-DD`) the task should be done by. It is met when the task is completed before the end of that day in local time. |
 | `status` | See [workflow.md](workflow.md#task-states). |
-| `resolution` | How a `done` task ended: `merged` (completed by its merged pull request) or `not_adopted` (concluded without merging); `null` for every other status. Tasks done before Toodo recorded it are `merged`. |
+| `resolution` | How a `done` task ended: `merged` (completed once its completion criteria were met, e.g. by its merged pull request) or `not_adopted` (concluded without merging); `null` for every other status. Tasks done before Toodo recorded it are `merged`. |
 | `dependsOn` | IDs of tasks that must be completed first. |
 | `branch` | Branch created for the task's worktree. |
 | `worktreePath` | Directory of the task's worktree. |
@@ -107,6 +107,7 @@ A unit of work inside a workspace.
 | `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
 | `mergedWith` | For a task `done` as merged through the pull request of another task (see [workflow.md](workflow.md#7c-complete-through-another-tasks-pull-request)): that pull request's URL and the task that owns it (`null` once that task is deleted); `null` otherwise. |
 | `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
+| `criteria` | Completion criteria in order: text, check kind (`manual`, `pr_merged`, `pr_open_ci_green`, `branch_merged_locally`, `url`, `command`), target (URL or command), state (`pending`, `met`, `failed`), evidence, and who checked it when. Stored in `task_criteria`; see [workflow.md](workflow.md#completion-criteria). |
 | `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
 
 ### Task Timeline
@@ -131,7 +132,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   | --- | --- |
   | `plannedAt` | The first event (task creation). |
   | `startedAt` | The first move to `in_progress`; resuming a paused task keeps it. |
-  | `reviewAt` | The first move to `in_review` (pull request opened). |
+  | `reviewAt` | The first move to `in_review` (pull request opened, or every criterion met with a manual one awaiting confirmation). |
   | `completedAt` | The move to `done`. |
   | `pausedAt` | The latest move back to `planned` after `startedAt`, cleared when the task is started again. |
 

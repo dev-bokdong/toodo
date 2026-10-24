@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    BackupSettings, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost, NewTask,
-    NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId,
+    BackupSettings, CriterionId, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost,
+    NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
@@ -201,7 +201,12 @@ commands!(s => {
 
     "list_tasks"() => sync Reply::result(tasks::list_tasks(State(&s.storage)));
     "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(&s.storage), id));
-    "create_task"(task: NewTask) => sync Reply::result(tasks::create_task(State(&s.storage), task));
+    "create_task"(task: NewTask) => sync Reply::result(
+        tasks::create_task(State(&s.storage), State(&s.git), task)
+    );
+    "check_criterion"(task_id: TaskId, criterion_id: CriterionId, met: bool, evidence: Option<String>) => sync Reply::result(
+        tasks::check_criterion(State(&s.storage), task_id, criterion_id, met, evidence)
+    );
     "update_task"(task: TaskEdit) => sync Reply::result(tasks::update_task(State(&s.storage), task));
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
@@ -242,7 +247,7 @@ commands!(s => {
         completion::open_pull_request(State(&s.storage), State(&s.git), State(&s.github), id)
     );
     "complete_task"(id: TaskId) => sync Reply::result(
-        completion::complete_task(State(&s.storage), State(&s.github), State(&s.herdr), id)
+        completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id)
     );
     "conclude_task"(id: TaskId, note: String) => sync Reply::result(
         completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)

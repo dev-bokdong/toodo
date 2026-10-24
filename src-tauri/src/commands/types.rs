@@ -8,7 +8,9 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{git, github, herdr, ssh};
-use crate::domain::{backup, memory, model, path, plan, review, ssh_config, status, timeline};
+use crate::domain::{
+    backup, criteria, memory, model, path, plan, review, ssh_config, status, timeline,
+};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -265,6 +267,9 @@ pub enum WorkspaceSource {
     Open,
     /// Clone `url` into the location, which must not exist or be empty.
     Clone { url: String },
+    /// Make the location, a plain folder or one that does not exist yet, a new git
+    /// repository without a remote.
+    Init,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
@@ -295,6 +300,7 @@ impl TryFrom<NewWorkspace> for WorkspaceSetup {
             location: new.location.try_into()?,
             source: match new.source {
                 WorkspaceSource::Open => WorkspaceSource::Open,
+                WorkspaceSource::Init => WorkspaceSource::Init,
                 WorkspaceSource::Clone { url } => WorkspaceSource::Clone {
                     url: required("repository URL", url)?,
                 },
@@ -632,6 +638,159 @@ pub struct Task {
     pub milestones: TaskMilestones,
     /// Notes agents left on the task through the MCP server, oldest first.
     pub notes: Vec<TaskNote>,
+    /// What has to hold for the task to be done, in order.
+    pub criteria: Vec<Criterion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(transparent)]
+pub struct CriterionId(#[specta(type = Number)] pub i64);
+
+impl From<CriterionId> for criteria::CriterionId {
+    fn from(id: CriterionId) -> Self {
+        Self(id.0)
+    }
+}
+
+/// How a completion criterion is checked: by hand (`manual`) or by Toodo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckKind {
+    /// Checked by the user or an agent, with evidence.
+    Manual,
+    /// The task's pull request is merged into the workspace base branch.
+    PrMerged,
+    /// The task's pull request is open and all its checks passed.
+    PrOpenCiGreen,
+    /// The task branch is merged into the base branch in the repository itself, for
+    /// workspaces without an `origin` remote.
+    BranchMergedLocally,
+    /// A GET of `target`, an http(s) URL, succeeds.
+    Url,
+    /// `target`, a shell command, exits with status 0 in the task worktree.
+    Command,
+}
+
+impl From<CheckKind> for criteria::CheckKind {
+    fn from(kind: CheckKind) -> Self {
+        match kind {
+            CheckKind::Manual => Self::Manual,
+            CheckKind::PrMerged => Self::PullRequestMerged,
+            CheckKind::PrOpenCiGreen => Self::PullRequestOpenChecksPassed,
+            CheckKind::BranchMergedLocally => Self::BranchMergedLocally,
+            CheckKind::Url => Self::Url,
+            CheckKind::Command => Self::Command,
+        }
+    }
+}
+
+impl From<criteria::CheckKind> for CheckKind {
+    fn from(kind: criteria::CheckKind) -> Self {
+        match kind {
+            criteria::CheckKind::Manual => Self::Manual,
+            criteria::CheckKind::PullRequestMerged => Self::PrMerged,
+            criteria::CheckKind::PullRequestOpenChecksPassed => Self::PrOpenCiGreen,
+            criteria::CheckKind::BranchMergedLocally => Self::BranchMergedLocally,
+            criteria::CheckKind::Url => Self::Url,
+            criteria::CheckKind::Command => Self::Command,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionState {
+    Pending,
+    Met,
+    /// The last automatic check failed, e.g. a command exited with an error; Toodo checks
+    /// it again.
+    Failed,
+}
+
+impl From<criteria::CriterionState> for CriterionState {
+    fn from(state: criteria::CriterionState) -> Self {
+        match state {
+            criteria::CriterionState::Pending => Self::Pending,
+            criteria::CriterionState::Met => Self::Met,
+            criteria::CriterionState::Failed => Self::Failed,
+        }
+    }
+}
+
+/// Who checked a criterion last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckedBy {
+    User,
+    Agent,
+    Toodo,
+}
+
+impl From<criteria::CheckedBy> for CheckedBy {
+    fn from(by: criteria::CheckedBy) -> Self {
+        match by {
+            criteria::CheckedBy::User => Self::User,
+            criteria::CheckedBy::Agent => Self::Agent,
+            criteria::CheckedBy::Toodo => Self::Toodo,
+        }
+    }
+}
+
+/// A completion criterion of a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Criterion {
+    pub id: CriterionId,
+    pub text: String,
+    pub kind: CheckKind,
+    /// The URL or command to check; for `branch_merged_locally`, the commit the branch
+    /// started from once Toodo knows it.
+    pub target: Option<String>,
+    pub state: CriterionState,
+    /// What showed the last check's result, or why it failed.
+    pub evidence: Option<String>,
+    pub checked_by: Option<CheckedBy>,
+    pub checked_at: Option<Timestamp>,
+}
+
+impl From<&criteria::Criterion> for Criterion {
+    fn from(criterion: &criteria::Criterion) -> Self {
+        Self {
+            id: CriterionId(criterion.id.0),
+            text: criterion.text.clone(),
+            kind: criterion.kind.into(),
+            target: criterion.target.clone(),
+            state: criterion.state.into(),
+            evidence: criterion.evidence.clone(),
+            checked_by: criterion.checked_by.map(CheckedBy::from),
+            checked_at: criterion.checked_at.map(Timestamp),
+        }
+    }
+}
+
+/// A completion criterion given when creating or editing a task: an existing one by `id`
+/// (only when editing), or a new one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CriterionInput {
+    /// An existing criterion of the task, which keeps its state unless its kind or
+    /// target changes; omit it for a new criterion.
+    #[serde(default)]
+    pub id: Option<CriterionId>,
+    /// What has to hold, in words, e.g. `The server answers /health`.
+    pub text: String,
+    pub kind: CheckKind,
+    /// The http(s) URL of a `url` criterion or the shell command of a `command`
+    /// criterion; omit it for other kinds.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+impl CriterionInput {
+    pub fn parse(&self) -> CommandResult<criteria::NewCriterion> {
+        criteria::NewCriterion::parse(&self.text, self.kind.into(), self.target.as_deref())
+            .map_err(|error| CommandError::invalid_input(error.to_string()))
+    }
 }
 
 /// The merged pull request of another task that shipped the work of a task.
@@ -808,6 +967,7 @@ impl From<&model::Task> for Task {
                 .collect(),
             milestones: timeline::milestones(&task.timeline).into(),
             notes: map_all(&task.notes),
+            criteria: map_all(&task.criteria),
         }
     }
 }
@@ -858,6 +1018,12 @@ pub struct NewTask {
     pub estimate: Option<Estimate>,
     /// `YYYY-MM-DD`; blank or `null` for none.
     pub due_date: Option<String>,
+    /// Completion criteria in order; an `id` is not allowed here.
+    pub criteria: Vec<CriterionInput>,
+    /// Whether to put the merge criterion first: the task's pull request is merged, or,
+    /// in a repository without an `origin` remote, its branch is merged into the base
+    /// branch locally. Ignored when `criteria` already has one of those.
+    pub merge_criterion: bool,
 }
 
 impl TryFrom<NewTask> for storage::NewTask {
@@ -871,8 +1037,23 @@ impl TryFrom<NewTask> for storage::NewTask {
             description: new.description,
             estimate: estimate(new.estimate)?,
             due_date: due_date(new.due_date.as_deref())?,
+            criteria: new_criteria(&new.criteria)?,
         })
     }
+}
+
+/// The criteria of a new task, which cannot refer to existing ones.
+fn new_criteria(inputs: &[CriterionInput]) -> CommandResult<Vec<criteria::NewCriterion>> {
+    inputs
+        .iter()
+        .map(|input| match input.id {
+            Some(id) => Err(CommandError::invalid_input(format!(
+                "criterion {} cannot be given by id when creating a task",
+                id.0
+            ))),
+            None => input.parse(),
+        })
+        .collect()
 }
 
 /// The fields of a task the user edits directly. Status, dependencies, and the
@@ -888,6 +1069,9 @@ pub struct TaskEdit {
     pub estimate: Option<Estimate>,
     /// `YYYY-MM-DD`; blank or `null` clears the due date.
     pub due_date: Option<String>,
+    /// The new completion criteria in order, which replace the current ones; `null`
+    /// keeps them. The criteria of a done task cannot change.
+    pub criteria: Option<Vec<CriterionInput>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]

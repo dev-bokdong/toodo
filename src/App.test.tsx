@@ -10,6 +10,7 @@ import {
   commands,
   events,
   type CommitRecord,
+  type Criterion,
   type HerdrMachine,
   type MemoryEntry,
   type Task,
@@ -40,6 +41,7 @@ vi.mock("@/lib/bindings", () => ({
     updateTask: vi.fn(),
     pauseTask: vi.fn(),
     setCompletionNote: vi.fn(),
+    checkCriterion: vi.fn(),
     deleteTask: vi.fn(),
     addDependency: vi.fn(),
     removeDependency: vi.fn(),
@@ -135,6 +137,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     resolution: null,
     completionNote: null,
     notes: [],
+    criteria: [],
     timeline: [],
     milestones: {
       plannedAt: null,
@@ -143,6 +146,20 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
       completedAt: null,
       pausedAt: null,
     },
+    ...overrides,
+  };
+}
+
+function criterion(id: number, text: string, overrides: Partial<Criterion> = {}): Criterion {
+  return {
+    id,
+    text,
+    kind: "manual",
+    target: null,
+    state: "pending",
+    evidence: null,
+    checkedBy: null,
+    checkedAt: null,
     ...overrides,
   };
 }
@@ -873,6 +890,32 @@ describe("App", () => {
     });
   });
 
+  it("makes a local folder a new repository", async () => {
+    const notes: Workspace = { ...toodo, id: 3, name: "notes", location: { kind: "local", path: "C:\\dev\\notes" } };
+    mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.createWorkspace.mockResolvedValue({ status: "ok", data: notes });
+    mockedOpenDialog.mockResolvedValue("C:\\dev\\notes");
+    renderApp();
+
+    await screen.findByText("No workspaces yet.");
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [notes] });
+    fireEvent.click(screen.getByRole("button", { name: "Init on Local" }));
+    const form = screen.getByRole("form", { name: "Init workspace on Local" });
+    fireEvent.click(within(form).getByRole("button", { name: "Browse..." }));
+    await waitFor(() => expect(within(form).getByLabelText("Folder")).toHaveValue("C:\\dev\\notes"));
+    expect(within(form).getByLabelText("Name")).toHaveValue("notes");
+    fireEvent.click(within(form).getByRole("button", { name: "Init workspace" }));
+
+    expect(await screen.findByRole("heading", { name: "notes" })).toBeInTheDocument();
+    expect(mocked.createWorkspace).toHaveBeenCalledWith({
+      name: "notes",
+      location: { kind: "local", path: "C:\\dev\\notes" },
+      source: { kind: "init" },
+      defaultBaseBranch: null,
+    });
+  });
+
   it("clones into a folder browsed on an SSH host and selects the workspace", async () => {
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [savedMachine("devbox")] });
@@ -992,8 +1035,47 @@ describe("App", () => {
       description: "",
       estimate: { unit: "weeks", amount: 2.5 },
       dueDate: "2026-11-01",
+      criteria: [],
+      mergeCriterion: true,
     });
     expect(screen.getByLabelText("Estimate")).toHaveValue("");
+  });
+
+  it("creates a task with completion criteria", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.createTask.mockResolvedValue({ status: "ok", data: task(5, 1, "Add search") });
+    await renderWorkspace();
+
+    await screen.findByText("No tasks in this workspace yet.");
+    const form = screen.getByRole("form", { name: "New task" });
+    fireEvent.change(within(form).getByLabelText("Task title"), { target: { value: "Add search" } });
+    expect(within(form).getByRole("checkbox", { name: "Done when merged" })).toBeChecked();
+    const add = within(form).getByRole("button", { name: "Add criterion" });
+    fireEvent.click(add);
+    fireEvent.change(within(form).getByLabelText("Criterion 1 text"), { target: { value: " Docs reviewed " } });
+    fireEvent.click(add);
+    fireEvent.change(within(form).getByLabelText("Criterion 2 text"), { target: { value: "Tests pass" } });
+    expect(within(form).queryByLabelText("Criterion 2 target")).not.toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText("Criterion 2 kind"), { target: { value: "command" } });
+    // A command criterion cannot be added without its command.
+    expect(within(form).getByRole("button", { name: "Add task" })).toBeDisabled();
+    fireEvent.change(within(form).getByLabelText("Criterion 2 target"), { target: { value: "npm test" } });
+    // A row left blank is not sent.
+    fireEvent.click(add);
+    fireEvent.click(within(form).getByRole("button", { name: "Add task" }));
+
+    await waitFor(() => expect(within(form).queryByLabelText("Criterion 1 text")).not.toBeInTheDocument());
+    expect(mocked.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Add search",
+        criteria: [
+          { text: "Docs reviewed", kind: "manual", target: null },
+          { text: "Tests pass", kind: "command", target: "npm test" },
+        ],
+        mergeCriterion: true,
+      }),
+    );
   });
 
   it("links the issue number given with a new task", async () => {
@@ -1444,7 +1526,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    expect(await screen.findByText("Locked while #3 is in review")).toBeInTheDocument();
+    expect(await screen.findByText("Locked while #3 is awaiting completion")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Change base branch" })).toBeDisabled();
   });
 
@@ -1545,6 +1627,7 @@ describe("App", () => {
   it("records commits, opens a pull request, and completes the task once it is merged", async () => {
     const started = task(1, 1, "Add login", {
       status: "in_progress",
+      criteria: [criterion(1, "Pull request merged into the base branch", { kind: "pr_merged" })],
       branch: "feat/add-login-1",
       worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
       herdrWorkspaceId: "w27",
@@ -1571,7 +1654,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open pull request for #1" }));
 
     expect(await screen.findByText(pr)).toBeInTheDocument();
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In review")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Awaiting completion")).toBeInTheDocument();
     expect(await screen.findByText("Fix login redirect")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
     expect(mocked.openPullRequest).toHaveBeenCalledWith(1);
@@ -1628,8 +1711,76 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In review")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Awaiting completion")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
+  });
+
+  it("checks a manual criterion with evidence and unchecks it", async () => {
+    const docs = criterion(7, "Docs reviewed");
+    const started = task(1, 1, "Add search", { status: "in_progress", criteria: [docs] });
+    const checked = {
+      ...started,
+      criteria: [{ ...docs, state: "met" as const, evidence: "Read by Ada", checkedBy: "user" as const, checkedAt: 1760000000 }],
+    };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    mocked.checkCriterion.mockResolvedValue({ status: "ok", data: checked });
+    await renderWorkspace();
+
+    const criteria = await screen.findByRole("list", { name: "Criteria of #1" });
+    const box = () => within(criteria).getByRole("checkbox", { name: "Check criterion 7 of #1" });
+    expect(box()).not.toBeChecked();
+    fireEvent.click(box());
+    // Checking asks for the evidence before anything is saved.
+    expect(mocked.checkCriterion).not.toHaveBeenCalled();
+    fireEvent.change(within(criteria).getByLabelText("Evidence for criterion 7"), {
+      target: { value: " Read by Ada " },
+    });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [checked] });
+    fireEvent.click(within(criteria).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(within(criteria).queryByLabelText("Evidence for criterion 7")).not.toBeInTheDocument());
+    expect(mocked.checkCriterion).toHaveBeenCalledWith(1, 7, true, "Read by Ada");
+    expect(box()).toBeChecked();
+    expect(within(criteria).getByText("Read by Ada")).toBeInTheDocument();
+
+    // Unchecking saves right away.
+    mocked.checkCriterion.mockResolvedValue({ status: "ok", data: started });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    fireEvent.click(box());
+
+    await waitFor(() => expect(box()).not.toBeChecked());
+    expect(mocked.checkCriterion).toHaveBeenLastCalledWith(1, 7, false, null);
+  });
+
+  it("confirms the completion of a task whose criteria are all met", async () => {
+    const met = { state: "met" as const, checkedAt: 1760000000 };
+    const awaiting = task(1, 1, "Add search", {
+      status: "in_review",
+      criteria: [
+        criterion(1, "Branch merged into the base branch locally", {
+          ...met,
+          kind: "branch_merged_locally",
+          checkedBy: "toodo",
+        }),
+        criterion(2, "Docs reviewed", { ...met, checkedBy: "user", evidence: "Read by Ada" }),
+      ],
+    });
+    const done = { ...awaiting, status: "done" as const, resolution: "merged" as const };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [awaiting] });
+    mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
+    await renderWorkspace();
+
+    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    expect(within(tasks).getByText("Awaiting completion")).toBeInTheDocument();
+    expect(within(tasks).queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    fireEvent.click(within(tasks).getByRole("button", { name: "Confirm completion of #1" }));
+
+    expect(await within(tasks).findByText("Done")).toBeInTheDocument();
+    expect(mocked.completeTask).toHaveBeenCalledWith(1);
+    expect(within(tasks).queryByRole("button", { name: "Confirm completion of #1" })).not.toBeInTheDocument();
   });
 
   it("shows which pull request of another task shipped a done task", async () => {
@@ -1868,7 +2019,48 @@ describe("App", () => {
       description: "new",
       estimate: null,
       dueDate: "2026-12-01",
+      criteria: null,
     });
+  });
+
+  it("edits the criteria of a task and keeps the existing ones by ID", async () => {
+    const original = task(1, 1, "Add search", {
+      criteria: [
+        criterion(3, "Pull request merged into the base branch", { kind: "pr_merged" }),
+        criterion(4, "Docs reviewed"),
+      ],
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
+    mocked.updateTask.mockResolvedValue({ status: "ok", data: original });
+    await renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    // The merge criterion keeps its kind.
+    expect(within(form).getByLabelText("Criterion 1 kind of #1")).toBeDisabled();
+    fireEvent.change(within(form).getByLabelText("Criterion 2 text of #1"), {
+      target: { value: "Docs and changelog reviewed" },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "Add criterion to #1" }));
+    fireEvent.change(within(form).getByLabelText("Criterion 3 text of #1"), { target: { value: "Search answers" } });
+    fireEvent.change(within(form).getByLabelText("Criterion 3 kind of #1"), { target: { value: "url" } });
+    fireEvent.change(within(form).getByLabelText("Criterion 3 target of #1"), {
+      target: { value: "https://example.com/search" },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument());
+    expect(mocked.updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 1,
+        criteria: [
+          { id: 3, text: "Pull request merged into the base branch", kind: "pr_merged", target: null },
+          { id: 4, text: "Docs and changelog reviewed", kind: "manual", target: null },
+          { text: "Search answers", kind: "url", target: "https://example.com/search" },
+        ],
+      }),
+    );
   });
 
   it("asks before discarding unsaved edits of a task", async () => {

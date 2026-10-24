@@ -11,7 +11,9 @@ pub enum TaskStatus {
     /// worktree, commit records, and pull request.
     Planned,
     InProgress,
-    /// The task branch is pushed and its pull request is open, waiting to be merged.
+    /// Awaiting completion: the task's pull request is open, waiting for its merge, or
+    /// every completion criterion is met and one of them is manual, waiting for someone to
+    /// confirm it (see [`super::criteria`]).
     InReview,
     /// Finished: its pull request was merged, or the work was concluded without merging
     /// (see [`super::model::TaskResolution`]).
@@ -51,6 +53,13 @@ impl TaskStatus {
                 to: Self::Done,
             }),
         }
+    }
+
+    /// Completes a task that is being worked on once its completion criteria are met: a
+    /// task whose criteria Toodo checks on its own can be done straight from
+    /// `in_progress`, e.g. a branch merged locally.
+    pub fn complete(self) -> Result<Self, TransitionError> {
+        self.conclude()
     }
 
     pub fn transition_to(self, next: Self) -> Result<Self, TransitionError> {

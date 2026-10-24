@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
+use crate::domain::criteria::NewCriterion;
 use crate::domain::dag;
 use crate::domain::model::{
     CommitRecord, HostPath, LinkedIssue, MergedWith, NoteKind, PullRequestSnapshot, Task, TaskId,
@@ -24,6 +25,8 @@ pub struct NewTask {
     pub description: String,
     pub estimate: Option<Estimate>,
     pub due_date: Option<DueDate>,
+    /// What has to hold for the task to be done, in order.
+    pub criteria: Vec<NewCriterion>,
 }
 
 /// The dependent task after [`Storage::add_dependencies`], and whether the new
@@ -193,6 +196,7 @@ impl TaskRow {
         depends_on: BTreeSet<TaskId>,
         timeline: Vec<TaskEvent>,
         notes: Vec<TaskNote>,
+        criteria: Vec<crate::domain::criteria::Criterion>,
     ) -> Result<Task> {
         let worktree_path = match (self.worktree_path, self.workspace_kind.as_str()) {
             (None, _) => None,
@@ -232,6 +236,7 @@ impl TaskRow {
                 .map_err(invalid_data)?,
             timeline,
             notes,
+            criteria,
         })
     }
 }
@@ -300,18 +305,26 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
         });
     }
 
+    let mut criteria = super::criteria::load(conn, filter, parameter)?;
+
     rows.into_iter()
         .map(|row| {
             let dependencies = depends_on.remove(&row.id).unwrap_or_default();
             let timeline = timelines.remove(&row.id).unwrap_or_default();
             let task_notes = notes.remove(&row.id).unwrap_or_default();
-            row.into_task(dependencies, timeline, task_notes)
+            let task_criteria = criteria.remove(&row.id).unwrap_or_default();
+            row.into_task(dependencies, timeline, task_notes, task_criteria)
         })
         .collect()
 }
 
 /// Appends a status change of `task` at `at` to its status history.
-fn record_event(conn: &Connection, task: TaskId, status: TaskStatus, at: i64) -> Result<()> {
+pub(super) fn record_event(
+    conn: &Connection,
+    task: TaskId,
+    status: TaskStatus,
+    at: i64,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO task_events (task_id, status, at) VALUES (?1, ?2, ?3)",
         params![task.0, status.as_str(), at],
@@ -328,7 +341,7 @@ fn all_tasks(conn: &Connection) -> Result<Vec<Task>> {
     query_tasks(conn, "?1 = 1", 1)
 }
 
-fn find_task(conn: &Connection, id: TaskId) -> Result<Option<Task>> {
+pub(super) fn find_task(conn: &Connection, id: TaskId) -> Result<Option<Task>> {
     Ok(query_tasks(conn, "t.id = ?1", id.0)?.pop())
 }
 
@@ -399,30 +412,10 @@ impl Storage {
         }
         let id = TaskId(tx.last_insert_rowid());
         record_event(&tx, id, status, at)?;
+        super::criteria::insert(&tx, id, &new.criteria)?;
+        let created = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
-        Ok(Task {
-            id,
-            workspace_id: new.workspace_id,
-            task_type: new.task_type,
-            title: new.title.clone(),
-            description: new.description.clone(),
-            status,
-            depends_on: BTreeSet::new(),
-            branch: None,
-            worktree_path: None,
-            herdr_workspace_id: None,
-            pull_request_url: None,
-            pull_request_merged_at: None,
-            pull_request: None,
-            resolution: None,
-            merged_with: None,
-            completion_note: None,
-            issue: None,
-            estimate: new.estimate,
-            due_date: new.due_date,
-            timeline: vec![TaskEvent { status, at }],
-            notes: Vec::new(),
-        })
+        Ok(created)
     }
 
     pub fn get_task(&self, id: TaskId) -> Result<Option<Task>> {
@@ -526,7 +519,8 @@ impl Storage {
         Ok(started)
     }
 
-    /// Moves an `in_review` task to `done` as merged, stores the merge time and the snapshot of its
+    /// Moves an `in_progress` or `in_review` task whose criteria are met to `done` as
+    /// merged (see [`TaskStatus::complete`]), stores the merge time and the snapshot of its
     /// pull request, and forgets its herdr workspace, which was closed, in one
     /// transaction. Non-empty `commits` (those of the merged pull request) replace its
     /// commit records. The worktree path stays: the checkout is kept on disk until its
@@ -541,11 +535,11 @@ impl Storage {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        let status = task.status.transition_to(TaskStatus::Done)?;
+        let status = task.status.complete()?;
         tx.execute(
             "UPDATE tasks
              SET status = ?2, resolution = ?3, herdr_workspace_id = NULL,
-                 pull_request_merged_at = ?4
+                 pull_request_merged_at = coalesce(?4, pull_request_merged_at)
              WHERE id = ?1",
             params![
                 id.0,

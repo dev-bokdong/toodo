@@ -90,10 +90,13 @@ task after it. Use remove_dependency to drop an edge.
 4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
 rnd), write a short imperative title, and put details in description. Write the \
 description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
-issue body) with three sections: `## Purpose` (the outcome and why), `## Background` \
-(context, what prompted it, related tasks, constraints), and `## Done when` (a `- [ ]` \
-task list of verifiable criteria). Use `-` lists, backticks for code, paths, and \
-commands, fenced code blocks, and links; no raw HTML. \
+issue body) with two sections: `## Purpose` (the outcome and why) and `## Background` \
+(context, what prompted it, related tasks, constraints). Put what has to hold for the \
+task to be done in criteria, not in the description: one verifiable item each, kind \
+manual for what is checked by hand, url or command (with target) or pr_open_ci_green \
+for what Toodo checks itself. The merge criterion comes first unless you set \
+merge_criterion false for work that ships no code. Use `-` lists, backticks for code, \
+paths, and commands, fenced code blocks, and links; no raw HTML. \
 When you split work into tasks, set estimate to your expected size of each (hours, \
 days, weeks, or months of active work); the user's reviews compare it \
 with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
@@ -109,10 +112,11 @@ edits. Neither tool changes the task's status.
 unchanged.
 7. start_task, complete_task, and conclude_task act on other tasks, the way the user \
 would in the Toodo app: start a ready task (or resume a paused one) for another agent \
-session, complete a task whose pull request is merged, or conclude one that ends \
-without a merge (research not adopted, a duplicate, work no longer needed) with the \
-reason. Never start, complete, or conclude your own task, the one current_task finds: \
-it was started for you, and the merge of its pull request completes it. conclude_task \
+session, complete a task whose completion criteria are met (which confirms one that \
+awaits completion), or conclude one that ends without a merge (research not adopted, a \
+duplicate, work no longer needed) with the reason. Never start, complete, or conclude \
+your own task, the one current_task finds: it was started for you, and meeting its \
+criteria completes it. conclude_task \
 never closes a pull request, so a task with an open one is rejected; the user concludes \
 it in the app. When one pull request ships the work of several tasks, complete each \
 extra task with complete_task and merged_with set to the task that owns the pull \
@@ -137,6 +141,17 @@ machine of the task's workspace. list_machine_settings shows it for every machin
 a missing one with set_worktree_root to a directory the user named, or when start_task \
 reports it missing and the user tells you where worktrees go. Never change or clear a \
 root that is set unless the user asks.
+10. A task is done when its completion criteria are met. Toodo checks every kind but \
+manual itself, about once a minute: pr_merged and pr_open_ci_green from the task's pull \
+request, branch_merged_locally from the repository (for workspaces without an origin \
+remote, where the task branch is merged into baseBranch locally and nothing is pushed), \
+url by fetching its target, and command by running its target in the task worktree once \
+every other criterion is met. Check a manual criterion of your task with \
+check_criterion once it holds, with evidence (a link, a command and its output, or what \
+you verified). Once every criterion is met, a task whose criteria are all automatic is \
+done at once; one with a manual criterion awaits completion (in_review) until the user \
+confirms it, so stop there. Change the criteria with update_task when the plan \
+changes, never to make a task pass.
 
 Deleting tasks happens in the Toodo app only, not through these tools. A pull request \
 from the task branch into baseBranch moves the task to in_review, and its merge \
@@ -567,17 +582,30 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Create a planned task in a workspace, optionally depending on existing tasks."
+        description = "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks. Without merge_criterion false, its first criterion is the merge: the pull request is merged, or, in a repository without an origin remote, the branch is merged into the base branch locally."
     )]
-    fn create_task(
+    async fn create_task(
         &self,
         Parameters(request): Parameters<tools::CreateTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::create_task(storage, request))
+        self.change_blocking(move |backend| {
+            tools::create_task(backend.storage(), backend.git(), request)
+        })
+        .await
     }
 
     #[tool(
-        description = "Change the type, title, description, estimate, or due date of a task; omitted fields stay unchanged."
+        description = "Check (met true, the default) or uncheck a manual completion criterion of a task that is not done, with evidence of what shows it holds. Toodo checks the other kinds itself. Once every criterion of an in_progress task is met, it awaits completion (in_review) until the user, or complete_task, confirms it. Returns the task with its criteria."
+    )]
+    fn check_criterion(
+        &self,
+        Parameters(request): Parameters<tools::CheckCriterion>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::check_criterion(storage, request))
+    }
+
+    #[tool(
+        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged."
     )]
     fn update_task(
         &self,
@@ -630,7 +658,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Complete an in_review task whose pull request is merged, as the Toodo app does: the task becomes done (merged), its herdr workspace is closed, and its dependents can start. Rejected while the pull request is not merged. Toodo also completes merged tasks on its own within a minute. With merged_with, complete a task whose work shipped with the merged pull request of another task instead, e.g. the extra tasks one pull request fixed: an in_progress or in_review task, or one already done as not_adopted, becomes done (merged) through that pull request, which the app shows on the task. Rejected while that pull request or task is not merged yet, and while the task's own branch has an open or merged pull request. Never complete your own task, the one current_task finds: the merge of its pull request completes it."
+        description = "Complete a task being worked on once its completion criteria are met, as the Toodo app does; this is also how a task awaiting completion because of a manual criterion is confirmed. Toodo re-checks the automatic criteria first; the task becomes done (merged), its herdr workspace is closed, and its dependents can start. Rejected with the criteria not met yet, e.g. while its pull request is not merged. Toodo also completes tasks whose criteria are all automatic on its own within a minute. With merged_with, complete a task whose work shipped with the merged pull request of another task instead, e.g. the extra tasks one pull request fixed: an in_progress or in_review task, or one already done as not_adopted, becomes done (merged) through that pull request, which the app shows on the task. Rejected while that pull request or task is not merged yet, and while the task's own branch has an open or merged pull request. Never complete your own task, the one current_task finds: meeting its criteria completes it."
     )]
     async fn complete_task(
         &self,
@@ -839,6 +867,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap();
         (storage, task)
@@ -1290,6 +1319,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap()
     }

@@ -5,13 +5,18 @@ description: Work on a Toodo task from its description to a pull request into th
 
 # Working on a Toodo task
 
-Toodo tracks your task and turns your pull request into the task's status: it moves the
-task to `in_review` once a pull request from the task branch into the base branch exists,
-and to `done` once that pull request is merged.
+Toodo tracks your task by its completion criteria, the `criteria` of the task: it is
+done once every criterion is met. Toodo checks every kind but `manual` itself about once
+a minute (`pr_merged`, `pr_open_ci_green`, `branch_merged_locally`, `url`, and `command`,
+which runs once every other criterion is met); you check `manual` ones with
+`check_criterion` and evidence. A pull request from the task branch into the base branch
+moves the task to `in_review`. Once every criterion is met, a task whose criteria are all
+automatic is `done` at once; one with a manual criterion awaits completion (`in_review`)
+until the user confirms it.
 
 Never start, complete, or conclude your own task (the one `current_task` finds) with
-`start_task`, `complete_task`, or `conclude_task`: it was started for you, and the merge
-of its pull request completes it. Those tools are for other tasks, e.g. starting a ready
+`start_task`, `complete_task`, or `conclude_task`: it was started for you, and meeting its
+criteria completes it. Those tools are for other tasks, e.g. starting a ready
 task for another agent session or concluding a duplicate. `conclude_task` never closes a
 pull request; a task with an open one is concluded by the user in the Toodo app.
 When your pull request also fixed other tasks, never conclude them: once it is merged and
@@ -27,8 +32,9 @@ Deleting tasks happens in the Toodo app only.
    request, see step 4 of "Otherwise: finish with a pull request").
 2. If no task matches, you are not in a Toodo task worktree: tell the user and ask which
    task you are working on instead of guessing.
-3. Read the description. `## Done when` is your finish line; `## Purpose` decides
-   questions the criteria leave open. If the description is unclear or contradicts the
+3. Read the description and the task's `criteria`: the criteria are your finish line;
+   `## Purpose` decides questions they leave open. Tasks created before criteria
+   existed keep their old `## Done when` list as manual criteria. If the description is unclear or contradicts the
    code, call `report_blocker` with what you need and ask the user.
 4. Read the project memory: `list_memory` with the task's `workspaceId` and
    `include_shared: true`. Follow its rules and decisions unless the task says to change
@@ -101,12 +107,18 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
 
 ## 4. Otherwise: finish with a pull request
 
-1. Check every `## Done when` item and run the checks the repository uses (tests, type
-   checks, linters).
+1. Verify every criterion and run the checks the repository uses (tests, type checks,
+   linters). Check each `manual` criterion with `check_criterion` and the evidence that
+   shows it holds; leave the automatic ones to Toodo.
+   - If `criteria` has `branch_merged_locally` instead of `pr_merged`, the repository has
+     no `origin` remote: there is nothing to push and no pull request. Commit on the task
+     branch and stop; the branch merged into `baseBranch` locally completes the task.
+     Merge it yourself (`git merge` into `baseBranch` in the workspace repository) only
+     with `agentMerge` `afterChecks` and once the repository's checks pass.
 2. Commit on the task branch and push it: `git push -u origin <branch>`.
 3. Open the pull request into the workspace base branch:
    `gh pr create --base <baseBranch> --head <branch>`, titled with the task title, with
-   a body that summarizes the change and lists the `## Done when` items. If a pull request
+   a body that summarizes the change and lists the criteria. If a pull request
    for the branch already exists, push to it instead of opening another. A pull request
    into any other base is ignored by Toodo.
 4. Merge it only if the workspace allows it. `current_task` returns `agentMerge`:
@@ -130,8 +142,9 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
 
 # Writing task descriptions
 
-Every task you create gets a description in GitHub-flavored Markdown with these three
-sections; Toodo renders it and uses it as the GitHub issue body.
+Every task you create gets a description in GitHub-flavored Markdown with these two
+sections, Toodo renders it and uses it as the GitHub issue body, and completion criteria
+in `criteria`.
 
 ```markdown
 ## Purpose
@@ -142,15 +155,22 @@ The outcome the task delivers and why it matters, in one to three sentences.
 
 What exists today, what prompted the task (e.g. found while working on #12), related
 tasks and what they decided, links, and constraints the implementer has to respect.
+```
 
-## Done when
-
-- [ ] An observable, checkable result, e.g. `cargo test` covers the new rule
-- [ ] ...
+```json
+"criteria": [
+  { "text": "`cargo test` covers the new rule", "kind": "command", "target": "cargo test" },
+  { "text": "The user approved the wording", "kind": "manual" },
+  { "text": "Docs site shows the page", "kind": "url", "target": "https://example.com/docs/x" }
+]
 ```
 
 - Write it for an agent that starts from this description alone, without your session.
-- Make every `## Done when` item verifiable, including the tests or checks expected.
+- Make every criterion verifiable, one item each. Use an automatic kind when Toodo can
+  check it (`command` with a short command that exits 0, `url`, `pr_open_ci_green`) and
+  `manual` otherwise. The merge criterion (`pr_merged`, or `branch_merged_locally`
+  without `origin`) is added first unless you pass `merge_criterion: false`, e.g. for
+  research or an errand that ships no code.
 - Use `-` lists, backticks for code, paths, and commands, fenced code blocks, and links;
   no raw HTML.
 - Pick `task_type` by the kind of change (feat, fix, modify, refactor, docs, test, chore,
@@ -166,7 +186,8 @@ repository Toodo does not have yet:
 2. Only when it is missing and the user asked for it, call `create_workspace` with a
    `name` and the absolute `path` on the machine Toodo runs on. Pass `clone_url` to clone
    the repository into a new or empty directory, or leave it out to open a repository
-   already cloned there. Set `default_base_branch` when pull requests go into a branch
+   already cloned there. Pass `init: true` instead to make a plain folder a new git
+   repository without a remote, whose tasks merge into the base branch locally. Set `default_base_branch` when pull requests go into a branch
    other than the repository's default one, e.g. `dev`.
 3. Use the `id` it returns as `workspace_id` for `create_task`.
 

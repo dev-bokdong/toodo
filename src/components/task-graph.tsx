@@ -138,7 +138,7 @@ const phaseStyles: Record<TimelinePhase, string> = {
 
 const phaseLabels: Record<TimelinePhase, string> = {
   in_progress: "In progress",
-  in_review: "In review",
+  in_review: "Awaiting completion",
 };
 
 

@@ -185,6 +185,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap();
         let second = storage
@@ -195,6 +196,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                criteria: Vec::new(),
             })
             .unwrap();
         storage.add_dependency(second.id, first.id).unwrap();

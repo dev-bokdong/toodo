@@ -6,7 +6,7 @@ export type AgentAlert = { title: string; body: string };
 const statusNames: Record<TaskStatus, string> = {
   planned: "Planned",
   in_progress: "In progress",
-  in_review: "In review",
+  in_review: "Awaiting completion",
   done: "Done",
 };
 
@@ -19,7 +19,7 @@ function statusTitle(was: TaskStatus, task: Task): string {
     case "in_progress":
       return "Task started";
     case "in_review":
-      return "Task in review";
+      return "Task awaiting completion";
     case "done":
       return task.resolution === "not_adopted" ? "Task concluded without merging" : "Task done";
     case "planned":

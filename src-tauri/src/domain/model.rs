@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use super::criteria::Criterion;
 use super::path::{PathError, PosixPath, WindowsPath};
 use super::plan::{DueDate, Estimate};
 use super::status::TaskStatus;
@@ -330,6 +331,8 @@ pub struct Task {
     pub timeline: Vec<TaskEvent>,
     /// Notes left on the task, oldest first.
     pub notes: Vec<TaskNote>,
+    /// What has to hold for the task to be done, in the order its author gave.
+    pub criteria: Vec<Criterion>,
 }
 
 /// A GitHub issue linked to a task.
