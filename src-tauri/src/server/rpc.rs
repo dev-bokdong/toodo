@@ -227,6 +227,9 @@ commands!(s => {
 
     "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));
     "start_task"(id: TaskId) => sync Reply::result(herdr::start_task(State(&s.storage), State(&s.git), State(&s.herdr), id));
+    "ensure_task_workspace"(id: TaskId) => sync Reply::result(
+        herdr::ensure_task_workspace(State(&s.storage), State(&s.herdr), id)
+    );
     "open_task_in_herdr"(id: TaskId) => sync Reply::result(
         herdr::open_task_in_herdr(State(&s.storage), State(&s.herdr), id)
     );

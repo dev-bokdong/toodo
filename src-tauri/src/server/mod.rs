@@ -8,6 +8,9 @@
 //!   `pull-request-statuses-changed` events with JSON data.
 //! - `/api/backups/...` moves database files in and out (see [`files`]).
 //! - `/api/devices...` registers, lists, and revokes devices (see [`devices`]).
+//! - `POST /api/stream-tickets` and `GET /api/panes/stream` mirror a pane of a task's herdr
+//!   workspace over a WebSocket (see [`panes`]); the stream takes a ticket instead of the
+//!   token.
 //! - `/mcp` is the MCP endpoint, as in the desktop app.
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
@@ -17,6 +20,7 @@
 
 mod devices;
 mod files;
+mod panes;
 mod rpc;
 
 use std::convert::Infallible;
@@ -136,6 +140,7 @@ pub struct Services {
     events: broadcast::Sender<ServerEvent>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
+    panes: panes::Panes,
 }
 
 impl Services {
@@ -248,13 +253,15 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let web_token = mcp::load_token(&web_token_path)?;
     let listener = mcp::bind(config.listen)?;
     let port = listener.local_addr()?.port();
+    let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
     let services = Arc::new(Services {
         storage: Mutex::new(storage),
         git: Arc::new(Git::new(Box::new(ProcessRunner))),
         github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
         ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
         ssh_config: SshConfigFile::in_home(),
-        herdr: Arc::new(Herdr::new(Box::new(ProcessRunner))),
+        panes: panes::Panes::new(Arc::new(panes::HerdrSockets(herdr.clone()))),
+        herdr,
         agent_statuses: Mutex::default(),
         pull_request_statuses: Mutex::default(),
         backups: Backups::load(&config.data_dir),
@@ -345,6 +352,7 @@ fn router(
         .route("/api/backups/{name}", get(files::download))
         .route("/api/devices", get(devices::list).post(devices::register))
         .route("/api/devices/{id}/revoke", post(devices::revoke))
+        .route("/api/stream-tickets", post(panes::issue_ticket))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .route_layer(middleware::from_fn_with_state(
             devices::Gate {
@@ -354,7 +362,11 @@ fn router(
             devices::require_access,
         ))
         .with_state(services.clone());
-    let app = api.merge(mcp::router(services, mcp_token));
+    // Browsers cannot send the token on a WebSocket; the stream checks its ticket instead.
+    let streams = Router::new()
+        .route("/api/panes/stream", get(panes::stream))
+        .with_state(services.clone());
+    let app = api.merge(streams).merge(mcp::router(services, mcp_token));
     match web_dir {
         Some(dir) => app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
@@ -436,13 +448,24 @@ mod tests {
     const TEST_RESTORE_LIMIT: u64 = 1024 * 1024;
 
     fn services(data_dir: &Path) -> Arc<Services> {
+        let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
+        let access = Arc::new(panes::HerdrSockets(herdr.clone()));
+        services_with(data_dir, herdr, access)
+    }
+
+    pub(super) fn services_with(
+        data_dir: &Path,
+        herdr: HerdrState,
+        access: Arc<dyn panes::PaneAccess>,
+    ) -> Arc<Services> {
         Arc::new(Services {
             storage: Mutex::new(Storage::open_in_memory().unwrap()),
             git: Arc::new(Git::new(Box::new(ProcessRunner))),
             github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
             ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
             ssh_config: SshConfigFile::in_home(),
-            herdr: Arc::new(Herdr::new(Box::new(ProcessRunner))),
+            panes: panes::Panes::new(access),
+            herdr,
             agent_statuses: Mutex::default(),
             pull_request_statuses: Mutex::default(),
             backups: Backups::load(data_dir),
@@ -483,12 +506,13 @@ mod tests {
     fn serve_services(web_dir: Option<&Path>) -> (SocketAddr, tempfile::TempDir, Arc<Services>) {
         let temp = tempfile::tempdir().unwrap();
         let services = services(temp.path());
-        let app = router(
-            services.clone(),
-            "web".to_owned(),
-            "agent".to_owned(),
-            web_dir,
-        );
+        let address = serve(services.clone(), web_dir);
+        (address, temp, services)
+    }
+
+    /// Serves `services` with the web token `web` and the MCP token `agent`.
+    pub(super) fn serve(services: Arc<Services>, web_dir: Option<&Path>) -> SocketAddr {
+        let app = router(services, "web".to_owned(), "agent".to_owned(), web_dir);
         let listener = mcp::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -498,7 +522,7 @@ mod tests {
                 .unwrap()
                 .block_on(mcp::serve(listener, app))
         });
-        (address, temp, services)
+        address
     }
 
     #[test]
@@ -579,7 +603,11 @@ mod tests {
     /// Sends `head` (request line and headers, without the blank line) and `body`; returns
     /// the status line, the headers, and the body of the response. A server that answers
     /// before reading the whole body may close the connection while it is being sent.
-    fn exchange(address: SocketAddr, head: &str, body: &[u8]) -> (String, String, Vec<u8>) {
+    pub(super) fn exchange(
+        address: SocketAddr,
+        head: &str,
+        body: &[u8],
+    ) -> (String, String, Vec<u8>) {
         use std::io::{Read, Write};
         let mut stream = std::net::TcpStream::connect(address).unwrap();
         stream

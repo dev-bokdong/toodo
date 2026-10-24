@@ -154,24 +154,49 @@ impl Connector for LocalSocket {
 pub struct SshSocket {
     host: MachineLabel,
     socket_path: String,
+    multiplexed: bool,
 }
 
 impl SshSocket {
     pub fn new(host: MachineLabel, socket_path: String) -> Self {
-        Self { host, socket_path }
+        Self {
+            host,
+            socket_path,
+            multiplexed: false,
+        }
+    }
+
+    /// Like [`SshSocket::new`], for many short connections (herdr answers one request per
+    /// connection): they share one SSH connection, which OpenSSH keeps for a minute after
+    /// the last, so only the first pays for the handshake. OpenSSH on Windows cannot
+    /// share connections.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn multiplexed(host: MachineLabel, socket_path: String) -> Self {
+        Self {
+            multiplexed: !cfg!(windows),
+            ..Self::new(host, socket_path)
+        }
     }
 
     fn args(&self) -> Vec<String> {
-        [
-            "-o",
-            "BatchMode=yes",
-            "-W",
-            &self.socket_path,
-            "--",
-            self.host.as_str(),
-        ]
-        .map(str::to_owned)
-        .to_vec()
+        let shared: &[&str] = if self.multiplexed {
+            &[
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPath=~/.ssh/toodo-%C",
+                "-o",
+                "ControlPersist=60",
+            ]
+        } else {
+            &[]
+        };
+        ["-o", "BatchMode=yes"]
+            .iter()
+            .chain(shared)
+            .chain(&["-W", &self.socket_path, "--", self.host.as_str()])
+            .map(|arg| (*arg).to_owned())
+            .collect()
     }
 }
 
@@ -588,6 +613,33 @@ mod tests {
             [
                 "-o",
                 "BatchMode=yes",
+                "-W",
+                "/home/u/.config/herdr/herdr.sock",
+                "--",
+                "devbox",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multiplexed_remote_sockets_share_one_ssh_connection() {
+        let socket = SshSocket::multiplexed(
+            MachineLabel::parse("devbox").unwrap(),
+            "/home/u/.config/herdr/herdr.sock".to_owned(),
+        );
+        assert_eq!(
+            socket.args(),
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPath=~/.ssh/toodo-%C",
+                "-o",
+                "ControlPersist=60",
                 "-W",
                 "/home/u/.config/herdr/herdr.sock",
                 "--",

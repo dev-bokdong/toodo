@@ -1138,6 +1138,29 @@ impl AgentStatus {
     }
 }
 
+/// A pane of a task's herdr workspace, for the pane view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPane {
+    pub pane_id: String,
+    /// The agent herdr recognized in the pane, e.g. `claude`.
+    pub agent: Option<String>,
+    pub agent_status: Option<AgentStatus>,
+    /// The pane's label, or else its terminal title.
+    pub title: Option<String>,
+}
+
+impl From<&herdr::PaneAgent> for TaskPane {
+    fn from(pane: &herdr::PaneAgent) -> Self {
+        Self {
+            pane_id: pane.pane_id.clone(),
+            agent: pane.agent.clone(),
+            agent_status: AgentStatus::from_herdr(pane.status),
+            title: pane.title.clone(),
+        }
+    }
+}
+
 /// The agent status of a task whose herdr workspace has an agent, summarized over the
 /// workspace's panes: blocked over working over done over idle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
