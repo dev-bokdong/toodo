@@ -1755,6 +1755,25 @@ describe("App", () => {
     expect(mocked.checkCriterion).toHaveBeenLastCalledWith(1, 7, false, null);
   });
 
+  it("marks a failed manual criterion as failed beside its checkbox", async () => {
+    const failed = task(1, 1, "Add search", {
+      status: "in_progress",
+      criteria: [
+        criterion(7, "Docs reviewed", { state: "failed", checkedBy: "user", checkedAt: 1760000000 }),
+        criterion(8, "Demo recorded"),
+      ],
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [failed] });
+    await renderWorkspace();
+
+    const criteria = await screen.findByRole("list", { name: "Criteria of #1" });
+    const [failedItem, pendingItem] = within(criteria).getAllByRole("listitem");
+    expect(within(failedItem).getByRole("img", { name: "Failed" })).toBeInTheDocument();
+    expect(within(failedItem).getByRole("checkbox")).not.toBeChecked();
+    expect(within(pendingItem).queryByRole("img")).not.toBeInTheDocument();
+  });
+
   it("confirms the completion of a task whose criteria are all met", async () => {
     const met = { state: "met" as const, checkedAt: 1760000000 };
     const awaiting = task(1, 1, "Add search", {
