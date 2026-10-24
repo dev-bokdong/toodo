@@ -199,11 +199,95 @@ are downloaded in the browser, and database backups are downloaded and uploaded 
 [API](#api)). Reach the loopback port through an SSH tunnel
 (`ssh -L 47616:127.0.0.1:47616 <server>`, then `http://127.0.0.1:47616`); anything that
 puts it on a network needs its own authentication in front, since the web token opens the
-whole server account.
+whole server account. To open it from a phone, see
+[Off the Machine](#off-the-machine-cloudflare-tunnel-and-access).
 
 The event stream (`/api/events`) is a long-lived server-sent event response with a
 keep-alive comment every 15 seconds; a proxy in front must not buffer it. When the stream
 drops, the web app reconnects and refetches everything.
+
+### Off the Machine: Cloudflare Tunnel and Access
+
+To use the web app from a phone or another computer without an SSH tunnel, publish it
+through a Cloudflare Tunnel with Cloudflare Access in front. The server keeps listening on
+loopback; `cloudflared` connects out to Cloudflare, so no port is opened on the machine.
+Access signs you in before any request reaches the server, and the web app still asks for
+`web-token`, so a stolen token alone is not enough from outside, and a signed-in browser
+without the token gets nothing.
+
+You need a domain on Cloudflare and a Zero Trust organization (the free plan does). Below,
+`toodo.example.com` stands for the hostname you pick.
+
+1. **Access first.** In Zero Trust, add an Access application of type *self-hosted* for
+   `toodo.example.com` (the whole hostname, no path) with an *Allow* policy that includes
+   only your own identity, for example your e-mail address with the one-time PIN login. Do
+   it before the hostname resolves, so nothing is ever reachable without it. Add no
+   *Bypass* or *Service Auth* policy: the API, the event stream, and `/mcp` all sit behind
+   the same application.
+2. **A tunnel of its own.** Create a new, remotely managed tunnel (*Networks > Tunnels*)
+   for the server instead of adding a hostname to a tunnel the machine already runs for
+   something else: it gets its own token, can be stopped or deleted alone, and a mistake in
+   its routes cannot take the other one down. Give it one public hostname,
+   `toodo.example.com` to `http://127.0.0.1:47616` (the server's `TOODO_LISTEN`), and let
+   everything else fall through to `http_status:404`. Cloudflare adds the proxied DNS
+   record for the hostname.
+3. **Run the connector as the server's user.** Save the tunnel's token to a file only you
+   can read, and run `cloudflared` with it from a systemd user service next to
+   `toodo-server.service`:
+
+   ```sh
+   mkdir -p -m 700 ~/.config/toodo-tunnel
+   (umask 077 && cat > ~/.config/toodo-tunnel/token)   # paste the token, then Ctrl-D
+   ```
+
+   ```ini
+   # ~/.config/systemd/user/toodo-tunnel.service
+   [Unit]
+   Description=Cloudflare tunnel for toodo-server
+   After=network-online.target toodo-server.service
+   Wants=network-online.target
+
+   [Service]
+   ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run --token-file %h/.config/toodo-tunnel/token
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   Then `systemctl --user daemon-reload && systemctl --user enable --now toodo-tunnel`.
+   Never put the token on the command line or in the unit file, where other users of the
+   machine can read it.
+4. **Check from outside** (any machine, no cookies): every path is a redirect to the Access
+   login, never the app:
+
+   ```sh
+   curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://toodo.example.com/api/rpc/list_tasks
+   # 302 https://<team>.cloudflareaccess.com/cdn-cgi/access/login/toodo.example.com?...
+   ```
+
+   Then open `https://toodo.example.com` on the phone, sign in to Access, and enter
+   `web-token` once. Install it from the browser: *Install app* (or *Add to Home screen*)
+   in Chrome on Android, *Share > Add to Home Screen* in Safari on iOS.
+
+Things to know:
+
+- The web app links its manifest with `crossorigin="use-credentials"`. Browsers fetch a
+  manifest without cookies otherwise, Access would answer it with its login redirect, and
+  the browser would not offer to install the app.
+- The service worker loads pages from the network first, so when the Access session has
+  expired, reopening or reloading the app goes through the Access login again. Until then,
+  requests to `/api` fail (Access redirects them to its login, which a script cannot
+  follow); reload the app to sign in again. The Access session duration of the
+  application sets how often that happens.
+- `/api/events` works through the tunnel: Cloudflare passes `text/event-stream` responses
+  through unbuffered, and the server's 15-second keep-alive stays below Cloudflare's idle
+  timeout.
+- Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels);
+  do not point remote agents at the public hostname, where Access stops them.
+- To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
+  tunnel, its DNS record, and the Access application.
 
 ## Development
 

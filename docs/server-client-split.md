@@ -532,4 +532,6 @@ These need an owner decision before the thin-client step. They do not block 251 
    desktop app exports, then the server restores (via 2.2's upload). The restore needs a
    pass that rewrites or rejects Windows `Local` paths, depending on decision 2.
 4. **Exposure.** Which authenticating front the PWA uses off the machine, and whether
-   per-device tokens (4.4) are needed before phones use it.
+   per-device tokens (4.4) are needed before phones use it. The documented front is a
+   Cloudflare Tunnel of its own with Cloudflare Access in front, the server staying on
+   loopback ("Off the Machine" in `docs/server.md`); per-device tokens remain open.
