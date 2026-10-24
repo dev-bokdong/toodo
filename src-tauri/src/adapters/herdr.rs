@@ -252,8 +252,8 @@ impl Herdr {
         }
     }
 
-    /// Types `command` into the shell of a pane of the local herdr server and runs it.
-    #[cfg(feature = "server")]
+    /// Types `command` into a pane of the local herdr server and presses Enter, e.g. to run
+    /// it in the pane's shell or to send it to the agent in the pane.
     pub fn run_in_pane(&self, pane_id: &str, command: &str) -> Result<(), HerdrError> {
         let invocation = invocation(None, &["pane", "run", pane_id, command]);
         self.runner.run(&invocation)?;

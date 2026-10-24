@@ -394,6 +394,17 @@ pub(super) const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL
     );
     ",
+    // Version 18: the conversation with the lead in the chat panel. A client names each
+    // message it sends, so sending it again does not repeat it.
+    "
+    CREATE TABLE chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        author TEXT NOT NULL CHECK (author IN ('user', 'lead')),
+        body TEXT NOT NULL CHECK (trim(body) <> ''),
+        client_id TEXT UNIQUE CHECK (client_id IS NULL OR author = 'user'),
+        at INTEGER NOT NULL
+    );
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1341,5 +1352,30 @@ mod tests {
         conn.execute("DELETE FROM devices WHERE id = 1", [])
             .unwrap();
         assert_eq!(count(&conn), 0);
+    }
+
+    #[test]
+    fn version_18_starts_an_empty_chat_that_keeps_one_message_per_client_id() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..17] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 17).unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let insert = |author: &str, body: &str, client_id: Option<&str>| {
+            conn.execute(
+                "INSERT INTO chat_messages (author, body, client_id, at) VALUES (?1, ?2, ?3, 1)",
+                params![author, body, client_id],
+            )
+        };
+        assert!(insert("user", "Hi", Some("c1")).is_ok());
+        assert!(insert("user", "Hi", Some("c1")).is_err());
+        assert!(insert("lead", "Hello", None).is_ok());
+        assert!(insert("lead", "Hello", Some("c2")).is_err());
+        assert!(insert("user", " ", None).is_err());
+        assert!(insert("dori", "Hi", None).is_err());
     }
 }

@@ -8,6 +8,7 @@
 //! line with the dependencies after every change.
 
 mod backup;
+mod chat;
 mod commits;
 mod criteria;
 mod devices;

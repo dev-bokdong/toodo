@@ -498,6 +498,20 @@ impl ToodoMcp {
         ))
     }
 
+    #[tool(
+        description = "Post a message to the people in the Toodo chat panel. Only the Toodo lead uses it: their messages reach the lead's pane as lines starting with [Toodo chat], and they read only the panel, never the pane. Answer each of them here, and post updates they should see. GitHub-flavored Markdown."
+    )]
+    fn reply_in_chat(
+        &self,
+        Parameters(request): Parameters<tools::ChatReply>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = crate::commands::lead::reply(&mut lock(self.backend.storage()), &request.text);
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
     /// Runs a tool that changes project memory and announces the change to the frontend.
     fn change_memory<T: Serialize>(
         &self,
@@ -778,6 +792,7 @@ mod tests {
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
         memory_changed: std::sync::Mutex<usize>,
+        chat_changed: std::sync::Mutex<usize>,
     }
 
     type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
@@ -799,6 +814,7 @@ mod tests {
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
                 memory_changed: std::sync::Mutex::default(),
+                chat_changed: std::sync::Mutex::default(),
             }
         }
     }
@@ -812,6 +828,9 @@ mod tests {
         }
         fn memory_changed(&self) {
             *self.memory_changed.lock().unwrap() += 1;
+        }
+        fn chat_changed(&self) {
+            *self.chat_changed.lock().unwrap() += 1;
         }
         fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
         fn pull_request_statuses_changed(
@@ -1115,6 +1134,40 @@ mod tests {
         .to_owned();
         assert!(missing.starts_with("NotFound:"), "{missing}");
         assert_eq!(*backend.memory_changed.lock().unwrap(), 4);
+    }
+
+    #[test]
+    fn a_chat_reply_is_stored_and_announced() {
+        let backend = Arc::new(TestBackend::new(
+            crate::storage::Storage::open_in_memory().unwrap(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+        let call = |text: &str| {
+            serde_json::to_value(
+                server
+                    .reply_in_chat(Parameters(tools::ChatReply {
+                        text: text.to_owned(),
+                    }))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+
+        assert!(error_text(&call(" ")).contains("empty"));
+        let posted = created_workspace(&call("Created **#4**."));
+
+        assert_eq!(
+            (&posted["author"], &posted["body"]),
+            (
+                &serde_json::json!("lead"),
+                &serde_json::json!("Created **#4**.")
+            )
+        );
+        assert_eq!(*backend.chat_changed.lock().unwrap(), 1);
+        assert_eq!(
+            lock(backend.storage()).list_chat_messages().unwrap().len(),
+            1
+        );
     }
 
     fn error_text(result: &serde_json::Value) -> &str {
@@ -1529,6 +1582,7 @@ mod tests {
             "add_memory",
             "update_memory",
             "supersede_memory",
+            "reply_in_chat",
         ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
         }

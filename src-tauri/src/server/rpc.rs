@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::Services;
+use crate::commands::events::Notifier;
 use crate::commands::types::{
     BackupSettings, CriterionId, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost,
     NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId,
@@ -277,6 +278,14 @@ commands!(s => {
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
 
     "get_lead"() => sync Reply::value(lead::get_lead(State(&s.lead)));
+    "list_chat_messages"() => sync Reply::result(lead::list_chat_messages(State(&s.storage)));
+    "send_chat_message"(text: String, client_id: String) => sync {
+        let sent = lead::send_chat_message(State(&s.storage), State(&s.herdr), State(&s.lead), text, client_id);
+        if sent.is_ok() {
+            s.chat_changed();
+        }
+        Reply::result(sent)
+    };
 
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::review_period(State(&s.storage), start, end)
