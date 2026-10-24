@@ -5,7 +5,9 @@
 //! Every few seconds it checks that pane. A shell waiting for input in the foreground
 //! means the agent is gone, so the server types the launcher into the shell again, waiting
 //! longer after each agent that exits right after it starts. After a server restart an
-//! agent still running in the pane is adopted rather than started twice.
+//! agent still running in the pane is adopted rather than started twice. An agent that
+//! starts working, after it was not at the last check, has picked up the chat messages
+//! typed into its pane by then, so they are marked as seen.
 //!
 //! The launcher (`lead-start` in the data directory, readable by the owner only) exports
 //! the server's MCP URL and token, the model, and the system prompt file, then runs the
@@ -24,6 +26,7 @@ use serde_json::{Value, json};
 use super::Services;
 use crate::adapters::git::{Git, shell_quote};
 use crate::adapters::herdr::{Herdr, PaneAgent};
+use crate::commands::events::Notifier;
 use crate::commands::lead::{LeadState, LeadStatus, LeadStatusState};
 use crate::commands::types::{AgentStatus, Timestamp, WorkspaceSetup, WorkspaceSource};
 use crate::commands::{StorageState, lock, workspaces};
@@ -185,6 +188,8 @@ pub struct Supervisor {
     herdr_workspace: Option<String>,
     pane: Option<String>,
     agent: Agent,
+    /// The last check found the agent working.
+    working: bool,
 }
 
 impl Supervisor {
@@ -200,6 +205,27 @@ impl Supervisor {
             herdr_workspace: None,
             pane: None,
             agent: Agent::default(),
+            working: false,
+        }
+    }
+
+    /// Marks the chat messages delivered by `now`, when the check that started then found
+    /// the agent working while the one before did not, as seen: the agent started a turn
+    /// and took them in. Returns whether any were marked.
+    fn note_turn(&mut self, storage: &StorageState, status: &LeadStatus, now: i64) -> bool {
+        let working =
+            status.state == LeadState::Running && status.agent_status == Some(AgentStatus::Working);
+        let started = working && !self.working;
+        self.working = working;
+        if !started {
+            return false;
+        }
+        match lock(storage).mark_chat_seen(now) {
+            Ok(marked) => marked > 0,
+            Err(error) => {
+                eprintln!("toodo-server: cannot mark chat messages as seen: {error}");
+                false
+            }
         }
     }
 
@@ -368,6 +394,9 @@ pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<
                 elapsed.as_secs().try_into().unwrap_or(i64::MAX)
             });
         let status = supervisor.check(&services.storage, &services.git, &services.herdr, now);
+        if supervisor.note_turn(&services.storage, &status, now) {
+            services.chat_changed();
+        }
         if let Some(previous) = publish(&services.lead, &status) {
             if (previous.state, &previous.error) != (status.state, &status.error) {
                 let reason = status.error.as_deref().unwrap_or("");
@@ -880,6 +909,58 @@ mod tests {
         );
         assert!(herdr_runner.results.lock().unwrap().is_empty());
         assert_eq!(git_runner.invocations.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn messages_delivered_before_the_agent_starts_working_are_seen() {
+        use crate::domain::chat::ChatAuthor;
+
+        let storage: StorageState = Mutex::new(Storage::open_in_memory().unwrap());
+        let add = |at: i64, client: &str| {
+            let mut storage = lock(&storage);
+            storage.set_clock(move || at);
+            storage
+                .add_chat_message(ChatAuthor::User, "Hi", Some(client))
+                .unwrap();
+        };
+        let seen = || -> Vec<Option<i64>> {
+            let messages = lock(&storage).list_chat_messages().unwrap();
+            messages.iter().map(|message| message.seen_at).collect()
+        };
+        let config = LeadConfig::from_env(env(&[]), Path::new("/srv"))
+            .unwrap()
+            .unwrap();
+        let mut supervisor = Supervisor::new(
+            config,
+            "/srv".into(),
+            "http://x/mcp".to_owned(),
+            "t".to_owned(),
+        );
+        let status = |agent_status| LeadStatus {
+            state: LeadState::Running,
+            agent_status: Some(agent_status),
+            ..LeadStatus::default()
+        };
+
+        add(100, "c1");
+        assert!(!supervisor.note_turn(&storage, &status(AgentStatus::Idle), 105));
+        assert_eq!(seen(), [None]);
+        assert!(supervisor.note_turn(&storage, &status(AgentStatus::Working), 110));
+        assert_eq!(seen(), [Some(100)]);
+
+        // Typed in while the agent was busy with a turn it had already started.
+        add(112, "c2");
+        assert!(!supervisor.note_turn(&storage, &status(AgentStatus::Working), 115));
+        assert!(!supervisor.note_turn(&storage, &status(AgentStatus::Done), 120));
+        assert_eq!(seen(), [Some(100), None]);
+        // A lead that is not running is not working, whatever herdr last said.
+        let restarting = LeadStatus {
+            state: LeadState::Restarting,
+            ..status(AgentStatus::Working)
+        };
+        assert!(!supervisor.note_turn(&storage, &restarting, 122));
+        assert!(supervisor.note_turn(&storage, &status(AgentStatus::Working), 125));
+        assert_eq!(seen(), [Some(100), Some(112)]);
     }
 
     #[test]

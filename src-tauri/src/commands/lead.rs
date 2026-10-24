@@ -83,6 +83,11 @@ pub struct ChatMessage {
     /// Markdown.
     pub body: String,
     pub at: Timestamp,
+    /// When a person's message was typed into the lead's pane; null for the lead's.
+    pub delivered_at: Option<Timestamp>,
+    /// When the lead picked the message up: it started a turn after the message reached
+    /// its pane, or it replied in the chat.
+    pub seen_at: Option<Timestamp>,
 }
 
 impl From<&chat::ChatMessage> for ChatMessage {
@@ -95,6 +100,8 @@ impl From<&chat::ChatMessage> for ChatMessage {
             },
             body: message.body.clone(),
             at: Timestamp(message.at),
+            delivered_at: message.delivered_at.map(Timestamp),
+            seen_at: message.seen_at.map(Timestamp),
         }
     }
 }
@@ -163,10 +170,12 @@ fn running_pane(lead: &LeadStatusState) -> CommandResult<String> {
     )))
 }
 
-/// Stores a reply of the lead.
+/// Stores a reply of the lead. The lead has picked up every message delivered before it.
 pub(crate) fn reply(storage: &mut Storage, text: &str) -> CommandResult<ChatMessage> {
     let body = chat::body(text).map_err(|error| CommandError::invalid_input(error.to_string()))?;
-    Ok((&storage.add_chat_message(chat::ChatAuthor::Lead, &body, None)?).into())
+    let stored = storage.add_chat_message(chat::ChatAuthor::Lead, &body, None)?;
+    storage.mark_chat_seen(stored.at)?;
+    Ok((&stored).into())
 }
 
 #[cfg(test)]
@@ -255,8 +264,14 @@ mod tests {
         let mut storage = Storage::open_in_memory().unwrap();
         let blank = reply(&mut storage, "  ").unwrap_err();
         assert_eq!(blank.kind, CommandErrorKind::InvalidInput);
+        storage
+            .add_chat_message(chat::ChatAuthor::User, "Plan it", Some("c1"))
+            .unwrap();
         let answer = reply(&mut storage, "Created #4.").unwrap();
         assert_eq!(answer.author, ChatAuthor::Lead);
-        assert_eq!(storage.list_chat_messages().unwrap().len(), 1);
+        let stored = storage.list_chat_messages().unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].seen_at, Some(answer.at.0), "{stored:?}");
+        assert_eq!((answer.delivered_at, answer.seen_at), (None, None));
     }
 }

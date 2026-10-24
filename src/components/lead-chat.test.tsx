@@ -21,9 +21,13 @@ const running: LeadStatus = {
 };
 
 const history: ChatMessage[] = [
-  { id: 1, author: "user", body: "Plan the release", at: 1_790_000_000 },
-  { id: 2, author: "lead", body: "Created **#4**.", at: 1_790_000_060 },
+  { id: 1, author: "user", body: "Plan the release", at: 1_790_000_000, deliveredAt: 1_790_000_000, seenAt: 1_790_000_005 },
+  { id: 2, author: "lead", body: "Created **#4**.", at: 1_790_000_060, deliveredAt: null, seenAt: null },
 ];
+
+function sent(id: number, body: string, seenAt: number | null = null): ChatMessage {
+  return { id, author: "user", body, at: 1_790_000_120, deliveredAt: 1_790_000_120, seenAt };
+}
 
 function renderChat(lead: LeadStatus) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -45,10 +49,7 @@ describe("LeadChat", () => {
   });
 
   it("shows the history, marks it read, and sends a message with Enter", async () => {
-    mocked.sendChatMessage.mockResolvedValue({
-      status: "ok",
-      data: { id: 3, author: "user", body: "Start #4", at: 1_790_000_120 },
-    });
+    mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: sent(3, "Start #4") });
     renderChat(running);
 
     const log = await screen.findByRole("log", { name: "Messages" });
@@ -71,7 +72,7 @@ describe("LeadChat", () => {
   it("keeps the text and resends it under the same client ID after a failure", async () => {
     mocked.sendChatMessage
       .mockResolvedValueOnce({ status: "error", error: { kind: "external", message: "herdr failed" } })
-      .mockResolvedValueOnce({ status: "ok", data: { id: 3, author: "user", body: "Hi", at: 1 } });
+      .mockResolvedValueOnce({ status: "ok", data: sent(3, "Hi") });
     renderChat(running);
 
     const input = screen.getByRole("textbox", { name: "Message to the lead" });
@@ -84,6 +85,32 @@ describe("LeadChat", () => {
     await waitFor(() => expect(input).toHaveValue(""));
     const [first, second] = mocked.sendChatMessage.mock.calls;
     expect(second[1]).toBe(first[1]);
+  });
+
+  it("shows replies as Dori's and how far each message got", async () => {
+    let deliver: (reply: Awaited<ReturnType<typeof commands.sendChatMessage>>) => void = () => {};
+    mocked.sendChatMessage.mockReturnValue(new Promise((resolve) => (deliver = resolve)));
+    renderChat(running);
+
+    const log = await screen.findByRole("log", { name: "Messages" });
+    const reply = await within(log).findByRole("listitem", { name: "Dori" });
+    expect(within(reply).getByText("Dori")).toBeInTheDocument();
+    expect(reply.querySelector("img")).toHaveAttribute("src", expect.stringContaining("dori-avatar"));
+    const first = within(log).getByRole("listitem", { name: "You" });
+    expect(within(first).getByText("Seen")).toHaveAttribute("data-receipt", "seen");
+
+    const input = screen.getByRole("textbox", { name: "Message to the lead" });
+    fireEvent.change(input, { target: { value: "Start #4" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const pending = await within(log).findByText("Sent");
+    expect(pending.closest("li")).toHaveTextContent("Start #4");
+
+    // The refetch after sending does not answer: the sent message shows on its own.
+    mocked.listChatMessages.mockReturnValue(new Promise(() => {}));
+    deliver({ status: "ok", data: sent(3, "Start #4") });
+    expect(await within(log).findByText("Delivered")).toHaveAttribute("data-receipt", "delivered");
+    expect(within(log).queryByText("Sent")).toBeNull();
+    expect(within(log).getAllByRole("listitem", { name: "You" })).toHaveLength(2);
   });
 
   it("does not send while the lead is not running", async () => {

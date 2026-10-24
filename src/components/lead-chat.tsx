@@ -1,13 +1,16 @@
 /**
- * The chat with the server's lead: messages typed into the lead's herdr pane, and the
- * replies it posts back. Every open client shows the same history, live.
+ * The chat with the server's lead, Dori: messages typed into the lead's herdr pane, and the
+ * replies it posts back. Every open client shows the same history, live, with how far each
+ * of the person's messages got.
  */
 import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { MessagesSquare, SendHorizontal } from "lucide-react";
+import { Check, CheckCheck, MessagesSquare, SendHorizontal } from "lucide-react";
+import doriAvatar from "@/assets/dori-avatar.webp";
 import { Button } from "@/components/ui/button";
 import type { ChatMessage, LeadStatus } from "@/lib/bindings";
-import { markRead, newClientId } from "@/lib/chat";
+import { markRead, newClientId, receipt, type Receipt } from "@/lib/chat";
 import { useChatMessages, useSendChatMessage } from "@/lib/queries";
+import { formatFull } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { cn } from "@/lib/utils";
 
@@ -81,8 +84,12 @@ export function LeadChat({ lead }: { lead: LeadStatus }) {
 
   return (
     <section aria-label="Chat with the lead" className="flex min-h-0 flex-1 flex-col gap-3">
-      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="text-xl font-semibold tracking-tight">Lead</h2>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <img src={doriAvatar} alt="" className="size-10 shrink-0 rounded-full" />
+        <div className="flex min-w-0 flex-col">
+          <h2 className="text-xl font-semibold tracking-tight">Dori</h2>
+          <span className="text-xs text-muted-foreground">Toodo lead</span>
+        </div>
         <span role="status" aria-label="Lead status" className="text-sm text-muted-foreground">
           <span
             aria-hidden
@@ -118,6 +125,18 @@ export function LeadChat({ lead }: { lead: LeadStatus }) {
         {list.map((message) => (
           <Message key={message.id} message={message} />
         ))}
+        {send.isPending && send.variables && (
+          <Message
+            message={{
+              id: 0,
+              author: "user",
+              body: send.variables.text.trim(),
+              at: Math.floor(send.submittedAt / 1000),
+              deliveredAt: null,
+              seenAt: null,
+            }}
+          />
+        )}
       </ol>
       <form onSubmit={submit} aria-label="Message the lead" className="flex items-end gap-2">
         <textarea
@@ -147,29 +166,54 @@ export function LeadChat({ lead }: { lead: LeadStatus }) {
 }
 
 function Message({ message }: { message: ChatMessage }) {
-  const mine = message.author === "user";
-  const sentAt = new Date(message.at * 1000);
+  if (message.author === "lead") {
+    return (
+      <li data-author="lead" aria-label="Dori" className="flex max-w-[85%] items-start gap-2 self-start">
+        <img src={doriAvatar} alt="" className="size-8 shrink-0 rounded-full" />
+        <div className="flex min-w-0 flex-col items-start gap-1">
+          <span className="text-xs font-medium">Dori</span>
+          <div className="max-w-full rounded-lg border bg-background px-3 py-2 text-sm break-words">
+            <Suspense fallback={<p className="whitespace-pre-wrap">{message.body}</p>}>
+              <Markdown source={message.body} />
+            </Suspense>
+          </div>
+          <When className="text-xs text-muted-foreground" at={message.at} />
+        </div>
+      </li>
+    );
+  }
   return (
-    <li
-      data-author={message.author}
-      aria-label={mine ? "You" : "Lead"}
-      className={cn("flex max-w-[85%] flex-col gap-1", mine ? "items-end self-end" : "items-start self-start")}
-    >
-      <div
-        className={cn(
-          "rounded-lg px-3 py-2 text-sm break-words",
-          mine ? "bg-primary text-primary-foreground" : "border bg-background",
-        )}
-      >
-        {mine ? (
-          <p className="whitespace-pre-wrap">{message.body}</p>
-        ) : (
-          <Suspense fallback={<p className="whitespace-pre-wrap">{message.body}</p>}>
-            <Markdown source={message.body} />
-          </Suspense>
-        )}
+    <li data-author="user" aria-label="You" className="flex max-w-[85%] flex-col items-end gap-1 self-end">
+      <div className="rounded-lg bg-primary px-3 py-2 text-sm break-words text-primary-foreground">
+        <p className="whitespace-pre-wrap">{message.body}</p>
       </div>
-      <When className="text-xs text-muted-foreground" at={sentAt.getTime() / 1000} prefix={mine ? "You, " : "Lead, "} />
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <When at={message.at} prefix="You, " />
+        <ReceiptMark message={message} />
+      </div>
     </li>
+  );
+}
+
+const receipts: Record<Receipt, { text: string; seen: boolean }> = {
+  sent: { text: "Sent", seen: false },
+  delivered: { text: "Delivered", seen: false },
+  seen: { text: "Seen", seen: true },
+};
+
+/** Sent, delivered to the lead's pane, or seen by the lead, with the time in the tooltip. */
+function ReceiptMark({ message }: { message: ChatMessage }) {
+  const state = receipt(message);
+  const at = state === "seen" ? message.seenAt : state === "delivered" ? message.deliveredAt : null;
+  const Icon = state === "sent" ? Check : CheckCheck;
+  return (
+    <span
+      data-receipt={state}
+      title={at === null ? undefined : `${receipts[state].text} ${formatFull(at)}`}
+      className={cn("inline-flex items-center gap-0.5", receipts[state].seen && "text-sky-700 dark:text-sky-400")}
+    >
+      <Icon aria-hidden className="size-3.5" />
+      {receipts[state].text}
+    </span>
   );
 }

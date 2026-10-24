@@ -41,6 +41,17 @@ export function unreadCount(messages: readonly ChatMessage[], readUpTo: number):
   return messages.filter((message) => message.author === "lead" && message.id > readUpTo).length;
 }
 
+/**
+ * How far a person's message got: sent by this client and not confirmed yet, typed into
+ * the lead's pane, or picked up by the lead.
+ */
+export type Receipt = "sent" | "delivered" | "seen";
+
+export function receipt(message: Pick<ChatMessage, "deliveredAt" | "seenAt">): Receipt {
+  if (message.seenAt !== null) return "seen";
+  return message.deliveredAt !== null ? "delivered" : "sent";
+}
+
 export function newClientId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));

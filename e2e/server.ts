@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -18,7 +18,17 @@ export type ScratchServer = {
   rpc: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   /** Calls an MCP tool, like a coding agent does. */
   mcp: <T>(tool: string, args?: Record<string, unknown>) => Promise<T>;
+  /** The state of the fake herdr of a server started with a lead (see `fake-herdr.mjs`). */
+  herdrDir: string;
   stop: () => Promise<void>;
+};
+
+export type ServerOptions = {
+  /**
+   * Runs the lead against a fake herdr put first on the server's `PATH`, so the real herdr
+   * is never touched. Without it the lead is off.
+   */
+  lead?: boolean;
 };
 
 /** Workspaces the scratch database starts with; `herdr` is needed to create more. */
@@ -56,7 +66,23 @@ async function until(label: string, ready: () => Promise<boolean>, child: ChildP
   }
 }
 
-function launch(dataDir: string, port: number) {
+/** A `herdr` on a directory of its own that runs `fake-herdr.mjs` with its state in `dir`. */
+function fakeHerdr(dir: string): Record<string, string> {
+  const bin = path.join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const script = path.join(root, "e2e", "fake-herdr.mjs");
+  writeFileSync(path.join(bin, "herdr"), `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+  chmodSync(path.join(bin, "herdr"), 0o755);
+  return {
+    PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    FAKE_HERDR_DIR: dir,
+    TOODO_LEAD: "on",
+    TOODO_LEAD_DIR: path.join(dir, "lead"),
+    TOODO_LEAD_COMMAND: "true",
+  };
+}
+
+function launch(dataDir: string, port: number, lead: Record<string, string> | null) {
   const child = spawn(binary(), [], {
     env: {
       ...process.env,
@@ -64,7 +90,7 @@ function launch(dataDir: string, port: number) {
       TOODO_DATA_DIR: dataDir,
       TOODO_WEB_DIR: webDir(),
       // The lead would add a workspace and start an agent in the real herdr.
-      TOODO_LEAD: "off",
+      ...(lead ?? { TOODO_LEAD: "off" }),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -94,11 +120,13 @@ async function answers(port: number): Promise<boolean> {
  * never touches the data of a real server. The first start creates the database, which is
  * then seeded with workspaces (creating one through the API needs herdr) before the real start.
  */
-export async function startServer(): Promise<ScratchServer> {
+export async function startServer(options: ServerOptions = {}): Promise<ScratchServer> {
   const dataDir = mkdtempSync(path.join(tmpdir(), "toodo-e2e-"));
   const port = await freePort();
+  const herdrDir = path.join(dataDir, "herdr");
+  const lead = options.lead ? fakeHerdr(herdrDir) : null;
 
-  const first = launch(dataDir, port);
+  const first = launch(dataDir, port, null);
   await until("creating the database", () => answers(port), first.child, first.output);
   await stopProcess(first.child);
 
@@ -112,7 +140,7 @@ export async function startServer(): Promise<ScratchServer> {
   }
   db.close();
 
-  const running = launch(dataDir, port);
+  const running = launch(dataDir, port, lead);
   await until("starting", () => answers(port), running.child, running.output);
 
   const url = `http://127.0.0.1:${port}`;
@@ -133,6 +161,7 @@ export async function startServer(): Promise<ScratchServer> {
   return {
     url,
     webToken,
+    herdrDir,
     rpc<T>(command: string, args: Record<string, unknown> = {}) {
       return post<T>(`/api/rpc/${command}`, webToken, args);
     },
