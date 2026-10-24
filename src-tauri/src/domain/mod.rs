@@ -2,6 +2,7 @@
 
 pub mod backup;
 pub mod dag;
+pub mod device;
 pub mod issue;
 pub mod memory;
 pub mod model;

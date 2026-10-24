@@ -238,15 +238,20 @@ pub(crate) fn load_token(path: &Path) -> io::Result<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
-    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let token = random_token()?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     io::Write::write_all(&mut options.open(path)?, token.as_bytes())?;
     Ok(token)
+}
+
+/// 32 random bytes, in hex.
+pub(crate) fn random_token() -> io::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[cfg(unix)]
@@ -282,25 +287,32 @@ pub(crate) async fn require_token(
     request: Request,
     next: Next,
 ) -> Response {
-    let presented = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    if presented.is_some_and(|presented| same_secret(presented, &token)) {
+    if bearer(request.headers()).is_some_and(|presented| same_secret(presented, &token)) {
         next.run(request).await
     } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Bearer")],
-            "missing or wrong Toodo access token",
-        )
-            .into_response()
+        unauthorized()
     }
 }
 
+/// The bearer token of a request's `Authorization` header.
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+pub(crate) fn unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, "Bearer")],
+        "missing or wrong Toodo access token",
+    )
+        .into_response()
+}
+
 /// Compares without stopping at the first difference, so timing does not leak the token.
-fn same_secret(presented: &str, token: &str) -> bool {
+pub(crate) fn same_secret(presented: &str, token: &str) -> bool {
     presented.len() == token.len()
         && presented
             .bytes()

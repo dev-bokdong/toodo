@@ -9,6 +9,7 @@
 
 mod backup;
 mod commits;
+mod devices;
 mod memory;
 mod migrations;
 mod search;
@@ -25,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 use crate::domain::dag::DependencyError;
+use crate::domain::device::DeviceId;
 use crate::domain::memory::MemoryId;
 use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::TransitionError;
@@ -114,6 +116,7 @@ pub enum StorageError {
     /// A task cannot be related to itself.
     SelfRelation(TaskId),
     MemoryNotFound(MemoryId),
+    DeviceNotFound(DeviceId),
     /// A memory entry that was replaced is history and cannot change.
     MemorySuperseded {
         id: MemoryId,
@@ -172,6 +175,7 @@ impl fmt::Display for StorageError {
             }
             Self::SelfRelation(id) => write!(f, "task {id} cannot be related to itself"),
             Self::MemoryNotFound(id) => write!(f, "memory entry {id} does not exist"),
+            Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
             Self::MemorySuperseded { id, by } => write!(
                 f,
                 "memory entry {id} was superseded by entry {by}; change entry {by} instead"

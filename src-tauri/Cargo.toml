@@ -46,6 +46,7 @@ server = [
   "tokio/fs",
   "dep:tower-http",
   "dep:futures-util",
+  "dep:sha2",
 ]
 
 [build-dependencies]
@@ -66,6 +67,7 @@ tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
+sha2 = { version = "0.10", optional = true }
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 tokio = { version = "1.53.3", features = ["net", "rt", "macros"] }
 getrandom = { version = "0.3", features = ["std"] }
