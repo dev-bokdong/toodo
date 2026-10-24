@@ -897,6 +897,14 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
     const browser = screen.getByRole("group", { name: "Browse folders on devbox" });
+    await within(browser).findByRole("button", { name: "src/" });
+    const folder = within(browser).getByLabelText("Remote folder");
+    fireEvent.change(folder, { target: { value: "/home" } });
+    fireEvent.keyDown(folder, { key: "Enter" });
+    await within(browser).findByRole("button", { name: "me/" });
+    expect(mocked.createWorkspace).not.toHaveBeenCalled();
+    fireEvent.change(folder, { target: { value: "" } });
+    fireEvent.keyDown(folder, { key: "Enter" });
     fireEvent.click(await within(browser).findByRole("button", { name: "src/" }));
     await within(browser).findByText("No subfolders");
     fireEvent.click(within(browser).getByRole("button", { name: "Select folder" }));

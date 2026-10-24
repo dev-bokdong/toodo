@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import type { Machine } from "@/lib/bindings";
 import { useDirectories } from "@/lib/queries";
@@ -32,26 +32,33 @@ export function RemoteFolderBrowser({ machine, initialPath, onSelect, onCancel }
     if (current) setDraft(current);
   }, [current]);
 
-  function go(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    event.stopPropagation();
+  function go() {
     setPath(draft.trim() || null);
+  }
+
+  // The browser sits inside the workspace form, so Enter must not submit that form; a
+  // nested <form> is invalid HTML and browsers submit it natively instead.
+  function goOnEnter(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    go();
   }
 
   return (
     <div role="group" aria-label={`Browse folders on ${machineName}`} className="flex flex-col gap-1.5 rounded-lg border bg-background p-1.5">
-      <form onSubmit={go} className="flex gap-1">
+      <div className="flex gap-1">
         <input
           className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus-visible:border-ring"
           aria-label="Remote folder"
           placeholder="~"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={goOnEnter}
         />
-        <Button type="submit" size="xs" variant="outline">
+        <Button type="button" size="xs" variant="outline" onClick={go}>
           Go
         </Button>
-      </form>
+      </div>
       {listing.isPending && <p className="px-1 text-xs text-muted-foreground">{machine.kind === "local" ? "Reading folders..." : `Connecting to ${machineName}...`}</p>}
       {listing.isError && (
         <p role="alert" className="px-1 text-xs break-words text-destructive">
