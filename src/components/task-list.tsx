@@ -117,7 +117,8 @@ import {
   type TaskFilter,
 } from "@/lib/task-filter";
 import { needsAttention } from "@/lib/attention";
-import { formatDate, reachedMilestones } from "@/lib/timeline";
+import { formatFull, formatWhen, reachedMilestones } from "@/lib/timeline";
+import { When } from "@/components/when";
 import { firstParagraph, markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
 import { runsOnServer } from "@/lib/platform";
@@ -583,7 +584,7 @@ function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
             <div key={label} className="contents">
               <dt className="text-muted-foreground">{label}</dt>
               <dd>
-                <time dateTime={new Date(at * 1000).toISOString()}>{new Date(at * 1000).toLocaleString()}</time>
+                <When at={at} />
               </dd>
             </div>
           ))}
@@ -594,9 +595,7 @@ function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
   return (
     <p aria-label={`Timeline of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
       {milestones.map(({ label, at }) => (
-        <time key={label} dateTime={new Date(at * 1000).toISOString()} title={new Date(at * 1000).toLocaleString()}>
-          {`${label} ${formatDate(at)}`}
-        </time>
+        <When key={label} at={at} prefix={`${label} `} />
       ))}
     </p>
   );
@@ -984,9 +983,7 @@ function TaskRow({
                 <span className={cn("font-medium", toneText.danger)}>{failedCriteria} failed</span>
               )}
               {latest && (
-                <time dateTime={new Date(latest.at * 1000).toISOString()} title={new Date(latest.at * 1000).toLocaleString()}>
-                  {`${latest.label} ${formatDate(latest.at)}`}
-                </time>
+                <When at={latest.at} prefix={`${latest.label} `} />
               )}
             </p>
           )}
@@ -2000,7 +1997,7 @@ function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
       <p
         aria-label={`Latest note of #${task.id}`}
         className="flex min-w-0 items-center gap-1.5 text-xs"
-        title={new Date(latest.at * 1000).toLocaleString()}
+        title={formatFull(latest.at)}
       >
         <NoteKindBadge kind={latest.kind} />
         <span className="min-w-0 truncate text-muted-foreground">{markdownPreview(latest.body)}</span>
@@ -2017,9 +2014,7 @@ function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
           <li key={index} className="flex flex-col gap-0.5">
             <div className="flex items-center gap-1.5">
               <NoteKindBadge kind={note.kind} />
-              <time className="text-muted-foreground" dateTime={new Date(note.at * 1000).toISOString()}>
-                {new Date(note.at * 1000).toLocaleString()}
-              </time>
+              <When className="text-muted-foreground" at={note.at} />
             </div>
             <Suspense fallback={<p className="whitespace-pre-line break-words">{note.body}</p>}>
               <Markdown source={note.body} />
@@ -2626,7 +2621,7 @@ function CriterionMarker({ state }: { state: CriterionState }) {
 /** Who checked a criterion last and when, or null when nobody has. */
 function checkedByText(criterion: Criterion): string | null {
   if (criterion.checkedBy === null) return null;
-  const at = criterion.checkedAt === null ? "" : ` ${new Date(criterion.checkedAt * 1000).toLocaleString()}`;
+  const at = criterion.checkedAt === null ? "" : ` ${formatWhen(criterion.checkedAt)}`;
   return `Checked by ${checkedByLabels[criterion.checkedBy]}${at}`;
 }
 

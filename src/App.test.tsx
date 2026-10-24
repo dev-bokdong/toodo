@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
-import { formatDate } from "@/lib/timeline";
+import { formatFull, formatWhen } from "@/lib/timeline";
 import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notification";
@@ -291,8 +291,9 @@ describe("App", () => {
     expect(within(details).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
     details = await openDetails("Add storage");
     const timeline = within(details).getByLabelText("Timeline of #1");
-    expect(timeline).toHaveTextContent(`Planned${new Date(1760000000 * 1000).toLocaleString()}`);
-    expect(timeline).toHaveTextContent(`Completed${new Date(1760500000 * 1000).toLocaleString()}`);
+    expect(timeline).toHaveTextContent(`Planned${formatWhen(1760000000)}`);
+    expect(timeline).toHaveTextContent(`Completed${formatWhen(1760500000)}`);
+    expect(within(timeline).getByText(formatWhen(1760500000))).toHaveAttribute("title", formatFull(1760500000));
     expect(timeline).not.toHaveTextContent("Paused");
 
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
@@ -464,7 +465,7 @@ describe("App", () => {
     expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-12");
     const completed = await screen.findByRole("region", { name: "Completed" });
     expect(within(completed).getByText("Add storage")).toBeInTheDocument();
-    expect(within(completed).getByText(`toodo · ${formatDate(at)}`)).toBeInTheDocument();
+    expect(within(completed).getByText("toodo ·")).toHaveTextContent(`toodo · ${formatWhen(at)}`);
     const pullRequest = within(completed).getByRole("link", { name: "Pull request #7" });
     expect(pullRequest).toHaveTextContent("#7");
     expect(pullRequest).toHaveAttribute("href", "https://github.com/acme/toodo/pull/7");
@@ -473,7 +474,7 @@ describe("App", () => {
       "0123456Add the storage schema",
     );
     const workedOn = screen.getByRole("region", { name: "Worked on" });
-    expect(within(workedOn).getByText(`herdr · ${formatDate(at)}`)).toBeInTheDocument();
+    expect(within(workedOn).getByText("herdr ·")).toHaveTextContent(`herdr · ${formatWhen(at)}`);
     const { start, end } = weekPeriod("2026-10-12");
     expect(mocked.reviewPeriod).toHaveBeenCalledWith(start, end);
     const summary = screen.getByRole("region", { name: "Summary" });
@@ -750,7 +751,7 @@ describe("App", () => {
     fireEvent.mouseEnter(bar("Add storage"));
     const summary = await screen.findByRole("tooltip", { name: "Summary of #1" });
     expect(summary).toHaveTextContent("Add storage");
-    expect(summary).toHaveTextContent(`Completed${formatDate(plannedAt + 3600)}`);
+    expect(summary).toHaveTextContent(`Completed${formatWhen(plannedAt + 3600)}`);
     fireEvent.mouseLeave(bar("Add storage"));
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
 
@@ -2797,7 +2798,7 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Resume #1" })).toBeEnabled();
     expect(mocked.pauseTask).toHaveBeenCalledWith(1);
     expect(within(row("Add login")).getByText("Paused")).toBeInTheDocument();
-    expect(row("Add login")).toHaveTextContent(`Paused ${formatDate(1760200000)}`);
+    expect(row("Add login")).toHaveTextContent(`Paused ${formatWhen(1760200000)}`);
 
     // Secondary actions sit in the More menu, Delete last and in the destructive style.
     fireEvent.click(screen.getByRole("button", { name: "More actions for #1" }));

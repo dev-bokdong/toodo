@@ -39,6 +39,7 @@ import {
   type ReviewPeriod,
 } from "@/lib/review";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
+import { When } from "@/components/when";
 import { formatDate } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -375,7 +376,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                       <PullRequestLink url={task.pullRequestUrl} stats={task.pullRequest} />
                     )}
                     <span className="shrink-0 text-xs text-muted-foreground max-md:hidden">
-                      {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; {formatDate(at)}
+                      {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; <When at={at} />
                     </span>
                   </div>
                   {task.completionNote && (
@@ -489,7 +490,7 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
                   >
                     {adopted ? "Adopted" : "Not adopted"}
                   </span>
-                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{formatDate(at)}</span>
+                  <When className="ml-auto shrink-0 text-xs text-muted-foreground" at={at} />
                 </div>
                 <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line text-xs">
                   {task.completionNote ?? <span className="text-muted-foreground">No conclusion written.</span>}

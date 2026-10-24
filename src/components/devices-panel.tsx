@@ -1,14 +1,12 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
 import { listDevices, revokeDevice, type Device } from "@/web/devices";
 
 const devicesKey = ["devices"];
 
-function formatTime(seconds: number): string {
-  return new Date(seconds * 1000).toLocaleString();
-}
 
 function DeviceRow({ device }: { device: Device }) {
   const queryClient = useQueryClient();
@@ -28,9 +26,11 @@ function DeviceRow({ device }: { device: Device }) {
         {device.current && <span className="text-muted-foreground">(this device)</span>}
       </span>
       <span className="text-muted-foreground">
-        {device.revokedAt !== null
-          ? `Revoked ${formatTime(device.revokedAt)}`
-          : `Last seen ${formatTime(device.lastSeenAt)}`}
+        {device.revokedAt !== null ? (
+          <When at={device.revokedAt} prefix="Revoked " />
+        ) : (
+          <When at={device.lastSeenAt} prefix="Last seen " />
+        )}
       </span>
       {!revoked &&
         (confirming ? (
