@@ -53,6 +53,8 @@ export const queryKeys = {
   workspaces: ["workspaces"] as const,
   /** Tasks of every workspace: dependencies cross workspaces, so they are loaded together. */
   tasks: ["task-list"] as const,
+  /** Related links between tasks; under "tasks", so a tasks-changed event refetches them. */
+  taskRelations: ["tasks", "relations"] as const,
   herdrStatus: ["herdr-status"] as const,
   agentStatuses: ["agent-statuses"] as const,
   pullRequestStatuses: ["pull-request-statuses"] as const,
@@ -661,6 +663,33 @@ export function useAddDependency() {
 
 export function useRemoveDependency() {
   return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.removeDependency(id, dependsOn)));
+}
+
+/** Every related link between tasks of any workspaces. */
+export function useTaskRelations() {
+  return useQuery({
+    queryKey: queryKeys.taskRelations,
+    queryFn: () => unwrap(commands.listTaskRelations()),
+  });
+}
+
+/** The link between `taskId` and `relatedId`, which may belong to another workspace. */
+type Relation = { taskId: TaskId; relatedId: TaskId };
+
+function useRelationMutation(mutationFn: (relation: Relation) => Promise<unknown>) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.taskRelations }),
+  });
+}
+
+export function useAddRelation() {
+  return useRelationMutation(({ taskId, relatedId }) => unwrap(commands.addTaskRelation(taskId, relatedId)));
+}
+
+export function useRemoveRelation() {
+  return useRelationMutation(({ taskId, relatedId }) => unwrap(commands.removeTaskRelation(taskId, relatedId)));
 }
 
 /** Links GitHub issue `number` of the workspace repository to a task; `null` unlinks it. */

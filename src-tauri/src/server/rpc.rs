@@ -205,6 +205,13 @@ commands!(s => {
     );
 
     "list_tasks"() => sync Reply::result(tasks::list_tasks(State(&s.storage)));
+    "list_task_relations"() => sync Reply::result(tasks::list_task_relations(State(&s.storage)));
+    "add_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
+        tasks::add_task_relation(State(&s.storage), task_id, related_id)
+    );
+    "remove_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
+        tasks::remove_task_relation(State(&s.storage), task_id, related_id)
+    );
     "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(&s.storage), id));
     "create_task"(task: NewTask) => sync Reply::result(
         tasks::create_task(State(&s.storage), State(&s.git), task)

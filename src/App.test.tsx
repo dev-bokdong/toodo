@@ -45,6 +45,9 @@ vi.mock("@/lib/bindings", () => ({
     deleteTask: vi.fn(),
     addDependency: vi.fn(),
     removeDependency: vi.fn(),
+    listTaskRelations: vi.fn(),
+    addTaskRelation: vi.fn(),
+    removeTaskRelation: vi.fn(),
     herdrStatus: vi.fn(),
     getMachineSettings: vi.fn(),
     saveMachineSettings: vi.fn(),
@@ -205,6 +208,7 @@ describe("App", () => {
       data: { machine, worktreeRoot: null },
     }));
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listTaskRelations.mockResolvedValue({ status: "ok", data: [] });
     mocked.branchFreshness.mockResolvedValue({
       status: "ok",
       data: { base: "origin/main", behind: 0, fetchError: null, mergeable: null, mergeableError: null },
@@ -2293,6 +2297,106 @@ describe("App", () => {
     const details = await within(timeline).findByRole("complementary", { name: "Task details" });
     fireEvent.click(within(details).getByRole("button", { name: "Focus agent pane of #1" }));
     await waitFor(() => expect(mocked.focusAgentPane).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows related tasks in the details sheet and links and unlinks them", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage"),
+        task(2, 1, "Add UI"),
+        task(3, 1, "Write docs"),
+      ],
+    });
+    let relations = [{ taskId: 1, relatedId: 2 }];
+    mocked.listTaskRelations.mockImplementation(async () => ({
+      status: "ok",
+      data: structuredClone(relations),
+    }));
+    mocked.addTaskRelation.mockImplementation(
+      async (taskId: number, relatedId: number) => {
+        relations = [
+          ...relations,
+          {
+            taskId: Math.min(taskId, relatedId),
+            relatedId: Math.max(taskId, relatedId),
+          },
+        ];
+        return { status: "ok", data: null };
+      },
+    );
+    mocked.removeTaskRelation.mockImplementation(
+      async (taskId: number, relatedId: number) => {
+        relations = relations.filter(
+          (relation) =>
+            relation.taskId !== Math.min(taskId, relatedId) ||
+            relation.relatedId !== Math.max(taskId, relatedId),
+        );
+        return { status: "ok", data: null };
+      },
+    );
+    renderApp();
+
+    const timeline = await screen.findByRole("region", {
+      name: "Task timeline",
+    });
+    const bar = async (title: string) =>
+      (
+        await within(
+          timeline.querySelector(".react-flow__nodes") as HTMLElement,
+        ).findByText(title)
+      ).closest(".react-flow__node") as HTMLElement;
+    fireEvent.click(await bar("Add storage"));
+    const details = await within(timeline).findByRole("complementary", {
+      name: "Task details",
+    });
+    const related = await within(details).findByRole("list", {
+      name: "Related tasks of #1",
+    });
+    expect(within(related).getAllByRole("listitem")).toHaveLength(1);
+
+    // A chip opens the related task in the sheet.
+    fireEvent.click(
+      within(related).getByRole("button", { name: "Open related task #2" }),
+    );
+    expect(
+      await within(details).findByRole("heading", { name: "Add UI" }),
+    ).toBeInTheDocument();
+    // The link shows from both ends, and a task without links has no Related field.
+    expect(
+      await within(details).findByRole("list", { name: "Related tasks of #2" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(await bar("Write docs"));
+    expect(
+      await within(details).findByRole("heading", { name: "Write docs" }),
+    ).toBeInTheDocument();
+    expect(
+      within(details).queryByRole("region", { name: "Related" }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(within(details).getByLabelText("Add related task to #3"), {
+      target: { value: "1" },
+    });
+    await waitFor(() =>
+      expect(mocked.addTaskRelation).toHaveBeenCalledWith(3, 1),
+    );
+    const added = await within(details).findByRole("list", {
+      name: "Related tasks of #3",
+    });
+    fireEvent.click(
+      within(added).getByRole("button", {
+        name: "Remove related task #1 from #3",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocked.removeTaskRelation).toHaveBeenCalledWith(3, 1),
+    );
+    await waitFor(() =>
+      expect(
+        within(details).queryByRole("list", { name: "Related tasks of #3" }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("gathers tasks needing attention in the sidebar and shows one on the timeline", async () => {

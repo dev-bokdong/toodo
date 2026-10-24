@@ -24,6 +24,15 @@ pub struct WorkspaceId(#[specta(type = Number)] pub i64);
 #[serde(transparent)]
 pub struct TaskId(#[specta(type = Number)] pub i64);
 
+/// A related link between two tasks, which may belong to different workspaces. The link
+/// goes both ways; `task_id` is the lower ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRelation {
+    pub task_id: TaskId,
+    pub related_id: TaskId,
+}
+
 /// Seconds since the Unix epoch (UTC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
