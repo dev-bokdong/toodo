@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from "react";
+import { useId, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
@@ -12,6 +12,7 @@ import {
   useCreateWorkspace,
   useDeleteWorkspace,
   useHerdrMachines,
+  useHomeDirectory,
   useSshHosts,
   useWorkspaces,
 } from "@/lib/queries";
@@ -70,6 +71,39 @@ function herdrProblem(host: string, machines: HerdrMachine[]): string | null {
 function joinLocal(base: string, name: string): string {
   if (runsOnServer) return joinPosix(base, name);
   return /[\\/]$/.test(base) ? `${base}${name}` : `${base}\\${name}`;
+}
+
+/** `path` ending in a separator, ready for a folder name to be typed after it. */
+function withSeparator(path: string, local: boolean): string {
+  if (/[\\/]$/.test(path)) return path;
+  return local && !runsOnServer ? `${path}\\` : `${path}/`;
+}
+
+/** A field with a visible label above it and optional help text below. */
+function Field({
+  label,
+  help,
+  children,
+}: {
+  label: string;
+  help?: string;
+  children: (ids: { id: string; describedBy: string | undefined }) => ReactNode;
+}) {
+  const id = useId();
+  const helpId = `${id}-help`;
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-xs text-muted-foreground">
+        {label}
+      </label>
+      {children({ id, describedBy: help ? helpId : undefined })}
+      {help && (
+        <p id={helpId} className="text-xs text-muted-foreground">
+          {help}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function baseName(path: string): string {
@@ -477,14 +511,20 @@ type NewWorkspaceFormProps = {
 function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFormProps) {
   const createWorkspace = useCreateWorkspace();
   const [url, setUrl] = useState("");
-  const [folder, setFolder] = useState("");
+  const [folderDraft, setFolder] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [browsing, setBrowsing] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
 
   const cloning = mode === "clone";
-  const effectiveName = name ?? (cloning ? repositoryName(url) : baseName(folder));
+  const home = useHomeDirectory(machine === null ? { kind: "local" } : { kind: "ssh", label: machine }).data;
+  // A clone makes a new folder under home. Open and Init name the repository's own folder,
+  // so they start inside home, and the folder has to be finished before submitting.
+  const startFolder = home === undefined ? "" : cloning ? home : withSeparator(home, machine === null);
+  const folder = folderDraft ?? startFolder;
+  const folderUntouched = !cloning && folderDraft === null;
+  const effectiveName = name ?? (cloning ? repositoryName(url) : folderUntouched ? "" : baseName(folder));
   const folderLabel = cloning ? "Parent folder" : "Folder";
   const path =
     cloning && folder.trim() && effectiveName.trim()
@@ -530,28 +570,35 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
       onKeyDown={escapeCloses(onCancel, createWorkspace.isPending)}
     >
       {cloning && (
-        <input
-          className={inputClass}
-          placeholder="Repository URL"
-          aria-label="Repository URL"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          required
-        />
+        <Field label="Repository URL">
+          {({ id }) => (
+            <input
+              id={id}
+              className={inputClass}
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              required
+            />
+          )}
+        </Field>
       )}
-      <div className="flex gap-1">
-        <input
-          className={inputClass}
-          placeholder={machine === null && !runsOnServer ? "C:\\dev" : "/home/me/dev"}
-          aria-label={folderLabel}
-          value={folder}
-          onChange={(e) => setFolder(e.target.value)}
-          required
-        />
-        <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={browsesInApp ? browsing : undefined}>
-          Browse...
-        </Button>
-      </div>
+      <Field label={folderLabel} help={cloning ? undefined : "The repository's own folder."}>
+        {({ id, describedBy }) => (
+          <div className="flex gap-1">
+            <input
+              id={id}
+              className={inputClass}
+              aria-describedby={describedBy}
+              value={folder}
+              onChange={(e) => setFolder(e.target.value)}
+              required
+            />
+            <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={browsesInApp ? browsing : undefined}>
+              Browse...
+            </Button>
+          </div>
+        )}
+      </Field>
       {browsing && browsesInApp && (
         <RemoteFolderBrowser
           machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
@@ -568,33 +615,40 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
           {pickError}
         </p>
       )}
-      <input
-        className={inputClass}
-        placeholder="Name"
-        aria-label="Name"
-        value={effectiveName}
-        onChange={(e) => setName(e.target.value)}
-        required
-      />
-      {cloning && path && <p className="truncate text-xs text-muted-foreground" title={path}>Clones into {path}</p>}
+      <Field label="Name">
+        {({ id }) => (
+          <input
+            id={id}
+            className={inputClass}
+            value={effectiveName}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+        )}
+      </Field>
+      {cloning && folder.trim() && effectiveName.trim() && <p className="truncate text-xs text-muted-foreground" title={path}>Clones into {path}</p>}
       {mode === "init" && (
         <p className="text-xs text-muted-foreground">
           The folder is created if it does not exist and becomes a git repository without a remote.
         </p>
       )}
-      <input
-        className={inputClass}
-        placeholder={mode === "init" ? "Base branch (main if empty)" : "Base branch (detected if empty)"}
-        aria-label="Base branch"
-        value={baseBranch}
-        onChange={(e) => setBaseBranch(e.target.value)}
-      />
+      <Field label="Base branch" help={mode === "init" ? "Uses main if empty." : "Detected from the repository if empty."}>
+        {({ id, describedBy }) => (
+          <input
+            id={id}
+            className={inputClass}
+            aria-describedby={describedBy}
+            value={baseBranch}
+            onChange={(e) => setBaseBranch(e.target.value)}
+          />
+        )}
+      </Field>
       {createWorkspace.isError && (
         <p role="alert" className="text-xs text-destructive">
           {createWorkspace.error.message}
         </p>
       )}
-      <Button type="submit" size="sm" disabled={createWorkspace.isPending}>
+      <Button type="submit" size="sm" disabled={createWorkspace.isPending || folderUntouched}>
         {createWorkspace.isPending ? modes[mode].pending : modes[mode].submit}
       </Button>
     </form>
