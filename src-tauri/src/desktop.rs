@@ -226,7 +226,7 @@ pub fn run() {
             ));
             match (&mcp.error, server) {
                 (None, Some((listener, token))) => {
-                    let router = mcp::router(runtime.clone(), token);
+                    let router = mcp::router(runtime.clone(), token, None);
                     tauri::async_runtime::spawn(async move {
                         if let Err(error) = mcp::serve(listener, router).await {
                             eprintln!("toodo: MCP server stopped: {error}");

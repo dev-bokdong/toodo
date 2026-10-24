@@ -11,8 +11,11 @@
 //! in the app. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
 //! as a resource, since not every client can read resources. Agents on SSH machines reach
-//! the server through the reverse tunnels of [`tunnels`].
+//! the server through the reverse tunnels of [`tunnels`]. `toodo-server` also accepts
+//! its lead's own token, so that what the lead does is recorded and its destructive
+//! actions wait for a person's confirmation (see [`lead`]).
 
+mod lead;
 mod memory;
 mod tools;
 pub mod tunnels;
@@ -24,10 +27,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
+use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -280,8 +285,19 @@ pub(crate) fn make_private(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The MCP endpoint at `/mcp`, open only to requests that bear `token`.
-pub(crate) fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
+/// The tokens `/mcp` accepts.
+struct Tokens {
+    agent: String,
+    lead: Option<String>,
+}
+
+/// The MCP endpoint at `/mcp`, open only to requests that bear `token`, or `lead_token`,
+/// which tells the tools that the lead calls them (see [`lead`]).
+pub(crate) fn router(
+    backend: Arc<dyn Backend>,
+    token: String,
+    lead_token: Option<String>,
+) -> axum::Router {
     let service = StreamableHttpService::new(
         move || Ok(ToodoMcp::new(backend.clone())),
         LocalSessionManager::default().into(),
@@ -292,21 +308,34 @@ pub(crate) fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
     axum::Router::new()
         .nest_service("/mcp", service)
         .route_layer(middleware::from_fn_with_state(
-            Arc::new(token),
-            require_token,
+            Arc::new(Tokens {
+                agent: token,
+                lead: lead_token,
+            }),
+            require_caller,
         ))
 }
 
-pub(crate) async fn require_token(
-    State(token): State<Arc<String>>,
-    request: Request,
+/// Lets requests with one of `tokens` through, marked with their [`lead::Caller`].
+async fn require_caller(
+    State(tokens): State<Arc<Tokens>>,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    if bearer(request.headers()).is_some_and(|presented| same_secret(presented, &token)) {
-        next.run(request).await
+    let presented = bearer(request.headers()).unwrap_or("");
+    let caller = if same_secret(presented, &tokens.agent) {
+        lead::Caller::Agent
+    } else if tokens
+        .lead
+        .as_deref()
+        .is_some_and(|lead| same_secret(presented, lead))
+    {
+        lead::Caller::Lead
     } else {
-        unauthorized()
-    }
+        return unauthorized();
+    };
+    request.extensions_mut().insert(caller);
+    next.run(request).await
 }
 
 /// The bearer token of a request's `Authorization` header.
@@ -360,17 +389,7 @@ impl ToodoMcp {
         self.announce(result)
     }
 
-    /// Runs a tool that drives git, gh, or herdr on a blocking thread, since those take
-    /// seconds, and announces the change to the frontend.
-    async fn change_blocking(
-        &self,
-        apply: impl FnOnce(&dyn Backend) -> CommandResult<Task> + Send + 'static,
-    ) -> Result<CallToolResult, ErrorData> {
-        let result = self.blocking(apply).await?;
-        self.announce(result)
-    }
-
-    /// Runs `apply` on a blocking thread.
+    /// Runs `apply` on a blocking thread, since git, gh, and herdr take seconds.
     async fn blocking<T: Send + 'static>(
         &self,
         apply: impl FnOnce(&dyn Backend) -> CommandResult<T> + Send + 'static,
@@ -387,6 +406,62 @@ impl ToodoMcp {
             self.backend
                 .tasks_changed(model::WorkspaceId(details.task.workspace_id.0));
         }
+    }
+
+    /// What the tool returns: `result` with, when the lead made the change, `activity` kept
+    /// in the task's history and posted to the chat. Recording it can only fail after the
+    /// change is done, so a failure is logged rather than returned.
+    fn by(
+        &self,
+        caller: lead::Caller,
+        result: CommandResult<Task>,
+        activity: impl FnOnce(&Task) -> lead::Activity,
+    ) -> CommandResult<Task> {
+        let task = result?;
+        if caller != lead::Caller::Lead {
+            return Ok(task);
+        }
+        let activity = activity(&task);
+        match lead::record(&mut lock(self.backend.storage()), task.id.into(), &activity) {
+            Ok(noted) => {
+                self.backend.chat_changed();
+                Ok(noted)
+            }
+            Err(error) => {
+                eprintln!(
+                    "toodo: failed to record what the lead did to task {}: {}",
+                    task.id.0, error.message
+                );
+                Ok(task)
+            }
+        }
+    }
+
+    /// The code a person confirmed a destructive `action` of the lead with in the chat,
+    /// or else the tool result telling the lead how to get the confirmation.
+    fn confirmed(
+        &self,
+        tool: &str,
+        action: &str,
+        confirmation: Option<&str>,
+    ) -> Result<String, Result<CallToolResult, ErrorData>> {
+        let guarded = lead::guard(
+            &mut lock(self.backend.storage()),
+            tool,
+            action,
+            confirmation,
+        );
+        let error = match guarded {
+            Ok(lead::Guard::Confirmed(code)) => return Ok(code),
+            Ok(lead::Guard::Refused { error, asked }) => {
+                if asked {
+                    self.backend.chat_changed();
+                }
+                error
+            }
+            Err(error) => error,
+        };
+        Err(reply::<Task>(Err(error)))
     }
 
     fn announce(&self, result: CommandResult<Task>) -> Result<CallToolResult, ErrorData> {
@@ -602,16 +677,21 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks. Without merge_criterion false, its first criterion is the merge: the pull request is merged, or, in a repository without an origin remote, the branch is merged into the base branch locally."
+        description = "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks (depends_on) and related to others (related). Without merge_criterion false, its first criterion is the merge: the pull request is merged, or, in a repository without an origin remote, the branch is merged into the base branch locally."
     )]
     async fn create_task(
         &self,
+        Extension(parts): Extension<Parts>,
         Parameters(request): Parameters<tools::CreateTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change_blocking(move |backend| {
-            tools::create_task(backend.storage(), backend.git(), request)
-        })
-        .await
+        let related = request.related.clone();
+        let result = self
+            .blocking(move |backend| tools::create_task(backend.storage(), backend.git(), request))
+            .await?;
+        let result = self.by(lead::Caller::of(&parts), result, |task| {
+            lead::created(task, &related)
+        });
+        self.announce(result)
     }
 
     #[tool(
@@ -665,16 +745,39 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
+        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. With agent_command, Toodo then runs that command (e.g. the coding agent) in the first pane of the task's herdr workspace. Returns the task with the panes of its herdr workspace, ranIn (the pane agent_command ran in), and paneError when the panes could not be listed or the command did not run. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
     )]
     async fn start_task(
         &self,
-        Parameters(request): Parameters<tools::TaskRef>,
+        Extension(parts): Extension<Parts>,
+        Parameters(request): Parameters<tools::StartTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change_blocking(move |backend| {
-            tools::start_task(backend.storage(), backend.git(), backend.herdr(), request)
-        })
-        .await
+        let caller = lead::Caller::of(&parts);
+        let command = request.agent_command.clone();
+        let result = self
+            .blocking(move |backend| {
+                tools::start_task(backend.storage(), backend.git(), backend.herdr(), request)
+            })
+            .await?;
+        let result = result.and_then(|started| {
+            let ran = started
+                .ran_in
+                .clone()
+                .zip(command.as_deref().map(str::trim).map(str::to_owned));
+            let task = self.by(caller, Ok(started.task), |task| {
+                lead::started(
+                    task,
+                    ran.as_ref()
+                        .map(|(pane, command)| (pane.as_str(), command.as_str())),
+                )
+            })?;
+            Ok(tools::TaskStart { task, ..started })
+        });
+        if let Ok(started) = &result {
+            self.backend
+                .tasks_changed(model::WorkspaceId(started.task.workspace_id.0));
+        }
+        reply(result)
     }
 
     #[tool(
@@ -682,18 +785,50 @@ impl ToodoMcp {
     )]
     async fn complete_task(
         &self,
+        Extension(parts): Extension<Parts>,
         Parameters(request): Parameters<tools::CompleteTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change_blocking(move |backend| {
-            tools::complete_task(
-                backend.storage(),
-                backend.git(),
-                backend.github(),
-                backend.herdr(),
-                request,
-            )
-        })
-        .await
+        let caller = lead::Caller::of(&parts);
+        let mut confirmed = None;
+        if caller == lead::Caller::Lead {
+            let task = match tools::get_task(&lock(self.backend.storage()), request.id) {
+                Ok(task) => task,
+                Err(error) => return reply::<Task>(Err(error)),
+            };
+            let named = format!("#{} {}", task.id.0, task.title);
+            let action = match (&request.merged_with, task.status) {
+                (Some(target), _) => Some(format!(
+                    "complete {named} as shipped with {}, without a pull request of its own.",
+                    target.describe()
+                )),
+                (None, crate::commands::types::TaskStatus::InReview) => Some(format!(
+                    "confirm the completion of {named}, which awaits a person's confirmation \
+                     of its criteria."
+                )),
+                (None, _) => None,
+            };
+            if let Some(action) = action {
+                match self.confirmed("complete_task", &action, request.confirmation.as_deref()) {
+                    Ok(code) => confirmed = Some(code),
+                    Err(refused) => return refused,
+                }
+            }
+        }
+        let result = self
+            .blocking(move |backend| {
+                tools::complete_task(
+                    backend.storage(),
+                    backend.git(),
+                    backend.github(),
+                    backend.herdr(),
+                    request,
+                )
+            })
+            .await?;
+        let result = self.by(caller, result, |task| {
+            lead::completed(task, confirmed.as_deref())
+        });
+        self.announce(result)
     }
 
     #[tool(
@@ -701,18 +836,46 @@ impl ToodoMcp {
     )]
     async fn conclude_task(
         &self,
+        Extension(parts): Extension<Parts>,
         Parameters(request): Parameters<tools::ConcludeTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change_blocking(move |backend| {
-            tools::conclude_task(
-                backend.storage(),
-                backend.git(),
-                backend.github(),
-                backend.herdr(),
-                request,
-            )
-        })
-        .await
+        let caller = lead::Caller::of(&parts);
+        let mut confirmed = String::new();
+        if caller == lead::Caller::Lead {
+            let task = match tools::get_task(&lock(self.backend.storage()), request.id) {
+                Ok(task) => task,
+                Err(error) => return reply::<Task>(Err(error)),
+            };
+            let note: Vec<String> = request
+                .note
+                .trim()
+                .lines()
+                .map(|line| format!("> {line}").trim_end().to_owned())
+                .collect();
+            let action = format!(
+                "conclude #{} {} without a merge, with this completion note:\n\n{}",
+                task.id.0,
+                task.title,
+                note.join("\n")
+            );
+            match self.confirmed("conclude_task", &action, request.confirmation.as_deref()) {
+                Ok(code) => confirmed = code,
+                Err(refused) => return refused,
+            }
+        }
+        let result = self
+            .blocking(move |backend| {
+                tools::conclude_task(
+                    backend.storage(),
+                    backend.git(),
+                    backend.github(),
+                    backend.herdr(),
+                    request,
+                )
+            })
+            .await?;
+        let result = self.by(caller, result, |task| lead::concluded(task, &confirmed));
+        self.announce(result)
     }
 
     #[tool(description = "Remove the dependency of task_id on depends_on.")]
@@ -898,12 +1061,275 @@ mod tests {
         (storage, task)
     }
 
+    /// The HTTP request of a tool call by `caller`, as the router marks it.
+    fn by(caller: lead::Caller) -> Extension<Parts> {
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        parts.extensions.insert(caller);
+        Extension(parts)
+    }
+
     fn start(server: &ToodoMcp, id: model::TaskId) -> serde_json::Value {
-        let request = tools::TaskRef { id: id.into() };
+        let request = tools::StartTask {
+            id: id.into(),
+            agent_command: None,
+        };
         let result = runtime()
-            .block_on(server.start_task(Parameters(request)))
+            .block_on(server.start_task(by(lead::Caller::Agent), Parameters(request)))
             .unwrap();
         serde_json::to_value(result).unwrap()
+    }
+
+    fn chat(backend: &TestBackend) -> Vec<String> {
+        lock(backend.storage())
+            .list_chat_messages()
+            .unwrap()
+            .into_iter()
+            .map(|message| message.body)
+            .collect()
+    }
+
+    fn last_note(task: &serde_json::Value) -> &str {
+        task["notes"].as_array().unwrap().last().unwrap()["body"]
+            .as_str()
+            .unwrap()
+    }
+
+    #[test]
+    fn what_the_lead_creates_is_linked_noted_and_posted_to_the_chat() {
+        let (storage, first) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let create = |caller, arguments: serde_json::Value| {
+            let request = serde_json::from_value(arguments).unwrap();
+            let result = runtime()
+                .block_on(server.create_task(by(caller), Parameters(request)))
+                .unwrap();
+            serde_json::to_value(result).unwrap()
+        };
+        let task = |title: &str, related: serde_json::Value| {
+            serde_json::json!({
+                "workspace_id": first.workspace_id.0,
+                "task_type": "feat",
+                "title": title,
+                "depends_on": [first.id.0],
+                "related": related,
+                "merge_criterion": false,
+            })
+        };
+
+        let by_agent = created_workspace(&create(
+            lead::Caller::Agent,
+            task("Add logout", serde_json::json!([])),
+        ));
+        assert_eq!(by_agent["notes"], serde_json::json!([]));
+        assert!(chat(&backend).is_empty());
+
+        let unknown = create(lead::Caller::Lead, task("Lost", serde_json::json!([999])));
+        assert!(error_text(&unknown).starts_with("NotFound:"));
+        let by_lead = created_workspace(&create(
+            lead::Caller::Lead,
+            task("Add sessions", serde_json::json!([by_agent["id"]])),
+        ));
+
+        let id = by_lead["id"].as_i64().unwrap();
+        let agent_id = by_agent["id"].as_i64().unwrap();
+        assert_eq!(id, agent_id + 1, "the rejected task was not kept");
+        assert_eq!(by_lead["dependsOn"], serde_json::json!([first.id.0]));
+        assert_eq!(
+            lock(backend.storage()).list_relations().unwrap(),
+            [(model::TaskId(agent_id), model::TaskId(id))]
+        );
+        let links = format!(
+            "; it depends on #{} and is related to #{agent_id}.",
+            first.id.0
+        );
+        assert_eq!(
+            last_note(&by_lead),
+            format!("Created by the Toodo lead{links}")
+        );
+        assert_eq!(
+            chat(&backend),
+            [format!("Created #{id} Add sessions{links}")]
+        );
+        assert_eq!(*backend.chat_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn the_lead_starts_a_task_with_its_agent_in_the_new_pane() {
+        let (storage, task) = storage_with_task(Some(r"D:\wt"));
+        let created =
+            r#"{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w27"}}}"#;
+        let panes = r#"{"id":"cli:pane:list","result":{"panes":[
+            {"pane_id":"w9:p1","workspace_id":"w9","agent_status":"idle"},
+            {"pane_id":"w27:p1","workspace_id":"w27","agent_status":"unknown"}]}}"#;
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![
+                Ok("abc\n".to_owned()),
+                Ok(String::new()),
+                Err(crate::adapters::git::fake::failed()),
+                Ok(String::new()),
+            ],
+            vec![
+                Ok(created.to_owned()),
+                Ok(panes.to_owned()),
+                Ok(String::new()),
+            ],
+        ));
+        let server = ToodoMcp::new(backend.clone());
+        let request = tools::StartTask {
+            id: task.id.into(),
+            agent_command: Some(" omo --approve ".to_owned()),
+        };
+
+        let result = runtime()
+            .block_on(server.start_task(by(lead::Caller::Lead), Parameters(request)))
+            .unwrap();
+
+        let started = created_workspace(&serde_json::to_value(result).unwrap());
+        assert_eq!(started["status"], "in_progress");
+        assert_eq!(started["ranIn"], "w27:p1");
+        assert_eq!(started["panes"].as_array().unwrap().len(), 1);
+        assert_eq!(started["panes"][0]["paneId"], "w27:p1");
+        let ran = " and ran `omo --approve` in its pane w27:p1.";
+        assert_eq!(
+            last_note(&started),
+            format!("Started by the Toodo lead{ran}")
+        );
+        assert_eq!(
+            chat(&backend),
+            [format!("Started #{} Add login{ran}", task.id.0)]
+        );
+    }
+
+    fn conclude(
+        server: &ToodoMcp,
+        caller: lead::Caller,
+        id: model::TaskId,
+        confirmation: Option<&str>,
+    ) -> serde_json::Value {
+        let request = tools::ConcludeTask {
+            id: id.into(),
+            note: "Duplicate of #7\nSee there.".to_owned(),
+            confirmation: confirmation.map(str::to_owned),
+        };
+        let result = runtime()
+            .block_on(server.conclude_task(by(caller), Parameters(request)))
+            .unwrap();
+        serde_json::to_value(result).unwrap()
+    }
+
+    #[test]
+    fn the_lead_concludes_a_task_only_once_a_person_confirms_it_in_the_chat() {
+        use crate::domain::chat::ChatAuthor;
+        use crate::domain::status::TaskStatus;
+        let (mut storage, task) = storage_with_task(None);
+        storage
+            .set_task_status(task.id, TaskStatus::InProgress)
+            .unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let status = || {
+            lock(backend.storage())
+                .get_task(task.id)
+                .unwrap()
+                .unwrap()
+                .status
+        };
+
+        let asked = error_text(&conclude(&server, lead::Caller::Lead, task.id, None)).to_owned();
+        let code = asked.split("with the code ").nth(1).unwrap()[..6].to_owned();
+        assert_eq!(status(), TaskStatus::InProgress);
+        let request = chat(&backend).pop().unwrap();
+        assert!(
+            request.contains("> Duplicate of #7\n> See there."),
+            "{request}"
+        );
+        assert!(
+            request.contains(&format!("Reply `confirm {code}`")),
+            "{request}"
+        );
+
+        let waiting = conclude(&server, lead::Caller::Lead, task.id, Some(&code));
+        assert!(error_text(&waiting).contains("yet"));
+        lock(backend.storage())
+            .add_chat_message(ChatAuthor::User, &format!("confirm {code}"), None)
+            .unwrap();
+        let done = created_workspace(&conclude(&server, lead::Caller::Lead, task.id, Some(&code)));
+
+        assert_eq!(
+            (&done["status"], &done["resolution"]),
+            (
+                &serde_json::json!("done"),
+                &serde_json::json!("not_adopted")
+            )
+        );
+        let confirmed = format!(", confirmed in the chat (`confirm {code}`).");
+        assert_eq!(
+            last_note(&done),
+            format!("Concluded without a merge by the Toodo lead{confirmed}")
+        );
+        assert_eq!(
+            chat(&backend).pop().unwrap(),
+            format!(
+                "Concluded #{} Add login without a merge{confirmed}",
+                task.id.0
+            )
+        );
+        assert_eq!(*backend.chat_changed.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn other_agents_conclude_without_a_confirmation_or_a_chat_message() {
+        let (mut storage, task) = storage_with_task(None);
+        storage
+            .set_task_status(task.id, crate::domain::status::TaskStatus::InProgress)
+            .unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+
+        let done = created_workspace(&conclude(&server, lead::Caller::Agent, task.id, None));
+
+        assert_eq!(done["status"], "done");
+        assert_eq!(done["notes"], serde_json::json!([]));
+        assert!(chat(&backend).is_empty());
+    }
+
+    #[test]
+    fn the_lead_asks_before_confirming_a_completion_or_completing_with_another_task() {
+        use crate::domain::status::TaskStatus;
+        let (mut storage, task) = storage_with_task(None);
+        storage
+            .set_task_status(task.id, TaskStatus::InProgress)
+            .unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let complete = |merged_with: Option<tools::MergedWithRef>| {
+            let request = tools::CompleteTask {
+                id: task.id.into(),
+                confirmation: None,
+                merged_with,
+            };
+            let result = runtime()
+                .block_on(server.complete_task(by(lead::Caller::Lead), Parameters(request)))
+                .unwrap();
+            serde_json::to_value(result).unwrap()
+        };
+
+        let shipped = complete(Some(tools::MergedWithRef::Text(" #5 ".to_owned())));
+        assert!(error_text(&shipped).contains("confirm"));
+        lock(backend.storage())
+            .set_task_status(task.id, TaskStatus::InReview)
+            .unwrap();
+        let confirming = complete(None);
+        assert!(error_text(&confirming).contains("confirm"));
+
+        let requests = chat(&backend);
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(requests[0].contains("complete #1 Add login as shipped with #5,"));
+        assert!(requests[1].contains("awaits a person's confirmation"));
+        let stored = lock(backend.storage()).get_task(task.id).unwrap().unwrap();
+        assert_eq!(stored.status, TaskStatus::InReview);
     }
 
     #[test]
@@ -919,7 +1345,10 @@ mod tests {
                 Err(crate::adapters::git::fake::failed()),
                 Ok(String::new()),
             ],
-            vec![Ok(created.to_owned())],
+            vec![
+                Ok(created.to_owned()),
+                Ok(r#"{"id":"cli:pane:list","result":{"panes":[]}}"#.to_owned()),
+            ],
         ));
         let server = ToodoMcp::new(backend.clone());
 
@@ -1558,7 +1987,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let storage = crate::storage::Storage::open_in_memory().unwrap();
         let backend = Arc::new(TestBackend::new(storage));
-        let app = router(backend, "secret".to_owned());
+        let app = router(backend, "secret".to_owned(), Some("leader".to_owned()));
         std::thread::spawn(move || runtime().block_on(serve(listener, app)));
 
         assert!(post_initialize(address, "").starts_with("HTTP/1.1 401"));
@@ -1567,6 +1996,8 @@ mod tests {
         let accepted = post_initialize(address, "Authorization: Bearer secret\r\n");
         assert!(accepted.starts_with("HTTP/1.1 200"), "{accepted}");
         assert!(accepted.contains(r#""name":"toodo""#), "{accepted}");
+        let lead = post_initialize(address, "Authorization: Bearer leader\r\n");
+        assert!(lead.starts_with("HTTP/1.1 200"), "{lead}");
     }
 
     #[test]

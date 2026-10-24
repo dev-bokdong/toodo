@@ -20,7 +20,7 @@
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
 //! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
-//! access token, as a bearer token; the shared tokens are created in the data directory on
+//! access token or the lead's token, as a bearer token; the shared tokens are created in the data directory on
 //! first start.
 
 mod devices;
@@ -69,6 +69,8 @@ use crate::storage::Storage;
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
 const WEB_TOKEN_FILE: &str = "web-token";
+/// The MCP token of the lead, which tells the tools that the lead calls them.
+const LEAD_TOKEN_FILE: &str = "lead-token";
 
 /// The default port, next to the desktop app's MCP port ([`mcp::PORT`]) rather than on it:
 /// the desktop app forwards that port to its SSH machines, which may include this server,
@@ -293,6 +295,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
     let storage = Storage::open(&config.data_dir.join(DATABASE_FILE))?;
     let mcp_token = mcp::load_token(&config.data_dir.join(mcp::TOKEN_FILE))?;
+    let lead_token = mcp::load_token(&config.data_dir.join(LEAD_TOKEN_FILE))?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
     let web_token = mcp::load_token(&web_token_path)?;
     let push = push::Push::load(&config.data_dir, config.push_subject.clone())?;
@@ -327,7 +330,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         Some(lead) => {
             let data_dir = std::fs::canonicalize(&config.data_dir)?;
             let supervisor =
-                lead::Supervisor::new(lead, data_dir, services.mcp.url.clone(), mcp_token.clone());
+                lead::Supervisor::new(lead, data_dir, services.mcp.url.clone(), lead_token.clone());
             Some(lead::spawn(services.clone(), supervisor)?)
         }
         None => None,
@@ -340,6 +343,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         services.clone(),
         web_token,
         mcp_token,
+        lead_token,
         config.web_dir.as_deref(),
     );
     println!(
@@ -400,6 +404,7 @@ fn router(
     services: Arc<Services>,
     web_token: String,
     mcp_token: String,
+    lead_token: String,
     web_dir: Option<&Path>,
 ) -> Router {
     // `route_layer` guards the routes only: other paths stay 404 (or the web app) rather
@@ -437,7 +442,9 @@ fn router(
     let streams = Router::new()
         .route("/api/panes/stream", get(panes::stream))
         .with_state(services.clone());
-    let app = api.merge(streams).merge(mcp::router(services, mcp_token));
+    let app = api
+        .merge(streams)
+        .merge(mcp::router(services, mcp_token, Some(lead_token)));
     match web_dir {
         Some(dir) => app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
@@ -585,7 +592,13 @@ mod tests {
 
     /// Serves `services` with the web token `web` and the MCP token `agent`.
     pub(super) fn serve(services: Arc<Services>, web_dir: Option<&Path>) -> SocketAddr {
-        let app = router(services, "web".to_owned(), "agent".to_owned(), web_dir);
+        let app = router(
+            services,
+            "web".to_owned(),
+            "agent".to_owned(),
+            "lead".to_owned(),
+            web_dir,
+        );
         let listener = mcp::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -610,6 +623,7 @@ mod tests {
         assert!(status(address, "GET", "/api/nothing", Some("web")).contains(" 404 "));
         assert!(status(address, "POST", "/mcp", None).contains(" 401 "));
         assert!(status(address, "POST", "/mcp", Some("web")).contains(" 401 "));
+        assert!(!status(address, "POST", "/mcp", Some("lead")).contains(" 401 "));
         // Without a web build, other paths are simply not there.
         assert!(status(address, "GET", "/", None).contains(" 404 "));
         assert!(status(address, "GET", "/tasks", None).contains(" 404 "));
