@@ -325,6 +325,7 @@ export function useWorkspaceBranches(workspace: WorkspaceId, enabled: boolean) {
 /**
  * How far a started task's branch is behind its base and whether its pull request conflicts.
  * Each check fetches the base from origin, so it runs every few minutes rather than on every render.
+ * `null` when the workspace repository has no origin to fall behind.
  */
 export function useBranchFreshness(taskId: TaskId, enabled: boolean) {
   return useQuery({

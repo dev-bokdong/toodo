@@ -461,30 +461,31 @@ impl Git {
     }
 
     /// How many commits of the base branch `branch` lacks, read in the repository or
-    /// worktree at `dir`. When the repository has an `origin`, its `base` is fetched first
-    /// and counted against, since that is where prerequisites get merged; a failed fetch
-    /// (e.g. offline) counts against the last fetched state and reports the failure.
+    /// worktree at `dir`. The repository's `origin` is where prerequisites get merged, so its
+    /// `base` is fetched first and counted against; a failed fetch (e.g. offline) counts
+    /// against the last fetched state and reports the failure. `None` when the repository
+    /// has no `origin`: there is no shared base to fall behind.
     pub fn commits_behind(
         &self,
         location: &WorkspaceLocation,
         dir: &str,
         base: &str,
         branch: &str,
-    ) -> Result<BehindBase, GitError> {
+    ) -> Result<Option<BehindBase>, GitError> {
         let has_origin = self
             .run(location, Some(dir), &["remote"])?
             .lines()
             .any(|remote| remote.trim() == "origin");
-        let mut fetch_error = None;
-        let mut base_ref = base.to_owned();
-        if has_origin {
-            match self.run(location, Some(dir), &["fetch", "--quiet", "origin", base]) {
-                Ok(_) => {}
-                Err(error @ GitError::Failed { .. }) => fetch_error = Some(error.to_string()),
-                Err(error) => return Err(error),
-            }
-            base_ref = self.remote_tracking_or_local(location, dir, base)?;
+        if !has_origin {
+            return Ok(None);
         }
+        let mut fetch_error = None;
+        match self.run(location, Some(dir), &["fetch", "--quiet", "origin", base]) {
+            Ok(_) => {}
+            Err(error @ GitError::Failed { .. }) => fetch_error = Some(error.to_string()),
+            Err(error) => return Err(error),
+        }
+        let base_ref = self.remote_tracking_or_local(location, dir, base)?;
         let range = format!("{branch}..{base_ref}");
         let output = self.run(location, Some(dir), &["rev-list", "--count", &range, "--"])?;
         let behind = output
@@ -494,11 +495,11 @@ impl Git {
                 command: format!("git rev-list --count {range}"),
                 output: output.clone(),
             })?;
-        Ok(BehindBase {
+        Ok(Some(BehindBase {
             base: base_ref,
             behind,
             fetch_error,
-        })
+        }))
     }
 
     /// Pushes `branch` to `origin` and makes it the upstream of the local branch.
@@ -1494,6 +1495,7 @@ mod tests {
         ]);
         let behind = git
             .commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1")
+            .unwrap()
             .unwrap();
         assert_eq!(
             behind,
@@ -1531,6 +1533,7 @@ mod tests {
         ]);
         let behind = git
             .commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1")
+            .unwrap()
             .unwrap();
         assert_eq!(behind.base, "origin/main");
         assert_eq!(behind.behind, 0);
@@ -1538,22 +1541,23 @@ mod tests {
     }
 
     #[test]
-    fn commits_behind_without_origin_counts_against_the_local_base() {
-        let (git, runner) = git(vec![Ok(String::new()), Ok("2\n".to_owned())]);
+    fn commits_behind_without_origin_reports_nothing() {
+        let (git, runner) = git(vec![Ok("upstream\n".to_owned())]);
         let behind = git
             .commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1")
             .unwrap();
-        assert_eq!(behind.base, "main");
-        assert_eq!(behind.behind, 2);
-        assert_eq!(
-            runner.invocations.lock().unwrap()[1].args[4],
-            "feat/x-1..main"
-        );
+        assert_eq!(behind, None);
+        assert_eq!(runner.invocations.lock().unwrap().len(), 1);
     }
 
     #[test]
     fn commits_behind_rejects_a_count_that_is_not_a_number() {
-        let (git, _) = git(vec![Ok(String::new()), Ok("many\n".to_owned())]);
+        let (git, _) = git(vec![
+            Ok("origin\n".to_owned()),
+            Ok(String::new()),
+            Ok("abc\n".to_owned()),
+            Ok("many\n".to_owned()),
+        ]);
         assert!(matches!(
             git.commits_behind(&local(r"C:\dev\a"), r"D:\wt\a", "main", "feat/x-1"),
             Err(GitError::UnexpectedOutput { .. })

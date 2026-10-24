@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import { markdownPreview } from "./markdown";
+import { firstParagraph, markdownPreview } from "./markdown";
+
+describe("firstParagraph", () => {
+  it("previews the paragraph under the first heading without the headings", () => {
+    expect(
+      firstParagraph("## Purpose\nMake the timeline\n**readable** on phones.\n\n## Background\nThe bars overlap."),
+    ).toBe("Make the timeline readable on phones.");
+  });
+
+  it("skips fenced code and rules before the first paragraph", () => {
+    expect(firstParagraph("```sh\nnpm test\n```\n---\n- [ ] first step\n- [ ] second step\n\nLater text")).toBe(
+      "first step second step",
+    );
+  });
+
+  it("is empty when the description has only headings", () => {
+    expect(firstParagraph("# Title\n\n## Done when\n")).toBe("");
+  });
+});
 
 describe("markdownPreview", () => {
   it("drops block syntax and joins the lines", () => {

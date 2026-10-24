@@ -188,7 +188,30 @@ function renderApp() {
 /** Renders the app and opens one workspace, since the app starts on All workspaces. */
 async function renderWorkspace(name: RegExp = /^toodo/) {
   renderApp();
-  fireEvent.click(await screen.findByRole("button", { name }));
+  // The first render of a test file is slow on a loaded machine.
+  fireEvent.click(await screen.findByRole("button", { name }, { timeout: 5000 }));
+}
+
+/** The row of the task titled `title` in the list. */
+function row(title: string) {
+  return screen.getByRole("button", { name: title }).closest("li") as HTMLElement;
+}
+
+/** The list view's tasks, in sections by status. */
+function taskList() {
+  return screen.findByRole("region", { name: "Tasks" });
+}
+
+/** Opens the details sheet of the task titled `title` from its row in the list. */
+async function openDetails(title: string) {
+  fireEvent.click(await within(await taskList()).findByRole("button", { name: title }));
+  return screen.findByRole("complementary", { name: "Task details" });
+}
+
+/** Picks `name` from the "More" menu of task `id`, in a row or, given `scope`, in the details sheet. */
+async function chooseAction(id: number, name: string, scope: HTMLElement = document.body) {
+  fireEvent.click(await within(scope).findByRole("button", { name: `More actions for #${id}` }));
+  fireEvent.click(await screen.findByRole("menuitem", { name }));
 }
 
 describe("App", () => {
@@ -254,18 +277,23 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
+    // Done tasks are folded away until asked for.
+    expect(within(tasks).queryByText("Add storage")).not.toBeInTheDocument();
+    fireEvent.click(within(tasks).getByRole("button", { name: "Done 1" }));
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
-    const dependencies = within(tasks).getByRole("group", { name: "Dependencies of #2" });
-    expect(within(dependencies).getByText("#1")).toBeInTheDocument();
     // Its only prerequisite is done, so #2 can be started now.
-    expect(within(tasks).getByText("Ready")).toBeInTheDocument();
-    const timeline = within(tasks).getByLabelText("Timeline of #1");
-    expect(timeline).toHaveTextContent(`Planned ${formatDate(1760000000)}`);
-    expect(timeline).toHaveTextContent(`Completed ${formatDate(1760500000)}`);
-    expect(timeline).not.toHaveTextContent("Paused");
-    expect(within(tasks).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
+    expect(within(row("Add UI")).getByText("Ready")).toBeInTheDocument();
     expect(within(tasks).queryByText("Fix ssh")).not.toBeInTheDocument();
+    let details = await openDetails("Add UI");
+    const dependencies = within(details).getByRole("group", { name: "Dependencies of #2" });
+    expect(within(dependencies).getByText("#1")).toBeInTheDocument();
+    expect(within(details).queryByLabelText("Timeline of #2")).not.toBeInTheDocument();
+    details = await openDetails("Add storage");
+    const timeline = within(details).getByLabelText("Timeline of #1");
+    expect(timeline).toHaveTextContent(`Planned${new Date(1760000000 * 1000).toLocaleString()}`);
+    expect(timeline).toHaveTextContent(`Completed${new Date(1760500000 * 1000).toLocaleString()}`);
+    expect(timeline).not.toHaveTextContent("Paused");
 
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
@@ -371,7 +399,8 @@ describe("App", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: /^herdr/ }));
-    const add = await screen.findByRole("combobox", { name: "Add dependency to #3" });
+    const details = await openDetails("Build UI");
+    const add = await within(details).findByRole("combobox", { name: "Add dependency to #3" });
     const groups = within(add).getAllByRole("group");
     expect(groups.map((group) => group.getAttribute("label"))).toEqual(["herdr", "toodo"]);
     expect(within(groups[1]).getByRole("option", { name: "#1 Add low level API" })).toBeInTheDocument();
@@ -388,11 +417,12 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     expect(await screen.findByRole("heading", { name: "All workspaces" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "List" }));
-    const tasks = screen.getByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(within(tasks).getAllByRole("listitem")).toHaveLength(3);
     expect(within(tasks).getByText("Add low level API")).toBeInTheDocument();
     expect(within(tasks).getByText("Write docs")).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Dependencies of #3" })).getByText("toodo #1")).toBeInTheDocument();
+    const all = await openDetails("Build UI");
+    expect(within(within(all).getByRole("group", { name: "Dependencies of #3" })).getByText("toodo #1")).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "New task" })).not.toBeInTheDocument();
   });
 
@@ -513,7 +543,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
 
@@ -525,7 +555,7 @@ describe("App", () => {
     const unplaced = within(timeline).getByRole("complementary", { name: "Tasks without a planned date" });
     expect(within(unplaced).getByText("Write docs")).toBeInTheDocument();
     expect(within(timeline).getByRole("button", { name: "Week" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByRole("list", { name: "Tasks" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Tasks" })).not.toBeInTheDocument();
 
     fireEvent.click(within(timeline).getByRole("button", { name: "Month" }));
     expect(within(timeline).getByRole("button", { name: "Month" })).toHaveAttribute("aria-pressed", "true");
@@ -575,14 +605,14 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "sqlite" } });
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
     expect(within(tasks).queryByText("Fix login")).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "in_progress" } });
     expect(await screen.findByText("No tasks match the search and filters.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
@@ -595,7 +625,7 @@ describe("App", () => {
     // The filters stay when switching to the list of every workspace.
     fireEvent.click(screen.getByRole("button", { name: "List" }));
     fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "SSH" } });
-    const all = screen.getByRole("list", { name: "Tasks" });
+    const all = screen.getByRole("region", { name: "Tasks" });
     expect(within(all).getAllByRole("listitem")).toHaveLength(1);
     expect(within(all).getByText("Fix ssh")).toBeInTheDocument();
   });
@@ -621,10 +651,10 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByText("Add UI")).toBeInTheDocument();
-    expect(within(tasks).getByText("Ready")).toBeInTheDocument();
-    expect(within(tasks).getByText("Blocked")).toBeInTheDocument();
+    expect(within(row("Add UI")).getByText("Ready")).toBeInTheDocument();
+    expect(within(row("Write docs")).getByText("Blocked")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "ready" } });
     expect(within(tasks).getAllByRole("listitem")).toHaveLength(1);
     expect(within(tasks).getByText("Add UI")).toBeInTheDocument();
@@ -657,7 +687,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     // The details panel names other tasks too, as dependency choices; look only at the bars.
@@ -707,7 +737,7 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const bar = (title: string) =>
@@ -763,7 +793,7 @@ describe("App", () => {
     ]);
     await renderWorkspace();
 
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     expect(await within(timeline).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
@@ -1105,7 +1135,8 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "#12" } });
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
-    expect(await screen.findByLabelText("Issue of #5")).toHaveTextContent("#12");
+    const details = await openDetails("Fix login");
+    expect(await within(details).findByLabelText("Issue of #5")).toHaveTextContent("#12");
     expect(mocked.linkIssue).toHaveBeenCalledWith(5, 12);
     expect(screen.getByLabelText("Issue number")).toHaveValue("");
   });
@@ -1119,8 +1150,8 @@ describe("App", () => {
       .mockResolvedValue({ status: "ok", data: task(1, 1, "Fix login", { issue }) });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Link issue to #1" }));
-    const number = screen.getByLabelText("Issue number of #1");
+    await chooseAction(1, "Link issue to #1");
+    const number = await screen.findByLabelText("Issue number of #1");
     fireEvent.change(number, { target: { value: "9" } });
     fireEvent.click(screen.getByRole("button", { name: "Link" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("issue #9 not found");
@@ -1128,14 +1159,17 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login", { issue })] });
     fireEvent.change(number, { target: { value: "12" } });
     fireEvent.click(screen.getByRole("button", { name: "Link" }));
-    expect(await screen.findByLabelText("Issue of #1")).toHaveTextContent("#12");
+    await waitFor(() => expect(screen.queryByLabelText("Issue number of #1")).not.toBeInTheDocument());
     expect(mocked.linkIssue).toHaveBeenLastCalledWith(1, 12);
-    expect(screen.queryByRole("button", { name: "Link issue to #1" })).not.toBeInTheDocument();
+    const details = await openDetails("Fix login");
+    expect(await within(details).findByLabelText("Issue of #1")).toHaveTextContent("#12");
 
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login")] });
-    fireEvent.click(screen.getByRole("button", { name: "Unlink issue from #1" }));
-    expect(await screen.findByRole("button", { name: "Link issue to #1" })).toBeInTheDocument();
+    fireEvent.click(within(details).getByRole("button", { name: "Unlink issue from #1" }));
+    await waitFor(() => expect(within(details).queryByLabelText("Issue of #1")).not.toBeInTheDocument());
     expect(mocked.linkIssue).toHaveBeenLastCalledWith(1, null);
+    await chooseAction(1, "Link issue to #1", details);
+    expect(within(details).getByLabelText("Issue number of #1")).toBeInTheDocument();
   });
 
   it("starts a ready task in herdr and shows its worktree", async () => {
@@ -1156,11 +1190,15 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
     fireEvent.click(start);
 
-    const open = await screen.findByRole("button", { name: "Open #1 in herdr" });
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In progress")).toBeInTheDocument();
-    expect(screen.getByText(/feat\/add-login-1/)).toHaveTextContent("D:\\wt\\toodo\\feat-add-login-1");
+    // Once started, opening a pull request is the next action; herdr is a menu item away.
+    expect(await screen.findByRole("button", { name: "Open pull request for #1" })).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("In progress")).toBeInTheDocument();
     expect(mocked.startTask).toHaveBeenCalledWith(1);
-    fireEvent.click(open);
+    const details = await openDetails("Add login");
+    expect(within(details).getByText("feat/add-login-1")).toBeInTheDocument();
+    expect(within(details).getByText("D:\\wt\\toodo\\feat-add-login-1")).toBeInTheDocument();
+    fireEvent.click(within(details).getByRole("button", { name: "Close details" }));
+    await chooseAction(1, "Open #1 in herdr");
     await waitFor(() => expect(mocked.openTaskInHerdr).toHaveBeenCalledWith(1));
   });
 
@@ -1176,7 +1214,7 @@ describe("App", () => {
     mocked.listAgentStatuses.mockResolvedValue([{ taskId: 1, status: "working" }]);
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
 
     const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
@@ -1229,7 +1267,7 @@ describe("App", () => {
     const focus = vi.spyOn(document, "hasFocus");
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
     const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
 
@@ -1270,7 +1308,7 @@ describe("App", () => {
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
+    const tasks = await taskList();
     expect(await within(tasks).findByLabelText("CI of #1")).toHaveTextContent("CI running");
     expect(within(tasks).getByLabelText("Review of #1")).toHaveTextContent("Review pending");
     expect(within(tasks).queryByLabelText("CI of #2")).not.toBeInTheDocument();
@@ -1327,7 +1365,7 @@ describe("App", () => {
     fireEvent.click(start);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("worktree root is not set for machine local");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Ready")).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Ready")).toBeInTheDocument();
   });
 
   it("copies the MCP config for agents", async () => {
@@ -1614,8 +1652,9 @@ describe("App", () => {
       "3 commits behind origin/main",
     );
     // The branch was synced outside Toodo; rechecking clears the warning without waiting.
+    const details = await openDetails("Behind");
     synced = true;
-    fireEvent.click(screen.getByRole("button", { name: "Recheck base freshness of #1" }));
+    fireEvent.click(within(details).getByRole("button", { name: "Recheck base freshness of #1" }));
     await waitFor(() =>
       expect(screen.queryByRole("note", { name: "Base freshness of #1" })).not.toBeInTheDocument(),
     );
@@ -1651,8 +1690,10 @@ describe("App", () => {
     mocked.refreshCommitRecords.mockResolvedValue({ status: "ok", data: [first] });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh commits of #1" }));
-    const commits = await screen.findByRole("list", { name: "Commits of #1" });
+    // The details sheet offers every action of the task as a button.
+    const details = await openDetails("Add login");
+    fireEvent.click(within(details).getByRole("button", { name: "Refresh commits of #1" }));
+    const commits = await within(details).findByRole("list", { name: "Commits of #1" });
     expect(within(commits).getByText("1111111")).toBeInTheDocument();
     expect(within(commits).getByText("Add login form")).toBeInTheDocument();
     expect(mocked.refreshCommitRecords).toHaveBeenCalledWith(1);
@@ -1662,20 +1703,21 @@ describe("App", () => {
     mocked.openPullRequest.mockResolvedValue({ status: "ok", data: inReview });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [inReview] });
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [first, second] });
-    fireEvent.click(screen.getByRole("button", { name: "Open pull request for #1" }));
+    fireEvent.click(within(details).getByRole("button", { name: "Open pull request for #1" }));
 
-    expect(await screen.findByText(pr)).toBeInTheDocument();
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Awaiting completion")).toBeInTheDocument();
-    expect(await screen.findByText("Fix login redirect")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
+    expect(await within(details).findByText(pr)).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Awaiting completion")).toBeInTheDocument();
+    expect(await within(details).findByText("Fix login redirect")).toBeInTheDocument();
+    expect(within(details).getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
     expect(mocked.openPullRequest).toHaveBeenCalledWith(1);
 
     const done = { ...inReview, status: "done" as const };
     mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
-    fireEvent.click(screen.getByRole("button", { name: "Complete #1" }));
+    fireEvent.click(within(details).getByRole("button", { name: "Complete #1" }));
 
-    expect(await within(screen.getByRole("list", { name: "Tasks" })).findByText("Done")).toBeInTheDocument();
+    expect(await within(details).findByText("Done")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getByRole("button", { name: "Done 1" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Push #1 to its pull request" })).not.toBeInTheDocument();
     expect(mocked.completeTask).toHaveBeenCalledWith(1);
@@ -1696,7 +1738,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open pull request for #1" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("has no commits that are not on main");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("In progress")).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("In progress")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open pull request for #1" })).toBeEnabled();
   });
 
@@ -1722,7 +1764,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Awaiting completion")).toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Awaiting completion")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
   });
 
@@ -1738,7 +1780,8 @@ describe("App", () => {
     mocked.checkCriterion.mockResolvedValue({ status: "ok", data: checked });
     await renderWorkspace();
 
-    const criteria = await screen.findByRole("list", { name: "Criteria of #1" });
+    const details = await openDetails("Add search");
+    const criteria = within(details).getByRole("list", { name: "Criteria of #1" });
     const box = () => within(criteria).getByRole("checkbox", { name: "Check criterion 7 of #1" });
     expect(box()).not.toBeChecked();
     fireEvent.click(box());
@@ -1753,7 +1796,7 @@ describe("App", () => {
     await waitFor(() => expect(within(criteria).queryByLabelText("Evidence for criterion 7")).not.toBeInTheDocument());
     expect(mocked.checkCriterion).toHaveBeenCalledWith(1, 7, true, "Read by Ada");
     expect(box()).toBeChecked();
-    expect(within(criteria).getByText("Read by Ada")).toBeInTheDocument();
+    expect(within(criteria).getByText(/^Read by Ada · Checked by you/)).toBeInTheDocument();
 
     // Unchecking saves right away.
     mocked.checkCriterion.mockResolvedValue({ status: "ok", data: started });
@@ -1776,7 +1819,11 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [failed] });
     await renderWorkspace();
 
-    const criteria = await screen.findByRole("list", { name: "Criteria of #1" });
+    // The row counts the failure; the details sheet marks the criterion.
+    await within(await taskList()).findByRole("button", { name: "Add search" });
+    expect(row("Add search")).toHaveTextContent("0/2 criteria met1 failed");
+    const details = await openDetails("Add search");
+    const criteria = within(details).getByRole("list", { name: "Criteria of #1" });
     const [failedItem, pendingItem] = within(criteria).getAllByRole("listitem");
     expect(within(failedItem).getByRole("img", { name: "Failed" })).toBeInTheDocument();
     expect(within(failedItem).getByRole("checkbox")).not.toBeChecked();
@@ -1802,13 +1849,13 @@ describe("App", () => {
     mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
     await renderWorkspace();
 
-    const tasks = await screen.findByRole("list", { name: "Tasks" });
-    expect(within(tasks).getByText("Awaiting completion")).toBeInTheDocument();
+    const tasks = await taskList();
+    expect(within(row("Add search")).getByText("Awaiting completion")).toBeInTheDocument();
     expect(within(tasks).queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
     fireEvent.click(within(tasks).getByRole("button", { name: "Confirm completion of #1" }));
 
-    expect(await within(tasks).findByText("Done")).toBeInTheDocument();
+    expect(await within(tasks).findByRole("button", { name: "Done 1" })).toBeInTheDocument();
     expect(mocked.completeTask).toHaveBeenCalledWith(1);
     expect(within(tasks).queryByRole("button", { name: "Confirm completion of #1" })).not.toBeInTheDocument();
   });
@@ -1826,10 +1873,13 @@ describe("App", () => {
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
     await renderWorkspace();
 
-    const shipped = await screen.findByLabelText("Shipped with pull request of #2");
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 2" }));
+    let details = await openDetails("Fix typo");
+    const shipped = within(details).getByLabelText("Shipped with pull request of #2");
     expect(shipped).toHaveTextContent(url);
-    expect(shipped.parentElement).toHaveTextContent(`Shipped with${url}of #1`);
-    expect(screen.queryByLabelText("Shipped with pull request of #1")).not.toBeInTheDocument();
+    expect(shipped.parentElement).toHaveTextContent(`Shipped with${url}Pull request of #1`);
+    details = await openDetails("Add login");
+    expect(within(details).queryByLabelText("Shipped with pull request of #1")).not.toBeInTheDocument();
   });
 
   it("asks for a completion note on a done task and saves it", async () => {
@@ -1854,9 +1904,11 @@ describe("App", () => {
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
     await renderWorkspace();
 
-    expect(await screen.findByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
-    fireEvent.click(screen.getByRole("button", { name: "Add completion note to #1" }));
-    const save = screen.getByRole("button", { name: "Save note" });
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    const details = await openDetails("Add login");
+    expect(within(details).getByLabelText("Pull request of #1")).toHaveTextContent("#12, +120/-30 in 4 files, 2 reviews");
+    await chooseAction(1, "Add completion note to #1", details);
+    const save = within(details).getByRole("button", { name: "Save note" });
     expect(save).toBeDisabled();
 
     const noted = { ...done, completionNote: "Cut sign-in time in half" };
@@ -1936,7 +1988,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [research, dependent] });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Conclude #1 without merging" }));
+    await chooseAction(1, "Conclude #1 without merging");
     const conclude = screen.getByRole("button", { name: "Conclude without merge" });
     expect(conclude).toBeDisabled();
 
@@ -1954,16 +2006,16 @@ describe("App", () => {
     });
     fireEvent.click(conclude);
 
-    expect(await screen.findByLabelText("Completion note of #1")).toHaveTextContent(
+    // Concluded research is done, so it moves to the folded Done section.
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    expect(mocked.concludeTask).toHaveBeenCalledWith(1, "Twice as slow as the current cache");
+    expect(within(row("Try a new cache")).getByText("Not adopted")).toBeInTheDocument();
+    expect(screen.getByRole("note", { name: "Blocked prerequisites of #2" })).toHaveTextContent("#1 not adopted");
+    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
+    const details = await openDetails("Try a new cache");
+    expect(within(details).getByLabelText("Completion note of #1")).toHaveTextContent(
       "Twice as slow as the current cache",
     );
-    expect(mocked.concludeTask).toHaveBeenCalledWith(1, "Twice as slow as the current cache");
-    const tasks = screen.getByRole("list", { name: "Tasks" });
-    expect(within(tasks).getByText("Not adopted")).toBeInTheDocument();
-    expect(screen.getByRole("note", { name: "Blocked prerequisites of #2" })).toHaveTextContent(
-      "#1 was not adopted",
-    );
-    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
   });
 
   it("adds and removes task dependencies", async () => {
@@ -1974,7 +2026,8 @@ describe("App", () => {
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
 
-    const add = await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    const details = await openDetails("Add UI");
+    const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
     expect(within(add).getByRole("option", { name: "#1 Add storage" })).toBeInTheDocument();
     expect(within(add).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
     mocked.listTasks.mockResolvedValue({
@@ -1983,9 +2036,9 @@ describe("App", () => {
     });
     fireEvent.change(add, { target: { value: "1" } });
 
-    const remove = await screen.findByRole("button", { name: "Remove dependency #1 from #2" });
+    const remove = await within(details).findByRole("button", { name: "Remove dependency #1 from #2" });
     expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
-    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
+    expect(within(details).getByRole("button", { name: "Start #2" })).toBeDisabled();
     mocked.removeDependency.mockResolvedValue({ status: "ok", data: null });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
     fireEvent.click(remove);
@@ -2008,7 +2061,8 @@ describe("App", () => {
     });
     await renderWorkspace();
 
-    fireEvent.change(await screen.findByRole("combobox", { name: "Add dependency to #1" }), {
+    const details = await openDetails("Add storage");
+    fireEvent.change(within(details).getByRole("combobox", { name: "Add dependency to #1" }), {
       target: { value: "2" },
     });
 
@@ -2029,7 +2083,7 @@ describe("App", () => {
     mocked.updateTask.mockResolvedValue({ status: "ok", data: edited });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
     fireEvent.change(within(form).getByLabelText("Type of #1"), { target: { value: "fix" } });
     fireEvent.change(within(form).getByLabelText("Title of #1"), { target: { value: "  Add sign-in " } });
@@ -2065,7 +2119,7 @@ describe("App", () => {
     mocked.updateTask.mockResolvedValue({ status: "ok", data: original });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
     // The merge criterion keeps its kind.
     expect(within(form).getByLabelText("Criterion 1 kind of #1")).toBeDisabled();
@@ -2098,14 +2152,14 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
     const title = within(form).getByLabelText("Title of #1");
-    expect(title).toHaveFocus();
+    await waitFor(() => expect(title).toHaveFocus());
     fireEvent.click(within(form).getByRole("button", { name: "Discard" }));
     expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1");
     const changed = screen.getByRole("form", { name: "Edit task #1" });
     fireEvent.change(within(changed).getByLabelText("Title of #1"), { target: { value: "Add sign-in" } });
     fireEvent.keyDown(within(changed).getByLabelText("Title of #1"), { key: "Escape" });
@@ -2129,7 +2183,7 @@ describe("App", () => {
       data: [task(1, 1, "Add UI", { milestones: planned }), task(2, 1, "Write docs", { milestones: planned })],
     });
     await renderWorkspace();
-    await screen.findByRole("list", { name: "Tasks" });
+    await taskList();
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const bar = (title: string) =>
@@ -2140,7 +2194,7 @@ describe("App", () => {
 
     fireEvent.click(bar("Add UI"));
     const details = await within(timeline).findByRole("complementary", { name: "Task details" });
-    fireEvent.click(within(details).getByRole("button", { name: "Edit #1" }));
+    await chooseAction(1, "Edit #1", details);
     const field = within(details).getByLabelText("Title of #1");
     fireEvent.change(field, { target: { value: "Add the UI" } });
 
@@ -2174,8 +2228,11 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
     await renderWorkspace();
 
-    expect(await screen.findByText("Steps form")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Edit #1" }));
+    // The row previews the first paragraph; the heading above it is left out.
+    await within(await taskList()).findByRole("button", { name: "Add login" });
+    expect(within(row("Add login")).getByText("form")).toBeInTheDocument();
+    expect(within(row("Add login")).queryByText(/Steps/)).not.toBeInTheDocument();
+    await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
     fireEvent.click(within(form).getByRole("button", { name: "Preview" }));
 
@@ -2201,7 +2258,8 @@ describe("App", () => {
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
 
-    const add = await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    const details = await openDetails("Verify login");
+    const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
       data: [fix, { ...started, status: "planned", herdrWorkspaceId: null, dependsOn: [1] }],
@@ -2213,11 +2271,12 @@ describe("App", () => {
       }),
     );
 
-    expect(await screen.findByRole("note", { name: "Waiting prerequisites of #2" })).toHaveTextContent(
+    expect(await within(details).findByRole("note", { name: "Waiting prerequisites of #2" })).toHaveTextContent(
       "Waiting on #1",
     );
     expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
-    expect(screen.getByRole("button", { name: "Resume #2" })).toBeDisabled();
+    expect(within(details).getByRole("button", { name: "Resume #2" })).toBeDisabled();
+    expect(within(row("Verify login")).getByRole("note", { name: "Waiting prerequisites of #2" })).toBeInTheDocument();
   });
 
   it("asks whether to close the herdr workspace of a task an agent paused", async () => {
@@ -2239,7 +2298,7 @@ describe("App", () => {
     vi.mocked(isPermissionGranted).mockResolvedValue(true);
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     await renderWorkspace();
-    await screen.findByRole("combobox", { name: "Add dependency to #2" });
+    await within(await taskList()).findByRole("button", { name: "Verify login" });
 
     // An agent adds the prerequisite through MCP, which leaves the workspace open.
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, paused] });
@@ -2503,7 +2562,7 @@ describe("App", () => {
     expect(window.location.search).toBe("");
   });
 
-  it("shows the latest agent note in the list and every note in the task details", async () => {
+  it("puts a task whose agent reported a blocker under Needs attention and shows every note in the task details", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
     const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
@@ -2519,9 +2578,10 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [noted, task(2, 1, "Add logout")] });
     await renderWorkspace();
 
-    const latest = await screen.findByLabelText("Latest note of #1");
-    expect(latest).toHaveTextContent("BlockerNeed a test account for the provider+1 more");
-    expect(screen.queryByLabelText("Latest note of #2")).not.toBeInTheDocument();
+    const tasks = await taskList();
+    const attention = within(tasks).getByRole("list", { name: "Needs attention" });
+    expect(within(attention).getByRole("button", { name: "Add login" })).toBeInTheDocument();
+    expect(within(attention).queryByRole("button", { name: "Add logout" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
@@ -2549,7 +2609,8 @@ describe("App", () => {
     mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
     await screen.findByLabelText("Agent of #2");
-    const add = screen.getByRole("combobox", { name: "Add dependency to #2" });
+    const details = await openDetails("Verify login");
+    const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
 
     fireEvent.change(add, { target: { value: "1" } });
     const confirmation = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
@@ -2590,18 +2651,28 @@ describe("App", () => {
     mocked.deleteTask.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();
 
-    const pause = await screen.findByRole("button", { name: "Pause #1" });
-    expect(screen.queryByRole("button", { name: "Delete #1" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for #1" }));
+    const pause = await screen.findByRole("menuitem", { name: "Pause #1" });
+    expect(screen.queryByRole("menuitem", { name: "Delete #1" })).not.toBeInTheDocument();
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [paused] });
     fireEvent.click(pause);
 
     expect(await screen.findByRole("button", { name: "Resume #1" })).toBeEnabled();
     expect(mocked.pauseTask).toHaveBeenCalledWith(1);
-    expect(within(screen.getByRole("list", { name: "Tasks" })).getByText("Paused")).toBeInTheDocument();
-    expect(screen.getByLabelText("Timeline of #1")).toHaveTextContent(`Paused ${formatDate(1760200000)}`);
-    expect(screen.queryByRole("button", { name: "Pause #1" })).not.toBeInTheDocument();
+    expect(within(row("Add login")).getByText("Paused")).toBeInTheDocument();
+    expect(row("Add login")).toHaveTextContent(`Paused ${formatDate(1760200000)}`);
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete #1" }));
+    // Secondary actions sit in the More menu, Delete last and in the destructive style.
+    fireEvent.click(screen.getByRole("button", { name: "More actions for #1" }));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((item) => item.getAttribute("aria-label"))).toEqual([
+      "Show details of #1",
+      "Link issue to #1",
+      "Edit #1",
+      "Delete #1",
+    ]);
+    expect(items.at(-1)).toHaveClass("text-destructive");
+    fireEvent.click(items.at(-1) as HTMLElement);
     expect(mocked.deleteTask).not.toHaveBeenCalled();
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete #1" }));
@@ -2627,7 +2698,8 @@ describe("App", () => {
       .mockResolvedValueOnce({ status: "ok", data: null });
     await renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Delete #1" }));
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    await chooseAction(1, "Delete #1");
     expect(mocked.deleteTask).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /Remove worktree/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Force delete #1" })).not.toBeInTheDocument();
@@ -2641,5 +2713,80 @@ describe("App", () => {
 
     expect(await screen.findByText("No tasks in this workspace yet.")).toBeInTheDocument();
     expect(mocked.deleteTask).toHaveBeenLastCalledWith(1, true);
+  });
+
+  it("groups the list by status, needs attention first, with done work folded away", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Ship v1", { status: "done", resolution: "merged" }),
+        task(2, 1, "Plan docs", { dependsOn: [3] }),
+        task(3, 1, "Build API", { status: "in_progress" }),
+        task(4, 1, "Fix crash", { status: "in_review", pullRequestUrl: "https://github.com/acme/toodo/pull/4" }),
+        task(5, 1, "Add search"),
+        task(6, 1, "Add UI", {
+          status: "in_progress",
+          notes: [{ kind: "blocker", body: "Need an account", at: 1760000000 }],
+        }),
+      ],
+    });
+    await renderWorkspace();
+
+    const tasks = await taskList();
+    expect(within(tasks).getAllByRole("region").map((section) => section.getAttribute("aria-label"))).toEqual([
+      "Needs attention",
+      "In progress",
+      "Awaiting completion",
+      "Ready",
+      "Planned",
+      "Done",
+    ]);
+    const titles = (name: string) =>
+      within(within(tasks).getByRole("list", { name }))
+        .getAllByRole("listitem")
+        .map((item) => item.querySelector("[data-task-row] button")?.textContent);
+    expect(titles("Needs attention")).toEqual(["Add UI"]);
+    expect(titles("In progress")).toEqual(["Build API"]);
+    expect(titles("Awaiting completion")).toEqual(["Fix crash"]);
+    expect(titles("Ready")).toEqual(["Add search"]);
+    expect(titles("Planned")).toEqual(["Plan docs"]);
+
+    const done = within(tasks).getByRole("button", { name: "Done 1" });
+    expect(done).toHaveAttribute("aria-expanded", "false");
+    expect(within(tasks).queryByRole("list", { name: "Done" })).not.toBeInTheDocument();
+    fireEvent.click(done);
+    expect(done).toHaveAttribute("aria-expanded", "true");
+    expect(titles("Done")).toEqual(["Ship v1"]);
+  });
+
+  it("keeps base freshness failures off the rows and checks nothing without an origin", async () => {
+    const worktree = { status: "in_progress" as const, branch: "feat/x", worktreePath: "D:\\wt\\toodo\\x", herdrWorkspaceId: "w1" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Fetch fails", worktree), task(2, 1, "No origin", worktree)],
+    });
+    mocked.branchFreshness.mockImplementation((id) =>
+      Promise.resolve(
+        id === 1
+          ? { status: "error", error: { kind: "external", message: "git rev-list failed" } }
+          : { status: "ok", data: null },
+      ),
+    );
+    await renderWorkspace();
+
+    // The failed check is reported once, in the details, not repeated on the row.
+    let details = await openDetails("Fetch fails");
+    expect(await within(details).findByRole("note", { name: "Base freshness of #1" })).toHaveTextContent(
+      "Could not check whether the branch is behind its base",
+    );
+    expect(within(await taskList()).queryByText(/Could not check/)).not.toBeInTheDocument();
+    expect(within(await taskList()).queryByRole("note", { name: "Base freshness of #1" })).not.toBeInTheDocument();
+
+    details = await openDetails("No origin");
+    await waitFor(() => expect(mocked.branchFreshness).toHaveBeenCalledWith(2));
+    expect(within(details).queryByRole("note", { name: "Base freshness of #2" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("note", { name: "Base freshness of #2" })).not.toBeInTheDocument();
   });
 });

@@ -176,9 +176,24 @@ export const commands = {
 	 *  Counts the commits of the base branch (fetched from `origin` first) that the task's
 	 *  branch lacks, and asks GitHub whether its pull request, if any, merges without
 	 *  conflicts. A failing fetch or pull request lookup is reported in the result rather
-	 *  than failing the whole check.
+	 *  than failing the whole check. `None` when the workspace repository has no `origin`,
+	 *  since there is no shared base branch to fall behind.
 	 */
-	branchFreshness: (id: TaskId) => typedError<BranchFreshness, CommandError>(__TAURI_INVOKE("branch_freshness", { id })),
+	branchFreshness: (id: TaskId) => typedError<{
+	/**  The revision counted against: `origin/<base>` when it exists, else `<base>`. */
+	base: string,
+	/**  Commits on the base that the branch does not contain. */
+	behind: number,
+	/**  Why fetching `origin` failed; `behind` is then against the last fetched base. */
+	fetchError: string | null,
+	/**
+	 *  Whether the task's pull request merges without conflicts; `None` without a pull
+	 *  request or when it could not be read.
+	 */
+	mergeable: MergeState | null,
+	/**  Why the pull request could not be read. */
+	mergeableError: string | null,
+} | null, CommandError>(__TAURI_INVOKE("branch_freshness", { id })),
 	listPullRequestStatuses: () => __TAURI_INVOKE<TaskPullRequestStatus[]>("list_pull_request_statuses"),
 	/**
 	 *  Links issue `number` of the workspace repository to a task that is not done, after

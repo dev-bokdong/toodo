@@ -14,7 +14,8 @@ use crate::domain::model;
 /// Counts the commits of the base branch (fetched from `origin` first) that the task's
 /// branch lacks, and asks GitHub whether its pull request, if any, merges without
 /// conflicts. A failing fetch or pull request lookup is reported in the result rather
-/// than failing the whole check.
+/// than failing the whole check. `None` when the workspace repository has no `origin`,
+/// since there is no shared base branch to fall behind.
 #[cfg_attr(feature = "desktop", tauri::command(async))]
 #[cfg_attr(feature = "desktop", specta::specta)]
 pub fn branch_freshness(
@@ -22,7 +23,7 @@ pub fn branch_freshness(
     git: State<'_, GitState>,
     github: State<'_, GitHubState>,
     id: TaskId,
-) -> CommandResult<BranchFreshness> {
+) -> CommandResult<Option<BranchFreshness>> {
     freshness(&storage, &git, &github, id.into())
 }
 
@@ -31,14 +32,17 @@ fn freshness(
     git: &Git,
     github: &GitHub,
     id: model::TaskId,
-) -> CommandResult<BranchFreshness> {
+) -> CommandResult<Option<BranchFreshness>> {
     let checkout = checkout(storage, id)?;
-    let behind = git.commits_behind(
+    let Some(behind) = git.commits_behind(
         &checkout.location,
         &checkout.worktree,
         &checkout.base,
         &checkout.branch,
-    )?;
+    )?
+    else {
+        return Ok(None);
+    };
     let (mergeable, mergeable_error) = match checkout.task.pull_request_url.as_deref() {
         None => (None, None),
         Some(url) => match github.mergeable(url) {
@@ -46,13 +50,13 @@ fn freshness(
             Err(error) => (None, Some(error.to_string())),
         },
     };
-    Ok(BranchFreshness {
+    Ok(Some(BranchFreshness {
         base: behind.base,
         behind: behind.behind,
         fetch_error: behind.fetch_error,
         mergeable,
         mergeable_error,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -127,7 +131,7 @@ mod tests {
         let (storage, id) = started_task();
         let (git, github, gh) = adapters(behind_by(4), Vec::new());
 
-        let freshness = freshness(&storage, &git, &github, id).unwrap();
+        let freshness = freshness(&storage, &git, &github, id).unwrap().unwrap();
 
         assert_eq!(
             freshness,
@@ -151,7 +155,7 @@ mod tests {
             vec![Ok(r#"{"mergeable":"CONFLICTING"}"#.to_owned())],
         );
 
-        let freshness = freshness(&storage, &git, &github, id).unwrap();
+        let freshness = freshness(&storage, &git, &github, id).unwrap().unwrap();
 
         assert_eq!(freshness.behind, 2);
         assert_eq!(freshness.mergeable, Some(MergeState::Conflicting));
@@ -163,10 +167,20 @@ mod tests {
         lock(&storage).open_pull_request(id, &[], PR, None).unwrap();
         let (git, github, _) = adapters(behind_by(1), vec![Err(failed())]);
 
-        let freshness = freshness(&storage, &git, &github, id).unwrap();
+        let freshness = freshness(&storage, &git, &github, id).unwrap().unwrap();
 
         assert_eq!(freshness.behind, 1);
         assert_eq!(freshness.mergeable, None);
         assert!(freshness.mergeable_error.is_some());
+    }
+
+    #[test]
+    fn a_repository_without_origin_reports_no_freshness() {
+        let (storage, id) = started_task();
+        lock(&storage).open_pull_request(id, &[], PR, None).unwrap();
+        let (git, github, gh) = adapters(vec![Ok(String::new())], Vec::new());
+
+        assert_eq!(freshness(&storage, &git, &github, id).unwrap(), None);
+        assert!(gh.invocations.lock().unwrap().is_empty());
     }
 }

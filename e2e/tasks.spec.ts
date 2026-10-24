@@ -8,7 +8,7 @@ test("creates a task in a workspace", async ({ app }) => {
   await app.getByLabel("Task title").fill("Repair the login redirect");
   await app.getByRole("button", { name: "Add task" }).click();
 
-  const row = app.getByRole("list", { name: "Tasks" }).getByRole("listitem").filter({ hasText: "Repair the login redirect" });
+  const row = app.getByRole("region", { name: "Tasks" }).getByRole("listitem").filter({ hasText: "Repair the login redirect" });
   await expect(row).toBeVisible();
   await expect(row).toContainText("fix");
   await expect(app.getByLabel("Task title")).toHaveValue("");
@@ -19,18 +19,19 @@ test("edits the title of a task and keeps it after a reload", async ({ app, serv
   await app.reload();
   await app.getByRole("button", { name: /^alpha/ }).click();
 
-  await app.getByRole("button", { name: `Edit #${task.id}` }).click();
+  await app.getByRole("button", { name: `More actions for #${task.id}` }).click();
+  await app.getByRole("menuitem", { name: `Edit #${task.id}` }).click();
   const title = app.getByLabel(`Title of #${task.id}`);
   await title.fill("Write the release notes");
   await app.getByRole("form", { name: `Edit task #${task.id}` }).getByRole("button", { name: "Save" }).click();
 
-  const tasks = app.getByRole("list", { name: "Tasks" });
+  const tasks = app.getByRole("region", { name: "Tasks" });
   await expect(tasks.getByText("Write the release notes")).toBeVisible();
   await expect(tasks.getByText("Draft the release notes")).toHaveCount(0);
 
   await app.reload();
   await app.getByRole("button", { name: /^alpha/ }).click();
-  await expect(app.getByRole("list", { name: "Tasks" }).getByText("Write the release notes")).toBeVisible();
+  await expect(app.getByRole("region", { name: "Tasks" }).getByText("Write the release notes")).toBeVisible();
 });
 
 test("adds and removes a dependency", async ({ app, server }) => {
@@ -39,12 +40,16 @@ test("adds and removes a dependency", async ({ app, server }) => {
   await app.reload();
   await app.getByRole("button", { name: /^alpha/ }).click();
 
-  await app.getByLabel(`Add dependency to #${second.id}`).selectOption({ label: `#${first.id} ${first.title}` });
+  // Dependencies are edited in the task's details sheet, opened from its title.
+  await app.getByRole("region", { name: "Tasks" }).getByRole("button", { name: second.title }).click();
+  const details = app.getByRole("complementary", { name: "Task details" });
+  await details.getByLabel(`Add dependency to #${second.id}`).selectOption({ label: `#${first.id} ${first.title}` });
 
-  const dependencies = app.getByRole("group", { name: `Dependencies of #${second.id}` });
+  const dependencies = details.getByRole("group", { name: `Dependencies of #${second.id}` });
   await expect(dependencies).toContainText(`#${first.id}`);
+  await expect(app.getByRole("region", { name: "Tasks" }).getByRole("note", { name: `Waiting prerequisites of #${second.id}` })).toContainText(`#${first.id}`);
 
-  await app.getByRole("button", { name: `Remove dependency #${first.id} from #${second.id}` }).click();
+  await details.getByRole("button", { name: `Remove dependency #${first.id} from #${second.id}` }).click();
   await expect(dependencies.getByRole("button", { name: /^Remove dependency/ })).toHaveCount(0);
 });
 
