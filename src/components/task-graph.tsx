@@ -953,16 +953,16 @@ function TimelineTooltip({
   );
 }
 
-/** A dependency line routed between the rows, so it shows even when the bars meet in time. */
+/**
+ * A dependency line routed between the rows, so it shows even when the bars meet in time.
+ *
+ * The line has no halo in the background color: a browser that darkens light pages itself
+ * (Samsung Internet's dark mode) leaves SVG strokes as they are, so a halo stays light on the
+ * darkened page, and the halos of the lines leaving one prerequisite merge into a thick band.
+ */
 function TimelineEdge({ sourceX, sourceY, targetX, targetY, markerEnd, style, interactionWidth }: EdgeProps) {
   const path = timelineEdgePath({ x: sourceX, y: sourceY }, { x: targetX, y: targetY }, rowHeight);
-  return (
-    <>
-      {/* A halo in the background color keeps the line apart from bar borders and crossing lines. */}
-      <path d={path} className="dependency-halo fill-none" strokeWidth={5} style={{ opacity: style?.opacity }} />
-      <BaseEdge path={path} markerEnd={markerEnd} style={style} interactionWidth={interactionWidth} />
-    </>
-  );
+  return <BaseEdge path={path} markerEnd={markerEnd} style={style} interactionWidth={interactionWidth} />;
 }
 
 function TimelineBarView({
