@@ -9,22 +9,11 @@ import { ServerConnection } from "@/components/server-connection";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateCheck } from "@/components/update-banner";
-import { WakeWordSetting } from "@/components/wake-word";
-import { compactSelectClass } from "@/components/workspace-list";
 import { commands } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
-import { builtForWeb, checksForUpdates, nativeDictation, runsOnServer } from "@/lib/platform";
+import { builtForWeb, checksForUpdates, runsOnServer } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import {
-  setReadAloud,
-  setSpeechLanguage,
-  speechLanguages,
-  speechSupported,
-  useReadAloud,
-  useSpeechLanguage,
-} from "@/lib/voice";
-import { wakeWordOffered } from "@/lib/wake-word";
 
 export type SettingsSection = "general" | "agents" | "devices" | "notifications" | "backups";
 
@@ -66,50 +55,7 @@ function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: (
         {checksForUpdates && <UpdateCheck onRequested={onUpdateCheckRequested} />}
       </div>
       {!builtForWeb && <ServerConnection />}
-      {runsOnServer && <VoiceSettings />}
     </section>
-  );
-}
-
-/** How this browser talks with the lead: the language of voice input and replies, and reading aloud. */
-function VoiceSettings() {
-  const readAloud = useReadAloud();
-  const language = useSpeechLanguage();
-  const languages = speechLanguages.some((item) => item.tag === language)
-    ? speechLanguages
-    : [{ tag: language, label: language }, ...speechLanguages];
-  return (
-    <fieldset className="flex flex-col gap-2">
-      <legend className="mb-1 font-medium">Voice in the lead chat</legend>
-      <label className="flex flex-wrap items-center justify-between gap-2">
-        Speech language
-        <select
-          value={language}
-          onChange={(event) => setSpeechLanguage(event.target.value)}
-          className={compactSelectClass}
-        >
-          {languages.map((item) => (
-            <option key={item.tag} value={item.tag}>
-              {item.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      {speechSupported() ? (
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={readAloud} onChange={(event) => setReadAloud(event.target.checked)} />
-          Read the lead's replies aloud
-        </label>
-      ) : (
-        <p className="text-muted-foreground">This browser cannot read replies aloud.</p>
-      )}
-      {wakeWordOffered && <WakeWordSetting />}
-      <p className="text-xs text-muted-foreground">
-        {nativeDictation
-          ? "Voice input uses this Mac's speech recognition, which asks for the microphone and speech recognition the first time; reading aloud uses its voices."
-          : "Voice input and reading aloud are done by this browser. Voice input is not offered where the browser has no speech recognition, such as Firefox."}
-      </p>
-    </fieldset>
   );
 }
 

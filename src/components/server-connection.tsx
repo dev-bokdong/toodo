@@ -482,7 +482,7 @@ export function ServerSetup() {
     <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-4 p-6 pt-[calc(1.5rem+env(safe-area-inset-top))]">
       <h1 className="text-xl font-semibold tracking-tight">Connect to your Toodo server</h1>
       <p className="text-sm text-muted-foreground">
-        Toodo on this phone shows the tasks and the lead chat of a Toodo server. Add the server, then switch to it.
+        Toodo on this phone shows the tasks of a Toodo server. Add the server, then switch to it.
       </p>
       <ServerConnection />
     </main>

@@ -1,8 +1,7 @@
 /**
- * The `toodo-server` the app talks to: where its API is, how to send it requests, and under
- * which keys what the app keeps for it (its access token, the read mark of the chat) is
- * stored, so that each server keeps its own. The web build talks to the server that serves
- * it, with relative URLs; the desktop app connected to a server sends its requests to that
+ * The `toodo-server` the app talks to: where its API is, how to send it requests, and the
+ * key its access token is stored under, so that each server keeps its own. The web build
+ * talks to the server that serves it, with relative URLs; the desktop app connected to a server sends its requests to that
  * server's origin from Rust (see `src/client/transport.ts`), with the server's Cloudflare
  * Access service token if it has one.
  */
@@ -36,8 +35,8 @@ export function server(origin: string | null): Server {
   };
 }
 
-/** The names of what the app keeps for each server (see `src/web/session.ts` and `src/lib/chat.ts`). */
-const perServerNames = ["toodo-server-token", "toodo-chat-read"] as const;
+/** The names of what the app keeps for each server (see `src/web/session.ts`). */
+const perServerNames = ["toodo-server-token"] as const;
 
 /** Forgets what the app keeps for the server at `origin`. */
 export function forgetServer(origin: string): void {

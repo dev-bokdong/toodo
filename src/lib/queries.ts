@@ -1,14 +1,11 @@
-import { useCallback, useEffect } from "react";
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   commands,
   events,
   type BackupSettings,
-  type ChatMessage,
   type CommandError,
   type CriterionId,
-  type LeadProfile,
-  type LeadStatus,
   type Machine,
   type MachineSettings,
   type MemoryContent,
@@ -26,7 +23,6 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
-import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
 import { runsOnServer } from "@/lib/platform";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
@@ -78,77 +74,7 @@ export const queryKeys = {
   memory: (workspace: WorkspaceId | null, includeSuperseded: boolean) =>
     ["memory", workspace, includeSuperseded] as const,
   allMemory: ["memory"] as const,
-  lead: ["lead"] as const,
-  leadProfile: ["lead-profile"] as const,
-  chatMessages: ["chat-messages"] as const,
 };
-
-/** The server's lead; the desktop app has none. Kept current by `lead-changed` events. */
-export function useLead() {
-  const queryClient = useQueryClient();
-  useEffect(() => {
-    if (!runsOnServer) return;
-    const subscription = listen<LeadStatus>("lead-changed", ({ payload }) =>
-      queryClient.setQueryData(queryKeys.lead, payload),
-    );
-    return () => void subscription.then((unlisten) => unlisten());
-  }, [queryClient]);
-  return useQuery({
-    queryKey: queryKeys.lead,
-    queryFn: () => commands.getLead(),
-    enabled: runsOnServer,
-  });
-}
-
-/** How the chat shows a lead whose server names none, or does not say. */
-export const defaultLeadProfile: LeadProfile = { name: "Lead", avatar: null };
-
-/** The lead's name and picture, set in the server's configuration. */
-export function useLeadProfile(): LeadProfile {
-  const profile = useQuery({
-    queryKey: queryKeys.leadProfile,
-    queryFn: () => commands.getLeadProfile(),
-    enabled: runsOnServer,
-    staleTime: Infinity,
-  });
-  return profile.data ?? defaultLeadProfile;
-}
-
-/** The chat with the lead; kept current by `useHerdrEvents`. */
-export function useChatMessages(enabled: boolean) {
-  return useQuery({
-    queryKey: queryKeys.chatMessages,
-    queryFn: () => unwrap(commands.listChatMessages()),
-    enabled,
-  });
-}
-
-/**
- * Shows a message the server took at once, in place of the pending one, so it does not vanish
- * or show twice until the refetch.
- */
-export function useShowSentChatMessage() {
-  const queryClient = useQueryClient();
-  return useCallback(
-    (sent: ChatMessage) => {
-      queryClient.setQueryData<ChatMessage[]>(queryKeys.chatMessages, (list) =>
-        list && !list.some((message) => message.id === sent.id) ? [...list, sent] : list,
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages });
-    },
-    [queryClient],
-  );
-}
-
-export function useSendChatMessage() {
-  const showSent = useShowSentChatMessage();
-  return useMutation({
-    mutationFn: ({ text, clientId }: { text: string; clientId: string }) =>
-      unwrap(commands.sendChatMessage(text, clientId)),
-    // Not awaiting the refetch: the mutation would stay pending until it returns.
-    onSuccess: showSent,
-  });
-}
 
 export function useMemoryEntries(workspace: WorkspaceId | null, includeSuperseded: boolean) {
   return useQuery({
@@ -509,7 +435,6 @@ export function useHerdrEvents() {
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
       events.memoryChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory })),
-      events.chatChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages })),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),

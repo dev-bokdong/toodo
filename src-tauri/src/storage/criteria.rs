@@ -403,15 +403,7 @@ mod tests {
             Err(StorageError::CriterionNotFound { .. })
         ));
         start(&mut storage, &task);
-        storage
-            .complete_task(
-                task.id,
-                None,
-                None,
-                &[],
-                &crate::domain::finish::Finish::Completed,
-            )
-            .unwrap();
+        storage.complete_task(task.id, None, None, &[]).unwrap();
         assert!(matches!(
             storage.check_criterion(task.id, task.criteria[1].id, true, None, CheckedBy::User),
             Err(StorageError::CriteriaOfDoneTask(_))

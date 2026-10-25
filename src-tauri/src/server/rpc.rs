@@ -12,14 +12,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::Services;
-use crate::commands::events::Notifier;
 use crate::commands::types::{
     BackupSettings, CriterionId, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost,
     NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, lead, machines, mcp, memory, review, tasks, workspaces,
+    herdr, issues, machines, mcp, memory, review, tasks, workspaces,
 };
 
 /// What running a command gave.
@@ -261,21 +260,12 @@ commands!(s => {
     "open_pull_request"(id: TaskId) => sync Reply::result(
         completion::open_pull_request(State(&s.storage), State(&s.git), State(&s.github), id)
     );
-    // A finish posts its report to the chat.
-    "complete_task"(id: TaskId) => sync {
-        let done = completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id);
-        if done.is_ok() {
-            s.chat_changed();
-        }
-        Reply::result(done)
-    };
-    "conclude_task"(id: TaskId, note: String) => sync {
-        let done = completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note);
-        if done.is_ok() {
-            s.chat_changed();
-        }
-        Reply::result(done)
-    };
+    "complete_task"(id: TaskId) => sync Reply::result(
+        completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id)
+    );
+    "conclude_task"(id: TaskId, note: String) => sync Reply::result(
+        completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)
+    );
     "list_pull_request_statuses"() => sync Reply::value(
         completion::list_pull_request_statuses(State(&s.pull_request_statuses))
     );
@@ -292,17 +282,6 @@ commands!(s => {
 
     "mcp_server_info"() => sync Reply::value(mcp::mcp_server_info(State(&s.mcp)));
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
-
-    "get_lead"() => sync Reply::value(lead::get_lead(State(&s.lead)));
-    "get_lead_profile"() => sync Reply::value(lead::get_lead_profile(State(&s.lead_profile)));
-    "list_chat_messages"() => sync Reply::result(lead::list_chat_messages(State(&s.storage)));
-    "send_chat_message"(text: String, client_id: String) => sync {
-        let sent = lead::send_chat_message(State(&s.storage), State(&s.herdr), State(&s.lead), text, client_id);
-        if sent.is_ok() {
-            s.chat_changed();
-        }
-        Reply::result(sent)
-    };
 
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::review_period(State(&s.storage), start, end)
@@ -350,15 +329,6 @@ mod tests {
         "set_connection",
         "get_access_token",
         "set_access_token",
-        "start_dictation",
-        "stop_dictation",
-        "cancel_dictation",
-        "open_privacy_settings",
-        "get_wake_word",
-        "set_wake_word",
-        "cancel_wake_word",
-        "set_wake_word_speaking",
-        "set_wake_word_dictating",
     ];
 
     /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.

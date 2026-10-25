@@ -1,12 +1,9 @@
 //! Core domain model and rules. Pure logic: no I/O, no Tauri, no storage.
 
 pub mod backup;
-pub mod chat;
 pub mod criteria;
 pub mod dag;
 pub mod device;
-pub mod finish;
-pub mod inbox;
 pub mod issue;
 pub mod memory;
 pub mod model;

@@ -3,7 +3,6 @@ import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, Settings, 
 import { AgentAccessStatus } from "@/components/agent-access-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
-import { FloatingChat } from "@/components/lead-chat";
 import { MemoryPanel, type MemoryDraft } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
 import { Review } from "@/components/review";
@@ -12,15 +11,13 @@ import { ServerSwitcher } from "@/components/server-switcher";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
-import { WakeWord } from "@/components/wake-word";
 import { WorkspaceList } from "@/components/workspace-list";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { builtForWeb, checksForUpdates, runsOnServer } from "@/lib/platform";
-import { useHerdrEvents, useLead, useLeadProfile, useWorkspaces } from "@/lib/queries";
+import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
-import { wakeWordOffered } from "@/lib/wake-word";
 import { listenForOpenTask } from "@/web/push";
 
 export default function App() {
@@ -29,9 +26,6 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
   const [reviewing, setReviewing] = useState(false);
   const [sharedMemory, setSharedMemory] = useState(false);
-  const lead = useLead();
-  const leadProfile = useLeadProfile();
-  const hasLead = lead.data !== undefined && lead.data.state !== "disabled";
   // Whether a workspace shows its tasks or its memory; kept across workspaces.
   const [workspaceView, setWorkspaceView] = useState<"tasks" | "memory">("tasks");
   const openPage = (page: "review" | "memory" | null) => {
@@ -275,8 +269,6 @@ export default function App() {
             )
           )}
         </main>
-        {hasLead && lead.data && <FloatingChat lead={lead.data} profile={leadProfile} />}
-        {wakeWordOffered && <WakeWord />}
       </div>
       <SettingsDialog
         open={settingsOpen}

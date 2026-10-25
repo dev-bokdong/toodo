@@ -202,9 +202,7 @@ describe("saved servers", () => {
   it("forget what the app kept for a removed server, and only for it", async () => {
     appCommands(A);
     localStorage.setItem(`toodo-server-token@${A}`, "device-a");
-    localStorage.setItem(`toodo-chat-read@${A}`, "3");
     localStorage.setItem(`toodo-server-token@${B}`, "device-b");
-    localStorage.setItem(`toodo-chat-read@${B}`, "9");
     localStorage.setItem("toodo-theme", "dark");
     const { ServerConnection } = await startWindow(A).then(() => import("@/components/server-connection"));
     render(
@@ -220,9 +218,7 @@ describe("saved servers", () => {
     await vi.waitFor(() => expect(screen.queryByText("Work")).toBeNull());
     expect(native.invoke).toHaveBeenCalledWith("remove_server", { url: B });
     expect(localStorage.getItem(`toodo-server-token@${B}`)).toBeNull();
-    expect(localStorage.getItem(`toodo-chat-read@${B}`)).toBeNull();
     expect(localStorage.getItem(`toodo-server-token@${A}`)).toBe("device-a");
-    expect(localStorage.getItem(`toodo-chat-read@${A}`)).toBe("3");
     expect(localStorage.getItem("toodo-theme")).toBe("dark");
   });
 

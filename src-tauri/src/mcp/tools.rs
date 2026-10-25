@@ -20,9 +20,7 @@ use crate::commands::types::{
 use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
 use crate::domain::criteria::{CheckedBy, NewCriterion};
-use crate::domain::inbox::{self, ItemId};
 use crate::domain::model::{self, NoteKind};
-use crate::domain::status::TaskStatus as Status;
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -95,11 +93,6 @@ pub struct CreateTask {
     /// omitted. Set false for work that ships nothing, e.g. research or an errand.
     #[serde(default)]
     pub merge_criterion: Option<bool>,
-    /// Names this creation, e.g. `chat-12/create-1` for the first task the lead creates
-    /// for the inbox item chat-12. Calling again with a request ID that already created a
-    /// task returns that task and creates nothing.
-    #[serde(default)]
-    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -169,213 +162,6 @@ pub struct Dependency {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub struct ChatReply {
-    /// The reply, in GitHub-flavored Markdown.
-    pub text: String,
-    /// The people's messages this reply answers, such as `["chat-12"]`: Toodo records
-    /// them as handled by it. Only the Toodo lead passes them.
-    #[serde(default, deserialize_with = "item_ids")]
-    pub handles: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct AckChat {
-    /// The people's messages you received and are on, such as `["chat-12", "chat-13"]`.
-    #[serde(deserialize_with = "item_ids")]
-    pub ids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct MarkChatHandled {
-    /// The person's message, such as `chat-12`.
-    pub id: String,
-    /// Your reply in the chat that answers it (its `id` from reply_in_chat), posted after
-    /// the message.
-    pub reply_id: Option<i64>,
-    /// The task you created or started for it, with a `request_id` of the message such
-    /// as `chat-12/create-1`.
-    pub task_id: Option<TaskId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct TakePending {
-    /// The items to take, an array such as `["chat-12", "event-40"]` from a `[Toodo inbox]`
-    /// line, taken before or not. Omit it to take the oldest items not taken yet.
-    #[serde(default, deserialize_with = "item_ids")]
-    pub ids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct ListChat {
-    /// Read messages with an ID above this one: the ID of the last message you read, or
-    /// 0 (the default) to read from the start.
-    #[serde(default)]
-    pub after: Option<i64>,
-    /// At most this many messages: 100 when omitted, at most 500.
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-/// What `list_chat` returns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatFeed {
-    /// Oldest first.
-    pub messages: Vec<FeedMessage>,
-    /// More messages follow the last one: read again with its ID as `after`.
-    pub more: bool,
-}
-
-/// A chat message with where it came from, for an imported one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeedMessage {
-    #[serde(flatten)]
-    pub message: crate::commands::lead::ChatMessage,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin_id: Option<String>,
-}
-
-impl From<&crate::domain::chat::ChatMessage> for FeedMessage {
-    fn from(message: &crate::domain::chat::ChatMessage) -> Self {
-        Self {
-            message: message.into(),
-            origin: message
-                .origin
-                .as_ref()
-                .map(|origin| origin.label().to_owned()),
-            origin_id: message.origin.as_ref().map(|origin| origin.id().to_owned()),
-        }
-    }
-}
-
-/// Who wrote an imported message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ImportedAuthor {
-    /// A person.
-    User,
-    /// The lead.
-    Lead,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct ImportChatMessage {
-    pub author: ImportedAuthor,
-    /// The message, in GitHub-flavored Markdown.
-    pub text: String,
-    /// A label of the chat it was written in, such as `matrix`: lowercase letters,
-    /// digits, `.`, `_`, and `-`.
-    pub origin: String,
-    /// The message's ID in that chat, unique there.
-    pub origin_id: String,
-}
-
-/// What `import_chat_message` returns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportedChat {
-    pub message: FeedMessage,
-    /// False when the message was imported before: nothing was stored.
-    pub created: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct SetTyping {
-    /// True while you compose a reply, false once you stopped.
-    pub typing: bool,
-}
-
-/// The `ids` of [`TakePending`]: an array, or, as agents also send them, one string with
-/// the IDs separated by spaces or commas, or with the array encoded as JSON. An empty
-/// string counts as omitted.
-fn item_ids<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<String>>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Ids {
-        List(Vec<String>),
-        Text(String),
-    }
-    let text = match Option::<Ids>::deserialize(deserializer)? {
-        None => return Ok(None),
-        Some(Ids::List(ids)) => return Ok(Some(ids)),
-        Some(Ids::Text(text)) => text,
-    };
-    let ids = serde_json::from_str::<Vec<String>>(text.trim()).unwrap_or_else(|_| {
-        text.split(|c: char| c == ',' || c.is_whitespace())
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned)
-            .collect()
-    });
-    Ok((!ids.is_empty()).then_some(ids))
-}
-
-/// What `take_pending` returns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Pending {
-    /// Oldest first.
-    pub items: Vec<PendingItem>,
-    /// Requested IDs that name no item.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub missing: Vec<String>,
-    /// Items still waiting: call take_pending again.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub remaining: usize,
-    /// People's messages taken before and not handled yet, however old, for a take
-    /// without IDs: answer them, or mark them handled.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub open: Vec<String>,
-}
-
-fn is_zero(count: &usize) -> bool {
-    *count == 0
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingItem {
-    /// `chat-<n>` or `event-<n>`; the base of the request IDs of what you do for it.
-    pub id: String,
-    pub at: types::Timestamp,
-    /// When an earlier take got the item: you may have acted on it already.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub taken_before: Option<types::Timestamp>,
-    #[serde(flatten)]
-    pub content: PendingContent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase"
-)]
-pub enum PendingContent {
-    /// A person's message in the chat panel, in Markdown; answer it with reply_in_chat.
-    Chat { body: String },
-    /// A task reached a status you follow: in_review (awaiting completion) or done.
-    TaskEvent {
-        task_id: TaskId,
-        title: String,
-        status: TaskStatus,
-        /// The chat message in which Toodo reported this finish, for a done event: it is
-        /// reported, do not repeat it.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        report_id: Option<i64>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub struct AddNote {
     /// The task the note is about, usually your current task.
     pub task_id: TaskId,
@@ -393,11 +179,6 @@ pub struct StartTask {
     /// workspaces on the machine Toodo runs on.
     #[serde(default)]
     pub agent_command: Option<String>,
-    /// Names this start, e.g. `event-40/start-7`. Calling again with a request ID that
-    /// already started the task returns it as it is, without starting it or running
-    /// agent_command again.
-    #[serde(default)]
-    pub request_id: Option<String>,
 }
 
 /// A started task with the panes of its herdr workspace.
@@ -421,10 +202,6 @@ pub struct TaskStart {
 pub struct CompleteTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
-    /// Only for the Toodo lead: the code of the confirmation request a person answered
-    /// in the chat panel.
-    #[serde(default)]
-    pub confirmation: Option<String>,
     /// Only for a task whose work shipped with the merged pull request of another task,
     /// e.g. one pull request that fixed several tasks: that task's ID (`178` or `"#178"`),
     /// which must be done as merged, or the pull request URL. Omit it to complete the
@@ -441,14 +218,6 @@ pub enum MergedWithRef {
 }
 
 impl MergedWithRef {
-    /// `#178` or the pull request URL, for the lead's confirmation request.
-    pub(super) fn describe(&self) -> String {
-        match self {
-            Self::Task(id) => format!("#{id}"),
-            Self::Text(text) => text.trim().to_owned(),
-        }
-    }
-
     fn target(self) -> CommandResult<completion::MergedWithTarget> {
         let text = match self {
             Self::Task(id) => return Ok(completion::MergedWithTarget::Task(model::TaskId(id))),
@@ -508,10 +277,6 @@ pub struct ConcludeTask {
     /// The conclusion in GitHub-flavored Markdown: what was tried or found and why the
     /// work ends without a merge. Kept as the task's completion note.
     pub note: String,
-    /// Only for the Toodo lead: the code of the confirmation request a person answered
-    /// in the chat panel.
-    #[serde(default)]
-    pub confirmation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -696,9 +461,6 @@ fn comparable_path(path: &str) -> String {
 /// before anything is written; a new task has no dependents, so its edges cannot close
 /// a cycle.
 pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> CommandResult<Task> {
-    if let Some(request_id) = &request.request_id {
-        valid_request_id(request_id)?;
-    }
     let merge = if request.merge_criterion.unwrap_or(true) {
         let criteria = request
             .criteria
@@ -739,12 +501,6 @@ fn insert_task(
         new.criteria.insert(0, merge);
     }
     let task = storage.create_task(&new)?;
-    name_request(
-        storage,
-        task.id,
-        Status::Planned,
-        request.request_id.as_deref(),
-    );
     let linked = request
         .depends_on
         .iter()
@@ -769,170 +525,6 @@ fn insert_task(
         return Err(error.into());
     }
     get_task(storage, task.id.into())
-}
-
-/// The task an earlier call named `request_id` already created or started (`status`), if
-/// any; a request ID that named something else is invalid input.
-pub fn repeated(
-    storage: &Storage,
-    request_id: Option<&str>,
-    status: Status,
-) -> CommandResult<Option<Task>> {
-    let Some(request_id) = request_id else {
-        return Ok(None);
-    };
-    let request_id = valid_request_id(request_id)?;
-    let Some((task, named)) = storage.task_of_request(request_id)? else {
-        return Ok(None);
-    };
-    if named != status {
-        return Err(CommandError::invalid_input(format!(
-            "request_id {request_id:?} already named a change of task #{task} to {}; use a \
-             new one",
-            named.as_str()
-        )));
-    }
-    get_task(storage, task.into()).map(Some)
-}
-
-fn valid_request_id(request_id: &str) -> CommandResult<&str> {
-    inbox::request_id(request_id).ok_or_else(|| {
-        CommandError::invalid_input(format!(
-            "request_id must have 1 to {} characters",
-            inbox::MAX_REQUEST_ID_CHARS
-        ))
-    })
-}
-
-/// Names the change of `task` to `status` with `request_id`. It only fails after the change
-/// was made, so a failure is logged.
-fn name_request(
-    storage: &mut Storage,
-    task: model::TaskId,
-    status: Status,
-    request_id: Option<&str>,
-) {
-    let Some(request_id) = request_id.and_then(inbox::request_id) else {
-        return;
-    };
-    if let Err(error) = storage.name_request(task, status, request_id) {
-        eprintln!(
-            "toodo: cannot name the change of task {task} with request {request_id}: {error}"
-        );
-    }
-}
-
-/// Hands the lead the items of its inbox (see [`crate::domain::inbox`]).
-pub fn take_pending(storage: &mut Storage, request: TakePending) -> CommandResult<Pending> {
-    let ids = request
-        .ids
-        .map(|ids| {
-            ids.iter()
-                .map(|id| {
-                    ItemId::parse(id).ok_or_else(|| {
-                        CommandError::invalid_input(format!(
-                            "{id:?} is not an inbox item ID such as chat-12 or event-40"
-                        ))
-                    })
-                })
-                .collect::<CommandResult<Vec<_>>>()
-        })
-        .transpose()?;
-    let taken = storage.take_pending(ids.as_deref())?;
-    let open = if ids.is_none() {
-        open_besides(storage, &taken)?
-    } else {
-        Vec::new()
-    };
-    Ok(pending(taken, open))
-}
-
-/// The items `take_pending` without IDs would take next, without taking them.
-pub fn peek_pending(storage: &Storage) -> CommandResult<Pending> {
-    let peeked = storage.peek_pending()?;
-    let open = open_besides(storage, &peeked)?;
-    Ok(pending(peeked, open))
-}
-
-/// People's messages taken before and not handled yet, other than those of `taken`.
-fn open_besides(storage: &Storage, taken: &storage::Taken) -> CommandResult<Vec<String>> {
-    Ok(storage
-        .open_chat()?
-        .into_iter()
-        .map(ItemId::Chat)
-        .filter(|id| !taken.items.iter().any(|item| item.id == *id))
-        .map(|id| id.to_string())
-        .collect())
-}
-
-/// The chat after a cursor (see [`ListChat`]).
-pub fn list_chat(storage: &Storage, request: &ListChat) -> CommandResult<ChatFeed> {
-    const DEFAULT_LIMIT: usize = 100;
-    let limit = request
-        .limit
-        .map_or(DEFAULT_LIMIT, |limit| {
-            usize::try_from(limit).unwrap_or(usize::MAX)
-        })
-        .clamp(1, storage::MAX_FEED);
-    let mut messages = storage.chat_after(request.after.unwrap_or(0), limit + 1)?;
-    let more = messages.len() > limit;
-    messages.truncate(limit);
-    Ok(ChatFeed {
-        messages: messages.iter().map(Into::into).collect(),
-        more,
-    })
-}
-
-/// Stores a message of another chat (see [`ImportChatMessage`]).
-pub fn import_chat_message(
-    storage: &mut Storage,
-    request: ImportChatMessage,
-) -> CommandResult<ImportedChat> {
-    use crate::domain::chat::{self, ChatAuthor, ChatOrigin};
-    let body = chat::body(&request.text)
-        .map_err(|error| CommandError::invalid_input(error.to_string()))?;
-    let origin = ChatOrigin::parse(&request.origin, &request.origin_id)
-        .map_err(CommandError::invalid_input)?;
-    let author = match request.author {
-        ImportedAuthor::User => ChatAuthor::User,
-        ImportedAuthor::Lead => ChatAuthor::Lead,
-    };
-    let (message, created) = storage.import_chat_message(author, &body, &origin)?;
-    Ok(ImportedChat {
-        message: (&message).into(),
-        created,
-    })
-}
-
-fn pending(taken: storage::Taken, open: Vec<String>) -> Pending {
-    Pending {
-        open,
-        items: taken
-            .items
-            .into_iter()
-            .map(|item| PendingItem {
-                id: item.id.to_string(),
-                at: types::Timestamp(item.at),
-                taken_before: item.taken_before.map(types::Timestamp),
-                content: match item.content {
-                    storage::InboxContent::Chat { body } => PendingContent::Chat { body },
-                    storage::InboxContent::Event {
-                        task,
-                        title,
-                        status,
-                        report,
-                    } => PendingContent::TaskEvent {
-                        task_id: task.into(),
-                        title,
-                        status: status.into(),
-                        report_id: report.map(|id| id.0),
-                    },
-                },
-            })
-            .collect(),
-        missing: taken.missing.iter().map(ToString::to_string).collect(),
-        remaining: taken.remaining,
-    }
 }
 
 pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<Task> {
@@ -1031,19 +623,8 @@ pub fn start_task(
             ));
         }
     }
-    if let Some(request_id) = &request.request_id {
-        valid_request_id(request_id)?;
-    }
     let task: Task = match herdr_commands::start(storage, git, herdr, id) {
-        Ok(task) => {
-            name_request(
-                &mut lock(storage),
-                id,
-                Status::InProgress,
-                request.request_id.as_deref(),
-            );
-            (&task).into()
-        }
+        Ok(task) => (&task).into(),
         Err(error) => return Err(with_worktree_root_hint(&lock(storage), id, error)),
     };
     let mut started = TaskStart {
@@ -1385,36 +966,21 @@ mod tests {
         (storage, workspace.id.into())
     }
 
+    /// Agents started before the lead was removed may still send `request_id`; it is
+    /// ignored rather than failing the call.
     #[test]
-    fn take_pending_reads_ids_as_an_array_or_as_one_string() {
-        let ids = |arguments: serde_json::Value| {
-            serde_json::from_value::<TakePending>(arguments)
-                .unwrap()
-                .ids
-        };
-        let both = Some(vec!["chat-12".to_owned(), "event-40".to_owned()]);
-        assert_eq!(
-            ids(serde_json::json!({ "ids": ["chat-12", "event-40"] })),
-            both
-        );
-        assert_eq!(ids(serde_json::json!({ "ids": "chat-12 event-40" })), both);
-        assert_eq!(ids(serde_json::json!({ "ids": "chat-12, event-40" })), both);
-        assert_eq!(
-            ids(serde_json::json!({ "ids": r#"["chat-12","event-40"]"# })),
-            both
-        );
-        assert_eq!(
-            ids(serde_json::json!({ "ids": "chat-12" })),
-            Some(vec!["chat-12".to_owned()])
-        );
-        for omitted in [
-            serde_json::json!({}),
-            serde_json::json!({ "ids": null }),
-            serde_json::json!({ "ids": " " }),
-        ] {
-            assert_eq!(ids(omitted), None);
-        }
-        assert!(serde_json::from_value::<TakePending>(serde_json::json!({ "ids": 12 })).is_err());
+    fn create_and_start_ignore_a_request_id() {
+        let create = serde_json::from_value::<CreateTask>(serde_json::json!({
+            "workspace_id": 1, "task_type": "feat", "title": "Add login",
+            "request_id": "chat-12/create-1"
+        }))
+        .unwrap();
+        assert_eq!(create.title, "Add login");
+        let start = serde_json::from_value::<StartTask>(serde_json::json!({
+            "id": 7, "request_id": "event-40/start-7"
+        }))
+        .unwrap();
+        assert_eq!(start.id, TaskId(7));
     }
 
     fn create(
@@ -1436,7 +1002,6 @@ mod tests {
                 due_date: None,
                 criteria: Vec::new(),
                 merge_criterion: None,
-                request_id: None,
             },
             Some(NewCriterion::merge(true)),
         )
@@ -2002,7 +1567,6 @@ mod tests {
             StartTask {
                 id: dependent.id,
                 agent_command: None,
-                request_id: None,
             },
         )
         .unwrap_err();
@@ -2019,7 +1583,6 @@ mod tests {
             StartTask {
                 id: task.id,
                 agent_command: None,
-                request_id: None,
             },
         )
         .unwrap_err();
@@ -2085,7 +1648,6 @@ mod tests {
     fn own(id: TaskId) -> CompleteTask {
         CompleteTask {
             id,
-            confirmation: None,
             merged_with: None,
         }
     }
@@ -2093,7 +1655,6 @@ mod tests {
     fn merged_with(id: TaskId, target: MergedWithRef) -> CompleteTask {
         CompleteTask {
             id,
-            confirmation: None,
             merged_with: Some(target),
         }
     }
@@ -2106,13 +1667,7 @@ mod tests {
         let extra = {
             let mut storage = crate::commands::lock(&storage);
             storage
-                .complete_task(
-                    task.id.into(),
-                    Some(1_760_021_265),
-                    None,
-                    &[],
-                    &crate::domain::finish::Finish::Completed,
-                )
+                .complete_task(task.id.into(), Some(1_760_021_265), None, &[])
                 .unwrap();
             let extra = create(&mut storage, task.workspace_id, "Fix typo", vec![]).unwrap();
             let checkout = crate::domain::naming::TaskCheckout {
@@ -2370,7 +1925,6 @@ mod tests {
         ConcludeTask {
             id,
             note: note.to_owned(),
-            confirmation: None,
         }
     }
 

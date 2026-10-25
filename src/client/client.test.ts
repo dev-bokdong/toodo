@@ -20,7 +20,6 @@ async function startApp(server: string | null) {
     core: await import("@/client/core"),
     event: await import("@/client/event"),
     session: await import("@/web/session"),
-    chat: await import("@/lib/chat"),
     connection: await import("@/web/connection"),
   };
 }
@@ -148,23 +147,19 @@ describe("what the app keeps for each server", () => {
     delete window.__TOODO_SERVER__;
   });
 
-  it("keeps the token and the chat's read mark apart", async () => {
+  it("keeps the tokens apart", async () => {
     const a = await startApp(A);
     a.session.setToken("device-a");
-    a.chat.markRead(7);
 
     const b = await startApp(B);
     expect(b.session.getToken()).toBeNull();
     b.session.setToken("device-b");
-    b.chat.markRead(2);
 
     const web = await startApp(null);
     expect(web.session.getToken()).toBeNull();
 
     const again = await startApp(A);
     expect(again.session.getToken()).toBe("device-a");
-    expect(localStorage.getItem(`toodo-chat-read@${A}`)).toBe("7");
-    expect(localStorage.getItem(`toodo-chat-read@${B}`)).toBe("2");
   });
 
   it("forgets only the token of the server that revoked it", async () => {

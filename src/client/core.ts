@@ -17,15 +17,6 @@ const APP_COMMANDS = new Set([
   "remove_server",
   "get_access_token",
   "set_access_token",
-  "start_dictation",
-  "stop_dictation",
-  "cancel_dictation",
-  "open_privacy_settings",
-  "get_wake_word",
-  "set_wake_word",
-  "cancel_wake_word",
-  "set_wake_word_speaking",
-  "set_wake_word_dictating",
 ]);
 
 export function runsInApp(command: string): boolean {

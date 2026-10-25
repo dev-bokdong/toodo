@@ -13,7 +13,6 @@
     "opener:allow-open-url",
     "opener:allow-default-urls",
     "remote:default",
-    "deep-link:default",
-    "speech:default"
+    "deep-link:default"
   ]
 }

@@ -32,10 +32,8 @@ into a performance report.
 - [docs/workflow.md](docs/workflow.md): task lifecycle from planning to pull request.
 - [docs/server.md](docs/server.md): running Toodo headless on a Linux server, used from a
   browser.
-- [docs/android.md](docs/android.md): the Android app, a client of a server, with voice
-  input to the lead in one tap.
-- [docs/macos.md](docs/macos.md): the macOS app, a client of the server with native
-  dictation.
+- [docs/android.md](docs/android.md): the Android app, a client of a server.
+- [docs/macos.md](docs/macos.md): the macOS app, a client of a server.
 
 ## Requirements
 
@@ -53,8 +51,8 @@ Toodo can also run as a server on a Linux machine with herdr, used from a browse
 `e2e/` holds Playwright tests that drive the web app (the `--mode web` build) against a
 scratch `toodo-server`. Every test starts its own server on a free loopback port with a
 temporary data directory, so a run never touches the data of a real server and never binds
-the default server ports. The servers run without a lead (`TOODO_LEAD=off`), and a run
-fails when it leaves a new workspace open in the herdr of the machine (`e2e/herdr-guard.ts`).
+the default server ports. A run fails when it leaves a new workspace open in the herdr of
+the machine (`e2e/herdr-guard.ts`).
 CI runs the suite on pull requests into `dev`
 (`.github/workflows/e2e.yml`).
 
