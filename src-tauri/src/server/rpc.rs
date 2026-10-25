@@ -1,6 +1,6 @@
-//! `POST /api/rpc/<command>`: runs one of the commands the desktop app registers with
-//! Tauri, with the same JSON arguments (camelCase keys, as Tauri passes them) and the same
-//! JSON result, so the frontend's generated bindings work unchanged over HTTP.
+//! `POST /api/rpc/<command>`: runs one of the commands of the frontend's generated
+//! bindings (see `bindings.rs`), with their JSON arguments (camelCase keys) and JSON
+//! result.
 
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ use crate::commands::{
 pub enum Reply {
     /// The command's result, as JSON.
     Done(serde_json::Value),
-    /// The command failed; the frontend gets the error as the desktop app reports it.
+    /// The command failed; the frontend gets the command's error.
     Failed(CommandError),
     /// No command has this name.
     UnknownCommand,
@@ -189,11 +189,6 @@ commands!(s => {
     );
 
     "list_herdr_machines"() => sync Reply::result(machines::list_herdr_machines(State(&s.herdr)));
-    // `herdr machine add` asks questions in a terminal, which a server does not have.
-    "add_herdr_machine"(host: String) => sync Reply::Failed(CommandError::rejected(format!(
-        "the server cannot answer herdr's questions: run `herdr machine add {host}` in a \
-         terminal on the server, then pick the machine here"
-    )));
     "list_ssh_hosts"() => sync Reply::result(machines::list_ssh_hosts(State(&s.ssh_config)));
     "add_ssh_host"(host: NewSshHost) => sync Reply::result(machines::add_ssh_host(State(&s.ssh_config), host));
     "list_remote_directories"(machine: String, path: Option<String>) => async Reply::result(
@@ -316,48 +311,22 @@ mod tests {
 
     use super::*;
 
-    /// Commands of the bindings that only the desktop app runs, because they read or write
-    /// a path on the client's machine: the web app downloads reports in the browser and
-    /// moves database files over `/api/backups` instead.
-    const DESKTOP_ONLY: &[&str] = &["export_database", "restore_database", "save_report"];
-
-    /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.
-    fn bound_commands() -> BTreeSet<String> {
-        let bindings = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../src/lib/bindings.ts"
-        ))
-        .unwrap();
-        bindings
-            .split("__TAURI_INVOKE")
-            .skip(1)
-            .filter_map(|call| {
-                let call = call.strip_prefix('<').map_or(call, |rest| {
-                    rest.split_once(">(").map_or(rest, |(_, after)| after)
-                });
-                let call = call.trim_start_matches('(');
-                let name = call.strip_prefix('"')?.split('"').next()?;
-                Some(name.to_owned())
-            })
-            .collect()
-    }
-
     #[test]
     fn every_command_of_the_bindings_is_served() {
-        let bound = bound_commands();
+        let bound: BTreeSet<String> = crate::bindings::commands()
+            .iter()
+            .map(|command| command.name().to_owned())
+            .collect();
         assert!(
             bound.contains("list_tasks") && bound.contains("app_info"),
             "{bound:?}"
         );
         let served: BTreeSet<String> = COMMANDS.iter().map(|name| (*name).to_owned()).collect();
-        let desktop_only: BTreeSet<String> =
-            DESKTOP_ONLY.iter().map(|name| (*name).to_owned()).collect();
-        assert!(desktop_only.is_subset(&bound), "{desktop_only:?}");
-        assert_eq!(served, &bound - &desktop_only);
+        assert_eq!(served, bound);
     }
 
     #[test]
-    fn arguments_use_the_camel_case_keys_of_tauri() {
+    fn arguments_use_the_camel_case_keys_of_the_bindings() {
         let args = serde_json::json!({ "taskId": 3, "dependsOn": 4 });
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]

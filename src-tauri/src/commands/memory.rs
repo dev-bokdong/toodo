@@ -27,8 +27,7 @@ pub(crate) fn scope(
 
 /// The entries of the workspace, or the shared ones when `workspace_id` is `null`; the
 /// superseded ones too when `include_superseded`. Most recently changed first.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_memory(
     storage: State<'_, StorageState>,
     workspace_id: Option<WorkspaceId>,
@@ -42,8 +41,7 @@ pub fn list_memory(
 }
 
 /// Adds an entry to the workspace, or a shared one when `workspace_id` is `null`.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn add_memory(
     storage: State<'_, StorageState>,
     workspace_id: Option<WorkspaceId>,
@@ -62,8 +60,7 @@ pub(crate) fn add(
 }
 
 /// Rewrites a current entry, e.g. to fix a mistake. Superseded entries cannot change.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn update_memory(
     storage: State<'_, StorageState>,
     id: MemoryId,
@@ -83,8 +80,7 @@ pub(crate) fn update(
 
 /// Replaces a current entry with a new one in the same scope and returns the new entry;
 /// the old one stays as history.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn supersede_memory(
     storage: State<'_, StorageState>,
     id: MemoryId,

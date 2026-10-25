@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { McpServerInfo, McpTunnel, McpTunnelState } from "@/lib/bindings";
-import { runsOnServer } from "@/lib/platform";
 import { useMcpServerInfo, useMcpTunnels } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { toneFill } from "@/lib/status-styles";
@@ -81,9 +80,7 @@ export function AgentAccessPanel() {
   return (
     <section aria-label="Agent access" className="flex flex-col gap-2 text-sm">
       <p className="text-muted-foreground">
-        {runsOnServer
-          ? "Agents on the server can plan tasks and connect dependencies through the Toodo server's MCP endpoint."
-          : "Agents can plan tasks and connect dependencies through Toodo's MCP server while the app is running."}
+        Agents on the server can plan tasks and connect dependencies through the Toodo server's MCP endpoint.
       </p>
       {data && (
         <>
@@ -112,9 +109,7 @@ export function AgentAccessPanel() {
           {!data.error && (
             <>
               <p className="text-muted-foreground">
-                {runsOnServer
-                  ? "Agents on SSH machines use the same config: the server forwards its port to each machine with a workspace."
-                  : "Agents on SSH machines use the same config: Toodo forwards the port to each machine with a workspace."}
+                Agents on SSH machines use the same config: the server forwards its port to each machine with a workspace.
               </p>
               <TunnelList tunnels={tunnels.data ?? []} />
             </>

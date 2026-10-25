@@ -16,8 +16,7 @@ use crate::domain::model;
 /// conflicts. A failing fetch or pull request lookup is reported in the result rather
 /// than failing the whole check. `None` when the workspace repository has no `origin`,
 /// since there is no shared base branch to fall behind.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn branch_freshness(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,

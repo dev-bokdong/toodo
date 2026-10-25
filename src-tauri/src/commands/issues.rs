@@ -19,8 +19,7 @@ use crate::storage::StorageError;
 /// Links issue `number` of the workspace repository to a task that is not done, after
 /// checking that the issue exists; `null` unlinks the current issue. An open pull
 /// request of the task gets a closing reference to the issue.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn link_issue(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -34,8 +33,7 @@ pub fn link_issue(
 /// Opens an issue in the workspace repository with the title and description of a task
 /// that is not done and has no issue yet, and links it to the task. An open pull request
 /// of the task gets a closing reference to the issue.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn create_issue(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,

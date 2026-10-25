@@ -1,5 +1,5 @@
 /**
- * Stands in for `@tauri-apps/api/event` in the web build: listeners get the events of
+ * Delivers server events: listeners get the events of
  * `toodo-server`'s event stream (`GET /api/events`), which one connection reads for all
  * of them. When the stream drops, it reconnects after a growing delay and, once the server
  * answers again, tells `onReconnect` subscribers, since events may have been missed
@@ -142,17 +142,6 @@ export async function listen<T>(event: string, handler: EventCallback<T>): Promi
     if (handlers.size === 0) disconnect();
   };
 }
-
-export async function once<T>(event: string, handler: EventCallback<T>): Promise<UnlistenFn> {
-  const unlisten = await listen<T>(event, (received) => {
-    unlisten();
-    handler(received);
-  });
-  return unlisten;
-}
-
-/** Events only flow from the server to the app; there is nothing to send them to. */
-export async function emit(): Promise<void> {}
 
 /** Calls `listener` whenever the stream reconnects after it dropped. */
 export function onReconnect(listener: () => void): () => void {

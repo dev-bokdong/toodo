@@ -27,8 +27,7 @@ impl From<&ServerStatus> for McpServerInfo {
     }
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn mcp_server_info(status: State<'_, ServerStatus>) -> McpServerInfo {
     McpServerInfo::from(&*status)
 }
@@ -65,8 +64,7 @@ impl From<TunnelStatus> for McpTunnel {
     }
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_mcp_tunnels(tunnels: State<'_, TunnelsState>) -> Vec<McpTunnel> {
     let tunnels = tunnels
         .lock()

@@ -1,6 +1,6 @@
 /**
- * Display helpers for repository and worktree paths: Windows paths in the desktop app,
- * POSIX paths on the server and on SSH machines.
+ * Display helpers for repository and worktree paths: POSIX paths on the server and on SSH
+ * machines, and Windows paths (drive letters and UNC shares).
  */
 
 type Parsed = { root: string; separator: string; segments: string[] };

@@ -13,9 +13,7 @@ use std::fmt;
 
 use serde_json::Value;
 
-use super::git::{
-    GitError, Invocation, Runner, describe, is_plain_word, shell_quote, ssh_invocation,
-};
+use super::git::{GitError, Invocation, Runner, describe, shell_quote, ssh_invocation};
 use crate::domain::model::{Machine, MachineLabel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +33,6 @@ pub enum HerdrError {
     MachineNotSaved { host: String },
     /// Every saved herdr machine for the SSH host is disabled.
     MachineDisabled { host: String, profile_id: String },
-    /// The SSH host cannot be passed to `herdr machine add` safely.
-    InvalidHost { host: String },
 }
 
 impl fmt::Display for HerdrError {
@@ -61,11 +57,6 @@ impl fmt::Display for HerdrError {
                 f,
                 "the herdr machine for SSH host '{host}' is disabled; run \
                  `herdr machine enable {profile_id}`, then try again"
-            ),
-            Self::InvalidHost { host } => write!(
-                f,
-                "SSH host {host:?} must use only letters, digits, and . _ - @ : / = \
-                 and must not start with '-'"
             ),
         }
     }
@@ -377,20 +368,6 @@ impl Herdr {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Runs `herdr machine add <host>` in a terminal window and waits for the user to
-    /// finish it. herdr asks there before installing or replacing the remote herdr, and
-    /// saves nothing when the user cancels.
-    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-    pub fn add_machine(&self, host: &MachineLabel) -> Result<(), HerdrError> {
-        if !is_plain_word(host.as_str()) || host.as_str().starts_with('-') {
-            return Err(HerdrError::InvalidHost {
-                host: host.as_str().to_owned(),
-            });
-        }
-        let invocation = invocation(None, &["machine", "add", host.as_str()]);
-        Ok(self.runner.run_in_terminal(&invocation)?)
-    }
-
     /// ID of the saved herdr machine to target for `machine`, or `None` for this machine.
     /// Among enabled profiles whose SSH target is the host, the one on herdr's default
     /// session wins.
@@ -689,38 +666,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn machines_are_added_in_a_terminal() {
-        let (herdr, runner) = herdr(vec![Ok(String::new())]);
-        herdr
-            .add_machine(&MachineLabel::parse("admin@analysis-server").unwrap())
-            .unwrap();
-        assert_eq!(
-            runner.invocations.lock().unwrap()[0],
-            Invocation {
-                program: "herdr",
-                args: ["machine", "add", "admin@analysis-server"]
-                    .map(str::to_owned)
-                    .to_vec(),
-            }
-        );
-    }
-
-    #[test]
-    fn hosts_that_need_quoting_are_not_added() {
-        let (herdr, runner) = herdr(Vec::new());
-        for host in ["dev box", "devbox&calc", "-oProxyCommand=x", "dev\"box"] {
-            assert_eq!(
-                herdr.add_machine(&MachineLabel::parse(host).unwrap()),
-                Err(HerdrError::InvalidHost {
-                    host: host.to_owned()
-                }),
-                "{host}"
-            );
-        }
-        assert!(runner.invocations.lock().unwrap().is_empty());
     }
 
     #[test]

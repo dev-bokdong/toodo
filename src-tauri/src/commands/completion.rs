@@ -45,8 +45,7 @@ use crate::storage::{CriterionCheck, StorageError};
 
 /// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 /// the base branch and stores them as its commit records.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn refresh_commit_records(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -60,8 +59,7 @@ pub fn refresh_commit_records(
 /// of the branch opened elsewhere (e.g. from herdr) is adopted instead: an open one gets
 /// the push, a merged one is recorded without pushing. Run it again after more commits
 /// to push them to the pull request.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn open_pull_request(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -76,8 +74,7 @@ pub fn open_pull_request(
 /// ready. Toodo checks its automatic criteria first; a merged pull request's size,
 /// reviews, and commits are recorded for reviews. Its herdr workspace is closed; the
 /// worktree stays on disk. Rejected with the criteria that are not met.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn complete_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -94,8 +91,7 @@ pub fn complete_task(
 /// pull request of its branch, recorded or not, is closed with the conclusion as a
 /// comment and recorded, and its herdr workspace is closed. The branch and worktree stay,
 /// and its dependents keep waiting.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn conclude_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -1056,8 +1052,7 @@ fn adopt_pull_request(
 /// check.
 pub type PullRequestStatusState = Mutex<HashMap<model::TaskId, PullRequestStatus>>;
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_pull_request_statuses(
     statuses: State<'_, PullRequestStatusState>,
 ) -> Vec<types::TaskPullRequestStatus> {

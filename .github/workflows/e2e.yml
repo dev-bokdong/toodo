@@ -45,10 +45,10 @@ jobs:
 
       - name: Build the server
         working-directory: src-tauri
-        run: cargo build --no-default-features --features server --bin toodo-server
+        run: cargo build --bin toodo-server
 
       - name: Build the web app
-        run: npx vite build --mode web --outDir dist-web
+        run: npx vite build
 
       - name: Install the browser
         run: npx playwright install --with-deps chromium

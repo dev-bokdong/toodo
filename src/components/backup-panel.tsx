@@ -1,8 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import type { BackupEntry, BackupSettings } from "@/lib/bindings";
-import { runsOnServer } from "@/lib/platform";
 import { formatFull } from "@/lib/timeline";
 import { When } from "@/components/when";
 import {
@@ -10,21 +8,16 @@ import {
   useBackups,
   useDownloadBackup,
   useDownloadExport,
-  useExportDatabase,
   useRestoreBackup,
-  useRestoreDatabase,
   useSaveBackupSettings,
   useUploadRestore,
 } from "@/lib/queries";
 
 const inputClass = "h-7 w-16 rounded-md border bg-background px-2 text-sm";
 
-const databaseFilters = [{ name: "Toodo database", extensions: ["sqlite3", "db"] }];
-
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
-
 
 function formatSize(bytes: number): string {
   return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -36,10 +29,7 @@ const kindLabels: Record<BackupEntry["kind"], string> = {
 };
 
 /** What a confirmed restore replaces the data with. */
-type RestoreSource =
-  | { kind: "path"; path: string }
-  | { kind: "backup"; path: string }
-  | { kind: "upload"; file: File };
+type RestoreSource = { kind: "backup"; path: string } | { kind: "upload"; file: File };
 
 function sourceName(source: RestoreSource): string {
   return source.kind === "upload" ? source.file.name : fileName(source.path);
@@ -47,60 +37,26 @@ function sourceName(source: RestoreSource): string {
 
 export function BackupPanel() {
   const backups = useBackups();
-  const exportDatabase = useExportDatabase();
   const downloadExport = useDownloadExport();
   const downloadBackup = useDownloadBackup();
-  const restoreDatabase = useRestoreDatabase();
   const restoreBackup = useRestoreBackup();
   const uploadRestore = useUploadRestore();
   const upload = useRef<HTMLInputElement>(null);
   const [confirming, setConfirming] = useState<RestoreSource | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [dialogError, setDialogError] = useState<string | null>(null);
 
-  const exporting = exportDatabase.isPending || downloadExport.isPending;
-  const restoring = restoreDatabase.isPending || restoreBackup.isPending || uploadRestore.isPending;
+  const exporting = downloadExport.isPending;
+  const restoring = restoreBackup.isPending || uploadRestore.isPending;
 
-  async function exportToFile() {
+  function exportToFile() {
     setNotice(null);
-    setDialogError(null);
-    if (runsOnServer) {
-      // The server sends a snapshot and the browser downloads it.
-      downloadExport.mutate(undefined, { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
-      return;
-    }
-    try {
-      const date = new Date().toISOString().slice(0, 10);
-      const path = await saveDialog({
-        title: "Export database",
-        defaultPath: `toodo-backup-${date}.sqlite3`,
-        filters: databaseFilters,
-      });
-      if (typeof path !== "string") return;
-      exportDatabase.mutate(path, { onSuccess: () => setNotice(`Exported to ${path}`) });
-    } catch (error) {
-      setDialogError(`Could not open the save dialog: ${String(error)}`);
-    }
+    // The server sends a snapshot and the browser downloads it.
+    downloadExport.mutate(undefined, { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
   }
 
-  async function pickBackup() {
+  function pickBackup() {
     setNotice(null);
-    setDialogError(null);
-    if (runsOnServer) {
-      upload.current?.click();
-      return;
-    }
-    try {
-      const path = await openDialog({
-        title: "Restore database",
-        multiple: false,
-        directory: false,
-        filters: databaseFilters,
-      });
-      if (typeof path === "string") setConfirming({ kind: "path", path });
-    } catch (error) {
-      setDialogError(`Could not open the file dialog: ${String(error)}`);
-    }
+    upload.current?.click();
   }
 
   function restore(source: RestoreSource) {
@@ -112,18 +68,11 @@ export function BackupPanel() {
       },
     };
     if (source.kind === "upload") uploadRestore.mutate(source.file, options);
-    else if (source.kind === "backup") restoreBackup.mutate(fileName(source.path), options);
-    else restoreDatabase.mutate(source.path, options);
+    else restoreBackup.mutate(fileName(source.path), options);
   }
 
   const error =
-    exportDatabase.error ??
-    downloadExport.error ??
-    downloadBackup.error ??
-    restoreDatabase.error ??
-    restoreBackup.error ??
-    uploadRestore.error ??
-    backups.error;
+    downloadExport.error ?? downloadBackup.error ?? restoreBackup.error ?? uploadRestore.error ?? backups.error;
 
   return (
     <section aria-label="Backups" className="flex flex-col gap-2">
@@ -134,20 +83,18 @@ export function BackupPanel() {
         <Button size="sm" variant="outline" onClick={pickBackup} disabled={restoring}>
           Restore...
         </Button>
-        {runsOnServer && (
-          <input
-            ref={upload}
-            type="file"
-            accept=".sqlite3,.db"
-            aria-label="Database file to restore"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = "";
-              if (file) setConfirming({ kind: "upload", file });
-            }}
-          />
-        )}
+        <input
+          ref={upload}
+          type="file"
+          accept=".sqlite3,.db"
+          aria-label="Database file to restore"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) setConfirming({ kind: "upload", file });
+          }}
+        />
       </div>
       {confirming && (
         <div role="alertdialog" aria-label="Confirm restore" className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
@@ -170,9 +117,9 @@ export function BackupPanel() {
           {notice}
         </p>
       )}
-      {(dialogError ?? error) && (
+      {error && (
         <p role="alert" className="text-xs break-words text-destructive">
-          {dialogError ?? error?.message}
+          {error.message}
         </p>
       )}
       <AutoBackupSettings />
@@ -189,21 +136,19 @@ export function BackupPanel() {
               </span>
             </span>
             <span className="flex flex-wrap gap-1">
-              {runsOnServer && (
-                <Button
-                  changesData
-                  size="xs"
-                  variant="outline"
-                  aria-label={`Download backup from ${formatFull(backup.createdAt)}`}
-                  disabled={downloadBackup.isPending}
-                  onClick={() => {
-                    setNotice(null);
-                    downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
-                  }}
-                >
-                  Download
-                </Button>
-              )}
+              <Button
+                changesData
+                size="xs"
+                variant="outline"
+                aria-label={`Download backup from ${formatFull(backup.createdAt)}`}
+                disabled={downloadBackup.isPending}
+                onClick={() => {
+                  setNotice(null);
+                  downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
+                }}
+              >
+                Download
+              </Button>
               <Button
                 size="xs"
                 variant="outline"

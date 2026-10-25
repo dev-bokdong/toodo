@@ -1,14 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { CalendarCheck, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/task-list";
 import { inputClass } from "@/components/workspace-list";
 import type { ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
-import { runsOnServer } from "@/lib/platform";
-import { useReview, useSaveReport, useWorkspaces } from "@/lib/queries";
+import { useReview, useWorkspaces } from "@/lib/queries";
 import {
   commitSubject,
   durationKeys,
@@ -42,6 +39,7 @@ import { toneChip, toneFill, toneText } from "@/lib/status-styles";
 import { When } from "@/components/when";
 import { formatDate } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
+import { openUrl } from "@/web/opener";
 
 const outcomeStyles: Record<ReviewOutcome, string> = {
   completed: toneText.success,
@@ -130,7 +128,6 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const { start, end } = periodBounds(period);
   const review = useReview(start, end);
   const workspaces = useWorkspaces();
-  const saveReport = useSaveReport();
   const names = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
   const noun = periodNouns[period.kind];
 
@@ -153,37 +150,16 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     }
   }
 
-  async function saveAs(extension: "md" | "csv", entries: ReviewEntry[]) {
-    setNotice(null);
+  function saveAs(extension: "md" | "csv", entries: ReviewEntry[]) {
     const workspaceList = workspaces.data ?? [];
     const contents =
       extension === "csv"
         ? reviewCsv(entries, workspaceList, Date.now() / 1000)
         : reviewMarkdown(period, entries, workspaceList, Date.now() / 1000);
-    if (runsOnServer) {
-      // The report is for the user, not the server: the browser downloads it.
-      const name = reviewFileName(period, extension);
-      download(name, contents, extension === "csv" ? "text/csv" : "text/markdown");
-      setNotice(`Downloaded ${name}`);
-      return;
-    }
-    try {
-      const path = await saveDialog({
-        title: extension === "csv" ? "Save review as CSV" : "Save review as Markdown",
-        defaultPath: reviewFileName(period, extension),
-        filters: [extension === "csv" ? { name: "CSV", extensions: ["csv"] } : { name: "Markdown", extensions: ["md"] }],
-      });
-      if (typeof path !== "string") return;
-      saveReport.mutate(
-        { path, contents },
-        {
-          onSuccess: () => setNotice(`Saved to ${path}`),
-          onError: (error) => setNotice(`Could not save: ${error.message}`),
-        },
-      );
-    } catch (error) {
-      setNotice(`Could not open the save dialog: ${String(error)}`);
-    }
+    // The report is for the user, not the server: the browser downloads it.
+    const name = reviewFileName(period, extension);
+    download(name, contents, extension === "csv" ? "text/csv" : "text/markdown");
+    setNotice(`Downloaded ${name}`);
   }
 
   return (
@@ -286,7 +262,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           </Button>
         )}
         <div className="ml-auto">
-          <ExportMenu disabled={!review.data || saveReport.isPending}>
+          <ExportMenu disabled={!review.data}>
             {(close) => (
               <>
                 <MenuItem

@@ -13,7 +13,7 @@ function parentOf(path: string): string {
 }
 
 type RemoteFolderBrowserProps = {
-  /** An SSH machine, or `local` for the server in the web build. */
+  /** An SSH machine, or `local` for the server. */
   machine: Machine;
   /** Directory to start in; the home directory when empty. */
   initialPath: string;

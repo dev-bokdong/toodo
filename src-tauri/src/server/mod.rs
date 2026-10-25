@@ -1,7 +1,7 @@
 //! The headless server (`toodo-server`) for a Linux machine that runs herdr itself: the
-//! commands of the desktop app over HTTP for the web build of the frontend, the events the
-//! desktop app emits as a server-sent event stream, and the MCP server for agents, all on
-//! one port. Workspaces on "Local" are on the server, with POSIX paths.
+//! commands over HTTP for the web app (the PWA), its events as a server-sent event
+//! stream, and the MCP server for agents, all on one port. Workspaces on "Local" are on
+//! the server, with POSIX paths.
 //!
 //! - `POST /api/rpc/<command>` runs a command (see [`rpc`]).
 //! - `GET /api/events` streams `tasks-changed`, `agent-statuses-changed`, and
@@ -13,7 +13,7 @@
 //! - `POST /api/stream-tickets` and `GET /api/panes/stream` mirror a pane of a task's herdr
 //!   workspace over a WebSocket (see [`panes`]); the stream takes a ticket instead of the
 //!   token.
-//! - `/mcp` is the MCP endpoint, as in the desktop app.
+//! - `/mcp` is the MCP endpoint.
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
 //! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
@@ -65,11 +65,9 @@ const DATABASE_FILE: &str = "toodo.sqlite3";
 
 const WEB_TOKEN_FILE: &str = "web-token";
 
-/// The default port, next to the desktop app's MCP port ([`mcp::PORT`]) rather than on it:
-/// the desktop app forwards that port to its SSH machines, which may include this server,
-/// and the server forwards its own port to its SSH machines the same way, so the two must
-/// differ to share a machine.
-pub const DEFAULT_PORT: u16 = mcp::PORT + 1;
+/// The default port. The server forwards it to its SSH machines too, so agents there reach
+/// the MCP endpoint on the same port.
+pub const DEFAULT_PORT: u16 = 47616;
 
 /// Events kept for subscribers that read slower than they arrive; a subscriber that falls
 /// further behind skips the oldest.
@@ -85,7 +83,7 @@ Environment:
   TOODO_LISTEN    address to listen on (default 127.0.0.1:47616)
   TOODO_DATA_DIR  database, backups, and access tokens
                   (default $XDG_DATA_HOME/toodo-server or ~/.local/share/toodo-server)
-  TOODO_WEB_DIR   web build of the frontend (`npm run build:web` writes dist-web);
+  TOODO_WEB_DIR   web build of the frontend (`npm run build` writes dist-web);
                   without it only the API and MCP are served
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
@@ -481,14 +479,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_port_is_not_the_desktop_apps_mcp_port() {
+    fn the_default_config_listens_on_loopback_and_keeps_data_in_home() {
         let config =
             Config::from_env(|name| (name == "HOME").then(|| "/home/me".to_owned())).unwrap();
         assert_eq!(
             config.listen,
             SocketAddr::from((Ipv4Addr::LOCALHOST, 47616))
         );
-        assert_ne!(config.listen.port(), mcp::PORT);
         assert_eq!(
             config.data_dir,
             PathBuf::from("/home/me/.local/share/toodo-server")

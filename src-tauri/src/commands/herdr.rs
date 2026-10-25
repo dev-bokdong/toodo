@@ -17,8 +17,7 @@ use crate::domain::naming;
 use crate::domain::status::TaskStatus;
 use crate::storage::{CriterionCheck, StorageError};
 
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> {
     Ok((&herdr.server_status()?).into())
 }
@@ -29,8 +28,7 @@ pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> 
 /// base branch. A new task branch starts from the freshly fetched `origin/<base>` without an
 /// upstream; without `origin`, or when the fetch fails (noted on the task), from the local
 /// base. A paused task resumes on its branch, in its worktree if it still has one.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn start_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -43,8 +41,7 @@ pub fn start_task(
 /// Makes sure herdr has the workspace of a started task open without focusing it, opening
 /// the task's worktree again when herdr no longer has it, and lists the workspace's panes
 /// for the pane view.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn ensure_task_workspace(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -54,8 +51,7 @@ pub fn ensure_task_workspace(
     Ok(found.panes.iter().map(TaskPane::from).collect())
 }
 
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn open_task_in_herdr(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -67,8 +63,7 @@ pub fn open_task_in_herdr(
 /// Focuses the pane of the agent working on a started task, the one that needs the user
 /// most when its herdr workspace has several. Without a recognized agent it focuses the
 /// workspace like [`open_task_in_herdr`].
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn focus_agent_pane(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -80,8 +75,7 @@ pub fn focus_agent_pane(
 /// Closes the herdr workspace of a paused task, e.g. one that an agent paused through
 /// MCP by adding a prerequisite, which leaves the workspace open for the user to decide.
 /// The worktree is kept. Tasks that are worked on are rejected.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn close_task_workspace(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -93,8 +87,7 @@ pub fn close_task_workspace(
 /// Checks out the branch of an `in_progress` or `in_review` task that lost its worktree,
 /// e.g. because it was removed in herdr, into a new worktree opened in herdr. The branch
 /// is taken from `origin` when the repository no longer has it.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn restore_task_worktree(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -1244,10 +1237,6 @@ mod tests {
                     .map(|arg| arg.replace(self.placeholder, &self.dir))
                     .collect(),
             })
-        }
-
-        fn run_in_terminal(&self, _: &Invocation) -> Result<(), GitError> {
-            unreachable!("start never opens a terminal")
         }
     }
 

@@ -1,5 +1,5 @@
 /**
- * The `toodo-server` the app talks to: the one that serves the web build, reached with
+ * The `toodo-server` the app talks to: the one that serves the app, reached with
  * relative URLs.
  */
 

@@ -1,5 +1,5 @@
 /**
- * Database files of `toodo-server` for the web build: the browser downloads snapshots and
+ * Database files of `toodo-server`: the browser downloads snapshots and
  * backups and uploads a database to restore over `/api/backups`, since it cannot reach
  * paths on the server.
  */
