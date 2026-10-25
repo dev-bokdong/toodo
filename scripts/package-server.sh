@@ -20,7 +20,7 @@ out_dir=$3
 [ -f "$web_dir/index.html" ] || { echo "error: $web_dir has no index.html; run npm run build:web" >&2; exit 1; }
 [ -f "$web_dir/sw.js" ] || { echo "error: $web_dir is not a web build (no sw.js); run npm run build:web" >&2; exit 1; }
 version_line=$("$binary" --version)
-if ! [[ $version_line =~ ^toodo-server\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+if ! [[ $version_line =~ ^toodo-server\ ([0-9]+\.[0-9]+\.[0-9]+)(\ \(commit\ [0-9a-f]+\))?$ ]]; then
   echo "error: unexpected '$binary --version' output: $version_line" >&2
   exit 1
 fi
