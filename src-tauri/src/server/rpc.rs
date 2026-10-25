@@ -330,7 +330,12 @@ mod tests {
     /// Commands of the bindings that only the desktop app runs, because they read or write
     /// a path on the client's machine: the web app downloads reports in the browser and
     /// moves database files over `/api/backups` instead.
-    const DESKTOP_ONLY: &[&str] = &["export_database", "restore_database", "save_report"];
+    const DESKTOP_ONLY: &[&str] = &[
+        "export_database",
+        "restore_database",
+        "save_report",
+        "set_connection",
+    ];
 
     /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.
     fn bound_commands() -> BTreeSet<String> {

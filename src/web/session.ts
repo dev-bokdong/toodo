@@ -1,12 +1,13 @@
 /**
- * The access token of `toodo-server`, kept in local storage: this browser's device token,
- * or the shared web token when this browser signed in before devices existed. Every API
+ * The access token of `toodo-server`, kept in local storage for each server: this browser's
+ * device token, or the shared web token when this browser signed in before devices existed. Every API
  * request bears it; a request the server rejects forgets it, so the app asks for it again.
  */
 import type { CommandError } from "@/lib/bindings";
 import { serverFetch } from "@/web/connection";
+import { activeServer } from "@/web/server";
 
-const STORAGE_KEY = "toodo-server-token";
+const STORAGE_KEY = activeServer.key("toodo-server-token");
 
 const listeners = new Set<() => void>();
 

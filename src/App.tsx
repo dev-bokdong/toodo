@@ -14,7 +14,7 @@ import { UpdateBanner } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
-import { runsOnServer } from "@/lib/platform";
+import { builtForWeb, runsOnServer } from "@/lib/platform";
 import { useHerdrEvents, useLead, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
@@ -204,7 +204,7 @@ export default function App() {
           <span className="font-semibold tracking-tight">Toodo</span>
         </header>
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
-          {runsOnServer ? <InstallBanner /> : <UpdateBanner />}
+          {builtForWeb ? <InstallBanner /> : <UpdateBanner />}
           <HerdrBanner />
           {reviewing ? (
             <Review onShowTask={showTask} />

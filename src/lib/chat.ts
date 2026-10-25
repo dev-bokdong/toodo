@@ -4,8 +4,10 @@
  */
 import { useSyncExternalStore } from "react";
 import type { ChatMessage } from "@/lib/bindings";
+import { activeServer } from "@/web/server";
 
-const READ_KEY = "toodo-chat-read";
+/** Kept for each server, whose messages it counts. */
+const READ_KEY = activeServer.key("toodo-chat-read");
 const listeners = new Set<() => void>();
 
 function readUpTo(): number {

@@ -491,6 +491,30 @@ Things to know:
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
 
+### The Desktop App as a Client
+
+The desktop app can show a server's data instead of its own, as one more client of the
+server next to the browsers. Under **General** in Settings, enter the server's address
+(for example `http://192.168.0.5:47616`) and choose **Connect**; the app restarts, asks for
+`web-token` and a name once, and then keeps a device token of its own, like a browser.
+**Use this computer's data** switches back; the local data is untouched meanwhile.
+
+- Connected, the app starts no database, MCP server, SSH tunnels, or background checks
+  of its own: the server does all of that. It keeps its window, tray, updates, and
+  notifications. The choice is `connection.json` in the app data directory.
+- The app keeps its token and the lead chat's read mark per server address, so switching
+  between servers signs in to each once and keeps them apart.
+- The app's pages are its own, so it calls the server across origins. The server answers
+  CORS requests from the app's origins only (`http://tauri.localhost` and
+  `https://tauri.localhost` on Windows and Android, `tauri://localhost` on macOS and
+  Linux); the token, not a cookie, authorizes each request.
+- The app must reach the server itself: on the same network, through an SSH tunnel
+  (`ssh -L 47616:127.0.0.1:47616 server` and `http://127.0.0.1:47616`), or a VPN. A
+  hostname behind Cloudflare Access does not work yet: Access answers the app's requests
+  with its login page, which only a browser can follow. On macOS, use an `https` address,
+  since its WebView may block plain `http` requests from the app's pages.
+- Downloads of backups go through the WebView's own download handling.
+
 ## Development
 
 `npm run dev:web` starts the Vite dev server with the web build's modules and forwards

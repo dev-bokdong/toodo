@@ -271,6 +271,11 @@ export const commands = {
 	 *  message already stored under it is returned without storing or typing it again.
 	 */
 	sendChatMessage: (text: string, clientId: string) => typedError<ChatMessage, CommandError>(__TAURI_INVOKE("send_chat_message", { text, clientId })),
+	/**
+	 *  Sets which server the app uses from its next start: `server` (an `http` or `https`
+	 *  address) or, for `None`, the local data. Returns the server as it will be used.
+	 */
+	setConnection: (server: string | null) => typedError<string | null, CommandError>(__TAURI_INVOKE("set_connection", { server })),
 };
 
 /** Events */

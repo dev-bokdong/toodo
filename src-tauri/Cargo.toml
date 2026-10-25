@@ -72,7 +72,7 @@ tauri-plugin-updater = { version = "2", optional = true }
 tauri-plugin-process = { version = "2", optional = true }
 tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
-tower-http = { version = "0.6", features = ["fs"], optional = true }
+tower-http = { version = "0.6", features = ["cors", "fs"], optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
 sha2 = { version = "0.10", optional = true }
 # Web Push: message encryption and VAPID signing, and posting to push services.

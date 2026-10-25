@@ -1,6 +1,8 @@
 import { useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { ServerConnection } from "@/components/server-connection";
 import { inputClass } from "@/components/workspace-list";
+import { connectedServer } from "@/lib/platform";
 import { guessDeviceLabel, signIn, TokenRejected } from "@/web/devices";
 import { getToken, setToken, subscribeToken } from "@/web/session";
 
@@ -48,12 +50,13 @@ function TokenForm() {
   }
 
   return (
-    <main className="flex min-h-svh items-center justify-center p-6">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-4 p-6">
       <form onSubmit={submit} aria-label="Server access" className="flex w-full max-w-sm flex-col gap-3 rounded-lg border p-5">
         <h1 className="text-lg font-semibold">Toodo server</h1>
+        {connectedServer !== null && <p className="text-sm break-all">{connectedServer}</p>}
         <p className="text-sm text-muted-foreground">
-          Sign in with the server's access token. This browser then gets a token of its own, which you can revoke
-          under Devices.
+          Sign in with the server's access token. {connectedServer === null ? "This browser" : "This app"} then gets a
+          token of its own, which you can revoke under Devices.
         </p>
         <div className="flex flex-col gap-1">
           <label htmlFor={`${id}-token`} className="text-xs text-muted-foreground">
@@ -103,6 +106,11 @@ function TokenForm() {
           {checking ? "Checking..." : "Continue"}
         </Button>
       </form>
+      {connectedServer !== null && (
+        <div className="w-full max-w-sm rounded-lg border p-5">
+          <ServerConnection />
+        </div>
+      )}
     </main>
   );
 }
