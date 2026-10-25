@@ -2042,13 +2042,20 @@ mod tests {
             |caller| serde_json::to_value(server.read_toodo_skill(by(caller)).unwrap()).unwrap();
         let result = skill(lead::Caller::Agent);
         assert_eq!(result["content"][0]["text"], SKILL);
-        assert!(SKILL.starts_with("---\nname: toodo\n"));
+        // `lines` also drops the `\r` of a CRLF checkout on Windows.
+        assert_eq!(
+            SKILL.lines().take(2).collect::<Vec<_>>(),
+            ["---", "name: toodo"]
+        );
         assert_ne!(result["isError"], true);
     }
 
     #[test]
     fn the_lead_token_reads_the_lead_skill_and_the_agent_token_the_worker_skill() {
-        assert!(LEAD_SKILL.starts_with("---\nname: toodo-lead\n"));
+        assert_eq!(
+            LEAD_SKILL.lines().take(2).collect::<Vec<_>>(),
+            ["---", "name: toodo-lead"]
+        );
         let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
         let storage = crate::storage::Storage::open_in_memory().unwrap();
