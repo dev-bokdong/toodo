@@ -12,6 +12,7 @@ import { ServerSwitcher } from "@/components/server-switcher";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
+import { WakeWord } from "@/components/wake-word";
 import { WorkspaceList } from "@/components/workspace-list";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
@@ -19,6 +20,7 @@ import { builtForWeb, checksForUpdates, runsOnServer } from "@/lib/platform";
 import { useHerdrEvents, useLead, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
+import { wakeWordOffered } from "@/lib/wake-word";
 import { listenForOpenTask } from "@/web/push";
 
 export default function App() {
@@ -273,6 +275,7 @@ export default function App() {
           )}
         </main>
         {hasLead && lead.data && <FloatingChat lead={lead.data} />}
+        {wakeWordOffered && <WakeWord />}
       </div>
       <SettingsDialog
         open={settingsOpen}

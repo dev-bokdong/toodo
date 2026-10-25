@@ -436,6 +436,38 @@ describe("LeadChat voice", () => {
     expect(screen.getByRole("button", { name: "Voice input" })).toBeInTheDocument();
   });
 
+  it("takes a second dictated message while the first is sending, and retries a failed one under its client ID", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    let answer: (reply: Awaited<ReturnType<typeof commands.sendChatMessage>>) => void = () => {};
+    mocked.sendChatMessage
+      .mockReset()
+      .mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+      .mockResolvedValueOnce({ status: "ok", data: sent(4, "first") })
+      .mockResolvedValueOnce({ status: "ok", data: sent(5, "second") });
+    renderChat(running);
+    const dictate = (words: string) => {
+      fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+      act(() => FakeRecognition.last!.hear(words));
+      fireEvent.click(screen.getByRole("button", { name: "Stop voice input and send" }));
+    };
+
+    dictate("first");
+    await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledTimes(1));
+    dictate("second");
+    act(() => answer({ status: "error", error: { kind: "external", message: "offline" } }));
+    expect(await screen.findByText("Not sent: offline")).toBeInTheDocument();
+    expect(screen.getByText("second")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledTimes(3));
+    const [first, retried, second] = mocked.sendChatMessage.mock.calls;
+    expect(retried).toEqual(first);
+    expect(first[0]).toBe("first");
+    expect(second[0]).toBe("second");
+    expect(second[1]).not.toBe(first[1]);
+    await waitFor(() => expect(screen.queryByText("Not sent: offline")).not.toBeInTheDocument());
+  });
+
   it("opens the chat listening when a link into the app asks for voice input", async () => {
     vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
     requestChat({ voice: true });

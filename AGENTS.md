@@ -85,7 +85,8 @@ Layout:
     build has exactly one of them.
   - `src-tauri/src/desktop.rs`: Tauri builder, tauri-specta command registration, tray.
   - `src-tauri/src/dictation/`: native dictation of the macOS app (`AVAudioEngine` and
-    `SFSpeechRecognizer`); its commands reject on other platforms.
+    `SFSpeechRecognizer`) and its wake word (`wake/`, sherpa-onnx), sharing one microphone
+    owner (`capture.rs`); its commands reject on other platforms.
   - `src-tauri/src/connection.rs`: whether the desktop app uses its own data or one of the
     `toodo-server`s saved in it (`connection.json`); connected, it starts no local data or
     background work. Switching between servers is in `src/lib/servers.ts`.

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   commands,
@@ -107,19 +107,30 @@ export function useChatMessages(enabled: boolean) {
   });
 }
 
-export function useSendChatMessage() {
+/**
+ * Shows a message the server took at once, in place of the pending one, so it does not vanish
+ * or show twice until the refetch.
+ */
+export function useShowSentChatMessage() {
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ text, clientId }: { text: string; clientId: string }) =>
-      unwrap(commands.sendChatMessage(text, clientId)),
-    onSuccess: (sent) => {
-      // Shown at once, in place of the pending one, so it does not vanish or show twice
-      // until the refetch; not awaited, since the mutation stays pending until this returns.
+  return useCallback(
+    (sent: ChatMessage) => {
       queryClient.setQueryData<ChatMessage[]>(queryKeys.chatMessages, (list) =>
         list && !list.some((message) => message.id === sent.id) ? [...list, sent] : list,
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages });
     },
+    [queryClient],
+  );
+}
+
+export function useSendChatMessage() {
+  const showSent = useShowSentChatMessage();
+  return useMutation({
+    mutationFn: ({ text, clientId }: { text: string; clientId: string }) =>
+      unwrap(commands.sendChatMessage(text, clientId)),
+    // Not awaiting the refetch: the mutation would stay pending until it returns.
+    onSuccess: showSent,
   });
 }
 

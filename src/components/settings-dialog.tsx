@@ -9,6 +9,7 @@ import { ServerConnection } from "@/components/server-connection";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateCheck } from "@/components/update-banner";
+import { WakeWordSetting } from "@/components/wake-word";
 import { compactSelectClass } from "@/components/workspace-list";
 import { commands } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
@@ -23,6 +24,7 @@ import {
   useReadAloud,
   useSpeechLanguage,
 } from "@/lib/voice";
+import { wakeWordOffered } from "@/lib/wake-word";
 
 export type SettingsSection = "general" | "agents" | "devices" | "notifications" | "backups";
 
@@ -101,6 +103,7 @@ function VoiceSettings() {
       ) : (
         <p className="text-muted-foreground">This browser cannot read replies aloud.</p>
       )}
+      {wakeWordOffered && <WakeWordSetting />}
       <p className="text-xs text-muted-foreground">
         {nativeDictation
           ? "Voice input uses this Mac's speech recognition, which asks for the microphone and speech recognition the first time; reading aloud uses its voices."

@@ -4,8 +4,9 @@ Saying the wake word "도리야" (do-ri-ya) and then a sentence should send that
 lead chat without touching the computer. This document is part A of that work: it picks a
 Korean wake word engine by measurement, proves that a sentence said in one breath right
 after the wake word reaches the recognizer whole, and fixes the engine/audio contract the
-platform integrations build on (the macOS app, then Windows and Android). It ships no app
-code; the prototype in `scripts/wake-word/` is a measuring harness.
+platform integrations build on (the macOS app, then Windows and Android). The prototype in
+`scripts/wake-word/` is a measuring harness; the macOS app's integration (part B) is
+described in [The macOS App](#the-macos-app) below.
 
 ## Choice
 
@@ -224,6 +225,74 @@ Engine:
    `Windows.Media.SpeechRecognition`. Measure any such replacement with `handoff.py` first.
 10. A listening cue (a sound and the indicator) starts within 100 ms of `detected_at` and
     stops when the result is final.
+
+## The macOS App
+
+The macOS app (see [docs/macos.md](macos.md#wake-word) for how it is used) runs the chosen
+detector natively, in `src-tauri/src/dictation/wake/`:
+
+- `rule.rs` and `detector.rs` are the Rust port of `wake.py`'s rule and "continue" capture:
+  the same three-syllable rule, gap before the wake word, quiet and timeout endings, and
+  the sentence taken from the same stream. `engine.rs` sets up sherpa-onnx (the `sherpa-onnx`
+  crate, linked statically) exactly as `wake.py` does; the hotword is passed in memory.
+- `model.rs` downloads the model files on first use, pinned to one revision of the
+  upstream repository and checked against their SHA-256 (see Licenses), and writes
+  `bpe.vocab` from `bpe.model` itself, so no Python step is needed on the Mac.
+- `macos.rs` is the worker thread; `src-tauri/src/dictation/capture.rs` is the one owner of
+  the microphone (contract item 1), shared with dictation by the microphone button, which
+  holds the wake word while it runs.
+
+Where it differs from the contract above:
+
+- **No ring buffer** (items 3 and 9). The sentence comes from the detector's own stream, so
+  nothing reads past audio; a ring is only needed by a platform recognizer replacing the
+  sentence step, which the macOS app does not use.
+- **Reopening** (item 5): the app does not watch for device notifications; when no audio has
+  come for 3 s it opens the default input device again (every 5 s until it works), which
+  covers sleep, a changed device, and a permission given back. Indices restart at zero with
+  each opening.
+
+The Rust port was checked against the prototype on the Linux server: both ran over 210
+clips made with `gen_positives.py` and `gen_nearmiss.py` (a fresh synthesis of the same
+set, so the numbers differ slightly from the tables above).
+
+| Measure | Rust port |
+| --- | --- |
+| Same wake word decision as the prototype | 209 of 210 clips |
+| Same message as the prototype (ignoring spaces and punctuation) | 206 of 210 clips |
+| Miss rate | 9.3% (14 of 150) |
+| Wake word end to detection, p50 / p95 | 0.51 / 0.71 s |
+| Wake word alone sent | 0 of 10 |
+| A sentence sent twice | 0 |
+| CPU (N150, one thread), peak RSS | 15.8% of one core, 234 MB (the prototype: 16.6%, 266 MB) |
+
+The messages that differ are single-syllable decoding differences ("yoyak" against
+"yoryak"), from the Rust run feeding seven seconds of silence after each clip so that the
+quiet ending fires. Near misses behave as in the prototype: the rhyming names at the start
+of a sentence still wake it.
+
+### Testing on a Mac
+
+The measurements above ran without a Mac or a microphone. The gate still has to be met with
+a real voice on an Apple Silicon Mac:
+
+1. Install the app from the `macOS` workflow's artifact of the change (see
+   [docs/macos.md](macos.md#getting-the-app)), connect it to a server, and turn on the wake
+   word in Settings > General. Wait for the status line to read "Listening".
+2. Hands-free path: with the window open, then closed to the menu bar, say the wake word
+   and a sentence in one breath, then the wake word alone, then a sentence without it.
+   Exactly one message must reach the lead chat, the first one, without its wake word.
+3. Edges: Esc while the indicator shows; a reply read aloud (turn on reading aloud) that
+   contains the wake word; the microphone button while listening; unplugging or switching
+   the input device; sleep and wake; turning the microphone off and on again for Toodo in
+   Privacy & Security. Each must leave the wake word listening again afterwards.
+4. Gate: record at least 30 wake word utterances (run-on sentences included) at a desk and
+   across the room, and an hour of ordinary conversation and video audio, with QuickTime
+   (the app keeps no recording of what it hears); convert them to 16 kHz mono WAV and run
+   `bench.py` and `handoff.py` on them as in Reproducing. Miss at most 10%, at most one false
+   accept per hour, p95 latency at most 1 s, no clipped or duplicated message.
+5. Cost: Activity Monitor's "% CPU" and "Memory" for Toodo while it listens, idle and
+   while speaking, over a few minutes each, and whether the Mac warms up over an hour.
 
 ## Licenses
 

@@ -1,9 +1,8 @@
-//! Dictation with `AVAudioEngine` and `SFSpeechRecognizer`. The engine and the recognition
-//! task live on the main thread; the system calls the permission, audio tap, and result
-//! blocks on queues of its own, which only report through events.
+//! Dictation with `SFSpeechRecognizer` on the microphone of [`capture`], which it shares
+//! with the wake word. The recognition task lives on the main thread; the system calls the
+//! permission and result blocks on queues of its own, which only report through events.
 
 use std::cell::RefCell;
-use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -12,7 +11,6 @@ use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-use objc2_avf_audio::{AVAudioEngine, AVAudioPCMBuffer, AVAudioTime};
 use objc2_foundation::{NSError, NSLocale, NSString};
 use objc2_speech::{
     SFSpeechAudioBufferRecognitionRequest, SFSpeechRecognitionResult, SFSpeechRecognitionTask,
@@ -21,6 +19,7 @@ use objc2_speech::{
 use tauri::AppHandle;
 use tauri_specta::Event;
 
+use super::capture::{self, StartError};
 use super::{DictationChanged, DictationError, DictationErrorKind};
 
 /// The session whose events still count; 0 when none. Whoever swaps a session out of here
@@ -33,7 +32,6 @@ const NO_SPEECH_CODE: isize = 1110;
 
 struct Session {
     id: u32,
-    engine: Retained<AVAudioEngine>,
     request: Retained<SFSpeechAudioBufferRecognitionRequest>,
     task: Retained<SFSpeechRecognitionTask>,
     _recognizer: Retained<SFSpeechRecognizer>,
@@ -61,13 +59,9 @@ pub fn stop(app: &AppHandle, id: u32) -> tauri::Result<()> {
     app.run_on_main_thread(move || {
         let listening = SESSION.with_borrow(|session| match session {
             Some(session) if session.id == id => {
-                // SAFETY: the engine and request are used on the main thread they were
-                // made on; the tap is the one `listen` installed on bus 0.
-                unsafe {
-                    session.engine.stop();
-                    session.engine.inputNode().removeTapOnBus(0);
-                    session.request.endAudio();
-                }
+                capture::detach_dictation();
+                // SAFETY: the request is used on the main thread it was made on.
+                unsafe { session.request.endAudio() };
                 true
             }
             _ => false,
@@ -133,13 +127,10 @@ fn release(id: Option<u32>) {
         }
     });
     if let Some(session) = session {
-        // SAFETY: on the main thread, as `listen` made them; removing a tap that is gone
-        // already and cancelling a finished task do nothing.
-        unsafe {
-            session.engine.stop();
-            session.engine.inputNode().removeTapOnBus(0);
-            session.task.cancel();
-        }
+        capture::detach_dictation();
+        // SAFETY: on the main thread, as `listen` made it; cancelling a finished task does
+        // nothing.
+        unsafe { session.task.cancel() };
     }
 }
 
@@ -251,8 +242,7 @@ fn listen(app: &AppHandle, id: u32, language: &str) -> Result<Session, Dictation
                 kind: DictationErrorKind::LanguageNotSupported,
                 message: format!("Speech recognition does not support {language} on this Mac."),
             })?;
-    // SAFETY: the methods below are called on the main thread with valid arguments; the
-    // tap block appends buffers, which a buffer request accepts from any thread.
+    // SAFETY: the methods below are called on the main thread with valid arguments.
     unsafe {
         if !recognizer.isAvailable() {
             return Err(failed(
@@ -262,35 +252,13 @@ fn listen(app: &AppHandle, id: u32, language: &str) -> Result<Session, Dictation
         let request = SFSpeechAudioBufferRecognitionRequest::new();
         request.setShouldReportPartialResults(true);
 
-        let engine = AVAudioEngine::new();
-        let input = engine.inputNode();
-        let format = input.outputFormatForBus(0);
-        if format.channelCount() == 0 || format.sampleRate() <= 0.0 {
-            return Err(DictationError {
-                kind: DictationErrorKind::NoMicrophone,
-                message: "No microphone was found.".to_owned(),
-            });
-        }
-        let tap_request = request.clone();
-        let tap = RcBlock::new(
-            move |buffer: NonNull<AVAudioPCMBuffer>, _when: NonNull<AVAudioTime>| {
-                tap_request.appendAudioPCMBuffer(buffer.as_ref());
+        capture::attach_dictation(request.clone()).map_err(|(error, message)| DictationError {
+            kind: match error {
+                StartError::NoMicrophone => DictationErrorKind::NoMicrophone,
+                StartError::DidNotStart => DictationErrorKind::Failed,
             },
-        );
-        input.installTapOnBus_bufferSize_format_block(
-            0,
-            1024,
-            Some(&format),
-            RcBlock::as_ptr(&tap),
-        );
-        engine.prepare();
-        if let Err(error) = engine.startAndReturnError() {
-            input.removeTapOnBus(0);
-            return Err(failed(format!(
-                "The microphone did not start: {}",
-                error.localizedDescription()
-            )));
-        }
+            message,
+        })?;
 
         let heard = Arc::new(Mutex::new(String::new()));
         let app = app.clone();
@@ -331,7 +299,6 @@ fn listen(app: &AppHandle, id: u32, language: &str) -> Result<Session, Dictation
         let task = recognizer.recognitionTaskWithRequest_resultHandler(&request, &report);
         Ok(Session {
             id,
-            engine,
             request,
             task,
             _recognizer: recognizer,

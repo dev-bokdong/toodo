@@ -314,6 +314,19 @@ export const commands = {
 	 *  was denied.
 	 */
 	openPrivacySettings: (pane: PrivacyPane) => typedError<null, CommandError>(__TAURI_INVOKE("open_privacy_settings", { pane })),
+	getWakeWord: () => typedError<WakeWordChanged, CommandError>(__TAURI_INVOKE("get_wake_word")),
+	/**
+	 *  Turns the wake word on or off and keeps the setting. Turning it on downloads the
+	 *  recognizer the first time and asks for the microphone if the user has not answered yet.
+	 */
+	setWakeWord: (enabled: boolean) => typedError<WakeWordChanged, CommandError>(__TAURI_INVOKE("set_wake_word", { enabled })),
+	/**  Drops the sentence being heard after the wake word, and listens again. */
+	cancelWakeWord: () => typedError<null, CommandError>(__TAURI_INVOKE("cancel_wake_word")),
+	/**
+	 *  Tells the detector whether the app is reading a reply aloud, so its own voice cannot
+	 *  wake it: detection holds while it speaks and for a moment after.
+	 */
+	setWakeWordSpeaking: (speaking: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("set_wake_word_speaking", { speaking })),
 };
 
 /** Events */
@@ -326,6 +339,8 @@ export const events = {
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	updateCheckRequested: makeEvent<UpdateCheckRequested>("update-check-requested"),
 	voiceMessageRequested: makeEvent<VoiceMessageRequested>("voice-message-requested"),
+	wakeWordChanged: makeEvent<WakeWordChanged>("wake-word-changed"),
+	wakeWordHeard: makeEvent<WakeWordHeard>("wake-word-heard"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
 };
 
@@ -1040,6 +1055,47 @@ export type UpdateCheckRequested = null;
  *  dictates a message, which it sends once the speaker stops.
  */
 export type VoiceMessageRequested = null;
+
+/**  Where the wake word stands, sent whenever it changes. */
+export type WakeWordChanged = {
+	/**  The setting: whether the app listens for the wake word while it runs. */
+	enabled: boolean,
+	status: WakeWordStatus,
+};
+
+export type WakeWordError = {
+	kind: WakeWordErrorKind,
+	message: string,
+};
+
+export type WakeWordErrorKind = 
+/**
+ *  The microphone is turned off for the app in the system's privacy settings; listening
+ *  starts again by itself once it is allowed.
+ */
+"microphoneNotAllowed" | 
+/**  No microphone, or it stopped; the app keeps trying to open the default one. */
+"noMicrophone" | "download" | "failed";
+
+/**
+ *  A sentence said after the wake word, for the lead chat. Each is sent once: the frontend
+ *  gives it one client ID, kept across retries.
+ */
+export type WakeWordHeard = {
+	/**  Counts the sentences heard since the app started. */
+	id: number,
+	message: string,
+};
+
+export type WakeWordStatus = { state: "off" } | 
+/**  The recognizer is being downloaded, the first time the wake word is turned on. */
+{ state: "downloading"; doneBytes: number | null; totalBytes: number | null } | 
+/**  The recognizer loads and the microphone opens. */
+{ state: "starting" } | { state: "listening" } | 
+/**  Not listening while the app reads a reply aloud or a message is dictated. */
+{ state: "held" } | 
+/**  The wake word was heard; the sentence after it so far. */
+{ state: "hearing"; transcript: string } | { state: "failed"; error: WakeWordError };
 
 export type Workspace = {
 	id: WorkspaceId,
