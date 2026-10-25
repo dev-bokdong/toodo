@@ -311,8 +311,8 @@ export const commands = {
 	/**  Stops listening and ends the session at once, without its text. */
 	cancelDictation: (session: number) => typedError<null, CommandError>(__TAURI_INVOKE("cancel_dictation", { session })),
 	/**
-	 *  Opens the system's privacy settings at `pane`, where the user can allow what dictation
-	 *  was denied.
+	 *  Opens the system's privacy settings at `pane`, where the user can allow what dictation or
+	 *  the wake word was denied.
 	 */
 	openPrivacySettings: (pane: PrivacyPane) => typedError<null, CommandError>(__TAURI_INVOKE("open_privacy_settings", { pane })),
 	getWakeWord: () => typedError<WakeWordChanged, CommandError>(__TAURI_INVOKE("get_wake_word")),
@@ -328,6 +328,12 @@ export const commands = {
 	 *  wake it: detection holds while it speaks and for a moment after.
 	 */
 	setWakeWordSpeaking: (speaking: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("set_wake_word_speaking", { speaking })),
+	/**
+	 *  Tells the detector whether a message is dictated in the lead chat by the WebView's speech
+	 *  recognition (the Windows app's), so the dictated words cannot also wake it: detection
+	 *  holds while it listens.
+	 */
+	setWakeWordDictating: (dictating: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("set_wake_word_dictating", { dictating })),
 };
 
 /** Events */
@@ -1081,8 +1087,8 @@ export type WakeWordError = {
 
 export type WakeWordErrorKind = 
 /**
- *  The microphone is turned off for the app in the system's privacy settings; listening
- *  starts again by itself once it is allowed.
+ *  The microphone is turned off for the app (on Windows, for desktop apps) in the
+ *  system's privacy settings; listening starts again by itself once it is allowed.
  */
 "microphoneNotAllowed" | 
 /**  No microphone, or it stopped; the app keeps trying to open the default one. */

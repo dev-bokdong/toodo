@@ -1,16 +1,16 @@
 /**
- * The wake word of the macOS app (`src-tauri/src/dictation/wake/`): the app listens for
+ * The wake word of the macOS and Windows apps (`src-tauri/src/dictation/wake/`): the app listens for
  * "Dori-ya" itself, also while its window is hidden, and reports what it hears. This keeps
  * its state for the settings and the listening indicator, and hands each sentence heard to
  * the voice outbox, which sends it to the lead chat.
  */
 import { useSyncExternalStore } from "react";
 import { commands, events, type WakeWordChanged } from "@/lib/bindings";
-import { connectedServer, nativeDictation } from "@/lib/platform";
+import { connectedServer, nativeWakeWord } from "@/lib/platform";
 import { sendVoiceMessage } from "@/lib/voice-outbox";
 
-/** Whether this app offers the wake word: the macOS app connected to a server with a lead. */
-export const wakeWordOffered = nativeDictation && connectedServer !== null;
+/** Whether this app offers the wake word: the macOS or Windows app connected to a server with a lead. */
+export const wakeWordOffered = nativeWakeWord && connectedServer !== null;
 
 let state: WakeWordChanged = { enabled: false, status: { state: "off" } };
 let started = false;
@@ -63,4 +63,9 @@ export function cancelWakeWord() {
 /** Tells the app whether a reply is read aloud, so the lead's own voice cannot wake it. */
 export function setWakeWordSpeaking(speaking: boolean) {
   void commands.setWakeWordSpeaking(speaking);
+}
+
+/** Tells the app whether a message is dictated in the chat, so the dictated words cannot wake it. */
+export function setWakeWordDictating(dictating: boolean) {
+  void commands.setWakeWordDictating(dictating);
 }

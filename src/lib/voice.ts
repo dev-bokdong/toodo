@@ -118,6 +118,25 @@ const recognitionErrors: Record<string, string> = {
  */
 export const QUIET_MS = 2000;
 
+// Dictations listening now, in any component: the app's wake word holds while one does.
+let dictating = 0;
+const dictatingListeners = new Set<() => void>();
+
+function changeDictating(by: number) {
+  dictating += by;
+  dictatingListeners.forEach((listener) => listener());
+}
+
+function subscribeDictating(listener: () => void): () => void {
+  dictatingListeners.add(listener);
+  return () => dictatingListeners.delete(listener);
+}
+
+/** Whether a message is being dictated anywhere in the window. */
+export function useDictating(): boolean {
+  return useSyncExternalStore(subscribeDictating, () => dictating > 0);
+}
+
 export type Dictation = {
   supported: boolean;
   listening: boolean;
@@ -148,6 +167,12 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
   callbacks.current = { onTranscript, onDone };
 
   useEffect(() => () => recognition.current?.abort(), []);
+
+  useEffect(() => {
+    if (!listening) return;
+    changeDictating(1);
+    return () => changeDictating(-1);
+  }, [listening]);
 
   const start = useCallback(() => {
     const Constructor = recognitionConstructor();

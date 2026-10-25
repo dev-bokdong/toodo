@@ -137,11 +137,20 @@ pub fn cancel_dictation(app: tauri::AppHandle, session: u32) -> CommandResult<()
     }
 }
 
-/// Opens the system's privacy settings at `pane`, where the user can allow what dictation
-/// was denied.
+/// Opens the system's privacy settings at `pane`, where the user can allow what dictation or
+/// the wake word was denied.
 #[tauri::command]
 #[specta::specta]
 pub fn open_privacy_settings(pane: PrivacyPane) -> CommandResult<()> {
+    #[cfg(windows)]
+    {
+        let url = match pane {
+            PrivacyPane::Microphone => "ms-settings:privacy-microphone",
+            PrivacyPane::SpeechRecognition => "ms-settings:privacy-speech",
+        };
+        tauri_plugin_opener::open_url(url, None::<&str>)
+            .map_err(|error| CommandError::external(format!("cannot open {url}: {error}")))
+    }
     #[cfg(target_os = "macos")]
     {
         let anchor = match pane {
@@ -163,7 +172,7 @@ pub fn open_privacy_settings(pane: PrivacyPane) -> CommandResult<()> {
                 }
             })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = pane;
         Err(unsupported())
