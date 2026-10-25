@@ -1,7 +1,8 @@
 /**
- * The chat with the server's lead, Dori: messages typed into the lead's herdr pane, and the
- * replies it posts back. Every open client shows the same history, live, with how far each
- * of the person's messages got. It floats over every view, behind a round Dori button.
+ * The chat with the server's lead: messages for the lead's inbox, and the replies it posts
+ * back. Every open client shows the same history, live, with how far each of the person's
+ * messages got. It floats over every view, behind a round button with the lead's picture.
+ * The lead's name and picture come from the server's configuration.
  */
 import {
   lazy,
@@ -17,6 +18,7 @@ import {
   type Ref,
 } from "react";
 import {
+  Bot,
   Check,
   CheckCheck,
   CircleCheck,
@@ -32,10 +34,9 @@ import {
   VolumeX,
   XIcon,
 } from "lucide-react";
-import doriAvatar from "@/assets/dori-avatar.webp";
 import { Button } from "@/components/ui/button";
 import { onChatRequest, takeChatRequest } from "@/lib/app-links";
-import { events, type ChatMessage, type LeadStatus } from "@/lib/bindings";
+import { events, type ChatMessage, type LeadProfile, type LeadStatus } from "@/lib/bindings";
 import {
   handledByText,
   markRead,
@@ -49,7 +50,12 @@ import {
 import { openPrivacySettings } from "@/lib/mac-dictation";
 import { openAppSettings } from "@/lib/native-speech";
 import { builtForWeb, mobileApp } from "@/lib/platform";
-import { useChatMessages, useSendChatMessage, useShowSentChatMessage } from "@/lib/queries";
+import {
+  defaultLeadProfile,
+  useChatMessages,
+  useSendChatMessage,
+  useShowSentChatMessage,
+} from "@/lib/queries";
 import { useSwipeClose } from "@/lib/swipe-close";
 import { formatFull } from "@/lib/timeline";
 import {
@@ -101,12 +107,28 @@ function leadState(lead: LeadStatus): { text: string; ready: boolean; accepts: b
   }
 }
 
+/** The lead's picture, or a generic icon when the server sets none. */
+function LeadAvatar({ profile, className }: { profile: LeadProfile; className: string }) {
+  if (profile.avatar !== null) {
+    return <img data-lead-avatar src={profile.avatar} alt="" className={cn("shrink-0 rounded-full object-cover", className)} />;
+  }
+  return (
+    <span
+      data-lead-avatar
+      aria-hidden
+      className={cn("flex shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary", className)}
+    >
+      <Bot className="size-[55%]" />
+    </span>
+  );
+}
+
 /**
- * The round Dori button at the bottom right, and the chat it opens: a panel over the view, or
- * a full-screen sheet on a phone. The panel stays mounted while closed, so an unsent message
- * and a message still sending survive closing it and moving between views.
+ * The round button with the lead's picture at the bottom right, and the chat it opens: a panel
+ * over the view, or a full-screen sheet on a phone. The panel stays mounted while closed, so an
+ * unsent message and a message still sending survive closing it and moving between views.
  */
-export function FloatingChat({ lead }: { lead: LeadStatus }) {
+export function FloatingChat({ lead, profile = defaultLeadProfile }: { lead: LeadStatus; profile?: LeadProfile }) {
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -167,9 +189,11 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
         onClick={() => setOpen(!open)}
         className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-20 size-14 rounded-full bg-card shadow-lg ring-1 ring-border outline-none transition-transform hover:scale-105 focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none motion-reduce:hover:scale-100 md:right-6 md:bottom-6"
       >
-        <img src={doriAvatar} alt="" className="size-full rounded-full" />
+        <LeadAvatar profile={profile} className="size-full" />
         <span className="sr-only">
-          {["Lead chat", lead.typing && "Dori is typing", unread > 0 && `${unread} unread`].filter(Boolean).join(", ")}
+          {["Lead chat", lead.typing && `${profile.name} is typing`, unread > 0 && `${unread} unread`]
+            .filter(Boolean)
+            .join(", ")}
         </span>
         <span
           data-chat-mark
@@ -219,7 +243,14 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
         <div className="flex shrink-0 touch-none justify-center pt-2 pb-1 md:hidden" {...drag.handlers}>
           <span data-grabber aria-hidden className="h-1 w-9 rounded-full bg-muted-foreground/40" />
         </div>
-        <LeadChat lead={lead} open={open} onClose={close} inputRef={input} voiceRequests={voiceRequests} />
+        <LeadChat
+          lead={lead}
+          profile={profile}
+          open={open}
+          onClose={close}
+          inputRef={input}
+          voiceRequests={voiceRequests}
+        />
       </div>
     </>
   );
@@ -243,12 +274,14 @@ function TypingDots({ className }: { className: string }) {
  */
 export function LeadChat({
   lead,
+  profile = defaultLeadProfile,
   open = true,
   onClose,
   inputRef,
   voiceRequests = 0,
 }: {
   lead: LeadStatus;
+  profile?: LeadProfile;
   open?: boolean;
   onClose?: () => void;
   inputRef?: Ref<HTMLTextAreaElement>;
@@ -343,10 +376,19 @@ export function LeadChat({
   return (
     <section aria-label="Chat with the lead" className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b px-4 py-2.5">
-        <img src={doriAvatar} alt="" className="size-9 shrink-0 rounded-full" />
+        <LeadAvatar profile={profile} className="size-9" />
         <div className="flex min-w-0 flex-col">
-          <h2 className="text-base font-semibold tracking-tight">Dori</h2>
-          <span role="status" aria-label="Lead status" className="truncate text-xs text-muted-foreground">
+          <h2 className="truncate text-base font-semibold tracking-tight">{profile.name}</h2>
+          <span
+            role="status"
+            aria-label="Lead status"
+            title={
+              lead.state === "external" && lead.lastContactAt !== null
+                ? `Last in touch ${formatFull(lead.lastContactAt)}`
+                : undefined
+            }
+            className="truncate text-xs text-muted-foreground"
+          >
             <span
               aria-hidden
               className={cn(
@@ -415,13 +457,12 @@ export function LeadChat({
             <MessagesSquare className="size-6" />
             No messages yet.
             <span className="text-xs">
-              Ask the lead to plan, start, or follow up on tasks. It reads your messages in its herdr pane and answers
-              here.
+              Ask the lead to plan, start, or follow up on tasks. It reads your messages and answers here.
             </span>
           </li>
         )}
         {list.map((message) => (
-          <Message key={message.id} message={message} />
+          <Message key={message.id} message={message} profile={profile} />
         ))}
         {send.isPending && send.variables && (
           <Message
@@ -438,13 +479,25 @@ export function LeadChat({
               handledBy: null,
               overdue: false,
             }}
+            profile={profile}
           />
         )}
         {outbox.map((item) => (
           <OutgoingMessage key={item.clientId} item={item} />
         ))}
-        {lead.typing && <TypingBubble />}
+        {lead.typing && <TypingBubble profile={profile} />}
       </ol>
+      {!state.ready && state.accepts && (
+        <p
+          data-composer-note
+          className="flex shrink-0 items-center gap-1.5 border-t bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground"
+        >
+          <Clock aria-hidden className="size-3.5 shrink-0" />
+          {lead.state === "external"
+            ? `${profile.name} is disconnected. Messages wait here until it connects.`
+            : `${profile.name} is not running yet. Messages wait here until it runs.`}
+        </p>
+      )}
       <form
         onSubmit={submit}
         aria-label="Message the lead"
@@ -465,9 +518,11 @@ export function LeadChat({
           rows={2}
           placeholder={
             state.ready
-              ? "Message Dori (Enter sends, Shift+Enter for a new line)"
+              ? `Message ${profile.name} (Enter sends, Shift+Enter for a new line)`
               : state.accepts
-                ? "Dori is not running yet; your message waits for it"
+                ? lead.state === "external"
+                  ? `${profile.name} is disconnected; your message waits for it`
+                  : `${profile.name} is not running yet; your message waits for it`
                 : "The lead is not running"
           }
           onChange={(event) => {
@@ -542,11 +597,11 @@ export function LeadChat({
   );
 }
 
-/** Three dots from Dori while the lead composes a reply; still when motion is reduced. */
-function TypingBubble() {
+/** Three dots from the lead while it composes a reply; still when motion is reduced. */
+function TypingBubble({ profile }: { profile: LeadProfile }) {
   return (
     <li data-typing aria-label="Reply is being written" className="flex max-w-[85%] items-start gap-2 self-start">
-      <img src={doriAvatar} alt="" className="size-8 shrink-0 rounded-full" />
+      <LeadAvatar profile={profile} className="size-8" />
       <div
         role="status"
         aria-label="Reply is being written"
@@ -607,7 +662,7 @@ function OutgoingMessage({ item }: { item: OutgoingVoice }) {
   );
 }
 
-function Message({ message }: { message: ChatMessage }) {
+function Message({ message, profile }: { message: ChatMessage; profile: LeadProfile }) {
   if (message.author === "system") {
     return (
       <li data-author="system" aria-label="Toodo" className="flex w-full flex-col items-center gap-1 self-center">
@@ -625,10 +680,10 @@ function Message({ message }: { message: ChatMessage }) {
   }
   if (message.author === "lead") {
     return (
-      <li data-author="lead" aria-label="Dori" className="flex max-w-[85%] items-start gap-2 self-start">
-        <img src={doriAvatar} alt="" className="size-8 shrink-0 rounded-full" />
+      <li data-author="lead" aria-label={profile.name} className="flex max-w-[85%] items-start gap-2 self-start">
+        <LeadAvatar profile={profile} className="size-8" />
         <div className="flex min-w-0 flex-col items-start gap-1">
-          <span className="text-xs font-medium">Dori</span>
+          <span className="text-xs font-medium">{profile.name}</span>
           <div className="max-w-full rounded-lg border bg-background px-3 py-2 text-sm break-words">
             <Suspense fallback={<p className="whitespace-pre-wrap">{message.body}</p>}>
               <Markdown source={message.body} />
@@ -664,6 +719,7 @@ function Message({ message }: { message: ChatMessage }) {
 
 const receipts: Record<Receipt, { text: string; seen: boolean }> = {
   sent: { text: "Sent", seen: false },
+  waiting: { text: "Waiting", seen: false },
   delivered: { text: "Delivered", seen: false },
   seen: { text: "Seen", seen: true },
   acked: { text: "Received", seen: true },
@@ -678,17 +734,20 @@ function ReceiptMark({ message }: { message: ChatMessage }) {
   const state = receipt(message);
   const at = {
     sent: null,
+    waiting: null,
     delivered: message.deliveredAt,
     seen: message.seenAt,
     acked: message.ackedAt,
     handled: message.handledAt,
   }[state];
   const text = state === "handled" ? handledByText(message) : receipts[state].text;
-  const Icon = state === "sent" ? Check : state === "handled" ? CircleCheckBig : CheckCheck;
+  const Icon = state === "sent" ? Check : state === "waiting" ? Clock : state === "handled" ? CircleCheckBig : CheckCheck;
   return (
     <span
       data-receipt={state}
-      title={at === null ? undefined : `${text} ${formatFull(at)}`}
+      title={
+        state === "waiting" ? "Stored; waits for the lead to take it" : at === null ? undefined : `${text} ${formatFull(at)}`
+      }
       className={cn("inline-flex items-center gap-0.5", receipts[state].seen && "text-sky-700 dark:text-sky-400")}
     >
       <Icon aria-hidden className="size-3.5" />

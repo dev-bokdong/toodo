@@ -7,6 +7,7 @@ import {
   type ChatMessage,
   type CommandError,
   type CriterionId,
+  type LeadProfile,
   type LeadStatus,
   type Machine,
   type MachineSettings,
@@ -78,6 +79,7 @@ export const queryKeys = {
     ["memory", workspace, includeSuperseded] as const,
   allMemory: ["memory"] as const,
   lead: ["lead"] as const,
+  leadProfile: ["lead-profile"] as const,
   chatMessages: ["chat-messages"] as const,
 };
 
@@ -96,6 +98,20 @@ export function useLead() {
     queryFn: () => commands.getLead(),
     enabled: runsOnServer,
   });
+}
+
+/** How the chat shows a lead whose server names none, or does not say. */
+export const defaultLeadProfile: LeadProfile = { name: "Lead", avatar: null };
+
+/** The lead's name and picture, set in the server's configuration. */
+export function useLeadProfile(): LeadProfile {
+  const profile = useQuery({
+    queryKey: queryKeys.leadProfile,
+    queryFn: () => commands.getLeadProfile(),
+    enabled: runsOnServer,
+    staleTime: Infinity,
+  });
+  return profile.data ?? defaultLeadProfile;
 }
 
 /** The chat with the lead; kept current by `useHerdrEvents`. */

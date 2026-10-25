@@ -1,6 +1,6 @@
 # Voice in the Lead Chat
 
-The web app's lead chat (Dori) takes spoken messages and can read the lead's replies aloud.
+The web app's lead chat takes spoken messages and can read the lead's replies aloud.
 Both are done by the browser:
 
 - **Voice input**: the microphone button next to Send starts the browser's speech
@@ -10,10 +10,10 @@ Both are done by the browser:
   recognition (Firefox) show no button; on a phone the keyboard's own dictation still works
   there.
 - **Reading aloud**: off by default. The speaker button in the chat header, or
-  Settings > General > "Read Dori's replies aloud", turns it on for this browser. New replies
+  Settings > General > "Read the lead's replies aloud", turns it on for this browser. New replies
   (not the history) are then read with the browser's speech synthesis, without Markdown
   markup, code blocks, or links, in pieces short enough to dodge Chrome's cut-off of long
-  utterances. "Stop reading aloud" shows in the chat header, and over the Dori button while
+  utterances. "Stop reading aloud" shows in the chat header, and over the chat button while
   the chat is closed.
 - Settings > General > "Speech language" (default: the browser's language) applies to both.
   It is kept per browser in local storage, as is the reading-aloud switch.

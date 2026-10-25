@@ -1,15 +1,17 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "./fixtures";
 
 test.use({ serverOptions: { lead: true } });
 
-test("the lead's messages come from Dori and each message shows how far it got, live", async ({ app, server }) => {
+test("the lead's messages come from the lead and each message shows how far it got, live", async ({ app, server }) => {
   const button = app.getByRole("button", { name: /^Lead chat/ });
   await button.click();
   const panel = app.getByRole("dialog", { name: "Lead chat" });
   const chat = panel.getByRole("region", { name: "Chat with the lead" });
-  await expect(chat.getByRole("heading", { name: "Dori" })).toBeVisible();
+  // No name or picture configured: "Lead" with a generic icon.
+  await expect(chat.getByRole("heading", { name: "Lead" })).toBeVisible();
   const input = chat.getByRole("textbox", { name: "Message to the lead" });
   await expect(input).toBeFocused();
   // The supervisor checks the fake lead every few seconds.
@@ -31,9 +33,9 @@ test("the lead's messages come from Dori and each message shows how far it got, 
   await expect(panel).toBeHidden();
   await expect(button).toBeFocused();
   writeFileSync(path.join(server.herdrDir, "agent-status"), "working");
-  await expect(button).toHaveAccessibleName(/Dori is typing/, { timeout: 15_000 });
+  await expect(button).toHaveAccessibleName(/Lead is typing/, { timeout: 15_000 });
 
-  // Opened again: the message was seen, and Dori's typing bubble shows until the reply is stored.
+  // Opened again: the message was seen, and the lead's typing bubble shows until the reply is stored.
   await button.click();
   await expect(mine("Plan the release").locator("[data-receipt]")).toHaveText("Seen");
   const typing = log.getByRole("listitem", { name: "Reply is being written" });
@@ -45,10 +47,10 @@ test("the lead's messages come from Dori and each message shows how far it got, 
   await expect(mine("Then tag it").locator("[data-receipt]")).toHaveText("Delivered");
   await server.mcp("reply_in_chat", { text: "On it." });
   await expect(typing).toHaveCount(0);
-  const reply = log.getByRole("listitem", { name: "Dori" });
+  const reply = log.getByRole("listitem", { name: "Lead" });
   await expect(reply).toContainText("On it.");
-  await expect(reply.locator("img")).toBeVisible();
-  await expect(reply.locator("img")).toHaveJSProperty("naturalWidth", 80);
+  await expect(reply.locator("[data-lead-avatar] svg")).toBeVisible();
+  await expect(reply.locator("img")).toHaveCount(0);
   await expect(mine("Then tag it").locator("[data-receipt]")).toHaveText("Seen");
 });
 
@@ -78,7 +80,7 @@ test("the chat floats over every view, keeps its draft, and counts replies while
   await server.mcp("reply_in_chat", { text: "Anything else?" });
   await expect(button).toHaveAccessibleName("Lead chat, 1 unread");
   await button.click();
-  await expect(panel.getByRole("listitem", { name: "Dori" })).toContainText("Anything else?");
+  await expect(panel.getByRole("listitem", { name: "Lead" })).toContainText("Anything else?");
   await expect(button).toHaveAccessibleName("Lead chat");
   await expect(input).toHaveValue("Half a thought");
 
@@ -88,4 +90,65 @@ test("the chat floats over every view, keeps its draft, and counts replies while
   await panel.getByRole("button", { name: "Close lead chat" }).click();
   await expect(panel).toBeHidden();
   await expect(button).toBeFocused();
+});
+
+/** A 1x1 PNG for `TOODO_LEAD_AVATAR`, written before the server of the tests below starts. */
+const avatarDir = mkdtempSync(path.join(tmpdir(), "toodo-e2e-avatar-"));
+const avatar = path.join(avatarDir, "lead.png");
+writeFileSync(
+  avatar,
+  Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"),
+);
+test.afterAll(() => rmSync(avatarDir, { recursive: true, force: true }));
+
+test.describe("with an outside lead", () => {
+  test.use({
+    serverOptions: { lead: "external", env: { TOODO_LEAD_NAME: "Planner", TOODO_LEAD_AVATAR: avatar } },
+  });
+
+  test("shows the configured lead, keeps messages while it is away, and its typing", async ({ app, server }) => {
+    const button = app.getByRole("button", { name: /^Lead chat/ });
+    await button.click();
+    const chat = app.getByRole("dialog", { name: "Lead chat" }).getByRole("region", { name: "Chat with the lead" });
+    await expect(chat.getByRole("heading", { name: "Planner" })).toBeVisible();
+    const picture = chat.locator("header img[data-lead-avatar]");
+    await expect(picture).toHaveAttribute("src", /^data:image\/png;base64,/);
+    await expect(picture).toHaveJSProperty("naturalWidth", 1);
+
+    // Out of touch: the header and the composer say so, and a message waits in the inbox.
+    const status = chat.getByRole("status", { name: "Lead status" });
+    await expect(status).toHaveText("Disconnected");
+    const note = chat.getByText("Planner is disconnected. Messages wait here until it connects.");
+    await expect(note).toBeVisible();
+    const input = chat.getByRole("textbox", { name: "Message to the lead" });
+    await expect(input).toHaveAttribute("placeholder", "Planner is disconnected; your message waits for it");
+    await input.fill("Plan the release");
+    await input.press("Enter");
+    const log = chat.getByRole("log", { name: "Messages" });
+    const mine = log.getByRole("listitem", { name: "You" }).filter({ hasText: "Plan the release" });
+    await expect(mine.locator("[data-receipt]")).toHaveText("Waiting");
+
+    // The outside lead gets in touch, then takes the message.
+    const peeked = await server.mcp<{ items: { id: string }[] }>("peek_pending", {}, "lead");
+    expect(peeked.items).toHaveLength(1);
+    await expect(status).toHaveText("Connected");
+    await expect(note).toBeHidden();
+    await expect(input).toHaveAttribute("placeholder", "Message Planner (Enter sends, Shift+Enter for a new line)");
+    await expect(mine.locator("[data-receipt]")).toHaveText("Waiting");
+    // Taking it marks it delivered and seen at once.
+    await server.mcp("take_pending", { ids: [peeked.items[0].id] }, "lead");
+    await expect(mine.locator("[data-receipt]")).toHaveText("Seen");
+
+    // Its typing reports drive the dots, on the closed button and in the open chat.
+    const typing = log.getByRole("listitem", { name: "Reply is being written" });
+    await server.mcp("set_typing", { typing: true }, "lead");
+    await expect(typing).toBeVisible();
+    await expect(typing.locator("img[data-lead-avatar]")).toBeVisible();
+    await input.press("Escape");
+    await expect(button).toHaveAccessibleName("Lead chat, Planner is typing");
+    await server.mcp("set_typing", { typing: false }, "lead");
+    await expect(button).toHaveAccessibleName("Lead chat");
+    await button.click();
+    await expect(typing).toHaveCount(0);
+  });
 });

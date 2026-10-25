@@ -30,6 +30,10 @@ server-sent event stream `GET /api/events` as a wake-up signal. Everything below
 - `lastContactAt`: when it last made a request (seconds since the Unix epoch);
 - `typing`: true while it reports that it composes a reply (see `set_typing`).
 
+The chat shows the outside lead as "Connected" or "Disconnected", under the name and
+picture set with `TOODO_LEAD_NAME` and `TOODO_LEAD_AVATAR` (see [`server.md`](server.md)).
+A person's message stays "Waiting" until the lead takes it, then shows "Seen".
+
 The chat accepts messages whether the outside lead is connected or not; they wait in the
 inbox until it reads them.
 

@@ -60,7 +60,7 @@ export function cancelWakeWord() {
   void commands.cancelWakeWord();
 }
 
-/** Tells the app whether a reply is read aloud, so Dori's own voice cannot wake it. */
+/** Tells the app whether a reply is read aloud, so the lead's own voice cannot wake it. */
 export function setWakeWordSpeaking(speaking: boolean) {
   void commands.setWakeWordSpeaking(speaking);
 }

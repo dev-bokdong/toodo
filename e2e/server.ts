@@ -16,8 +16,8 @@ export type ScratchServer = {
   webToken: string;
   /** Calls a command over the HTTP API, like the web app does. */
   rpc: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-  /** Calls an MCP tool, like a coding agent does. */
-  mcp: <T>(tool: string, args?: Record<string, unknown>) => Promise<T>;
+  /** Calls an MCP tool, like a coding agent does, or with `as: "lead"` the lead. */
+  mcp: <T>(tool: string, args?: Record<string, unknown>, as?: "agent" | "lead") => Promise<T>;
   /** The state of the fake herdr of a server started with a lead (see `fake-herdr.mjs`). */
   herdrDir: string;
   stop: () => Promise<void>;
@@ -26,9 +26,12 @@ export type ScratchServer = {
 export type ServerOptions = {
   /**
    * Runs the lead against a fake herdr put first on the server's `PATH`, so the real herdr
-   * is never touched. Without it the lead is off.
+   * is never touched. `"external"` runs no lead and keeps the chat for one outside the
+   * server. Without it the lead is off.
    */
-  lead?: boolean;
+  lead?: boolean | "external";
+  /** More environment for the server, such as `TOODO_LEAD_NAME`. */
+  env?: Record<string, string>;
 };
 
 /** Workspaces the scratch database starts with; `herdr` is needed to create more. */
@@ -82,7 +85,7 @@ function fakeHerdr(dir: string): Record<string, string> {
   };
 }
 
-function launch(dataDir: string, port: number, lead: Record<string, string> | null) {
+function launch(dataDir: string, port: number, lead: Record<string, string> | null, env: Record<string, string> = {}) {
   const child = spawn(binary(), [], {
     env: {
       ...process.env,
@@ -91,6 +94,7 @@ function launch(dataDir: string, port: number, lead: Record<string, string> | nu
       TOODO_WEB_DIR: webDir(),
       // The lead would add a workspace and start an agent in the real herdr.
       ...(lead ?? { TOODO_LEAD: "off" }),
+      ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -124,7 +128,8 @@ export async function startServer(options: ServerOptions = {}): Promise<ScratchS
   const dataDir = mkdtempSync(path.join(tmpdir(), "toodo-e2e-"));
   const port = await freePort();
   const herdrDir = path.join(dataDir, "herdr");
-  const lead = options.lead ? fakeHerdr(herdrDir) : null;
+  const lead =
+    options.lead === "external" ? { TOODO_LEAD: "external" } : options.lead ? fakeHerdr(herdrDir) : null;
 
   const first = launch(dataDir, port, null);
   await until("creating the database", () => answers(port), first.child, first.output);
@@ -140,13 +145,14 @@ export async function startServer(options: ServerOptions = {}): Promise<ScratchS
   }
   db.close();
 
-  const running = launch(dataDir, port, lead);
+  const running = launch(dataDir, port, lead, options.env);
   await until("starting", () => answers(port), running.child, running.output);
 
   const url = `http://127.0.0.1:${port}`;
   const token = (file: string) => readFileSync(path.join(dataDir, file), "utf8").trim();
   const webToken = token("web-token");
   const mcpToken = token("mcp-token");
+  const leadToken = token("lead-token");
 
   async function post<T>(target: string, bearer: string, body: unknown, headers: Record<string, string> = {}) {
     const response = await fetch(`${url}${target}`, {
@@ -165,12 +171,12 @@ export async function startServer(options: ServerOptions = {}): Promise<ScratchS
     rpc<T>(command: string, args: Record<string, unknown> = {}) {
       return post<T>(`/api/rpc/${command}`, webToken, args);
     },
-    async mcp<T>(tool: string, args: Record<string, unknown> = {}) {
+    async mcp<T>(tool: string, args: Record<string, unknown> = {}, as: "agent" | "lead" = "agent") {
       const text = await (
         await fetch(`${url}/mcp`, {
           method: "POST",
           headers: {
-            authorization: `Bearer ${mcpToken}`,
+            authorization: `Bearer ${as === "lead" ? leadToken : mcpToken}`,
             "content-type": "application/json",
             accept: "application/json, text/event-stream",
           },

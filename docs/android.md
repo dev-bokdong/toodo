@@ -31,9 +31,9 @@ checked against the Mozilla root certificates bundled into the app (`webpki-root
 the phone's certificate store, so a server must use a certificate from a public authority
 (Cloudflare's are), or plain `http` on a trusted network.
 
-## Talking to Dori
+## Talking to the Lead
 
-- **Launcher shortcut**: long-press the Toodo icon and choose "Talk to Dori" (drag it out
+- **Launcher shortcut**: long-press the Toodo icon and choose "Talk to the lead" (drag it out
   to put it on the home screen). It opens the lead chat listening for a spoken message.
 - **Links**: `toodo://chat` opens the lead chat, `toodo://chat/voice` opens it listening.
   They work whether the app is running or not (Tauri's deep-link plugin: `getCurrent` at

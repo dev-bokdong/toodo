@@ -17,7 +17,7 @@ import { WorkspaceList } from "@/components/workspace-list";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { builtForWeb, checksForUpdates, runsOnServer } from "@/lib/platform";
-import { useHerdrEvents, useLead, useWorkspaces } from "@/lib/queries";
+import { useHerdrEvents, useLead, useLeadProfile, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
 import { wakeWordOffered } from "@/lib/wake-word";
@@ -30,6 +30,7 @@ export default function App() {
   const [reviewing, setReviewing] = useState(false);
   const [sharedMemory, setSharedMemory] = useState(false);
   const lead = useLead();
+  const leadProfile = useLeadProfile();
   const hasLead = lead.data !== undefined && lead.data.state !== "disabled";
   // Whether a workspace shows its tasks or its memory; kept across workspaces.
   const [workspaceView, setWorkspaceView] = useState<"tasks" | "memory">("tasks");
@@ -274,7 +275,7 @@ export default function App() {
             )
           )}
         </main>
-        {hasLead && lead.data && <FloatingChat lead={lead.data} />}
+        {hasLead && lead.data && <FloatingChat lead={lead.data} profile={leadProfile} />}
         {wakeWordOffered && <WakeWord />}
       </div>
       <SettingsDialog

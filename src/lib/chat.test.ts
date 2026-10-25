@@ -28,8 +28,10 @@ describe("chat read mark", () => {
   });
 
   it("tells how far a message got from its receipts", () => {
-    const none = { deliveredAt: null, seenAt: null, ackedAt: null, handledAt: null };
-    expect(receipt(none)).toBe("sent");
+    const none = { id: 7, deliveredAt: null, seenAt: null, ackedAt: null, handledAt: null };
+    // Still sending from this client, or stored and waiting for the lead to take it.
+    expect(receipt({ ...none, id: 0 })).toBe("sent");
+    expect(receipt(none)).toBe("waiting");
     expect(receipt({ ...none, deliveredAt: 1 })).toBe("delivered");
     expect(receipt({ ...none, deliveredAt: 1, seenAt: 2 })).toBe("seen");
     expect(receipt({ ...none, deliveredAt: 1, seenAt: 2, ackedAt: 3 })).toBe("acked");

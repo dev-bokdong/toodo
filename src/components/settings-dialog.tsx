@@ -71,7 +71,7 @@ function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: (
   );
 }
 
-/** How this browser talks with Dori: the language of voice input and replies, and reading aloud. */
+/** How this browser talks with the lead: the language of voice input and replies, and reading aloud. */
 function VoiceSettings() {
   const readAloud = useReadAloud();
   const language = useSpeechLanguage();
@@ -98,7 +98,7 @@ function VoiceSettings() {
       {speechSupported() ? (
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={readAloud} onChange={(event) => setReadAloud(event.target.checked)} />
-          Read Dori's replies aloud
+          Read the lead's replies aloud
         </label>
       ) : (
         <p className="text-muted-foreground">This browser cannot read replies aloud.</p>
