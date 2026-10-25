@@ -6,7 +6,8 @@ Korean wake word engine by measurement, proves that a sentence said in one breat
 after the wake word reaches the recognizer whole, and fixes the engine/audio contract the
 platform integrations build on (the macOS app, then Windows and Android). The prototype in
 `scripts/wake-word/` is a measuring harness; the macOS app's integration (part B) is
-described in [The macOS App](#the-macos-app) below.
+described in [The macOS App](#the-macos-app) below, and the Windows app's in
+[The Windows App](#the-windows-app).
 
 ## Choice
 
@@ -293,6 +294,97 @@ a real voice on an Apple Silicon Mac:
    accept per hour, p95 latency at most 1 s, no clipped or duplicated message.
 5. Cost: Activity Monitor's "% CPU" and "Memory" for Toodo while it listens, idle and
    while speaking, over a few minutes each, and whether the Mac warms up over an hour.
+
+## The Windows App
+
+The Windows app runs the same detector while it is connected to a server: say "Dori-ya" and
+a message, with the window open or closed to the tray, and the message goes to the lead
+chat. It is the same worker as the macOS app's (`src-tauri/src/dictation/wake/worker.rs`:
+download, load, resample to 16 kHz, 100 ms chunks, holds, reopening); only the platform
+side differs (`windows.rs` and `microphone.rs`).
+
+- **Turning it on.** Off until **Settings > General > Send a message by saying "Dori-ya"**
+  is checked. The first time, it downloads the model (about 140 MB, pinned and checked as
+  on macOS) into `wake-word-model` in the app data directory
+  (`%APPDATA%\dev.toodo.app`). Nothing is installed or registered with Windows: no
+  service, no startup entry, no listening at sign-in. It listens only while Toodo runs, and
+  **Quit** in the tray menu closes the microphone.
+- **Microphone.** The default input device in shared mode through WASAPI (the `cpal`
+  crate), at its own rate and channels, mixed down to mono and resampled. When the default
+  device changes or goes away, the stream reports it and the worker opens the new default
+  device; when no audio has come for 3 s it does the same, every 5 s until it works.
+- **Permission.** Windows asks a desktop app nothing: with microphone access off it only
+  delivers silence. So the worker reads the three switches of **Settings > Privacy &
+  security > Microphone** ("Microphone access", "Let apps access your microphone", and "Let
+  desktop apps access your microphone", the `Value` of the `ConsentStore\microphone` keys in
+  the registry) before it opens the device and every 5 s while it listens. With one off,
+  the status line says so and **Open Windows Settings** opens that page
+  (`ms-settings:privacy-microphone`); listening resumes by itself once it is allowed.
+- **While it hears you.** Windows plays its default sound, the tray icon's tooltip reads
+  "Toodo - Listening", and the window shows what it hears at the top. The rules for
+  sending, cancelling, and retrying are the macOS app's (see
+  [docs/macos.md](macos.md#wake-word)), through the same voice outbox.
+- **Its own voice and dictation.** Detection holds while a reply is read aloud (and 0.3 s
+  after) and while a message is dictated with the chat's microphone button. Dictation in
+  the Windows app is the WebView2's own speech recognition (as in Edge), so the page tells
+  the worker when it listens (`set_wake_word_dictating`).
+- **Hidden window.** The listening thread opts out of Windows' power throttling
+  (`SetThreadInformation`, `ThreadPowerThrottling`), which slows down the threads of an app
+  without a visible window and would let the detector fall behind the microphone.
+- **No Windows speech recognizer.** `Windows.Media.SpeechRecognition` takes no audio from the
+  app (item 9 of the contract) and needs a packaged app for its permission; the sherpa-onnx
+  model needs neither, so the MSI and NSIS installers are unchanged.
+- **Build.** `sherpa-onnx` links its prebuilt static libraries for Windows
+  (`win-x64-static-MT-Release`, built with the static C runtime), which matches the static
+  VC runtime tauri-build links the app with; no DLL is added to the installers.
+
+### Cost
+
+Measured on the Linux server (Intel N150) with the Windows app's microphone code
+(`microphone.rs`, cpal on ALSA here) and the same detector files, built into a small harness;
+the input device was an ALSA capture fed in real time with a 48 kHz stereo recording, so
+the resampler and the mixdown run as on a typical Windows device.
+
+| Measure | Result |
+| --- | --- |
+| Wake word and sentence, "도리야, 오늘 할 일 목록 보여줘" | one message, "오늘 할 일 목록 보여줘"; the wake word detected 0.16 s after it ended, the message sent 2.1 s after its last word |
+| Wake word and sentence, a second voice, "도리야, 내일 회의 준비 작업을 만들어 줘" | one message, "내일 회 준비 작업을 만들어줘" (one syllable misrecognized) |
+| Wake word alone; a sentence without it | nothing sent (the first ends by timeout) |
+| CPU while idle (2 minutes of quiet noise), one N150 core = 100% | 15.9% |
+| CPU while hearing speech | 14.7 to 16.4% |
+| Peak memory (model loaded) | 229 to 233 MB |
+| Model load | 1.5 CPU s |
+
+The detector decodes every chunk whether or not anyone speaks (the recognizer finds the
+wake word in its transcript), so idle and speech cost about the same.
+
+### Testing on Windows
+
+No Windows machine was available for this change; the app was checked by building it for
+Windows in CI and by the measurements above. The gate still has to be met on a real
+Windows 10 or 11 PC:
+
+1. Install the MSI or NSIS build of the change, connect the app to a server, and turn on
+   the wake word in Settings > General. Wait for the status line to read "Listening".
+2. Hands-free path: with the window open, then closed to the tray, then minimized, say the
+   wake word and a sentence in one breath, then the wake word alone, then a sentence
+   without it. Exactly one message must reach the lead chat (check it with the server's lead
+   chat, also with `TOODO_LEAD=external`), the first one, without its wake word.
+3. Edges: Esc while the indicator shows; a reply read aloud that contains the wake word;
+   the chat's microphone button while listening (also: does WebView2 recognize Korean
+   there); unplugging the headset, and switching the default input device in Sound
+   settings; sleep and wake; turning each of the three microphone switches off and on
+   again; stopping the server for a minute while a message is sent (it must arrive once,
+   after the server is back). Each must leave the wake word listening again afterwards.
+4. Quit from the tray menu: the microphone icon in the taskbar must go away, and nothing may
+   listen until Toodo is started again.
+5. Gate: record at least 30 wake word utterances at a desk and across the room and an hour
+   of ordinary conversation and video audio, convert them to 16 kHz mono WAV, and run
+   `bench.py` and `handoff.py` as in Reproducing: miss at most 10%, at most one false accept
+   per hour, p95 latency at most 1 s, no clipped or duplicated message.
+6. Cost: Task Manager's CPU and memory for Toodo over a few minutes idle and while
+   speaking, with the window shown and hidden, on battery and plugged in, and
+   `powercfg /requests` (an open microphone may keep the PC from sleeping while idle).
 
 ## Licenses
 

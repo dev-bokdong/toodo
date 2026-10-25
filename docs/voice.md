@@ -23,9 +23,10 @@ The server takes no part: no audio reaches `toodo-server`, and it needs no model
 The macOS app is the exception for voice input: its WebView has no working speech
 recognition, so the app recognizes speech itself with the Mac's `SFSpeechRecognizer`, still
 on the device and with the same quiet rule, buttons, and speech language. See
-[docs/macos.md](macos.md#voice). The macOS app also takes a message spoken after the wake
-word "Dori-ya" without a click, recognized by a model running in the app (see
-[docs/wake-word.md](wake-word.md)). Dictated and wake word messages go out through the same
+[docs/macos.md](macos.md#voice). The macOS and Windows apps also take a message spoken after
+the wake word "Dori-ya" without a click, recognized by a model running in the app (see
+[docs/wake-word.md](wake-word.md)); the Windows app dictates with the WebView's speech
+recognition, as a browser does. Dictated and wake word messages go out through the same
 queue: one said while another is still sending waits its turn, and a failed one stays in
 the chat with Retry, under the client ID it was heard with.
 

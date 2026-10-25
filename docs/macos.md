@@ -124,10 +124,12 @@ listening, paused while a reply is read aloud, or what went wrong.
   `stop_dictation`, `cancel_dictation`, `open_privacy_settings`) and the
   `dictation-changed` event; `capture.rs`, the one owner of the microphone, which
   dictation and the wake word share; and `wake/`, the wake word (`get_wake_word`,
-  `set_wake_word`, `cancel_wake_word`, `set_wake_word_speaking`, the events
+  `set_wake_word`, `cancel_wake_word`, `set_wake_word_speaking`,
+  `set_wake_word_dictating`, the events
   `wake-word-changed` and `wake-word-heard`). They are commands and events of the app, not
   of the server, so a connected app keeps them local (`src/client/core.ts`,
-  `src/client/event.ts`); on Windows they reject.
+  `src/client/event.ts`). On Windows the dictation commands reject, while the wake word runs
+  there too (see [docs/wake-word.md](wake-word.md#the-windows-app)).
 - The wake word runs the sherpa-onnx recognizer, linked statically into the app from the
   `sherpa-onnx` crate's prebuilt libraries (downloaded when the app is built). The
   frontend sends what it hears through the voice outbox (`src/lib/voice-outbox.ts`), which
