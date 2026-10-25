@@ -79,6 +79,34 @@ pub fn get_lead(lead: State<'_, LeadStatusState>) -> LeadStatus {
     lead.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// The name the chat shows for a lead unless the server sets one with `TOODO_LEAD_NAME`.
+pub const DEFAULT_LEAD_NAME: &str = "Lead";
+
+/// How the chat shows the lead: its name and picture, from the server's configuration
+/// (`TOODO_LEAD_NAME` and `TOODO_LEAD_AVATAR`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LeadProfile {
+    pub name: String,
+    /// The picture as a `data:` URL; without one the chat shows a generic icon.
+    pub avatar: Option<String>,
+}
+
+impl Default for LeadProfile {
+    fn default() -> Self {
+        Self {
+            name: DEFAULT_LEAD_NAME.to_owned(),
+            avatar: None,
+        }
+    }
+}
+
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg_attr(feature = "desktop", specta::specta)]
+pub fn get_lead_profile(profile: State<'_, LeadProfile>) -> LeadProfile {
+    LeadProfile::clone(&profile)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatAuthor {

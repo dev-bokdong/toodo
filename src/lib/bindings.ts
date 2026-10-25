@@ -261,6 +261,7 @@ export const commands = {
 	 */
 	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_backup", { name })),
 	getLead: () => __TAURI_INVOKE<LeadStatus>("get_lead"),
+	getLeadProfile: () => __TAURI_INVOKE<LeadProfile>("get_lead_profile"),
 	/**  The latest messages of the chat with the lead, oldest first. */
 	listChatMessages: () => typedError<ChatMessage[], CommandError>(__TAURI_INVOKE("list_chat_messages")),
 	/**
@@ -638,6 +639,16 @@ export type HerdrStatus = {
 	/**  Whether the herdr server on this machine is running. */
 	running: boolean,
 	version: string | null,
+};
+
+/**
+ *  How the chat shows the lead: its name and picture, from the server's configuration
+ *  (`TOODO_LEAD_NAME` and `TOODO_LEAD_AVATAR`).
+ */
+export type LeadProfile = {
+	name: string,
+	/**  The picture as a `data:` URL; without one the chat shows a generic icon. */
+	avatar: string | null,
 };
 
 /**  What the server is doing with the lead. */

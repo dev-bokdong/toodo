@@ -115,6 +115,8 @@ toodo-server
 | `TOODO_LEAD_COMMAND` | omo (see below) | Shell command that starts the lead agent |
 | `TOODO_LEAD_MODEL` | none | Model for the lead, passed to the command as `$TOODO_LEAD_MODEL` |
 | `TOODO_LEAD_DIR` | `$TOODO_DATA_DIR/lead` | The lead's workspace |
+| `TOODO_LEAD_NAME` | `Lead` | The lead's name in the chat, up to 40 characters |
+| `TOODO_LEAD_AVATAR` | none (a generic icon) | PNG, JPEG, WebP, or GIF file of up to 256 KiB with the lead's picture in the chat; read once at start |
 
 On first start the data directory gets three access tokens:
 
@@ -257,6 +259,9 @@ herdrWorkspaceId, paneId, agent, agentStatus, typing, restarts, startedAt, error
 connected, lastContactAt }`, where `state` is `disabled`, `starting`, `running`,
 `restarting`, `failed`, or `external`. The `lead-changed` event carries the same object
 whenever it changes. The desktop app has no lead, and always reports `disabled`.
+`get_lead_profile` returns how the chat shows the lead, `{ name, avatar }`: the name from
+`TOODO_LEAD_NAME` and the picture from `TOODO_LEAD_AVATAR` as a `data:` URL, or `null`
+for a generic icon. Both apply in every lead mode, outside leads included.
 
 With `TOODO_LEAD=external` the server runs no lead, opens no herdr workspace for one,
 and reports `external`: the chat, the inbox, the receipts, and the finish reports work as
@@ -264,7 +269,7 @@ below, and a lead outside the server reads and answers them with the lead token.
 `connected` and `lastContactAt` tell whether it is in touch. See
 [`external-lead.md`](external-lead.md) for that API.
 
-The web app talks to the lead in a floating chat: a round Dori button at the bottom right of
+The web app talks to the lead in a floating chat: a round button with the lead's picture at the bottom right of
 every view opens a chat panel over it, or a full-screen sheet on a phone. While the chat is
 closed, the button shows the count of unread replies, and dots while the lead is typing.
 The panel keeps an unsent message while closed or while moving between views. `send_chat_message { text, clientId }`
