@@ -34,6 +34,8 @@ into a performance report.
   browser.
 - [docs/android.md](docs/android.md): the Android app, a client of a server, with voice
   input to Dori in one tap.
+- [docs/macos.md](docs/macos.md): the macOS app, a client of the server with native
+  dictation.
 
 ## Requirements
 
@@ -42,8 +44,9 @@ into a performance report.
 - Git for Windows, Windows OpenSSH, and the GitHub CLI (`gh`) on `PATH`
 
 Toodo can also run as a server on a Linux machine with herdr, used from a browser; see
-[docs/server.md](docs/server.md). The Android app connects to such a server; see
-[docs/android.md](docs/android.md).
+[docs/server.md](docs/server.md). The Android app connects to such a server (see
+[docs/android.md](docs/android.md)), and so does the macOS app on an Apple Silicon Mac (see
+[docs/macos.md](docs/macos.md)).
 
 ## End-to-End Tests
 

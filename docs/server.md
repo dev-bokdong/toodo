@@ -597,6 +597,7 @@ The app keeps a list of servers, for example a home server and a work server:
   (`ssh -L 47616:127.0.0.1:47616 server` and `http://127.0.0.1:47616`), a VPN, or a
   hostname behind Cloudflare Access with a service token.
 - Downloads of backups go through the WebView's own download handling.
+- The macOS app is only ever used this way; see [docs/macos.md](macos.md).
 
 #### Through Cloudflare Access
 
