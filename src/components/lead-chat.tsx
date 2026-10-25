@@ -19,6 +19,7 @@ import {
 import {
   Check,
   CheckCheck,
+  CircleCheck,
   MessageCircle,
   MessagesSquare,
   Mic,
@@ -455,6 +456,21 @@ function TypingBubble() {
 }
 
 function Message({ message }: { message: ChatMessage }) {
+  if (message.author === "system") {
+    return (
+      <li data-author="system" aria-label="Toodo" className="flex w-full flex-col items-center gap-1 self-center">
+        <div className="flex max-w-full items-start gap-2 rounded-lg border border-dashed bg-background/60 px-3 py-2 text-sm break-words">
+          <CircleCheck aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <Suspense fallback={<p className="whitespace-pre-wrap">{message.body}</p>}>
+              <Markdown source={message.body} />
+            </Suspense>
+          </div>
+        </div>
+        <When className="text-xs text-muted-foreground" at={message.at} prefix="Toodo, " />
+      </li>
+    );
+  }
   if (message.author === "lead") {
     return (
       <li data-author="lead" aria-label="Dori" className="flex max-w-[85%] items-start gap-2 self-start">

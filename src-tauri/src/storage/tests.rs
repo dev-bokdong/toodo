@@ -2,7 +2,7 @@ use super::*;
 use crate::domain::dag;
 use crate::domain::model::{
     AgentMerge, CommitRecord, HostPath, LinkedIssue, Machine, MachineLabel, MachineSettings,
-    NoteKind, PullRequestSnapshot, Task, TaskType, Workspace, WorkspaceLocation,
+    MergedWith, NoteKind, PullRequestSnapshot, Task, TaskType, Workspace, WorkspaceLocation,
 };
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::status::TaskStatus;
@@ -321,7 +321,13 @@ fn dependencies_across_workspaces_share_one_dag() {
     assert!(!ready(&storage, &ui));
     assert_eq!(
         storage
-            .complete_task(api.id, Some(1), None, &[])
+            .complete_task(
+                api.id,
+                Some(1),
+                None,
+                &[],
+                &crate::domain::finish::Finish::Completed
+            )
             .unwrap()
             .status,
         Done
@@ -958,7 +964,13 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
     assert_eq!(pushed_again.timeline.len(), 3);
     set_now(&now, 400);
     let done = storage
-        .complete_task(task.id, Some(390), None, &[])
+        .complete_task(
+            task.id,
+            Some(390),
+            None,
+            &[],
+            &crate::domain::finish::Finish::Completed,
+        )
         .unwrap();
 
     assert_eq!(
@@ -996,7 +1008,17 @@ fn only_status_changes_are_recorded_and_rejected_changes_record_nothing() {
     set_now(&now, 250);
     assert!(storage.add_dependency(a.id, b.id).is_err());
     assert!(storage.set_task_status(b.id, InProgress).is_err());
-    assert!(storage.complete_task(a.id, None, None, &[]).is_err());
+    assert!(
+        storage
+            .complete_task(
+                a.id,
+                None,
+                None,
+                &[],
+                &crate::domain::finish::Finish::Completed
+            )
+            .is_err()
+    );
     assert!(
         storage
             .open_pull_request(a.id, &[], "https://x/pull/1", None)
@@ -1073,7 +1095,15 @@ fn base_branch_cannot_change_while_a_task_is_in_review() {
     );
 
     // Once the review is over, the branch can change again.
-    storage.complete_task(task.id, Some(1), None, &[]).unwrap();
+    storage
+        .complete_task(
+            task.id,
+            Some(1),
+            None,
+            &[],
+            &crate::domain::finish::Finish::Completed,
+        )
+        .unwrap();
     workspace.default_base_branch = "main".to_owned();
     storage.update_workspace(&workspace).unwrap();
 }
@@ -1301,7 +1331,13 @@ fn the_search_index_follows_edits_notes_pull_requests_and_deletes() {
         first_reviewed_at: None,
     };
     storage
-        .complete_task(task.id, Some(50), Some(&snapshot), &[])
+        .complete_task(
+            task.id,
+            Some(50),
+            Some(&snapshot),
+            &[],
+            &crate::domain::finish::Finish::Completed,
+        )
         .unwrap();
     assert_eq!(search(&storage, "single"), [task.id]);
     assert_eq!(search(&storage, "oauth"), [task.id]);
@@ -1341,4 +1377,205 @@ fn related_links_go_both_ways_across_workspaces_and_never_block() {
     storage.add_related(later.id, earlier.id).unwrap();
     storage.delete_task(earlier.id).unwrap();
     assert!(storage.list_relations().unwrap().is_empty());
+}
+
+fn reports(storage: &Storage) -> Vec<(String, i64, String)> {
+    storage
+        .conn
+        .prepare(
+            "SELECT r.kind, m.result_id, m.body FROM chat_messages m
+             JOIN task_results r ON r.id = m.result_id
+             WHERE m.author = 'system' ORDER BY m.id",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+fn in_progress(storage: &mut Storage, workspace: &Workspace, title: &str) -> Task {
+    let task = add_task(storage, workspace, title);
+    storage.set_task_status(task.id, InProgress).unwrap()
+}
+
+#[test]
+fn every_finish_posts_one_report_of_its_own_that_survives_reopening() {
+    use crate::domain::finish::Finish;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("toodo.sqlite3");
+    let pr = "https://github.com/acme/toodo/pull/9";
+    {
+        let mut storage = Storage::open(&path).unwrap();
+        let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+        let merged = in_progress(&mut storage, &workspace, "Merged");
+        let spike = in_progress(&mut storage, &workspace, "Spike");
+        let extra = in_progress(&mut storage, &workspace, "Extra");
+        let finish = Finish::Merged {
+            url: pr.to_owned(),
+            number: Some(9),
+            merge_commit_sha: Some("abcdef0123".to_owned()),
+        };
+        storage
+            .complete_task(merged.id, Some(5), None, &[], &finish)
+            .unwrap();
+        storage
+            .conclude_task(spike.id, "Too slow\nDetails", &[], None)
+            .unwrap();
+        let shipped = MergedWith {
+            task_id: Some(merged.id),
+            pull_request_url: pr.to_owned(),
+        };
+        storage
+            .complete_task_merged_with(extra.id, &shipped, Some(5), &[])
+            .unwrap();
+        // A conclusion turned into a merge changes no status, and is a finish all the same.
+        let events = row_count(&storage, "task_events");
+        storage
+            .complete_task_merged_with(spike.id, &shipped, Some(5), &[])
+            .unwrap();
+        assert_eq!(row_count(&storage, "task_events"), events);
+
+        let stored: Vec<(String, Option<i64>, Option<String>)> = storage
+            .conn
+            .prepare("SELECT kind, pull_request_number, commit_sha FROM task_results ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            stored,
+            [
+                ("merged".into(), Some(9), Some("abcdef0123".into())),
+                ("not_adopted".into(), None, None),
+                ("merged".into(), Some(9), None),
+                ("merged".into(), Some(9), None),
+            ]
+        );
+    }
+    let storage = Storage::open(&path).unwrap();
+    let posted = reports(&storage);
+    let kinds: Vec<_> = posted.iter().map(|(kind, ..)| kind.as_str()).collect();
+    assert_eq!(kinds, ["merged", "not_adopted", "merged", "merged"]);
+    let results: std::collections::BTreeSet<_> = posted.iter().map(|(_, id, _)| *id).collect();
+    assert_eq!(results.len(), 4);
+    assert!(
+        posted[0].2.starts_with("**Merged:** #1 Merged."),
+        "{posted:?}"
+    );
+    assert!(posted[1].2.contains("> Too slow"), "{posted:?}");
+    assert!(
+        posted[3].2.starts_with("**Merged:** #2 Spike shipped"),
+        "{posted:?}"
+    );
+    let listed = storage.list_chat_messages().unwrap();
+    assert_eq!(listed.len(), 4);
+    assert!(listed.iter().all(
+        |message| message.author == crate::domain::chat::ChatAuthor::System
+            && (message.delivered_at, message.seen_at) == (None, None)
+    ));
+}
+
+#[test]
+fn a_finish_whose_report_cannot_be_stored_writes_nothing() {
+    use crate::domain::finish::Finish;
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = in_progress(&mut storage, &workspace, "Add login");
+    // `done` through a plain status change comes from `in_review`.
+    storage.set_task_status(task.id, InReview).unwrap();
+    let events = row_count(&storage, "task_events");
+    storage
+        .conn
+        .execute_batch(
+            "CREATE TEMP TRIGGER no_reports BEFORE INSERT ON chat_messages
+             WHEN NEW.author = 'system' BEGIN SELECT RAISE(ABORT, 'crash'); END;",
+        )
+        .unwrap();
+
+    assert!(
+        storage
+            .complete_task(task.id, Some(5), None, &[], &Finish::Completed)
+            .is_err()
+    );
+    assert!(storage.conclude_task(task.id, "No", &[], None).is_err());
+    assert!(storage.set_task_status(task.id, Done).is_err());
+    assert_eq!(status(&storage, &task), InReview);
+    assert_eq!(row_count(&storage, "task_events"), events);
+    assert_eq!(row_count(&storage, "task_results"), 0);
+
+    storage
+        .conn
+        .execute_batch("DROP TRIGGER no_reports")
+        .unwrap();
+    storage
+        .complete_task(task.id, Some(5), None, &[], &Finish::Completed)
+        .unwrap();
+    assert_eq!(reports(&storage).len(), 1);
+}
+
+#[test]
+fn a_finish_is_reported_once() {
+    use crate::domain::finish::Finish;
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = in_progress(&mut storage, &workspace, "Add login");
+    storage
+        .complete_task(task.id, None, None, &[], &Finish::Completed)
+        .unwrap();
+    assert!(
+        storage
+            .complete_task(task.id, None, None, &[], &Finish::Completed)
+            .is_err()
+    );
+    assert!(storage.set_task_status(task.id, Done).is_err());
+    let posted = reports(&storage);
+    assert_eq!(posted.len(), 1);
+    let again = storage.conn.execute(
+        "INSERT INTO chat_messages (author, body, at, result_id) VALUES ('system', 'x', 1, ?1)",
+        [posted[0].1],
+    );
+    assert!(again.is_err(), "a second report of one finish");
+    let by_lead = storage.conn.execute(
+        "INSERT INTO chat_messages (author, body, at, result_id) VALUES ('lead', 'x', 1, ?1)",
+        [posted[0].1],
+    );
+    assert!(by_lead.is_err(), "only the system reports a finish");
+    assert_eq!(reports(&storage).len(), 1);
+}
+
+#[test]
+fn reports_leave_peoples_messages_and_the_lead_inbox_alone() {
+    use crate::domain::chat::ChatAuthor;
+    use crate::domain::inbox::ItemId;
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = in_progress(&mut storage, &workspace, "Add login");
+    let asked = storage
+        .add_chat_message(ChatAuthor::User, "Is it done?", Some("c1"))
+        .unwrap();
+    storage.mark_chat_delivered(&[asked.id]).unwrap();
+    let asked = storage.chat_message_by_client("c1").unwrap().unwrap();
+
+    storage.set_task_status(task.id, InReview).unwrap();
+    storage.set_task_status(task.id, Done).unwrap();
+
+    let messages = storage.list_chat_messages().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1].author, ChatAuthor::System);
+    // Delivered and still not seen: the report is no answer to it.
+    assert_eq!(messages[0], asked);
+    assert_eq!(asked.seen_at, None);
+    assert_eq!(storage.latest_chat_message().unwrap(), Some(asked.clone()));
+    // The lead gets the person's message and the status changes, never the report.
+    let pending = storage.pending_items().unwrap();
+    assert_eq!(pending.len(), 3, "{pending:?}");
+    assert_eq!(pending[0], ItemId::Chat(asked.id));
+    assert!(
+        pending[1..]
+            .iter()
+            .all(|item| matches!(item, ItemId::Event(_))),
+        "{pending:?}"
+    );
 }

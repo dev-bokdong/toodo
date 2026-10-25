@@ -353,7 +353,9 @@ export type BranchList = {
 	fetchError: string | null,
 };
 
-export type ChatAuthor = "user" | "lead";
+export type ChatAuthor = "user" | "lead" | 
+/**  The server, reporting how a task finished. */
+"system";
 
 /**  A message of the chat with the lead was sent or answered. */
 export type ChatChanged = null;

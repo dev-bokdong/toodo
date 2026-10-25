@@ -5,6 +5,7 @@ pub mod chat;
 pub mod criteria;
 pub mod dag;
 pub mod device;
+pub mod finish;
 pub mod inbox;
 pub mod issue;
 pub mod memory;

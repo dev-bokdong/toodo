@@ -1,6 +1,7 @@
 //! What sets the lead apart from other MCP callers. `toodo-server` gives the lead a token
 //! of its own, so the tools know when the lead acts: what it does to a task is kept as a
-//! note in the task's history and posted to the chat panel, and its destructive actions
+//! note in the task's history and posted to the chat panel (a finish is reported there by
+//! the server itself, see [`crate::domain::finish`]), and its destructive actions
 //! wait until a person confirms them in the chat. The lead cannot post a person's message
 //! (it has no web or device token), so it cannot confirm for them.
 
@@ -33,11 +34,11 @@ impl Caller {
 }
 
 /// A change the lead made to a task: the note kept in the task's history and the message
-/// posted to the chat.
+/// posted to the chat, if the server's own report of the change does not already say it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Activity {
     pub(crate) note: String,
-    pub(crate) chat: String,
+    pub(crate) chat: Option<String>,
 }
 
 fn named(task: &Task) -> String {
@@ -66,7 +67,7 @@ pub(crate) fn created(task: &Task, related: &[TaskId]) -> Activity {
     };
     Activity {
         note: format!("Created by the Toodo lead{links}."),
-        chat: format!("Created {}{links}.", named(task)),
+        chat: Some(format!("Created {}{links}.", named(task))),
     }
 }
 
@@ -77,11 +78,12 @@ pub(crate) fn started(task: &Task, ran: Option<(&str, &str)>) -> Activity {
     });
     Activity {
         note: format!("Started by the Toodo lead{ran}."),
-        chat: format!("Started {}{ran}.", named(task)),
+        chat: Some(format!("Started {}{ran}.", named(task))),
     }
 }
 
-/// `confirmation`: the code a person confirmed the completion with, if it needed one.
+/// `confirmation`: the code a person confirmed the completion with, if it needed one. The
+/// completion is reported to the chat by the server, so only the note is kept.
 pub(crate) fn completed(task: &Task, confirmation: Option<&str>) -> Activity {
     let shipped = task
         .merged_with
@@ -92,15 +94,16 @@ pub(crate) fn completed(task: &Task, confirmation: Option<&str>) -> Activity {
     let confirmed = confirmed_by(confirmation);
     Activity {
         note: format!("Completed by the Toodo lead{shipped}{confirmed}."),
-        chat: format!("Completed {}{shipped}{confirmed}.", named(task)),
+        chat: None,
     }
 }
 
-pub(crate) fn concluded(task: &Task, confirmation: &str) -> Activity {
+/// Like [`completed`], the server reports the conclusion to the chat.
+pub(crate) fn concluded(confirmation: &str) -> Activity {
     let confirmed = confirmed_by(Some(confirmation));
     Activity {
         note: format!("Concluded without a merge by the Toodo lead{confirmed}."),
-        chat: format!("Concluded {} without a merge{confirmed}.", named(task)),
+        chat: None,
     }
 }
 
@@ -110,15 +113,17 @@ fn confirmed_by(confirmation: Option<&str>) -> String {
     })
 }
 
-/// Keeps `activity` in the history of `task` and posts it to the chat. Returns the task
-/// with the note.
+/// Keeps `activity` in the history of `task` and posts its message, if it has one, to the
+/// chat. Returns the task with the note.
 pub(crate) fn record(
     storage: &mut Storage,
     task: model::TaskId,
     activity: &Activity,
 ) -> CommandResult<Task> {
     let noted = storage.add_task_note(task, NoteKind::Progress, &activity.note)?;
-    reply(storage, &activity.chat)?;
+    if let Some(chat) = &activity.chat {
+        reply(storage, chat)?;
+    }
     Ok((&noted).into())
 }
 
@@ -269,6 +274,9 @@ mod tests {
         assert!(waiting.contains("yet"), "{waiting}");
         // The lead posting the answer itself confirms nothing.
         says(&mut storage, ChatAuthor::Lead, &format!("confirm {code}"));
+        assert!(outcome(&mut storage, action, &code).is_err());
+        // Nor does a report of the server.
+        says(&mut storage, ChatAuthor::System, &format!("confirm {code}"));
         assert!(outcome(&mut storage, action, &code).is_err());
         says(&mut storage, ChatAuthor::User, "something else");
         assert!(outcome(&mut storage, action, &code).is_err());

@@ -76,6 +76,8 @@ pub fn get_lead(lead: State<'_, LeadStatusState>) -> LeadStatus {
 pub enum ChatAuthor {
     User,
     Lead,
+    /// The server, reporting how a task finished.
+    System,
 }
 
 /// A message of the chat with the lead.
@@ -103,6 +105,7 @@ impl From<&chat::ChatMessage> for ChatMessage {
             author: match message.author {
                 chat::ChatAuthor::User => ChatAuthor::User,
                 chat::ChatAuthor::Lead => ChatAuthor::Lead,
+                chat::ChatAuthor::System => ChatAuthor::System,
             },
             body: message.body.clone(),
             at: Timestamp(message.at),

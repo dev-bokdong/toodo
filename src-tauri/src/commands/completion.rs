@@ -37,6 +37,7 @@ use crate::adapters::github::{
 };
 use crate::adapters::herdr::Herdr;
 use crate::domain::criteria::{self, CheckKind, CriterionState, Decision};
+use crate::domain::finish::Finish;
 use crate::domain::issue::{closes_issue, with_closing_reference};
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
@@ -626,7 +627,9 @@ fn clip(text: &str) -> String {
 
 /// Moves a task whose criteria are met to `done`: a merged pull request is recorded with
 /// its snapshot and commits (read first, so a gh failure keeps the task as it is), else
-/// the commits of its branch since it started are; its herdr workspace is closed.
+/// the commits of its branch since it started are; its herdr workspace is closed. The
+/// finish reported to the chat is what was seen: a merged pull request, an open one with
+/// passing checks, a branch merged locally, or else only the criteria.
 fn finish_task(
     storage: &StorageState,
     git: &Git,
@@ -637,9 +640,15 @@ fn finish_task(
     viewed: Option<&ViewedPullRequest>,
 ) -> CommandResult<model::Task> {
     let id = task.id;
-    let (merged_at, snapshot, commits) = match viewed.map(|viewed| &viewed.pull_request) {
-        Some(pull_request) if pull_request.state == PullRequestState::Merged => {
+    let (merged_at, snapshot, commits, finish) = match viewed {
+        Some(viewed) if viewed.pull_request.state == PullRequestState::Merged => {
+            let pull_request = &viewed.pull_request;
             let merged = github.merged_pull_request(&pull_request.url)?;
+            let finish = Finish::Merged {
+                url: pull_request.url.clone(),
+                number: Some(merged.snapshot.number),
+                merge_commit_sha: merged.snapshot.merge_commit_sha.clone(),
+            };
             let commits = merged
                 .commits
                 .into_iter()
@@ -651,9 +660,34 @@ fn finish_task(
                     committed_at: commit.committed_at,
                 })
                 .collect();
-            (pull_request.merged_at, Some(merged.snapshot), commits)
+            (
+                pull_request.merged_at,
+                Some(merged.snapshot),
+                commits,
+                finish,
+            )
         }
-        _ => (None, None, branch_commits(git, task, workspace)?),
+        _ => {
+            let finish = match viewed {
+                Some(viewed)
+                    if viewed.pull_request.state == PullRequestState::Open
+                        && viewed.status.checks == Some(ChecksState::Passing) =>
+                {
+                    Finish::PullRequestReady {
+                        url: viewed.pull_request.url.clone(),
+                        head_sha: viewed.head_sha.clone(),
+                    }
+                }
+                _ if task.criteria.iter().any(|criterion| {
+                    criterion.kind == CheckKind::BranchMergedLocally && criterion.is_met()
+                }) =>
+                {
+                    Finish::MergedLocally
+                }
+                _ => Finish::Completed,
+            };
+            (None, None, branch_commits(git, task, workspace)?, finish)
+        }
     };
     // A workspace herdr no longer has was already closed, e.g. by the user.
     if let Some(workspace_id) = &task.herdr_workspace_id {
@@ -663,7 +697,7 @@ fn finish_task(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(lock(storage).complete_task(id, merged_at, snapshot.as_ref(), &commits)?)
+    Ok(lock(storage).complete_task(id, merged_at, snapshot.as_ref(), &commits, &finish)?)
 }
 
 /// The commits of a task's branch since it started (the start commit a
@@ -1190,6 +1224,7 @@ fn check_pull_requests(
                     Settled::Done(task) => {
                         after.remove(&id);
                         notifier.tasks_changed(task.workspace_id);
+                        notifier.chat_changed();
                     }
                     Settled::Open {
                         task,
@@ -1659,6 +1694,17 @@ mod tests {
         ))
     }
 
+    /// The system's latest report in the chat.
+    fn report(fixture: &Fixture) -> String {
+        let messages = lock(&fixture.storage).list_chat_messages().unwrap();
+        let reports: Vec<_> = messages
+            .into_iter()
+            .filter(|message| message.author == crate::domain::chat::ChatAuthor::System)
+            .collect();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        reports[0].body.clone()
+    }
+
     fn recorded_shas(fixture: &Fixture) -> Vec<String> {
         lock(&fixture.storage)
             .list_commit_records(fixture.task.id)
@@ -1867,11 +1913,17 @@ mod tests {
                 "view",
                 PR,
                 "--json",
-                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews"
+                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews,headRefOid"
             ]
             .map(str::to_owned)
         );
         assert_eq!(invocations(&gh_runner)[1].args[..3], ["pr", "view", PR]);
+        assert_eq!(
+            report(&fixture),
+            format!(
+                "**Merged:** #1 Add login. Its [pull request #12]({PR}) was merged as `2222222`."
+            )
+        );
     }
 
     #[test]
@@ -2385,6 +2437,7 @@ mod tests {
     struct Recorder(
         Mutex<Vec<model::WorkspaceId>>,
         Mutex<Vec<Vec<types::TaskPullRequestStatus>>>,
+        Mutex<usize>,
     );
 
     impl Notifier for Recorder {
@@ -2396,7 +2449,9 @@ mod tests {
 
         fn memory_changed(&self) {}
 
-        fn chat_changed(&self) {}
+        fn chat_changed(&self) {
+            *self.2.lock().unwrap() += 1;
+        }
 
         fn agent_statuses_changed(&self, _: &[types::TaskAgentStatus]) {}
 
@@ -2446,6 +2501,8 @@ mod tests {
         assert_eq!(done.pull_request_merged_at, Some(MERGED_AT.1));
         assert!(dependent_ready(&fixture));
         assert_eq!(*recorder.0.lock().unwrap(), [done.workspace_id]);
+        assert_eq!(*recorder.2.lock().unwrap(), 1, "the report is announced");
+        assert!(report(&fixture).starts_with("**Merged:** #1 Add login."));
         assert_eq!(invocations(&herdr_runner).len(), 1);
         assert!(failures.is_empty());
 
@@ -2460,6 +2517,50 @@ mod tests {
             &statuses,
         );
         assert_eq!(invocations(&gh_runner).len(), 3);
+    }
+
+    #[test]
+    fn an_open_pull_request_with_passing_checks_is_reported_ready_and_not_merged() {
+        let criterion = NewCriterion::parse(
+            "Pull request open with green checks",
+            CheckKind::PullRequestOpenChecksPassed,
+            None,
+        )
+        .unwrap();
+        let fixture = local_criteria_fixture(vec![criterion]);
+        lock(&fixture.storage)
+            .open_pull_request(fixture.task.id, &[], PR, None)
+            .unwrap();
+        let passing = r#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]"#;
+        let mut view: serde_json::Value =
+            serde_json::from_str(&viewed_with("OPEN", "main", passing, "\"\"").unwrap()).unwrap();
+        view["headRefOid"] = serde_json::json!(SHA_A);
+        let github = GitHub::new(Box::new(runner(vec![Ok(view.to_string())])));
+        let git = Git::new(Box::new(runner(vec![Err(failed()), log(&[SHA_A])])));
+        let (herdr, _) = closing_herdr();
+        let recorder = Recorder::default();
+
+        check_pull_requests(
+            &fixture.storage,
+            &git,
+            &github,
+            &herdr,
+            &recorder,
+            &mut HashMap::new(),
+            &PullRequestStatusState::default(),
+        );
+
+        let done = stored(&fixture, &fixture.task);
+        assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.pull_request_merged_at, None);
+        assert_eq!(*recorder.2.lock().unwrap(), 1);
+        assert_eq!(
+            report(&fixture),
+            format!(
+                "**Pull request ready:** #1 Add login. Its [pull request #12]({PR}) is open with \
+                 passing checks at `1111111` and is not merged yet."
+            )
+        );
     }
 
     #[test]
@@ -2914,6 +3015,10 @@ mod tests {
         );
         assert_eq!(recorded_shas(&fixture), [SHA_A, SHA_B]);
         assert!(dependent_ready(&fixture));
+        assert_eq!(
+            report(&fixture),
+            "**Merged:** #1 Add login. Its branch was merged into the base branch."
+        );
         assert!(invocations(&gh_runner).is_empty());
         let commands: Vec<String> = invocations(&git_runner)
             .iter()
@@ -3075,6 +3180,10 @@ mod tests {
 
         let done = complete(&fixture.storage, &git, &github, &herdr, fixture.task.id).unwrap();
         assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(
+            report(&fixture),
+            "**Completed:** #1 Add login. Its completion criteria are met; no merge was seen."
+        );
     }
 
     #[test]

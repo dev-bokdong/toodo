@@ -1088,6 +1088,8 @@ mod tests {
         ));
         assert!(typing(&working, 102 + TYPING_CAP - 1));
         assert!(!typing(&working, 102 + TYPING_CAP));
+        add(104, ChatAuthor::System);
+        assert!(typing(&working, 105), "a report is no reply");
 
         add(110, ChatAuthor::Lead);
         assert!(!typing(&working, 111), "the reply ends it");

@@ -14,11 +14,12 @@ const message = (id: number, author: ChatMessage["author"]): ChatMessage => ({
 describe("chat read mark", () => {
   beforeEach(() => localStorage.clear());
 
-  it("counts only the lead's replies after the read mark", () => {
-    const messages = [message(1, "user"), message(2, "lead"), message(3, "user"), message(4, "lead")];
-    expect(unreadCount(messages, 0)).toBe(2);
-    expect(unreadCount(messages, 2)).toBe(1);
-    expect(unreadCount(messages, 4)).toBe(0);
+  it("counts the lead's replies and the server's reports after the read mark", () => {
+    const messages = [message(1, "user"), message(2, "lead"), message(3, "user"), message(4, "system"), message(5, "lead")];
+    expect(unreadCount(messages, 0)).toBe(3);
+    expect(unreadCount(messages, 2)).toBe(2);
+    expect(unreadCount(messages, 4)).toBe(1);
+    expect(unreadCount(messages, 5)).toBe(0);
   });
 
   it("tells how far a message got from when it was delivered and seen", () => {

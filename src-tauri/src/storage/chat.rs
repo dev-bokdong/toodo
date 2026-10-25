@@ -1,9 +1,11 @@
 //! The chat panel's conversation with the lead.
 
-use rusqlite::{OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, invalid_data};
 use crate::domain::chat::{ChatAuthor, ChatMessage, ChatMessageId};
+use crate::domain::finish::Finish;
+use crate::domain::model::TaskId;
 
 /// The most messages the chat panel shows: the latest ones.
 const HISTORY: i64 = 500;
@@ -44,11 +46,15 @@ impl Storage {
         rows.into_iter().map(with_author).collect()
     }
 
-    /// The newest message, if there is any.
+    /// The newest message of a person or the lead, if there is any; the system's reports
+    /// leave the conversation where it was.
     pub fn latest_chat_message(&self) -> Result<Option<ChatMessage>> {
         self.conn
             .query_row(
-                &format!("SELECT {COLUMNS} FROM chat_messages ORDER BY id DESC LIMIT 1"),
+                &format!(
+                    "SELECT {COLUMNS} FROM chat_messages WHERE author <> 'system'
+                     ORDER BY id DESC LIMIT 1"
+                ),
                 [],
                 message,
             )
@@ -111,6 +117,42 @@ impl Storage {
             [at, delivered_by],
         )?)
     }
+}
+
+/// Records how `task`, titled `title`, finished at `at`, and posts the system's report of
+/// it to the chat, on `conn`: called in the transaction of the change that finished the
+/// task, so the finish and its one report are stored together or not at all.
+pub(super) fn record_finish(
+    conn: &Connection,
+    task: TaskId,
+    title: &str,
+    finish: &Finish,
+    at: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO task_results (task_id, kind, pull_request_number, pull_request_url,
+             commit_sha, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            task.0,
+            finish.kind().as_str(),
+            finish.pull_request_number(),
+            finish.pull_request_url(),
+            finish.commit_sha(),
+            at
+        ],
+    )?;
+    let result = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO chat_messages (author, body, at, result_id) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            ChatAuthor::System.as_str(),
+            finish.report(task, title),
+            at,
+            result
+        ],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

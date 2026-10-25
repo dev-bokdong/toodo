@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::criteria::NewCriterion;
+use crate::domain::finish::Finish;
 use crate::domain::model::{
     CommitRecord, HostPath, LinkedIssue, MergedWith, NoteKind, PullRequestSnapshot, Task, TaskId,
     TaskNote, TaskResolution, TaskType, WorkspaceId,
@@ -526,12 +527,15 @@ impl Storage {
     /// transaction. Non-empty `commits` (those of the merged pull request) replace its
     /// commit records. The worktree path stays: the checkout is kept on disk until its
     /// worktree is removed. Dependents whose other dependencies are done can then start.
+    /// `finish`, what the caller saw finish it, is recorded and reported to the chat in the
+    /// same transaction.
     pub fn complete_task(
         &mut self,
         id: TaskId,
         merged_at: Option<i64>,
         pull_request: Option<&PullRequestSnapshot>,
         commits: &[CommitRecord],
+        finish: &Finish,
     ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
@@ -573,6 +577,7 @@ impl Storage {
             super::commits::write_commit_records(&tx, id, commits)?;
         }
         record_event(&tx, id, status, at)?;
+        super::chat::record_finish(&tx, id, &task.title, finish, at)?;
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
@@ -612,6 +617,11 @@ impl Storage {
             super::commits::write_commit_records(&tx, id, commits)?;
         }
         record_event(&tx, id, status, at)?;
+        let finish = Finish::NotAdopted {
+            note: note.to_owned(),
+            closed_pull_request: pull_request_url.map(str::to_owned),
+        };
+        super::chat::record_finish(&tx, id, &task.title, &finish, at)?;
         let concluded = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(concluded)
@@ -621,7 +631,8 @@ impl Storage {
     /// request of another task, `merged_with`, merged at `merged_at`, and forgets its herdr
     /// workspace, which was closed. A task `done` as `not_adopted` keeps its status history
     /// and only changes its resolution: the work did ship. Non-empty `commits` replace its
-    /// commit records. Its dependents can then start.
+    /// commit records. Its dependents can then start. Either way the merge is a finish of
+    /// its own, reported to the chat in the same transaction.
     pub fn complete_task_merged_with(
         &mut self,
         id: TaskId,
@@ -660,6 +671,8 @@ impl Storage {
         if changes_status {
             record_event(&tx, id, TaskStatus::Done, at)?;
         }
+        let finish = Finish::MergedWith(merged_with.clone());
+        super::chat::record_finish(&tx, id, &task.title, &finish, at)?;
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
@@ -817,7 +830,8 @@ impl Storage {
     /// Moves a task to `status` if its current status allows it, recording the change;
     /// pausing is a move back to `planned`. Starting requires all dependencies to be
     /// done. The pull request checks that guard `in_review` and `done` are up to the
-    /// caller; a task moved to `done` here counts as merged.
+    /// caller; a task moved to `done` here counts as merged, and is reported to the chat as
+    /// completed, since no merge was seen.
     pub fn set_task_status(&mut self, id: TaskId, status: TaskStatus) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
@@ -832,6 +846,9 @@ impl Storage {
             params![id.0, status.as_str(), resolution],
         )?;
         record_event(&tx, id, status, at)?;
+        if status == TaskStatus::Done {
+            super::chat::record_finish(&tx, id, &task.title, &Finish::Completed, at)?;
+        }
         let changed = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(changed)

@@ -266,8 +266,31 @@ message without storing or typing it again. The lead reads the message with the 
 `take_pending` and answers with `reply_in_chat`, as its prompt tells it to. Both store the
 message in the database and send the `chat-changed` event, so every open client reloads
 `list_chat_messages` (the latest 500 messages). Each client keeps the ID of the last
-message it showed in the open chat in local storage and counts the lead's later replies as
-unread.
+message it showed in the open chat in local storage and counts the lead's later replies,
+and the server's finish reports, as unread.
+
+#### Finish reports
+
+The server reports every task finish in the chat itself, whether the lead runs or not:
+completing or concluding in the app, through MCP, by the background check, or with
+`merged_with`, including a task done as not adopted that turns out to have shipped with
+another pull request (its resolution changes without a new status). The change that
+finishes the task stores a `task_results` row (`kind`, `pull_request_number`,
+`pull_request_url`, `commit_sha`) and a chat message with author `system` pointing at it,
+in one transaction: a crash keeps both or neither, and `result_id` is unique, so each
+finish is stored in the chat once. It then sends `chat-changed`. The kind is what was seen:
+
+- `merged`: the task's pull request was seen merged (with its merge commit), its branch was
+  seen merged into the base branch locally, or it shipped with another merged pull request.
+- `pr_ready`: its criteria were met while its pull request was open with passing checks
+  (with the head commit the checks ran on). Toodo completes such a task without a merge, so
+  the report never calls it merged.
+- `not_adopted`: it was concluded, with the first line of the conclusion.
+- `completed`: its criteria were met with neither, e.g. manual criteria only.
+
+A report is no message of the lead or a person: it marks no message as seen, does not end
+the lead's typing dots, is not in the lead's inbox (the lead gets the task event), and never
+confirms an action. The panel shows it as a notice of its own, and it is not read aloud.
 
 The chat also takes voice: a microphone button dictates a message and sends it, and the
 lead's new replies can be read aloud (off by default, a per-browser setting). Both run in
@@ -315,7 +338,9 @@ its calls by the lead token:
   the command did not run; the task is started either way.
 - **Record.** Each task the lead creates, starts, completes, or concludes gets a
   progress note in its history ("Started by the Toodo lead and ran `...` in its pane
-  ...") and a lead message in the chat, and the `chat-changed` event fires.
+  ..."). Creating and starting also post a lead message in the chat, and the
+  `chat-changed` event fires; a completion or conclusion is reported by the server's
+  finish report instead, so it is not posted twice.
 - **Confirm.** `conclude_task`, `complete_task` with `merged_with`, and `complete_task`
   of a task awaiting completion (which confirms its manual criteria for a person) do
   nothing when the lead first calls them: Toodo posts a request with a random
