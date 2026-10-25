@@ -20,7 +20,7 @@ use crate::commands::events::{
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
 use crate::domain::model;
-use crate::{adapters, commands, connection, mcp, storage};
+use crate::{adapters, commands, connection, mcp, remote, storage};
 
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
@@ -93,6 +93,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::lead::list_chat_messages,
             commands::lead::send_chat_message,
             connection::set_connection,
+            remote::access::get_access_token,
+            remote::access::set_access_token,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
@@ -201,6 +203,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(remote::plugin())
         .invoke_handler(builder.invoke_handler())
         .on_window_event(|window, event| {
             // Closing the main window hides it to the tray; Quit in the tray menu exits.
@@ -217,6 +220,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let connection = connection::load(&data_dir);
+            app.manage(remote::access::AccessTokens::load(&data_dir));
             create_main_window(app, &connection)?;
             if connection.server.is_some() {
                 return Ok(());

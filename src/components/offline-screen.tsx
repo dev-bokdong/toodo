@@ -16,6 +16,8 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
     <>
       {offline && <OfflineBanner retrying={state === "retrying"} />}
       {children}
+      {/* Room to scroll the end of the page out from under the banner, e.g. the service token fields. */}
+      {offline && <div aria-hidden className="h-40" />}
     </>
   );
 }

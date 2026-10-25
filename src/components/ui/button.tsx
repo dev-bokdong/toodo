@@ -46,14 +46,15 @@ function Button({
   variant = "default",
   size = "default",
   autoFocus,
-  changesData = false,
+  changesData,
   disabled,
   ...props
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants> & { changesData?: boolean }) {
   // A button that changes data waits while the web app cannot reach the server.
   const state = useSyncExternalStore(subscribeReachability, reachability)
   const serverDown = state === "unreachable" || state === "retrying"
-  const pausesWithServer = changesData || props.type === "submit"
+  // A submit button does, unless it says otherwise (`changesData={false}`).
+  const pausesWithServer = changesData ?? props.type === "submit"
   // Base UI does not pass autoFocus on to the element, so a button that appears in place of
   // another (a confirm step's "Back") is focused here.
   const element = useRef<HTMLButtonElement>(null)

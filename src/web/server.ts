@@ -1,8 +1,10 @@
 /**
- * The `toodo-server` the app talks to: where its API is, and under which keys what the app
- * keeps for it (its access token, the read mark of the chat) is stored, so that each server
- * keeps its own. The web build talks to the server that serves it, with relative URLs; the
- * desktop app connected to a server talks to that server's origin.
+ * The `toodo-server` the app talks to: where its API is, how to send it requests, and under
+ * which keys what the app keeps for it (its access token, the read mark of the chat) is
+ * stored, so that each server keeps its own. The web build talks to the server that serves
+ * it, with relative URLs; the desktop app connected to a server sends its requests to that
+ * server's origin from Rust (see `src/client/transport.ts`), with the server's Cloudflare
+ * Access service token if it has one.
  */
 import { connectedServer } from "@/lib/platform";
 
@@ -13,13 +15,25 @@ export interface Server {
   url(path: string): string;
   /** The local storage key of `name` for this server. */
   key(name: string): string;
+  /** `fetch` for `path` (starting with "/") on the server. */
+  fetch(path: string, init?: RequestInit): Promise<Response>;
 }
 
 export function server(origin: string | null): Server {
   if (origin === null) {
-    return { id: "", url: (path) => path, key: (name) => name };
+    return { id: "", url: (path) => path, key: (name) => name, fetch: (path, init) => fetch(path, init) };
   }
-  return { id: origin, url: (path) => `${origin}${path}`, key: (name) => `${name}@${origin}` };
+  const url = (path: string) => `${origin}${path}`;
+  return {
+    id: origin,
+    url,
+    key: (name) => `${name}@${origin}`,
+    // The web build has no app to send requests from, and leaves the transport out.
+    fetch: async (path, init) =>
+      import.meta.env.MODE === "web"
+        ? fetch(url(path), init)
+        : (await import("@/client/transport")).remoteFetch(url(path), init),
+  };
 }
 
 /** The server this app talks to. */

@@ -36,6 +36,16 @@ desktop = [
   "dep:tauri-plugin-process",
   "dep:tauri-plugin-notification",
   "dep:tauri-plugin-opener",
+  # Requests to a `toodo-server` the app connects to (see `src/remote/`).
+  "tokio/sync",
+  "tokio/time",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:futures-util",
+  "futures-util?/sink",
+  "futures-util?/alloc",
+  "dep:tokio-tungstenite",
+  "dep:base64",
 ]
 # The headless server (`toodo-server`): the same commands over HTTP for the web build of
 # the frontend. Build it without the default features.
@@ -80,6 +90,7 @@ ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"], optional = true }
 base64 = { version = "0.22", optional = true }
+tokio-tungstenite = { version = "0.29", default-features = false, optional = true }
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 tokio = { version = "1.53.3", features = ["net", "rt", "macros"] }
 getrandom = { version = "0.3", features = ["std"] }

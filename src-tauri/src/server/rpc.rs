@@ -344,6 +344,8 @@ mod tests {
         "restore_database",
         "save_report",
         "set_connection",
+        "get_access_token",
+        "set_access_token",
     ];
 
     /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.
