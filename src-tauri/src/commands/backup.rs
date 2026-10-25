@@ -172,6 +172,21 @@ pub fn export_file_name(storage: &StorageState) -> String {
     backup::export_file_name(lock(storage).now())
 }
 
+/// Adds the workspaces, tasks, and memory of the Toodo database at `path`, such as one of
+/// the former desktop app, to the data (see [`storage::Storage::import`]), after saving
+/// the current data as a pre-restore backup, which is returned with what was added.
+pub fn import_file(
+    storage: &StorageState,
+    backups: &Backups,
+    path: &Path,
+) -> storage::Result<(BackupFile, storage::ImportSummary)> {
+    let staged = storage::stage_backup(path)?;
+    let mut storage = lock(storage);
+    let safety = storage.backup_into(&backups.dir, BackupKind::PreRestore)?;
+    let summary = storage.import(&staged)?;
+    Ok((safety, summary))
+}
+
 fn restore(storage: &StorageState, backups: &Backups, path: &Path) -> storage::Result<BackupFile> {
     let staged = storage::stage_backup(path)?;
     let mut storage = lock(storage);

@@ -74,10 +74,14 @@ pub const DEFAULT_PORT: u16 = 47616;
 const EVENT_BUFFER: usize = 64;
 
 const USAGE: &str = "Usage: toodo-server [--version]
+       toodo-server import FILE
 
 Serves Toodo on one port: the web app, its API, and the MCP server for agents.
 --version prints the version, which is the version of the Toodo release it came from,
 and the commit it was built from.
+import adds the workspaces, tasks, and memory of the Toodo database FILE (e.g. a copy
+of the former Windows app's toodo.sqlite3) to the data in TOODO_DATA_DIR, after a
+pre-restore backup; stop the running server first.
 
 Environment:
   TOODO_LISTEN    address to listen on (default 127.0.0.1:47616)
@@ -269,6 +273,15 @@ pub fn main() {
         println!("{}", version());
         return;
     }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let source = match args.as_slice() {
+        [] => None,
+        [command, file] if command == "import" => Some(PathBuf::from(file)),
+        _ => {
+            eprintln!("toodo-server: unexpected arguments {args:?}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
     let config = match Config::from_env(|name| std::env::var(name).ok()) {
         Ok(config) => config,
         Err(error) => {
@@ -276,10 +289,41 @@ pub fn main() {
             std::process::exit(2);
         }
     };
-    if let Err(error) = run(config) {
+    let result = match source {
+        Some(source) => import(&config, &source),
+        None => run(config),
+    };
+    if let Err(error) = result {
         eprintln!("toodo-server: {error}");
         std::process::exit(1);
     }
+}
+
+/// Imports the Toodo database at `source` into the data directory, see
+/// [`backup::import_file`].
+fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    create_private_dir(&config.data_dir)?;
+    let storage = Mutex::new(Storage::open(&config.data_dir.join(DATABASE_FILE))?);
+    let backups = Backups::load(&config.data_dir);
+    let (safety, summary) = backup::import_file(&storage, &backups, source)?;
+    println!(
+        "Saved the data before the import as {}",
+        safety.path.display()
+    );
+    println!(
+        "Imported {} workspaces, {} tasks, and {} memory entries from {}.",
+        summary.workspaces,
+        summary.tasks,
+        summary.memory_entries,
+        source.display()
+    );
+    if summary.task_id_offset > 0 {
+        println!(
+            "Task #N of the imported database is task #(N + {}) here.",
+            summary.task_id_offset
+        );
+    }
+    Ok(())
 }
 
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
