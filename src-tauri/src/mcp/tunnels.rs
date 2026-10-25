@@ -1,8 +1,8 @@
 //! Reverse tunnels that let agents on SSH machines reach the MCP server: one `ssh -R`
-//! forward to every machine with an SSH workspace, so `http://127.0.0.1:47615/mcp` on
-//! that machine reaches this app. A forward that ends is opened again after a growing
-//! delay; forwards of machines without workspaces, and all of them when the app exits,
-//! are stopped.
+//! forward of the server's port to every machine with an SSH workspace, so
+//! `http://127.0.0.1:<port>/mcp` on that machine reaches this server. A forward that ends
+//! is opened again after a growing delay; forwards of machines without workspaces, and all
+//! of them when the server stops, are stopped.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};

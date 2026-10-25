@@ -98,9 +98,6 @@ if ! [[ $listen =~ ^(.+):([0-9]+)$ ]]; then
 fi
 listen_host=${BASH_REMATCH[1]}
 listen_port=${BASH_REMATCH[2]}
-if [ "$listen_port" = 47615 ]; then
-  die "port 47615 is the desktop app's MCP tunnel port; pick another (see docs/server.md)"
-fi
 # Health checks reach a wildcard address through loopback.
 case "$listen_host" in
   0.0.0.0) check_host=127.0.0.1 ;;
