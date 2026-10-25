@@ -111,20 +111,10 @@ toodo-server
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
-| `TOODO_LEAD` | `on` | `off` runs no lead; `external` runs none and keeps the chat for a lead outside the server (see [Lead](#lead) and [`external-lead.md`](external-lead.md)) |
-| `TOODO_LEAD_COMMAND` | omo (see below) | Shell command that starts the lead agent |
-| `TOODO_LEAD_MODEL` | none | Model for the lead, passed to the command as `$TOODO_LEAD_MODEL` |
-| `TOODO_LEAD_DIR` | `$TOODO_DATA_DIR/lead` | The lead's workspace |
-| `TOODO_LEAD_NAME` | `Lead` | The lead's name in the chat, up to 40 characters |
-| `TOODO_LEAD_AVATAR` | none (a generic icon) | PNG, JPEG, WebP, or GIF file of up to 256 KiB with the lead's picture in the chat; read once at start |
 
-On first start the data directory gets three access tokens:
+On first start the data directory gets two access tokens:
 
 - `mcp-token`: agents send it to `/mcp` as `Authorization: Bearer <token>`.
-- `lead-token`: the lead's token for `/mcp`, which tells the tools that the lead calls
-  them (see [Lead tools](#lead-tools)). Only the lead's launcher carries it, or, with
-  `TOODO_LEAD=external`, the lead outside the server. It also opens `GET /api/events`,
-  and nothing else under `/api`.
 - `web-token`: the shared web token. A browser signs in with it once and is registered
   as a device with a token of its own (see [Devices](#devices)); `/api` accepts the
   shared token too, so existing clients keep working.
@@ -211,172 +201,10 @@ contents of `mcp-token`):
 Agents on the server's SSH machines reach the same URL through the reverse tunnels the
 server keeps open to them.
 
-### Lead
+### Agent MCP Tools
 
-The server keeps one lead agent running in herdr. People talk to it in its pane (or
-through the pane view), and it turns their requests into Toodo tasks, starts them, runs
-coding agents in their worktrees, and follows them up, with Toodo as its only record of
-the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
+Besides the regular task tools, two arguments help an agent wire and start a plan:
 
-- **Workspace.** On first start the server creates `TOODO_LEAD_DIR` as a new git
-  repository without a remote and adds it as the workspace "Lead". The lead keeps
-  briefs, research, and scratch files there and never pushes it. Deleting the workspace
-  in Toodo only makes the server add it again on its next check; the files stay.
-- **Pane.** The server opens the workspace in herdr and runs the agent in its pane. Every
-  5 seconds it checks the pane: when the pane's shell is back in the foreground, the
-  agent has exited and is started again in the same pane. An agent that exits within a
-  minute of starting is retried after 10 s, 30 s, 1 min, 2 min, then every 5 min, and
-  after three such exits in a row the lead is reported `failed`. A closed pane or herdr
-  workspace is opened again. After a server restart an agent still running in the pane
-  is kept, not started a second time. When the server stops (Ctrl+C or SIGTERM) it
-  stops checking, waiting up to 10 s for a check in progress, then closes the lead's
-  herdr workspace, ending the agent; the next start opens it again.
-- **Command.** The server writes `lead-start` (owner-only, `0600`) and `lead-prompt.md`
-  to the data directory and types `sh <data dir>/lead-start` into the pane. The launcher
-  exports `TOODO_MCP_URL`, `TOODO_MCP_TOKEN` (the contents of `lead-token`),
-  `TOODO_LEAD_MODEL`, `TOODO_LEAD_PROMPT`
-  (the prompt file), and `TOODO_LEAD_DIR`, changes to the workspace, and runs
-  `TOODO_LEAD_COMMAND` with `sh`. The default runs omo:
-
-  ```sh
-  omo --approve ${TOODO_LEAD_MODEL:+--model "$TOODO_LEAD_MODEL"} \
-    --append-system-prompt "$TOODO_LEAD_PROMPT"
-  ```
-
-  Another agent works the same way, for example
-  `claude ${TOODO_LEAD_MODEL:+--model "$TOODO_LEAD_MODEL"} --append-system-prompt "$(cat "$TOODO_LEAD_PROMPT")"`.
-- **MCP.** The server writes this server's entry, named `toodo`, into the workspace's
-  `.omo/mcp.json` (omo, `bearerTokenEnv`) and `.mcp.json` (Claude Code, an
-  `Authorization` header with `${TOODO_MCP_TOKEN}`), keeping other servers in those
-  files. A file that is not plain JSON (comments included) is left alone and the lead is
-  reported `failed` until it is fixed or removed. Neither file holds the token, which only the launcher's environment carries, so
-  the lead reaches its own server even when another Toodo server uses a different token.
-  A `toodo` server in the agent's global configuration takes precedence over the project
-  one in omo; remove it, or point it at this server, on the machine the lead runs on.
-
-`get_lead` returns the lead's status for the chat panel: `{ state, workspaceId,
-herdrWorkspaceId, paneId, agent, agentStatus, typing, restarts, startedAt, error,
-connected, lastContactAt }`, where `state` is `disabled`, `starting`, `running`,
-`restarting`, `failed`, or `external`. The `lead-changed` event carries the same object
-whenever it changes. The desktop app has no lead, and always reports `disabled`.
-`get_lead_profile` returns how the chat shows the lead, `{ name, avatar }`: the name from
-`TOODO_LEAD_NAME` and the picture from `TOODO_LEAD_AVATAR` as a `data:` URL, or `null`
-for a generic icon. Both apply in every lead mode, outside leads included.
-
-With `TOODO_LEAD=external` the server runs no lead, opens no herdr workspace for one,
-and reports `external`: the chat, the inbox, the receipts, and the finish reports work as
-below, and a lead outside the server reads and answers them with the lead token.
-`connected` and `lastContactAt` tell whether it is in touch. See
-[`external-lead.md`](external-lead.md) for that API.
-
-The web app talks to the lead in a floating chat: a round button with the lead's picture at the bottom right of
-every view opens a chat panel over it, or a full-screen sheet on a phone. While the chat is
-closed, the button shows the count of unread replies, and dots while the lead is typing.
-The panel keeps an unsent message while closed or while moving between views. `send_chat_message { text, clientId }`
-stores the message in the lead's inbox first, then, while the lead runs, types only its
-ID into the lead's pane (`[Toodo inbox] chat-12 - take them with the Toodo MCP tool
-take_pending`) and marks it delivered. It is accepted while the lead starts, restarts,
-or fails too, and by a server with an outside lead (which reads it itself), and rejected
-only with `TOODO_LEAD=off`; a `clientId` already stored returns that
-message without storing or typing it again. The lead reads the message with the MCP tool
-`take_pending` and answers with `reply_in_chat`, as its prompt tells it to. Both store the
-message in the database and send the `chat-changed` event, so every open client reloads
-`list_chat_messages` (the latest 500 messages, and any older message of a person the lead
-has not handled yet; see Receipts below). Each client keeps the ID of the last
-message it showed in the open chat in local storage and counts the lead's later replies,
-and the server's finish reports, as unread.
-
-#### Finish reports
-
-The server reports every task finish in the chat itself, whether the lead runs or not:
-completing or concluding in the app, through MCP, by the background check, or with
-`merged_with`, including a task done as not adopted that turns out to have shipped with
-another pull request (its resolution changes without a new status). The change that
-finishes the task stores a `task_results` row (`kind`, `pull_request_number`,
-`pull_request_url`, `commit_sha`) and a chat message with author `system` pointing at it,
-in one transaction: a crash keeps both or neither, and `result_id` is unique, so each
-finish is stored in the chat once. It then sends `chat-changed`. The kind is what was seen:
-
-- `merged`: the task's pull request was seen merged (with its merge commit), its branch was
-  seen merged into the base branch locally, or it shipped with another merged pull request.
-- `pr_ready`: its criteria were met while its pull request was open with passing checks
-  (with the head commit the checks ran on). Toodo completes such a task without a merge, so
-  the report never calls it merged.
-- `not_adopted`: it was concluded, with the first line of the conclusion.
-- `completed`: its criteria were met with neither, e.g. manual criteria only.
-
-A report is no message of the lead or a person: it marks no message as seen, does not end
-the lead's typing dots, is not in the lead's inbox (the lead gets the task event), and never
-confirms an action. The panel shows it as a notice of its own, and it is not read aloud.
-
-The chat also takes voice: a microphone button dictates a message and sends it, and the
-lead's new replies can be read aloud (off by default, a per-browser setting). Both run in
-the browser, not on the server; see [`voice.md`](voice.md).
-
-#### Lead inbox
-
-Nothing meant for the lead is lost while it restarts. People's chat messages
-(`chat_messages`) and the status changes of tasks the lead follows, a task reaching
-`in_review` or `done` (`task_events` rows with `for_lead`), wait as pending until the
-lead takes them; their IDs are `chat-<id>` and `event-<id>`.
-
-- **Signal.** Every 5 seconds, while the lead runs, the server types the IDs of new items
-  into its pane as one `[Toodo inbox] ...` line: each message not delivered yet (stored
-  while the lead was not running, or when typing it failed, for example when the server
-  stopped between storing and typing) and each new event. A new agent session gets the
-  IDs of everything still pending once. The pane never gets the text of an item.
-- **Take.** `take_pending { ids? }`, for the lead token only, returns the items (`kind`
-  `chat` with `body`, or `task_event` with `taskId`, `title`, `status`) and marks them
-  taken; a taken message counts as delivered and seen. Without `ids` it returns the oldest
-  pending items, up to 50, with `remaining`; with `ids` it returns those items even if
-  taken before (`takenBefore`), and lists unknown IDs in `missing`. The lead's prompt
-  tells it to take everything at the start of every session.
-- **Request IDs.** `create_task` and `start_task` take `request_id`, which the lead
-  builds from the item it acts on (`chat-12/create-1`). The ID is kept on the task event
-  the call made; calling again with it returns that task and creates, starts, or runs
-  nothing, so an item handled again after a restart does not repeat its effects.
-
-#### Receipts
-
-Each person's message shows how far it got. `delivered` (its ID reached the pane) and
-`seen` (the lead started a turn after that, or replied) are the server's observations;
-`seen` is an estimate and never counts as handled. The lead itself writes the two
-receipts that say it acted, and only with the lead token:
-
-- **Acknowledged.** `ack_chat { ids }` records `ackedAt`: the lead received the message
-  and is on it. It is never an approval, and confirms nothing.
-- **Handled.** `reply_in_chat { text, handles }` posts a reply and records it as what
-  handled the messages in `handles`; `mark_chat_handled { id, reply_id | task_id }` links
-  a reply posted earlier, or a task. A reply must be the lead's and newer than the message;
-  a task must carry a request ID of the message (`chat-12` or `chat-12/...`) on one of its
-  events. Other links, other authors' messages, and event IDs are rejected, and nothing is
-  recorded for a call with one bad ID. Handled means answered or turned into a task, not
-  that the task is done.
-
-Both are kept once: repeating a call changes nothing, and a message handled before keeps
-its first time and link, so a receipt never goes back. Handling a message acknowledges it
-too. A message gets `dueAt`, its time plus 10 minutes by the server's clock, when it is
-stored; past it and unhandled it is `overdue`, decided by the server when it lists the
-chat, and the supervisor sends `chat-changed` when a message falls due so that clients show
-it. Messages stored before receipts existed have no `dueAt` and are never overdue. A take
-without IDs also returns `open`: the messages taken before and never handled, however
-far back in the history.
-
-Each `done` event the lead follows links the system's finish report of it (`report_id`,
-written in the transaction of the finish; earlier events got theirs from the result stored
-with them), and `take_pending` returns it as `reportId`, so the lead does not report the
-finish again.
-
-#### Lead tools
-
-The lead drives tasks through the same MCP tools as other agents, and the server knows
-its calls by the lead token:
-
-- **Skill.** `read_toodo_skill` returns the lead skill (`src-tauri/src/mcp/toodo-lead-skill.md`,
-  named `toodo-lead`) for the lead token and the worker skill (`toodo-skill.md`) for
-  `mcp-token`. The lead skill is the lead's manual for running the work: requests into
-  tasks, links, starting agents, following them up, merge rules, chat reports, and
-  memory. The prompt tells the lead to read it at the start of every session.
 - **Create.** `create_task` takes `depends_on` and `related`, so a plan is wired in one
   call; an unknown task in either rejects the call and creates nothing.
 - **Start.** `start_task` takes `agent_command`, which Toodo runs in the shell pane of
@@ -384,26 +212,10 @@ its calls by the lead token:
   for workspaces on the server's machine). The reply is the task with `panes`, `ranIn`
   (the pane the command ran in), and `paneError` when the panes could not be listed or
   the command did not run; the task is started either way.
-- **Record.** Each task the lead creates, starts, completes, or concludes gets a
-  progress note in its history ("Started by the Toodo lead and ran `...` in its pane
-  ..."). Creating and starting also post a lead message in the chat, and the
-  `chat-changed` event fires; a completion or conclusion is reported by the server's
-  finish report instead, so it is not posted twice.
-- **Confirm.** `conclude_task`, `complete_task` with `merged_with`, and `complete_task`
-  of a task awaiting completion (which confirms its manual criteria for a person) do
-  nothing when the lead first calls them: Toodo posts a request with a random
-  six-character code to the chat, naming the action and its arguments, and rejects the
-  call. Once a person answers `confirm <code>` in the chat, the lead calls the tool again
-  with the same arguments and `confirmation` set to the code. The request must still be
-  among the latest chat messages and match the action exactly, so a code confirms only
-  the action it was asked for. The lead cannot answer for a person: it posts only through
-  `reply_in_chat`, as the lead, and has no web or device token.
-- **Merge.** Toodo has no merge tool. The lead's prompt forbids merging pull requests and
-  pushing to base branches; agents that implement tasks follow the workspace's agent
-  merge policy, which never allows merging past the base branch.
 
-Calls with `mcp-token` behave as before: the worker skill, no notes or chat messages,
-and no confirmations.
+`read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`). Toodo has
+no merge tool: agents follow the workspace's agent merge policy, which never allows merging
+past the base branch.
 
 ### systemd
 
@@ -597,9 +409,9 @@ The app keeps a list of servers, for example a home server and a work server:
   of its own: the server does all of that. It keeps its window, tray, updates, and
   notifications. The saved servers and the one in use are `connection.json` in the app
   data directory.
-- The app keeps its token and the lead chat's read mark per server address, so switching
-  between servers signs in to each once and keeps them apart. The theme and the voice
-  settings are the app's own and stay the same on every server.
+- The app keeps its token per server address, so switching between servers signs in to
+  each once and keeps them apart. The theme is the app's own and stays the same on every
+  server.
 - The app sends its requests to the server from its Rust side, not from its pages: the
   API calls, the event stream, backup downloads and uploads, and the pane view's
   WebSocket. So no CORS applies, and the app can add a Cloudflare Access service token
@@ -681,8 +493,7 @@ Things to know:
   is `404` and malformed arguments `400`, both with a text body.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
-  desktop app's events, and `lead-changed` with the result of `get_lead` (see
-  [Lead](#lead)).
+  desktop app's events.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
