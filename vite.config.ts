@@ -3,7 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig, normalizePath, type Plugin } from "vite";
+import { defineConfig } from "vite";
 import { pwa } from "./vite-pwa.ts";
 
 const host = process.env.TAURI_DEV_HOST;
@@ -24,32 +24,6 @@ const webModules = {
   "@tauri-apps/plugin-updater": "updater",
 };
 
-/**
- * The desktop app connected to a `toodo-server` sends its commands and gets its events
- * there. Only the app's own imports of the Tauri core and event APIs (the generated
- * bindings among them) go through `src/client`, which picks the app or the server; the
- * Tauri plugins keep the real APIs, so their calls always reach the app.
- */
-function clientModules(): Plugin {
-  const shims: Record<string, string> = {
-    "@tauri-apps/api/core": "core",
-    "@tauri-apps/api/event": "event",
-  };
-  const srcDir = `${normalizePath(src)}/`;
-  const clientDir = `${srcDir}client/`;
-  return {
-    name: "toodo-client-modules",
-    enforce: "pre",
-    resolveId(source, importer) {
-      const shim = shims[source];
-      if (shim === undefined || importer === undefined) return null;
-      const from = normalizePath(importer);
-      if (!from.startsWith(srcDir) || from.startsWith(clientDir)) return null;
-      return `${clientDir}${shim}.ts`;
-    },
-  };
-}
-
 /** Where `npm run dev:web` forwards API and MCP requests: a running `toodo-server`. */
 const server = process.env.TOODO_SERVER ?? "http://127.0.0.1:47616";
 
@@ -58,8 +32,6 @@ export default defineConfig(({ mode }) => ({
     react(),
     tailwindcss(),
     ...(mode === "web" ? [pwa()] : []),
-    // Unit tests mock the Tauri APIs themselves and test `src/client` directly.
-    ...(mode !== "web" && mode !== "test" ? [clientModules()] : []),
   ],
   resolve: {
     alias: [

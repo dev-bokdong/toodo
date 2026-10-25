@@ -260,34 +260,6 @@ export const commands = {
 	 *  returned.
 	 */
 	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_backup", { name })),
-	/**  The server in use and the servers saved in the app. */
-	getConnection: () => typedError<Connection, CommandError>(__TAURI_INVOKE("get_connection")),
-	/**
-	 *  Sets which server the app uses: `server` (an `http` or `https` address, saved if it is
-	 *  not saved yet) or, for `None`, the local data. Returns the server as it will be used.
-	 *  The app uses it from its next start, or, switching from one server to another, from the
-	 *  window's next load.
-	 */
-	setConnection: (server: string | null) => typedError<string | null, CommandError>(__TAURI_INVOKE("set_connection", { server })),
-	/**  Saves the server at `url` as `name`, or renames it if it is saved already. */
-	saveServer: (url: string, name: string) => typedError<Connection, CommandError>(__TAURI_INVOKE("save_server", { url, name })),
-	/**
-	 *  Removes the saved server at `url`, and the Access service token the app keeps for it;
-	 *  the server in use cannot be removed.
-	 */
-	removeServer: (url: string) => typedError<Connection, CommandError>(__TAURI_INVOKE("remove_server", { url })),
-	/**  The Cloudflare Access service token kept for the server at `server`, without its secret. */
-	getAccessToken: (server: string) => typedError<{
-	clientId: string,
-} | null, CommandError>(__TAURI_INVOKE("get_access_token", { server })),
-	/**
-	 *  Keeps `token` as the Cloudflare Access service token of the server at `server`, sent
-	 *  with every request to it from now on, or removes the server's token for `None`.
-	 */
-	setAccessToken: (server: string, token: {
-	clientId: string,
-	clientSecret: string,
-} | null) => typedError<null, CommandError>(__TAURI_INVOKE("set_access_token", { server, token })),
 };
 
 /** Events */
@@ -301,17 +273,6 @@ export const events = {
 };
 
 /* Types */
-/**  The service token kept for a server, without its secret. */
-export type AccessTokenInfo = {
-	clientId: string,
-};
-
-/**  A service token entered by the user. */
-export type AccessTokenInput = {
-	clientId: string,
-	clientSecret: string,
-};
-
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
 export type AgentMerge = 
 /**  Agents stop once the pull request is open; the user merges it. */
@@ -434,13 +395,6 @@ export type CommitRecord = {
 	author: string,
 	/**  Commit timestamp in seconds since the Unix epoch. */
 	committedAt: number,
-};
-
-export type Connection = {
-	/**  The origin of the server in use, e.g. `https://toodo.example`; `None` for local data. */
-	server: string | null,
-	/**  The servers saved in the app, in the order they were added; `server` is one of them. */
-	servers?: SavedServer[],
 };
 
 /**  A completion criterion of a task. */
@@ -711,13 +665,6 @@ export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "wor
 
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";
-
-/**  A server saved in the app, to switch to by its name. */
-export type SavedServer = {
-	name: string,
-	/**  The origin of the server. */
-	url: string,
-};
 
 export type Task = {
 	id: TaskId,

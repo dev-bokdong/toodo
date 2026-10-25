@@ -1,17 +1,9 @@
-//! The desktop app (Windows, and macOS as a client of a server): the Tauri shell that
-//! registers the commands, keeps their state, emits events to the frontend, and owns the
-//! tray icon (the menu bar icon on macOS) and the MCP server. Connected
-//! to a `toodo-server` (see [`connection`]), it keeps only the window and the tray: the
-//! frontend sends its commands to the server, and no local data or background work starts.
-//!
-//! The same shell builds the Android app, which is always a client of a server: it has no
-//! tray, updater, or local data, and adds links into the app.
+//! The Windows desktop app: the Tauri shell that registers the commands, keeps their
+//! state, emits events to the frontend, and owns the tray icon and the MCP server.
 
 use std::sync::{Arc, Mutex};
 
-#[cfg(desktop)]
-use tauri::menu::{IsMenuItem, Menu, MenuItem};
-#[cfg(desktop)]
+use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
@@ -26,7 +18,7 @@ use crate::commands::events::{
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
 use crate::domain::model;
-use crate::{adapters, commands, connection, mcp, remote, storage};
+use crate::{adapters, commands, mcp, storage};
 
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
@@ -95,12 +87,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::memory::update_memory,
             commands::memory::supersede_memory,
             commands::backup::restore_backup,
-            connection::get_connection,
-            connection::set_connection,
-            connection::save_server,
-            connection::remove_server,
-            remote::access::get_access_token,
-            remote::access::set_access_token,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
@@ -119,11 +105,6 @@ pub struct UpdateCheckRequested;
 
 const MAIN_WINDOW: &str = "main";
 
-#[cfg(desktop)]
-/// Whether the app checks for updates: releases carry updater artifacts for Windows only.
-const UPDATES: bool = cfg!(not(target_os = "macos"));
-
-#[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.unminimize();
@@ -133,27 +114,17 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 /// Adds the tray icon that keeps Toodo running after its window is closed.
-#[cfg(desktop)]
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Toodo", true, None::<&str>)?;
-    let check_updates = UPDATES
-        .then(|| {
-            MenuItem::with_id(
-                app,
-                "check_updates",
-                "Check for Updates",
-                true,
-                None::<&str>,
-            )
-        })
-        .transpose()?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for Updates",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&show];
-    if let Some(item) = &check_updates {
-        items.push(item);
-    }
-    items.push(&quit);
-    let menu = Menu::with_items(app, &items)?;
+    let menu = Menu::with_items(app, &[&show, &check_updates, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Toodo")
         .menu(&menu)
@@ -180,49 +151,11 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 show_main_window(tray.app_handle());
             }
         });
-    if cfg!(target_os = "macos") {
-        // A template image: macOS tints it to match the menu bar.
-        tray = tray
-            .icon(tauri::include_image!("icons/tray-template.png"))
-            .icon_as_template(true);
-    } else if let Some(icon) = app.default_window_icon() {
+    if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }
     tray.build(app)?;
     Ok(())
-}
-
-/// Opens the main window of the configuration, told which server to use before its page
-/// loads.
-fn create_main_window(app: &tauri::App, connection: &connection::Connection) -> tauri::Result<()> {
-    let config = app
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|window| window.label == MAIN_WINDOW)
-        .expect("tauri.conf.json defines the main window");
-    tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
-        .initialization_script(connection::init_script(connection))
-        .initialization_script(platform_script())
-        .build()?;
-    Ok(())
-}
-
-/// Tells the page which system the app runs on, for what differs there: no update checks
-/// where releases have no updater artifacts.
-fn platform_script() -> String {
-    let platform = serde_json::to_string(std::env::consts::OS).expect("a string serializes");
-    format!("window.__TOODO_PLATFORM__ = {platform};")
-}
-
-fn on_run_event(app: &AppHandle, event: tauri::RunEvent) {
-    // Clicking the Dock icon while the window is hidden brings it back.
-    #[cfg(target_os = "macos")]
-    if let tauri::RunEvent::Reopen { .. } = event {
-        show_main_window(app);
-    }
-    shut_down_on_exit(app, event);
 }
 
 fn shut_down_on_exit(app: &AppHandle, event: tauri::RunEvent) {
@@ -236,7 +169,6 @@ fn shut_down_on_exit(app: &AppHandle, event: tauri::RunEvent) {
     }
 }
 
-#[cfg(desktop)]
 fn export_bindings(builder: &Builder<tauri::Wry>) {
     builder
         .export(specta_typescript::Typescript::default(), BINDINGS_PATH)
@@ -244,22 +176,17 @@ fn export_bindings(builder: &Builder<tauri::Wry>) {
 }
 
 /// Runs the desktop app.
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = specta_builder();
 
-    // The bindings are written into the source tree, which only a desktop build can reach.
-    #[cfg(all(debug_assertions, desktop))]
+    #[cfg(debug_assertions)]
     export_bindings(&builder);
 
-    let app = tauri::Builder::default()
+    tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(remote::plugin());
-    #[cfg(desktop)]
-    let app = app
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             // Closing the main window hides it to the tray; Quit in the tray menu exits.
@@ -269,23 +196,13 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
-        });
-    #[cfg(mobile)]
-    let app = app.plugin(tauri_plugin_deep_link::init());
-    app.invoke_handler(builder.invoke_handler())
+        })
+        .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let connection = connection::load(&data_dir);
-            #[cfg(desktop)]
             create_tray(app)?;
-            app.manage(remote::access::AccessTokens::load(&data_dir));
-            create_main_window(app, &connection)?;
-            // The phone app keeps no data of its own; until it connects, it asks for a server.
-            if cfg!(mobile) || connection.server.is_some() {
-                return Ok(());
-            }
             let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;
             app.manage::<commands::StorageState>(Mutex::new(storage));
             app.manage(commands::backup::Backups::load(&data_dir));
@@ -333,7 +250,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(on_run_event);
+        .run(shut_down_on_exit);
 }
 
 impl Notifier for AppHandle {

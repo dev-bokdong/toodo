@@ -32,8 +32,6 @@ into a performance report.
 - [docs/workflow.md](docs/workflow.md): task lifecycle from planning to pull request.
 - [docs/server.md](docs/server.md): running Toodo headless on a Linux server, used from a
   browser.
-- [docs/android.md](docs/android.md): the Android app, a client of a server.
-- [docs/macos.md](docs/macos.md): the macOS app, a client of a server.
 
 ## Requirements
 
@@ -42,9 +40,7 @@ into a performance report.
 - Git for Windows, Windows OpenSSH, and the GitHub CLI (`gh`) on `PATH`
 
 Toodo can also run as a server on a Linux machine with herdr, used from a browser; see
-[docs/server.md](docs/server.md). The Android app connects to such a server (see
-[docs/android.md](docs/android.md)), and so does the macOS app on an Apple Silicon Mac (see
-[docs/macos.md](docs/macos.md)).
+[docs/server.md](docs/server.md).
 
 ## End-to-End Tests
 

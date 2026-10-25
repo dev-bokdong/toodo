@@ -3,7 +3,7 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": ["main"],
-  "platforms": ["linux", "macOS", "windows"],
+  "platforms": ["linux", "windows"],
   "permissions": [
     "core:default",
     "dialog:allow-open",
@@ -12,7 +12,6 @@
     "process:allow-restart",
     "notification:default",
     "opener:allow-open-url",
-    "opener:allow-default-urls",
-    "remote:default"
+    "opener:allow-default-urls"
   ]
 }

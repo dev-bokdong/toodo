@@ -307,8 +307,7 @@ You need a domain on Cloudflare and a Zero Trust organization (the free plan doe
    only your own identity, for example your e-mail address with the one-time PIN login. Do
    it before the hostname resolves, so nothing is ever reachable without it. Add no
    *Bypass* policy: the API, the event stream, and `/mcp` all sit behind the same
-   application. The only other policy it takes is a *Service Auth* one for the desktop app
-   (see [Through Cloudflare Access](#through-cloudflare-access)).
+   application.
 2. **A tunnel of its own.** Create a new, remotely managed tunnel (*Networks > Tunnels*)
    for the server instead of adding a hostname to a tunnel the machine already runs for
    something else: it gets its own token, can be stopped or deleted alone, and a mistake in
@@ -376,107 +375,6 @@ Things to know:
   `web-token` and the other devices keep working.
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
-
-### The Desktop App as a Client
-
-The desktop app can show a server's data instead of its own, as one more client of the
-server next to the browsers. Under **General** in Settings, add the server's address
-(for example `http://192.168.0.5:47616`) with a name such as "Home", and choose **Switch**;
-the app restarts, asks for `web-token` and a device name once, and then keeps a device
-token of its own, like a browser. **Use this computer's data** switches back; the local
-data is untouched meanwhile.
-
-The app keeps a list of servers, for example a home server and a work server:
-
-- The name of the server in use is at the top of the sidebar (in the header on a phone);
-  its menu switches to another saved server. Switching from one server to another only
-  reloads the window, so the other server shows within a second or two, with nothing of
-  the first one left: the cached data, the event stream, and the pane views go with the
-  page. Switching between a server and this computer's data restarts the app.
-- **Rename** changes a server's name; **Remove** takes it off the list and forgets the
-  app's token and Access service token for it (revoke that token under **Devices** on the
-  server, too). The server in use cannot be removed.
-- Each saved server has its own Cloudflare Access service token, if it needs one
-  ([Through Cloudflare Access](#through-cloudflare-access)), so switching servers sends
-  each one only its own.
-- **Sign in again** forgets the app's token for a server, so the app asks for `web-token`
-  again, at once for the server in use and otherwise when it switches to it. A token one
-  server revokes leaves the other servers signed in.
-- When the server in use does not answer, the offline banner names it and offers the
-  other saved servers.
-
-- Connected, the app starts no database, MCP server, SSH tunnels, or background checks
-  of its own: the server does all of that. It keeps its window, tray, updates, and
-  notifications. The saved servers and the one in use are `connection.json` in the app
-  data directory.
-- The app keeps its token per server address, so switching between servers signs in to
-  each once and keeps them apart. The theme is the app's own and stays the same on every
-  server.
-- The app sends its requests to the server from its Rust side, not from its pages: the
-  API calls, the event stream, backup downloads and uploads, and the pane view's
-  WebSocket. So no CORS applies, and the app can add a Cloudflare Access service token
-  (below). It only sends them to the server it uses (or one it keeps a service token
-  for); the token, not a cookie, authorizes each request. The server still answers CORS
-  requests from the app's origins (`http://tauri.localhost` and `https://tauri.localhost`
-  on Windows and Android, `tauri://localhost` on macOS and Linux).
-- The app must reach the server: on the same network, through an SSH tunnel
-  (`ssh -L 47616:127.0.0.1:47616 server` and `http://127.0.0.1:47616`), a VPN, or a
-  hostname behind Cloudflare Access with a service token.
-- Downloads of backups go through the WebView's own download handling.
-- The macOS app is only ever used this way; see [docs/macos.md](macos.md).
-
-#### Through Cloudflare Access
-
-Access lets a browser in after its login page, which the app cannot show. Give the app a
-**service token** instead: a client ID and secret it sends as `CF-Access-Client-Id` and
-`CF-Access-Client-Secret` with every request. This assumes the hostname, tunnel, and
-Access application of [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access).
-
-1. **Create the token.** In the Cloudflare dashboard, open **Zero Trust > Access controls >
-   Service credentials > Service Tokens** (older dashboards: **Access > Service Auth**) and
-   choose **Create Service Token**. Name it after the computer, for example `toodo
-   laptop`, and pick a **Service Token Duration**, for example 1 year. Copy the **Client
-   ID** and **Client Secret** now: Cloudflare shows the secret only once.
-2. **Let it in.** Open the Access application of the hostname (**Access controls >
-   Applications**, then *Configure*), and under **Policies** add a policy with the action
-   **Service Auth** that includes **Service Token** is the token you created. Keep the
-   *Allow* policy for your own sign-in next to it, so browsers keep working. Add no
-   *Bypass* policy and leave **Bypass OPTIONS requests to origin** off: the app sends no
-   CORS preflight, so everything stays behind Access.
-3. **Enter it in the app.** Under **General** in Settings, enter the server's address
-   (`https://toodo.example.com`) and, under **Cloudflare Access service token**, the
-   client ID and the client secret, and choose **Add server**; for a server saved
-   already, choose **Add service token** on it instead. Then **Switch** to it: the app
-   asks for `web-token` and a name once, and keeps a device token, as with any server.
-4. **Check from outside**, with the token (any machine; the answer must come from the
-   server, `401` without a Toodo token, not Access's `302` to its login):
-
-   ```sh
-   curl -s -o /dev/null -w '%{http_code}\n' \
-     -H "CF-Access-Client-Id: <client id>" -H "CF-Access-Client-Secret: <client secret>" \
-     https://toodo.example.com/api
-   ```
-
-Things to know:
-
-- The app keeps the tokens per server address in `access-tokens.json` in its app data
-  directory, readable by your user only. It never hands the secret to its pages, never
-  shows it again, and never writes it to a log; Settings shows the client ID only, on
-  the saved server. **Remove service token** forgets it; to replace it, choose **Change
-  service token**, enter a new client ID and secret, and choose **Save service token**,
-  which takes effect at once.
-- When Access turns a request away (no token, a wrong or revoked one, an expired one, or
-  no *Service Auth* policy for it), the app says so in its banner, with the client ID it
-  sent, and keeps retrying; it keeps its Toodo token, so fixing the service token is
-  enough. Access answers such requests with its login redirect or, with strict service
-  token authentication, with `401` or `403`; the app tells both from the server's own
-  answers by Access's `WWW-Authenticate: Cloudflare-Access` challenge.
-- Service tokens expire at the end of their duration. Before that, choose **Refresh** on
-  the token in the dashboard to extend it (the secret stays), or create a new one and
-  enter it in the app.
-- To revoke one computer's access, delete its service token in the dashboard; the app
-  then shows Access's refusal, and other computers with tokens of their own keep
-  working.
 
 ## Development
 

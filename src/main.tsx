@@ -3,8 +3,7 @@ import React, { type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "@/App";
 import "@/index.css";
-import { ServerSetup } from "@/components/server-connection";
-import { builtForWeb, connectedServer, mobileApp } from "@/lib/platform";
+import { builtForWeb } from "@/lib/platform";
 import { initTheme } from "@/lib/theme";
 import { onReachable, watchConnection } from "@/web/connection";
 import { watchInstallOffer } from "@/web/install";
@@ -23,15 +22,10 @@ function render(app: ReactNode) {
   );
 }
 
-if (mobileApp && connectedServer === null) {
-  // The Android app has no data of its own: it asks for a server first.
-  render(<ServerSetup />);
-} else if (builtForWeb || connectedServer !== null) {
-  // The web build, and the apps connected to a server, sign in to the server and follow it.
-  if (builtForWeb) {
-    // The browser may announce that it can install the app before the app has loaded.
-    watchInstallOffer();
-  }
+if (builtForWeb) {
+  // The web build signs in to the server that serves it and follows it.
+  // The browser may announce that it can install the app before the app has loaded.
+  watchInstallOffer();
   watchConnection();
   void Promise.all([
     import("@/components/server-access"),
@@ -44,7 +38,7 @@ if (mobileApp && connectedServer === null) {
       // What failed while the server was unreachable shows its data again.
       onReachable(() => void queryClient.invalidateQueries());
       // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
-      if (builtForWeb && import.meta.env.PROD && "serviceWorker" in navigator) {
+      if (import.meta.env.PROD && "serviceWorker" in navigator) {
         navigator.serviceWorker.register("/sw.js").catch((error: unknown) => {
           console.error("Toodo: could not register the service worker", error);
         });

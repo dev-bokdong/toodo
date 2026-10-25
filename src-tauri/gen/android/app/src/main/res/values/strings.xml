@@ -1,6 +1,0 @@
-<resources>
-    <string name="app_name">"Toodo"</string>
-    <string name="main_activity_title">"Toodo"</string>
-    <string name="shortcut_talk_short">Talk to the lead</string>
-    <string name="shortcut_talk_long">Talk to the lead by voice</string>
-</resources>

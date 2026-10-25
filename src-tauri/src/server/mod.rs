@@ -39,7 +39,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{any, get, post, put};
 use futures_util::Stream;
 use tokio::sync::broadcast;
-use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::adapters::git::{Git, ProcessRunner};
@@ -71,15 +70,6 @@ const WEB_TOKEN_FILE: &str = "web-token";
 /// and the server forwards its own port to its SSH machines the same way, so the two must
 /// differ to share a machine.
 pub const DEFAULT_PORT: u16 = mcp::PORT + 1;
-
-/// The origins of the desktop app's WebView (WebView2 on Windows and Android, WebKit on
-/// macOS and Linux). Connected to this server, the app calls the API from them, so the API
-/// answers their cross-origin requests; the bearer token, not a cookie, authorizes them.
-const DESKTOP_ORIGINS: &[&str] = &[
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-    "tauri://localhost",
-];
 
 /// Events kept for subscribers that read slower than they arrive; a subscriber that falls
 /// further behind skips the oldest.
@@ -427,30 +417,11 @@ fn router(
         .route("/api/panes/stream", get(panes::stream))
         .with_state(services.clone());
     let app = api.merge(streams).merge(mcp::router(services, mcp_token));
-    let app = match web_dir {
+    match web_dir {
         Some(dir) => app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
         None => app,
-    };
-    // Around everything, so that the app also reads answers outside the API routes, such
-    // as the connection check's request for `/api` itself.
-    app.layer(desktop_cors())
-}
-
-/// Lets the desktop app's WebView call the API across origins, answering its preflight
-/// requests before the token check, which they carry no token for.
-fn desktop_cors() -> CorsLayer {
-    use axum::http::{HeaderValue, Method, header};
-    CorsLayer::new()
-        .allow_origin(AllowOrigin::list(
-            DESKTOP_ORIGINS
-                .iter()
-                .map(|origin| HeaderValue::from_static(origin)),
-        ))
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
-        .expose_headers([header::CONTENT_DISPOSITION])
-        .max_age(std::time::Duration::from_secs(600))
+    }
 }
 
 async fn event_stream(
@@ -689,67 +660,6 @@ mod tests {
         assert!(status(address, "GET", "/tasks/1", None).contains(" 200 "));
         assert!(status(address, "GET", "/api/nothing", None).contains(" 401 "));
         assert!(status(address, "GET", "/api/nothing", Some("web")).contains(" 404 "));
-    }
-
-    #[test]
-    fn the_desktop_app_may_call_the_api_across_origins() {
-        let (address, _temp) = serve_router(None);
-        let preflight = |origin: &str| {
-            exchange(
-                address,
-                &format!(
-                    "OPTIONS /api/rpc/list_workspaces HTTP/1.1\r\nOrigin: {origin}\r\n\
-                     Access-Control-Request-Method: POST\r\n\
-                     Access-Control-Request-Headers: authorization, content-type"
-                ),
-                b"",
-            )
-        };
-        for origin in DESKTOP_ORIGINS {
-            let (status, headers, _) = preflight(origin);
-            assert!(status.contains(" 200 "), "{origin}: {status}");
-            assert!(
-                headers.contains(&format!("access-control-allow-origin: {origin}")),
-                "{origin}: {headers}"
-            );
-            assert!(headers.contains("authorization"), "{headers}");
-        }
-        let (_, headers, _) = preflight("https://evil.example");
-        assert!(
-            !headers.contains("access-control-allow-origin"),
-            "{headers}"
-        );
-
-        // The answers themselves, including a rejected token, can be read by the app.
-        let request = |token: &str| {
-            exchange(
-                address,
-                &format!(
-                    "POST /api/rpc/list_workspaces HTTP/1.1\r\nOrigin: http://tauri.localhost\r\n\
-                     Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
-                     Content-Length: 2"
-                ),
-                b"{}",
-            )
-        };
-        let (status, headers, _) = exchange(
-            address,
-            "GET /api HTTP/1.1\r\nOrigin: tauri://localhost",
-            b"",
-        );
-        assert!(status.contains(" 404 "), "{status}");
-        assert!(
-            headers.contains("access-control-allow-origin: tauri://localhost"),
-            "{headers}"
-        );
-        for (token, expected) in [("web", " 200 "), ("wrong", " 401 ")] {
-            let (status, headers, _) = request(token);
-            assert!(status.contains(expected), "{status}");
-            assert!(
-                headers.contains("access-control-allow-origin: http://tauri.localhost"),
-                "{headers}"
-            );
-        }
     }
 
     /// Sends `head` (request line and headers, without the blank line) and `body`; returns

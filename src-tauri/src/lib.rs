@@ -1,13 +1,9 @@
 mod adapters;
 mod commands;
 #[cfg(feature = "desktop")]
-mod connection;
-#[cfg(feature = "desktop")]
 mod desktop;
 pub mod domain;
 mod mcp;
-#[cfg(feature = "desktop")]
-mod remote;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod storage;

@@ -2,7 +2,6 @@
  * Devices of `toodo-server`: each browser signs in once with the shared web token and
  * then keeps a token of its own, which can be revoked without touching other devices.
  */
-import { connectedServer } from "@/lib/platform";
 import { activeServer } from "@/web/server";
 import { apiRequest, authorization, failureMessage } from "@/web/session";
 
@@ -68,10 +67,9 @@ export async function revokeDevice(id: number): Promise<Device> {
   return (await response.json()) as Device;
 }
 
-/** A name for this browser to start from, e.g. "Chrome on Android", or "Toodo app on Windows" for the desktop app. */
+/** A name for this browser to start from, e.g. "Chrome on Android". */
 export function guessDeviceLabel(userAgent: string): string {
   const browser =
-    (connectedServer !== null ? "Toodo app" : undefined) ??
     [
       ["Edg/", "Edge"],
       ["Firefox/", "Firefox"],

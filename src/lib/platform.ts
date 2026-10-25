@@ -1,37 +1,11 @@
-declare global {
-  interface Window {
-    /** The server the desktop app uses, set by the app before the page loads (see `src-tauri/src/connection.rs`). */
-    __TOODO_SERVER__?: string | null;
-    /** Set by the Android app before the page loads. */
-    __TOODO_MOBILE__?: boolean;
-    /** The system the desktop app runs on (`windows`, `macos`, `linux`), set by the app before the page loads. */
-    __TOODO_PLATFORM__?: string;
-  }
-}
-
 /** Whether this is the web build served by `toodo-server` rather than the desktop app. */
 export const builtForWeb = import.meta.env.MODE === "web";
 
-/** Whether this is the Android app, which is always a client of a `toodo-server`. */
-export const mobileApp = !builtForWeb && window.__TOODO_MOBILE__ === true;
-
 /**
- * The origin of the `toodo-server` the desktop app is connected to, or null when it shows
- * its own data (and in the web build, which is served by the server it talks to).
+ * Whether the data comes from `toodo-server`, as in the web build. Its "Local" machine is the
+ * server, so local paths are POSIX paths there.
  */
-export const connectedServer: string | null = builtForWeb ? null : (window.__TOODO_SERVER__ ?? null);
+export const runsOnServer = builtForWeb;
 
-/**
- * Whether the data comes from `toodo-server`: the web build, or the desktop app connected
- * to a server. Its "Local" machine is the server, so local paths are POSIX paths there.
- */
-export const runsOnServer = builtForWeb || connectedServer !== null;
-
-/** The system the desktop app runs on, or null in the web build. */
-export const appPlatform: string | null = builtForWeb ? null : (window.__TOODO_PLATFORM__ ?? null);
-
-/**
- * Whether the app checks for updates: releases carry updater artifacts for Windows only; the
- * Android and macOS apps are updated by installing a newer build.
- */
-export const checksForUpdates = !builtForWeb && !mobileApp && appPlatform !== "macos";
+/** Whether the app checks for updates: only the desktop app is updated by Toodo itself. */
+export const checksForUpdates = !builtForWeb;
