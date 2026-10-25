@@ -1,6 +1,8 @@
 mod adapters;
 mod commands;
 #[cfg(feature = "desktop")]
+mod connection;
+#[cfg(feature = "desktop")]
 mod desktop;
 pub mod domain;
 mod mcp;

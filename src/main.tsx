@@ -3,6 +3,7 @@ import React, { type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "@/App";
 import "@/index.css";
+import { builtForWeb, connectedServer } from "@/lib/platform";
 import { initTheme } from "@/lib/theme";
 import { onReachable, watchConnection } from "@/web/connection";
 import { watchInstallOffer } from "@/web/install";
@@ -21,10 +22,12 @@ function render(app: ReactNode) {
   );
 }
 
-// A literal condition, so the desktop build drops the web build's access form and event stream.
-if (import.meta.env.MODE === "web") {
-  // The browser may announce that it can install the app before the app has loaded.
-  watchInstallOffer();
+// The web build, and the desktop app connected to a server, sign in to the server and follow it.
+if (builtForWeb || connectedServer !== null) {
+  if (builtForWeb) {
+    // The browser may announce that it can install the app before the app has loaded.
+    watchInstallOffer();
+  }
   watchConnection();
   void Promise.all([
     import("@/components/server-access"),
@@ -37,7 +40,7 @@ if (import.meta.env.MODE === "web") {
       // What failed while the server was unreachable shows its data again.
       onReachable(() => void queryClient.invalidateQueries());
       // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
-      if (import.meta.env.PROD && "serviceWorker" in navigator) {
+      if (builtForWeb && import.meta.env.PROD && "serviceWorker" in navigator) {
         navigator.serviceWorker.register("/sw.js").catch((error: unknown) => {
           console.error("Toodo: could not register the service worker", error);
         });

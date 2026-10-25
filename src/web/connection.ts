@@ -5,6 +5,7 @@
  * and the probe repeats after a growing delay, and at once when the browser comes back
  * online or the page is shown again. Any answer of the server ends it.
  */
+import { activeServer } from "@/web/server";
 
 /**
  * `checking`: a request failed and the probe that tells a blip from an outage runs.
@@ -108,7 +109,7 @@ async function probe(running: "checking" | "retrying") {
 async function ask(timeoutMs: number): Promise<string | null> {
   try {
     // Any answer will do: without a token the server answers 401.
-    const response = await fetch("/api", { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(activeServer.url("/api"), { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
     return isGatewayFailure(response) ? `A gateway in front of the server answered ${response.status}.` : null;
   } catch (error) {
     return error instanceof DOMException && error.name === "TimeoutError"
@@ -141,13 +142,13 @@ export function retryNow(): void {
 }
 
 /**
- * `fetch` for requests to the server, which tracks whether it answers. Aborted requests
+ * `fetch` for `path` on the server, which tracks whether it answers. Aborted requests
  * tell nothing.
  */
-export async function serverFetch(input: string, init?: RequestInit): Promise<Response> {
+export async function serverFetch(path: string, init?: RequestInit): Promise<Response> {
   let response: Response;
   try {
-    response = await fetch(input, init);
+    response = await fetch(activeServer.url(path), init);
   } catch (error) {
     if (error instanceof TypeError) {
       unreachable();

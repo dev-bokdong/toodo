@@ -5,6 +5,7 @@ import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-p
 import { BackupPanel } from "@/components/backup-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
+import { ServerConnection } from "@/components/server-connection";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateCheck } from "@/components/update-banner";
@@ -12,7 +13,7 @@ import { compactSelectClass } from "@/components/workspace-list";
 import { commands } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
-import { runsOnServer } from "@/lib/platform";
+import { builtForWeb, runsOnServer } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import {
   setReadAloud,
@@ -34,7 +35,10 @@ type Section = {
 
 const serverSections: Section[] = [
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
-  { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
+  // Web Push needs the service worker of the web build.
+  ...(builtForWeb
+    ? [{ id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> } as const]
+    : []),
 ];
 
 const sections: Section[] = [
@@ -57,8 +61,9 @@ function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: (
         <span className="ml-auto text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </span>
-        {!runsOnServer && <UpdateCheck onRequested={onUpdateCheckRequested} />}
+        {!builtForWeb && <UpdateCheck onRequested={onUpdateCheckRequested} />}
       </div>
+      {!builtForWeb && <ServerConnection />}
       {runsOnServer && <VoiceSettings />}
     </section>
   );

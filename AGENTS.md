@@ -75,11 +75,16 @@ Layout:
   - `src/components/ui/`: shadcn/ui components (add more with `npx shadcn@latest add <name>`).
   - `src/web/`: stand-ins for the Tauri modules in the web build (`--mode web`), which
     talk to `toodo-server`.
+  - `src/client/`: the Tauri core and event APIs for the app's own code in the desktop
+    build; connected to a server, they send commands and take events from it (see
+    `vite.config.ts`), while Tauri plugins keep talking to the app.
 - `src-tauri/`: Rust crate `toodo` (library `toodo_lib`).
   - `src-tauri/src/lib.rs`: module tree. Features: `desktop` (default, the Tauri app) and
     `server` (`toodo-server`, built with `--no-default-features --features server`); a
     build has exactly one of them.
   - `src-tauri/src/desktop.rs`: Tauri builder, tauri-specta command registration, tray.
+  - `src-tauri/src/connection.rs`: whether the desktop app uses its own data or a
+    `toodo-server` (`connection.json`); connected, it starts no local data or background work.
   - `src-tauri/src/server/`: headless Linux server: commands over HTTP (`rpc.rs`), events
     over SSE, MCP, Web Push notifications (`push/`), and the web build on one port, plus
     the lead agent it keeps running in herdr (`lead.rs`, prompt in `lead-prompt.md`); see

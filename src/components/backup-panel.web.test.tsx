@@ -6,7 +6,7 @@ import { BackupPanel } from "@/components/backup-panel";
 import { commands, type BackupEntry } from "@/lib/bindings";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 
-vi.mock("@/lib/platform", () => ({ runsOnServer: true }));
+vi.mock("@/lib/platform", () => ({ builtForWeb: true, connectedServer: null, runsOnServer: true }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock("@/web/files", () => ({ downloadBackup: vi.fn(), downloadExport: vi.fn(), uploadRestore: vi.fn() }));
 vi.mock("@/lib/bindings", () => ({

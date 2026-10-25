@@ -139,7 +139,7 @@ const Markdown = lazy(() => import("@/components/markdown"));
 // The timeline pulls in React Flow, so it loads only when it is first shown.
 const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
 // Pane views are streamed by `toodo-server`, so only the web build has them (and xterm.js).
-const PaneView = import.meta.env.MODE === "web" ? lazy(() => import("@/components/pane-view")) : null;
+const PaneView = runsOnServer ? lazy(() => import("@/components/pane-view")) : null;
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 

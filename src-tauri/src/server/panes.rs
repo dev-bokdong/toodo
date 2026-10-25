@@ -62,13 +62,6 @@ const LINGER: Duration = Duration::from_secs(5);
 /// Failed reads in a row after which a mirror gives up and closes its viewers.
 const MAX_FAILURES: u32 = 8;
 
-/// The origins of the desktop app's WebView (WebView2 on Windows, WebKit elsewhere).
-const DESKTOP_ORIGINS: &[&str] = &[
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-    "tauri://localhost",
-];
-
 pub type SharedConnector = Arc<dyn Connector + Send + Sync>;
 
 /// Opens connections to the herdr server of a machine; faked in tests.
@@ -389,7 +382,7 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
     let Ok(origin) = origin.to_str() else {
         return false;
     };
-    if DESKTOP_ORIGINS.contains(&origin) {
+    if super::DESKTOP_ORIGINS.contains(&origin) {
         return true;
     }
     let Some((_, authority)) = origin.split_once("://") else {

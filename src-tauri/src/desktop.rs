@@ -1,5 +1,7 @@
 //! The Windows desktop app: the Tauri shell that registers the commands, keeps their
-//! state, emits events to the frontend, and owns the tray icon and the MCP server.
+//! state, emits events to the frontend, and owns the tray icon and the MCP server. Connected
+//! to a `toodo-server` (see [`connection`]), it keeps only the window and the tray: the
+//! frontend sends its commands to the server, and no local data or background work starts.
 
 use std::sync::{Arc, Mutex};
 
@@ -18,7 +20,7 @@ use crate::commands::events::{
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
 use crate::domain::model;
-use crate::{adapters, commands, mcp, storage};
+use crate::{adapters, commands, connection, mcp, storage};
 
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
@@ -90,6 +92,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::lead::get_lead,
             commands::lead::list_chat_messages,
             commands::lead::send_chat_message,
+            connection::set_connection,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
@@ -162,6 +165,22 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Opens the main window of the configuration, told which server to use before its page
+/// loads.
+fn create_main_window(app: &tauri::App, connection: &connection::Connection) -> tauri::Result<()> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == MAIN_WINDOW)
+        .expect("tauri.conf.json defines the main window");
+    tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
+        .initialization_script(connection::init_script(connection))
+        .build()?;
+    Ok(())
+}
+
 fn export_bindings(builder: &Builder<tauri::Wry>) {
     builder
         .export(specta_typescript::Typescript::default(), BINDINGS_PATH)
@@ -197,6 +216,11 @@ pub fn run() {
             create_tray(app)?;
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
+            let connection = connection::load(&data_dir);
+            create_main_window(app, &connection)?;
+            if connection.server.is_some() {
+                return Ok(());
+            }
             let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;
             app.manage::<commands::StorageState>(Mutex::new(storage));
             app.manage(commands::backup::Backups::load(&data_dir));
