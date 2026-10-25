@@ -52,7 +52,8 @@ do, the WebView does not), so the app dictates with the phone's own: the app's s
 plugin (`src-tauri/gen/android/app/src/main/java/dev/toodo/app/SpeechPlugin.kt`) runs
 Android's `SpeechRecognizer`, and `src/lib/native-speech.ts` gives it the shape of the
 browser's recognition, so the chat drives both alike. Should a WebView offer the Web Speech
-API, the app uses it first.
+API, the app tries it first and hands over to the phone's recognition when it fails before
+hearing anything (`withNativeFallback` in the same file).
 
 - The language is Settings > General > Speech language (Korean by default on a Korean
   phone).

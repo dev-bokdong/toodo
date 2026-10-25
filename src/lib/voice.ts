@@ -7,7 +7,7 @@
  * whose WebView has no speech recognition, dictates with the phone's (see docs/android.md).
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { NativeRecognition } from "@/lib/native-speech";
+import { NativeRecognition, withNativeFallback } from "@/lib/native-speech";
 import { mobileApp } from "@/lib/platform";
 
 const READ_ALOUD_KEY = "toodo-read-aloud";
@@ -86,7 +86,9 @@ function recognitionConstructor(): RecognitionConstructor | null {
     SpeechRecognition?: RecognitionConstructor;
     webkitSpeechRecognition?: RecognitionConstructor;
   };
-  return scope.SpeechRecognition ?? scope.webkitSpeechRecognition ?? (mobileApp ? NativeRecognition : null);
+  const web = scope.SpeechRecognition ?? scope.webkitSpeechRecognition ?? null;
+  if (!mobileApp) return web;
+  return web === null ? NativeRecognition : withNativeFallback(web);
 }
 
 export function dictationSupported(): boolean {

@@ -10,6 +10,74 @@ type PermissionState = "granted" | "denied" | "prompt" | "prompt-with-rationale"
 type Permissions = { microphone: PermissionState };
 
 type ResultEvent = { readonly results: ArrayLike<{ readonly isFinal: boolean; readonly 0: { readonly transcript: string } }> };
+type ErrorEvent = { readonly error: string };
+
+/** What dictation uses of a recognition, the browser's or the phone's. */
+export type Recognition = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  maxAlternatives: number;
+  onresult: ((event: ResultEvent) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+};
+
+/** Failures after which the phone's recognition may still work. */
+const WEB_FAILURES = new Set(["not-allowed", "service-not-allowed", "network", "audio-capture", "language-not-supported"]);
+
+/**
+ * The WebView's speech recognition where it has one, handing over to the phone's when it fails
+ * before it has heard anything.
+ */
+export function withNativeFallback(Web: new () => Recognition): new () => Recognition {
+  return class FallbackRecognition extends NativeRecognition {
+    private current: Recognition | null = null;
+
+    start() {
+      const web = new Web();
+      let heard = false;
+      let failed = false;
+      web.lang = this.lang;
+      web.interimResults = this.interimResults;
+      web.continuous = this.continuous;
+      web.maxAlternatives = this.maxAlternatives;
+      web.onresult = (event) => {
+        heard = true;
+        this.onresult?.(event);
+      };
+      web.onerror = (event) => {
+        if (!heard && WEB_FAILURES.has(event.error)) failed = true;
+        else this.onerror?.(event);
+      };
+      web.onend = () => {
+        if (!failed) return this.onend?.();
+        this.current = null;
+        super.start();
+      };
+      this.current = web;
+      try {
+        web.start();
+      } catch {
+        this.current = null;
+        super.start();
+      }
+    }
+
+    stop() {
+      if (this.current) this.current.stop();
+      else super.stop();
+    }
+
+    abort() {
+      if (this.current) this.current.abort();
+      else super.abort();
+    }
+  };
+}
 
 /** Opens the app's page in Android's settings, where a microphone denied for good is allowed again. */
 export function openAppSettings(): Promise<void> {
@@ -30,7 +98,7 @@ export class NativeRecognition {
   continuous = false;
   maxAlternatives = 1;
   onresult: ((event: ResultEvent) => void) | null = null;
-  onerror: ((event: { readonly error: string }) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
   onend: (() => void) | null = null;
   private aborted = false;
   private listeners: PluginListener[] = [];
