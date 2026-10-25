@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { LeadChat } from "@/components/lead-chat";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { FloatingChat, LeadChat } from "@/components/lead-chat";
 import { commands, type ChatMessage, type LeadStatus } from "@/lib/bindings";
 
 vi.mock("@/lib/bindings", () => ({ commands: { listChatMessages: vi.fn(), sendChatMessage: vi.fn() } }));
@@ -37,6 +37,22 @@ function renderChat(lead: LeadStatus) {
       <LeadChat lead={lead} />
     </QueryClientProvider>,
   );
+}
+
+function renderFloating(lead: LeadStatus) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <FloatingChat lead={lead} />
+    </QueryClientProvider>,
+  );
+  const rerender = (next: LeadStatus) =>
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <FloatingChat lead={next} />
+      </QueryClientProvider>,
+    );
+  return { rerender };
 }
 
 describe("LeadChat", () => {
@@ -142,5 +158,100 @@ describe("LeadChat", () => {
     expect(await screen.findByRole("status", { name: "Lead status" })).toHaveTextContent("Restarting");
     fireEvent.change(screen.getByRole("textbox", { name: "Message to the lead" }), { target: { value: "Hi" } });
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+});
+
+describe("FloatingChat", () => {
+  beforeAll(() => import("@/components/markdown"));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    mocked.listChatMessages.mockReset().mockResolvedValue({ status: "ok", data: history });
+    mocked.sendChatMessage.mockReset();
+  });
+
+  it("opens over the view with the focus in the message box, and Escape or the button closes it", async () => {
+    renderFloating(running);
+    const button = screen.getByRole("button", { name: /^Lead chat/ });
+    const panel = screen.getByRole("dialog", { hidden: true });
+    expect(panel).not.toBeVisible();
+    expect(button).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(button);
+    expect(screen.getByRole("dialog", { name: "Lead chat" })).toBeVisible();
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    const input = screen.getByRole("textbox", { name: "Message to the lead" });
+    expect(input).toHaveFocus();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(panel).not.toBeVisible();
+    expect(button).toHaveFocus();
+
+    fireEvent.click(button);
+    expect(input).toHaveFocus();
+    fireEvent.click(button);
+    expect(panel).not.toBeVisible();
+
+    fireEvent.click(button);
+    fireEvent.click(screen.getByRole("button", { name: "Close lead chat" }));
+    expect(panel).not.toBeVisible();
+    expect(button).toHaveFocus();
+  });
+
+  it("keeps an unsent message while closed", async () => {
+    renderFloating(running);
+    const button = screen.getByRole("button", { name: /^Lead chat/ });
+    fireEvent.click(button);
+    fireEvent.change(screen.getByRole("textbox", { name: "Message to the lead" }), { target: { value: "Half a thought" } });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(screen.getByRole("textbox", { name: "Message to the lead" })).toHaveValue("Half a thought");
+  });
+
+  it("counts unread replies on the button only while closed, and marks them read when opened", async () => {
+    renderFloating(running);
+    const button = await screen.findByRole("button", { name: "Lead chat, 1 unread" });
+    expect(button.querySelector("[data-unread]")).toHaveTextContent("1");
+    // Shown while closed is not read.
+    expect(localStorage.getItem("toodo-chat-read")).toBeNull();
+
+    fireEvent.click(button);
+    await waitFor(() => expect(localStorage.getItem("toodo-chat-read")).toBe("2"));
+    expect(button).toHaveAccessibleName("Lead chat");
+    fireEvent.click(button);
+    expect(button).toHaveAccessibleName("Lead chat");
+    expect(button.querySelector("[data-unread]")).toBeNull();
+  });
+
+  it("closes the phone sheet on a swipe down from its grabber", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true, addEventListener() {}, removeEventListener() {} })),
+    );
+    renderFloating(running);
+    const button = screen.getByRole("button", { name: /^Lead chat/ });
+    fireEvent.click(button);
+    const panel = screen.getByRole("dialog", { name: "Lead chat" });
+    const grabber = panel.querySelector("[data-grabber]")!.parentElement!;
+    fireEvent.pointerDown(grabber, { pointerId: 1, button: 0, clientY: 100 });
+    fireEvent.pointerMove(grabber, { pointerId: 1, clientY: 250 });
+    fireEvent.pointerUp(grabber, { pointerId: 1, clientY: 250 });
+    expect(panel).not.toBeVisible();
+    expect(button).toHaveFocus();
+  });
+
+  it("shows typing dots on the button while the lead composes a reply", async () => {
+    const { rerender } = renderFloating(running);
+    const button = screen.getByRole("button", { name: /^Lead chat/ });
+    const mark = button.querySelector("[data-chat-mark]")!;
+    expect(mark.querySelectorAll(".animate-bounce")).toHaveLength(0);
+
+    rerender({ ...running, agentStatus: "working", typing: true });
+    expect(button).toHaveAccessibleName(expect.stringContaining("Dori is typing"));
+    expect(mark.querySelectorAll(".animate-bounce")).toHaveLength(3);
   });
 });

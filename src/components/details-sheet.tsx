@@ -1,20 +1,7 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type PointerEvent,
-  type ReactNode,
-  type Ref,
-} from "react";
+import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type Ref } from "react";
 import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-/** How far the sheet must be dragged down, in pixels, to close when let go. */
-const swipeCloseDistance = 80;
-/** Below Tailwind's `md` breakpoint, where the sheet is a bottom sheet. */
-const phoneQuery = "(max-width: 47.99rem)";
+import { useSwipeClose } from "@/lib/swipe-close";
 
 /**
  * The frame of a task details sheet. From `md` up, a panel floating over the window's right side,
@@ -46,7 +33,7 @@ export function DetailsSheet({
   const heading = useRef<HTMLHeadingElement>(null);
   const restore = useRef(returnFocus);
   restore.current = returnFocus;
-  const [drag, setDrag] = useState<{ pointer: number; startY: number; offset: number } | null>(null);
+  const drag = useSwipeClose(onClose);
 
   useLayoutEffect(() => {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -67,47 +54,7 @@ export function DetailsSheet({
     };
   }, []);
 
-  useEffect(() => {
-    if (drag === null) {
-      return;
-    }
-    // A sheet dragged off the phone layout, say by rotating the device, snaps back.
-    const media = window.matchMedia?.(phoneQuery);
-    const cancel = () => setDrag(null);
-    media?.addEventListener("change", cancel);
-    return () => media?.removeEventListener("change", cancel);
-  }, [drag !== null]);
-
-  function startDrag(event: PointerEvent<HTMLElement>) {
-    if (!window.matchMedia?.(phoneQuery).matches || event.button !== 0 || (event.target as HTMLElement).closest("button")) {
-      return;
-    }
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setDrag({ pointer: event.pointerId, startY: event.clientY, offset: 0 });
-  }
-
-  function moveDrag(event: PointerEvent<HTMLElement>) {
-    if (drag?.pointer === event.pointerId) {
-      setDrag({ ...drag, offset: Math.max(0, event.clientY - drag.startY) });
-    }
-  }
-
-  function endDrag(event: PointerEvent<HTMLElement>) {
-    if (drag?.pointer !== event.pointerId) {
-      return;
-    }
-    setDrag(null);
-    if (event.type === "pointerup" && event.clientY - drag.startY >= swipeCloseDistance) {
-      onClose();
-    }
-  }
-
-  const dragHandlers = {
-    onPointerDown: startDrag,
-    onPointerMove: moveDrag,
-    onPointerUp: endDrag,
-    onPointerCancel: endDrag,
-  };
+  const dragHandlers = drag.handlers;
 
   return (
     <aside
@@ -120,12 +67,12 @@ export function DetailsSheet({
         }
       }}
       aria-label="Task details"
-      data-dragging={drag === null ? undefined : ""}
+      data-dragging={drag.dragging ? "" : undefined}
       className="fixed z-40 flex flex-col overflow-hidden border bg-card shadow-xl max-md:inset-x-0 max-md:bottom-0 max-md:max-h-[90dvh] max-md:rounded-t-2xl max-md:border-b-0 max-md:pb-[env(safe-area-inset-bottom)] max-md:transition-transform max-md:data-dragging:transition-none motion-reduce:transition-none md:inset-y-4 md:right-4 md:w-(--sheet-width) md:rounded-xl"
       style={
         {
           "--sheet-width": width,
-          transform: drag === null || drag.offset === 0 ? undefined : `translateY(${drag.offset}px)`,
+          transform: drag.offset === 0 ? undefined : `translateY(${drag.offset}px)`,
         } as CSSProperties
       }
     >

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, MessagesSquare, X } from "lucide-react";
+import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { DevicesPanel } from "@/components/devices-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
-import { LeadChat, UnreadBadge } from "@/components/lead-chat";
+import { FloatingChat } from "@/components/lead-chat";
 import { MemoryPanel, type MemoryDraft } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
 import { NotificationsPanel } from "@/components/notifications-panel";
@@ -17,9 +17,8 @@ import { Button } from "@/components/ui/button";
 import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import { commands, type TaskId, type WorkspaceId } from "@/lib/bindings";
-import { unreadCount, useReadUpTo } from "@/lib/chat";
 import { runsOnServer } from "@/lib/platform";
-import { useChatMessages, useHerdrEvents, useLead, useWorkspaces } from "@/lib/queries";
+import { useHerdrEvents, useLead, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
 import { listenForOpenTask } from "@/web/push";
@@ -51,18 +50,13 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
   const [reviewing, setReviewing] = useState(false);
   const [sharedMemory, setSharedMemory] = useState(false);
-  const [chatting, setChatting] = useState(false);
   const lead = useLead();
   const hasLead = lead.data !== undefined && lead.data.state !== "disabled";
-  const chat = useChatMessages(hasLead);
-  const readUpTo = useReadUpTo();
-  const unread = chatting ? 0 : unreadCount(chat.data ?? [], readUpTo);
   // Whether a workspace shows its tasks or its memory; kept across workspaces.
   const [workspaceView, setWorkspaceView] = useState<"tasks" | "memory">("tasks");
-  const openPage = (page: "review" | "memory" | "chat" | null) => {
+  const openPage = (page: "review" | "memory" | null) => {
     setReviewing(page === "review");
     setSharedMemory(page === "memory");
-    setChatting(page === "chat");
     setMenuOpen(false);
   };
   // On narrow screens the sidebar is a modal drawer over the content.
@@ -109,7 +103,7 @@ export default function App() {
   };
   // A clicked notification of the web build opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
-  const onPage = reviewing || sharedMemory || chatting;
+  const onPage = reviewing || sharedMemory;
   const showingAll = selectedId === "all" && !onPage;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
@@ -153,18 +147,6 @@ export default function App() {
         </div>
         <NeedsAttention onShow={showTask} />
         <nav className="flex flex-col gap-0.5">
-          {hasLead && (
-            <Button
-              variant={chatting ? "secondary" : "ghost"}
-              className="justify-start"
-              aria-pressed={chatting}
-              onClick={() => openPage("chat")}
-            >
-              <MessagesSquare />
-              Lead chat
-              <UnreadBadge count={unread} />
-            </Button>
-          )}
           <Button
             variant={reviewing ? "secondary" : "ghost"}
             className="justify-start"
@@ -232,19 +214,17 @@ export default function App() {
             <Menu />
           </Button>
           <span className="font-semibold tracking-tight">Toodo</span>
-          {hasLead && !chatting && (
-            <Button variant="ghost" size="sm" className="ml-auto" aria-label="Open lead chat" onClick={() => openPage("chat")}>
-              <MessagesSquare />
-              <UnreadBadge count={unread} />
-            </Button>
-          )}
         </header>
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
+        <main
+          className={cn(
+            "relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6",
+            // Room below the last row for the floating chat button.
+            hasLead && "pb-24 md:pb-24",
+          )}
+        >
           {runsOnServer ? <InstallBanner /> : <UpdateBanner />}
           <HerdrBanner />
-          {chatting && lead.data ? (
-            <LeadChat lead={lead.data} />
-          ) : reviewing ? (
+          {reviewing ? (
             <Review onShowTask={showTask} />
           ) : sharedMemory ? (
             <MemoryPanel
@@ -306,6 +286,7 @@ export default function App() {
             )
           )}
         </main>
+        {hasLead && lead.data && <FloatingChat lead={lead.data} />}
       </div>
     </div>
   );

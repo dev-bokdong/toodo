@@ -254,14 +254,18 @@ is `disabled`, `starting`, `running`, `restarting`, or `failed`. The `lead-chang
 carries the same object whenever it changes. The desktop app has no lead, and always
 reports `disabled`.
 
-The web app's **Lead chat** page talks to the lead. `send_chat_message { text, clientId }`
+The web app talks to the lead in a floating chat: a round Dori button at the bottom right of
+every view opens a chat panel over it, or a full-screen sheet on a phone. While the chat is
+closed, the button shows the count of unread replies, and dots while the lead is typing.
+The panel keeps an unsent message while closed or while moving between views. `send_chat_message { text, clientId }`
 types the message into the lead's pane as one line starting with `[Toodo chat]` (line
 breaks become ` / `) and stores it; it is rejected while the lead is not running, and a
 `clientId` already stored returns that message without typing it again. The lead
 answers with the MCP tool `reply_in_chat`, as its prompt tells it to. Both store the
 message in the database and send the `chat-changed` event, so every open client reloads
 `list_chat_messages` (the latest 500 messages). Each client keeps the ID of the last
-message it showed in local storage and counts the lead's later replies as unread.
+message it showed in the open chat in local storage and counts the lead's later replies as
+unread.
 
 #### Lead tools
 
