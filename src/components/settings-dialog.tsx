@@ -5,7 +5,6 @@ import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-p
 import { BackupPanel } from "@/components/backup-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
-import { ServerConnection } from "@/components/server-connection";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { UpdateCheck } from "@/components/update-banner";
@@ -54,7 +53,6 @@ function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: (
         </span>
         {checksForUpdates && <UpdateCheck onRequested={onUpdateCheckRequested} />}
       </div>
-      {!builtForWeb && <ServerConnection />}
     </section>
   );
 }

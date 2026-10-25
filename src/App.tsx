@@ -7,7 +7,6 @@ import { MemoryPanel, type MemoryDraft } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
 import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
-import { ServerSwitcher } from "@/components/server-switcher";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import { UpdateBanner } from "@/components/update-banner";
@@ -132,7 +131,6 @@ export default function App() {
             <X />
           </Button>
         </div>
-        <ServerSwitcher className="max-md:hidden" onManage={() => showSettings("general")} />
         <NeedsAttention onShow={showTask} />
         <nav className="flex flex-col gap-0.5">
           <Button
@@ -201,10 +199,8 @@ export default function App() {
             <Menu />
           </Button>
           <span className="font-semibold tracking-tight">Toodo</span>
-          <ServerSwitcher className="ml-auto max-w-1/2" onManage={() => showSettings("general")} />
         </header>
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
-          {/* The Android app is updated by installing a newer APK, the macOS app by a newer build. */}
           {builtForWeb ? <InstallBanner /> : checksForUpdates && <UpdateBanner />}
           <HerdrBanner />
           {reviewing ? (

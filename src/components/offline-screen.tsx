@@ -1,8 +1,6 @@
 import { useSyncExternalStore, type ReactNode } from "react";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { connectedServer } from "@/lib/platform";
-import { serverName, switchServer, useConnection } from "@/lib/servers";
 import { reachability, retryNow, subscribeReachability, unreachableCause } from "@/web/connection";
 
 /**
@@ -18,7 +16,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
     <>
       {offline && <OfflineBanner retrying={state === "retrying"} />}
       {children}
-      {/* Room to scroll the end of the page out from under the banner, e.g. the service token fields. */}
+      {/* Room to scroll the end of the page out from under the banner. */}
       {offline && <div aria-hidden className="h-40" />}
     </>
   );
@@ -34,7 +32,7 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
       <WifiOff aria-hidden className="size-4 shrink-0" />
       <div className="min-w-0 flex-1">
         <p className="font-medium">
-          {connectedServer === null ? "Can't reach the Toodo server" : <ServerUnreachable origin={connectedServer} />}
+          Can't reach the Toodo server
         </p>
         <p className="text-xs">
           {reason} What you see may be out of date, and changes are paused. Toodo reconnects on its own as soon as
@@ -44,31 +42,6 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
       <Button size="sm" variant="outline" disabled={retrying} onClick={retryNow}>
         {retrying ? "Trying..." : "Retry now"}
       </Button>
-      {connectedServer !== null && <OtherServers origin={connectedServer} />}
-    </div>
-  );
-}
-
-function ServerUnreachable({ origin }: { origin: string }) {
-  const connection = useConnection();
-  return <>Can't reach {serverName(connection.data, origin)}</>;
-}
-
-/** The desktop app's other saved servers, which may answer while this one does not. */
-function OtherServers({ origin }: { origin: string }) {
-  const connection = useConnection();
-  const others = connection.data?.servers.filter((saved) => saved.url !== origin) ?? [];
-  if (others.length === 0) return null;
-  return (
-    <div role="group" aria-label="Other servers" className="flex w-full flex-wrap gap-2">
-      {others.map((saved) => (
-        <Button key={saved.url} size="sm" variant="outline" title={saved.url} onClick={() =>
-            switchServer(saved.url).catch((error: unknown) => console.error("Toodo: could not switch servers", error))
-          }
-        >
-          Switch to {saved.name}
-        </Button>
-      ))}
     </div>
   );
 }

@@ -30,7 +30,6 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 vi.mock("@/lib/bindings", () => ({
   commands: {
     appInfo: vi.fn(),
-    getConnection: vi.fn(),
     listWorkspaces: vi.fn(),
     createWorkspace: vi.fn(),
     updateWorkspace: vi.fn(),
@@ -233,7 +232,6 @@ describe("App", () => {
     vi.useRealTimers();
     vi.resetAllMocks();
     mocked.appInfo.mockResolvedValue({ name: "toodo", version: "1.2.3" });
-    mocked.getConnection.mockResolvedValue({ status: "ok", data: { server: null, servers: [] } });
     mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: true, version: "0.9.3" } });
     mocked.getMachineSettings.mockImplementation(async (machine) => ({
       status: "ok",

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
 
-vi.mock("@/lib/platform", () => ({ builtForWeb: true, connectedServer: null, runsOnServer: true }));
+vi.mock("@/lib/platform", () => ({ builtForWeb: true, runsOnServer: true }));
 
 const mutation = { mutate: vi.fn(), isPending: false, isError: false };
 const query = <T,>(data: T) => ({ data, isPending: false, isError: false });
