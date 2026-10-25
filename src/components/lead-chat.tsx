@@ -96,7 +96,7 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
         <span
           data-chat-mark
           aria-hidden
-          className="absolute -bottom-0.5 -left-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-primary-foreground ring-2 ring-background"
+          className="absolute -right-0.5 -bottom-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-primary-foreground ring-2 ring-background"
         >
           {lead.typing ? <TypingDots className="size-1 bg-primary-foreground" /> : <MessageCircle className="size-3" />}
         </span>
