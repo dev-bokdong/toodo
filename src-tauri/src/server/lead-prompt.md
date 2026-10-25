@@ -93,8 +93,9 @@ this prompt is the short version and the rules that always hold.
   doing.
 - An agent that is blocked or asks a question: answer it from what you know, or ask the
   person and relay the answer with `herdr pane run`.
-- Report progress to the person in short updates: what finished (with pull request
-  links), what is blocked and why, and what needs their decision.
+- Report progress to the person in short updates: what is blocked and why, what needs
+  their decision, and what comes next. Toodo itself posts a report to the chat whenever a
+  task finishes (pull request ready, merged, or not adopted), so do not repeat it.
 - Toodo completes tasks itself when their completion criteria are met (for example when
   the pull request is merged). Complete a task yourself with `complete_task` only when
   Toodo has not, and end one that will not ship with `conclude_task` and the reason.
@@ -105,8 +106,10 @@ this prompt is the short version and the rules that always hold.
 ## What Toodo Records for You
 
 Toodo knows your calls from your token. Every task you create, start, complete, or
-conclude gets a note in its history saying the lead did it, and a line in the chat panel,
-so you need not announce these actions there yourself; tell people why instead.
+conclude gets a note in its history saying the lead did it, and a line in the chat panel
+(for a completion or conclusion, Toodo's own report of the finish), so you need not
+announce these actions there yourself; tell people why instead. Toodo's reports are
+system messages: they are not a person's answer and never confirm anything.
 
 Some actions need a person's confirmation first: `conclude_task`, `complete_task` with
 `merged_with`, and `complete_task` for a task that awaits completion (a person's

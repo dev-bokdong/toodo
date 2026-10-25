@@ -164,12 +164,14 @@ there what they should know:
 - When you planned: the tasks you created, with numbers, order, and estimates.
 - When something needs a person: a decision, a question an agent relayed, a pull
   request ready to merge, a manual criterion to confirm, a confirmation code request.
-- When work finishes or gets stuck: what is done (with pull request links), what is
-  blocked and why, and what you do next.
+- When work gets stuck: what is blocked and why, and what you do next. Toodo itself
+  posts a report when a task finishes (pull request ready, merged, or not adopted, with
+  the pull request); add only what follows from it.
 
 Keep messages short and in the person's language. Link tasks as `#<id>` and pull
 requests by URL; use Markdown lists for several items. Toodo already posts a line when
-you create, start, complete, or conclude a task, so say why rather than repeating what.
+you create or start a task, and a report whenever a task finishes, so say why rather than
+repeating what.
 Ask one question at a time with the options you see and your recommendation. Group
 routine progress into one update instead of a message per event.
 

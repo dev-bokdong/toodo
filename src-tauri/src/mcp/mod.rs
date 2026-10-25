@@ -427,7 +427,9 @@ impl ToodoMcp {
         let activity = activity(&task);
         match lead::record(&mut lock(self.backend.storage()), task.id.into(), &activity) {
             Ok(noted) => {
-                self.backend.chat_changed();
+                if activity.chat.is_some() {
+                    self.backend.chat_changed();
+                }
                 Ok(noted)
             }
             Err(error) => {
@@ -888,6 +890,10 @@ impl ToodoMcp {
         let result = self.by(caller, result, |task| {
             lead::completed(task, confirmed.as_deref())
         });
+        // The finish posted its report to the chat.
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
         self.announce(result)
     }
 
@@ -934,7 +940,10 @@ impl ToodoMcp {
                 )
             })
             .await?;
-        let result = self.by(caller, result, |task| lead::concluded(task, &confirmed));
+        let result = self.by(caller, result, |_| lead::concluded(&confirmed));
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
         self.announce(result)
     }
 
@@ -1444,10 +1453,13 @@ mod tests {
             last_note(&done),
             format!("Concluded without a merge by the Toodo lead{confirmed}")
         );
+        // The server reports the finish; the lead's call adds no line of its own.
+        let messages = chat(&backend);
+        assert_eq!(messages.len(), 3, "{messages:?}");
         assert_eq!(
-            chat(&backend).pop().unwrap(),
+            messages[2],
             format!(
-                "Concluded #{} Add login without a merge{confirmed}",
+                "**Not adopted:** #{} Add login was concluded without a merge.\n\n> Duplicate of #7",
                 task.id.0
             )
         );
@@ -1455,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn other_agents_conclude_without_a_confirmation_or_a_chat_message() {
+    fn other_agents_conclude_without_a_confirmation_and_the_server_reports_it() {
         let (mut storage, task) = storage_with_task(None);
         storage
             .set_task_status(task.id, crate::domain::status::TaskStatus::InProgress)
@@ -1467,7 +1479,10 @@ mod tests {
 
         assert_eq!(done["status"], "done");
         assert_eq!(done["notes"], serde_json::json!([]));
-        assert!(chat(&backend).is_empty());
+        let messages = chat(&backend);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].starts_with("**Not adopted:**"), "{messages:?}");
+        assert_eq!(*backend.chat_changed.lock().unwrap(), 1);
     }
 
     #[test]

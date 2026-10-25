@@ -37,8 +37,9 @@ export function markRead(id: number) {
   listeners.forEach((listener) => listener());
 }
 
+/** The lead's replies and the server's reports newer than `readUpTo`. */
 export function unreadCount(messages: readonly ChatMessage[], readUpTo: number): number {
-  return messages.filter((message) => message.author === "lead" && message.id > readUpTo).length;
+  return messages.filter((message) => message.author !== "user" && message.id > readUpTo).length;
 }
 
 /**

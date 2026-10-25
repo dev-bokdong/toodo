@@ -131,6 +131,32 @@ describe("LeadChat", () => {
     expect(within(log).getAllByRole("listitem", { name: "You" })).toHaveLength(2);
   });
 
+  it("shows the server's finish reports apart from Dori's replies and the person's messages", async () => {
+    const report: ChatMessage = {
+      id: 3,
+      author: "system",
+      body: "**Merged:** #4 Release. Its [pull request #9](https://github.com/acme/toodo/pull/9) was merged.",
+      at: 1_790_000_120,
+      deliveredAt: null,
+      seenAt: null,
+    };
+    mocked.listChatMessages.mockResolvedValue({ status: "ok", data: [...history, report] });
+    renderChat(running);
+
+    const log = await screen.findByRole("log", { name: "Messages" });
+    const shown = await within(log).findByRole("listitem", { name: "Toodo" });
+    expect(shown).toHaveAttribute("data-author", "system");
+    expect(within(shown).getByRole("link", { name: "pull request #9" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/toodo/pull/9",
+    );
+    expect(shown.querySelector("img")).toBeNull();
+    expect(shown.querySelector("[data-receipt]")).toBeNull();
+    expect(within(log).getAllByRole("listitem", { name: "Dori" })).toHaveLength(1);
+    expect(within(log).getAllByRole("listitem", { name: "You" })).toHaveLength(1);
+    await waitFor(() => expect(localStorage.getItem("toodo-chat-read")).toBe("3"));
+  });
+
   it("shows Dori's typing bubble only while the lead is typing, still when motion is reduced", async () => {
     const view = renderChat(running);
     const log = await screen.findByRole("log", { name: "Messages" });

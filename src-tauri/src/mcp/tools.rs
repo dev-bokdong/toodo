@@ -1862,7 +1862,13 @@ mod tests {
         let extra = {
             let mut storage = crate::commands::lock(&storage);
             storage
-                .complete_task(task.id.into(), Some(1_760_021_265), None, &[])
+                .complete_task(
+                    task.id.into(),
+                    Some(1_760_021_265),
+                    None,
+                    &[],
+                    &crate::domain::finish::Finish::Completed,
+                )
                 .unwrap();
             let extra = create(&mut storage, task.workspace_id, "Fix typo", vec![]).unwrap();
             let checkout = crate::domain::naming::TaskCheckout {

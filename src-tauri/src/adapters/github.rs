@@ -83,11 +83,13 @@ pub struct PullRequestStatus {
 pub struct ViewedPullRequest {
     pub pull_request: PullRequest,
     pub status: PullRequestStatus,
+    /// The commit at the head of its branch, which its checks ran on.
+    pub head_sha: Option<String>,
 }
 
 /// Fields requested with `--json` for a [`ViewedPullRequest`].
 const VIEWED_PULL_REQUEST_FIELDS: &str =
-    "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews";
+    "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews,headRefOid";
 
 fn parse_viewed_pull_request(value: &Value) -> Option<ViewedPullRequest> {
     Some(ViewedPullRequest {
@@ -96,6 +98,10 @@ fn parse_viewed_pull_request(value: &Value) -> Option<ViewedPullRequest> {
             checks: parse_checks(value.get("statusCheckRollup")?.as_array()?)?,
             review: parse_review(value)?,
         },
+        head_sha: value
+            .get("headRefOid")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -778,6 +784,7 @@ mod tests {
                         checks: None,
                         review: ReviewState::Pending,
                     },
+                    head_sha: None,
                 }
             );
         }
@@ -792,7 +799,7 @@ mod tests {
                 "view",
                 URL,
                 "--json",
-                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews"
+                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews,headRefOid"
             ])
         );
     }

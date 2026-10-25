@@ -21,6 +21,10 @@ pub enum ChatAuthor {
     /// A person, from a client of the server.
     User,
     Lead,
+    /// The server itself, reporting how a task finished (see [`crate::domain::finish`]).
+    /// Its reports are not answers of the lead or a person: they mark nothing as seen and
+    /// confirm nothing.
+    System,
 }
 
 impl ChatAuthor {
@@ -28,11 +32,12 @@ impl ChatAuthor {
         match self {
             Self::User => "user",
             Self::Lead => "lead",
+            Self::System => "system",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        [Self::User, Self::Lead]
+        [Self::User, Self::Lead, Self::System]
             .into_iter()
             .find(|author| author.as_str() == value)
     }

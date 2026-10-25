@@ -261,12 +261,21 @@ commands!(s => {
     "open_pull_request"(id: TaskId) => sync Reply::result(
         completion::open_pull_request(State(&s.storage), State(&s.git), State(&s.github), id)
     );
-    "complete_task"(id: TaskId) => sync Reply::result(
-        completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id)
-    );
-    "conclude_task"(id: TaskId, note: String) => sync Reply::result(
-        completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)
-    );
+    // A finish posts its report to the chat.
+    "complete_task"(id: TaskId) => sync {
+        let done = completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id);
+        if done.is_ok() {
+            s.chat_changed();
+        }
+        Reply::result(done)
+    };
+    "conclude_task"(id: TaskId, note: String) => sync {
+        let done = completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note);
+        if done.is_ok() {
+            s.chat_changed();
+        }
+        Reply::result(done)
+    };
     "list_pull_request_statuses"() => sync Reply::value(
         completion::list_pull_request_statuses(State(&s.pull_request_statuses))
     );
