@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FloatingChat, LeadChat } from "@/components/lead-chat";
 import { commands, type ChatMessage, type LeadStatus } from "@/lib/bindings";
+import { QUIET_MS, stopSpeaking } from "@/lib/voice";
 
 vi.mock("@/lib/bindings", () => ({ commands: { listChatMessages: vi.fn(), sendChatMessage: vi.fn() } }));
 
@@ -253,5 +254,211 @@ describe("FloatingChat", () => {
     rerender({ ...running, agentStatus: "working", typing: true });
     expect(button).toHaveAccessibleName(expect.stringContaining("Dori is typing"));
     expect(mark.querySelectorAll(".animate-bounce")).toHaveLength(3);
+  });
+});
+
+/** A stand-in for the browser's speech recognition that the test drives by hand. */
+class FakeRecognition {
+  static last: FakeRecognition | null = null;
+  lang = "";
+  interimResults = false;
+  continuous = false;
+  maxAlternatives = 0;
+  onresult: ((event: { results: { isFinal: boolean; 0: { transcript: string } }[] }) => void) | null = null;
+  onerror: ((event: { error: string }) => void) | null = null;
+  onend: (() => void) | null = null;
+  start = vi.fn();
+  stop = vi.fn(() => this.onend?.());
+  abort = vi.fn(() => {
+    this.onerror?.({ error: "aborted" });
+    this.onend?.();
+  });
+  constructor() {
+    FakeRecognition.last = this;
+  }
+  hear(...pieces: string[]) {
+    this.onresult?.({ results: pieces.map((transcript) => ({ isFinal: false, 0: { transcript } })) });
+  }
+}
+
+class FakeUtterance {
+  lang = "";
+  voice: unknown = null;
+  onend: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(public text: string) {}
+}
+
+function fakeSynthesis() {
+  const queue: FakeUtterance[] = [];
+  const synthesis = {
+    speak: vi.fn((utterance: FakeUtterance) => queue.push(utterance)),
+    cancel: vi.fn(() => queue.splice(0).forEach((utterance) => utterance.onerror?.())),
+    getVoices: vi.fn(() => [{ lang: "ko-KR", name: "Korean" }]),
+  };
+  vi.stubGlobal("speechSynthesis", synthesis);
+  vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
+  return { synthesis, queue };
+}
+
+describe("LeadChat voice", () => {
+  beforeAll(() => import("@/components/markdown"));
+
+  beforeEach(() => {
+    localStorage.clear();
+    FakeRecognition.last = null;
+    mocked.listChatMessages.mockReset().mockResolvedValue({ status: "ok", data: history });
+    mocked.sendChatMessage.mockReset().mockResolvedValue({ status: "ok", data: sent(3, "sent") });
+  });
+
+  afterEach(() => {
+    stopSpeaking();
+    vi.unstubAllGlobals();
+  });
+
+  it("sends what is dictated after the typed text, in the chosen language", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    localStorage.setItem("toodo-speech-language", "ko-KR");
+    renderChat(running);
+    const input = screen.getByRole("textbox", { name: "Message to the lead" });
+    fireEvent.change(input, { target: { value: "Please" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    const recognition = FakeRecognition.last!;
+    expect(recognition.start).toHaveBeenCalledTimes(1);
+    expect(recognition.lang).toBe("ko-KR");
+    expect(recognition.interimResults).toBe(true);
+    expect(recognition.continuous).toBe(true);
+    expect(screen.getByRole("status", { name: "Voice input" })).toHaveTextContent("Listening");
+
+    act(() => recognition.hear("fix the", " login bug"));
+    expect(input).toHaveValue("Please fix the login bug");
+    expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop voice input and send" }));
+    await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledTimes(1));
+    expect(mocked.sendChatMessage.mock.calls[0][0]).toBe("Please fix the login bug");
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(screen.getByRole("button", { name: "Voice input" })).toBeInTheDocument();
+  });
+
+  it("stops listening by itself after a quiet spell, and sends", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    renderChat(running);
+    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    const recognition = FakeRecognition.last!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      act(() => recognition.hear("first part,"));
+      act(() => vi.advanceTimersByTime(QUIET_MS - 100));
+      act(() => recognition.hear("first part,", " and the rest"));
+      act(() => vi.advanceTimersByTime(QUIET_MS - 100));
+      expect(recognition.stop).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(100));
+      expect(recognition.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledTimes(1));
+    expect(mocked.sendChatMessage.mock.calls[0][0]).toBe("first part, and the rest");
+  });
+
+  it("drops the dictation on Escape and keeps the chat open", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    renderFloating(running);
+    fireEvent.click(screen.getByRole("button", { name: /^Lead chat/ }));
+    const input = screen.getByRole("textbox", { name: "Message to the lead" });
+    fireEvent.change(input, { target: { value: "Draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    act(() => FakeRecognition.last!.hear("never mind"));
+    expect(input).toHaveValue("Draft never mind");
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(FakeRecognition.last!.abort).toHaveBeenCalledTimes(1);
+    expect(input).toHaveValue("Draft");
+    expect(screen.getByRole("dialog", { name: "Lead chat" })).toBeVisible();
+    expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("explains a refused microphone, and offers no voice input without speech recognition", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    const view = renderChat(running);
+    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    act(() => {
+      FakeRecognition.last!.onerror?.({ error: "not-allowed" });
+      FakeRecognition.last!.onend?.();
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Microphone access is blocked");
+    expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+    view.unmount();
+
+    vi.unstubAllGlobals();
+    renderChat(running);
+    await screen.findByRole("log", { name: "Messages" });
+    expect(screen.queryByRole("button", { name: "Voice input" })).toBeNull();
+  });
+
+  it("reads new replies aloud only when turned on, and stops on request", async () => {
+    const { synthesis, queue } = fakeSynthesis();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <LeadChat lead={running} />
+      </QueryClientProvider>,
+    );
+    const log = await screen.findByRole("log", { name: "Messages" });
+    await within(log).findByText("Plan the release");
+    const toggle = screen.getByRole("button", { name: "Read replies aloud" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    const reply = (id: number, body: string): ChatMessage => ({ id, author: "lead", body, at: 1_790_000_200, deliveredAt: null, seenAt: null });
+    mocked.listChatMessages.mockResolvedValue({ status: "ok", data: [...history, reply(3, "Quiet one.")] });
+    await client.invalidateQueries();
+    await within(log).findByText("Quiet one.");
+    expect(synthesis.speak).not.toHaveBeenCalled();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("toodo-read-aloud")).toBe("on");
+    // The history there when it was turned on stays unread.
+    expect(synthesis.speak).not.toHaveBeenCalled();
+
+    mocked.listChatMessages.mockResolvedValue({
+      status: "ok",
+      data: [...history, reply(3, "Quiet one."), reply(4, "Opened **#7**: see [the PR](https://example.com/pr/7).")],
+    });
+    await client.invalidateQueries();
+    await waitFor(() => expect(synthesis.speak).toHaveBeenCalledTimes(1));
+    expect(queue[0].text).toBe("Opened #7: see the PR.");
+    expect(queue[0].lang).not.toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop reading aloud" }));
+    expect(synthesis.cancel).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Stop reading aloud" })).toBeNull();
+  });
+
+  it("offers a stop button over the closed chat while a reply is read aloud", async () => {
+    const { synthesis } = fakeSynthesis();
+    localStorage.setItem("toodo-read-aloud", "on");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <FloatingChat lead={running} />
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("button", { name: "Lead chat, 1 unread" });
+    expect(synthesis.speak).not.toHaveBeenCalled();
+
+    mocked.listChatMessages.mockResolvedValue({
+      status: "ok",
+      data: [...history, { id: 3, author: "lead", body: "Done.", at: 1_790_000_200, deliveredAt: null, seenAt: null }],
+    });
+    await client.invalidateQueries();
+    const stop = await screen.findByRole("button", { name: "Stop reading aloud" });
+    expect(synthesis.speak).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(stop);
+    expect(synthesis.cancel).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Stop reading aloud" })).toBeNull();
   });
 });
