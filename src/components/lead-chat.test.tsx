@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FloatingChat, LeadChat } from "@/components/lead-chat";
+import { requestChat } from "@/lib/app-links";
 import { commands, type ChatMessage, type LeadStatus } from "@/lib/bindings";
 import { QUIET_MS, stopSpeaking } from "@/lib/voice";
 
@@ -417,6 +418,16 @@ describe("LeadChat voice", () => {
     expect(mocked.sendChatMessage.mock.calls[0][0]).toBe("Please fix the login bug");
     await waitFor(() => expect(input).toHaveValue(""));
     expect(screen.getByRole("button", { name: "Voice input" })).toBeInTheDocument();
+  });
+
+  it("opens the chat listening when a link into the app asks for voice input", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    requestChat({ voice: true });
+    renderFloating(running);
+
+    expect(await screen.findByRole("dialog", { name: "Lead chat" })).toBeVisible();
+    await waitFor(() => expect(FakeRecognition.last?.start).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("status", { name: "Voice input" })).toHaveTextContent("Listening");
   });
 
   it("stops listening by itself after a quiet spell, and sends", async () => {

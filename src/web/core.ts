@@ -50,3 +50,8 @@ export async function invoke<T>(command: string, args: Record<string, unknown> =
   }
   throw new Error(text || `${response.status} ${response.statusText}`);
 }
+
+/** Only plugins with native code send events this way, and the web build has none. */
+export function addPluginListener(): Promise<never> {
+  return Promise.reject(new Error("Native plugins only run in the Toodo apps."));
+}

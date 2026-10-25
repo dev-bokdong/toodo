@@ -32,6 +32,8 @@ into a performance report.
 - [docs/workflow.md](docs/workflow.md): task lifecycle from planning to pull request.
 - [docs/server.md](docs/server.md): running Toodo headless on a Linux server, used from a
   browser.
+- [docs/android.md](docs/android.md): the Android app, a client of a server, with voice
+  input to Dori in one tap.
 
 ## Requirements
 
@@ -40,7 +42,8 @@ into a performance report.
 - Git for Windows, Windows OpenSSH, and the GitHub CLI (`gh`) on `PATH`
 
 Toodo can also run as a server on a Linux machine with herdr, used from a browser; see
-[docs/server.md](docs/server.md).
+[docs/server.md](docs/server.md). The Android app connects to such a server; see
+[docs/android.md](docs/android.md).
 
 ## End-to-End Tests
 

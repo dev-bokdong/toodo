@@ -2,7 +2,7 @@ import { useId, useReducer, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
 import type { AccessTokenInput, SavedServer } from "@/lib/bindings";
-import { connectedServer } from "@/lib/platform";
+import { connectedServer, mobileApp } from "@/lib/platform";
 import {
   serverName,
   signedIn,
@@ -47,7 +47,11 @@ export function ServerConnection() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">Data</span>
         <span className="text-muted-foreground">
-          {connectedServer === null ? "On this computer" : `On ${serverName(connection.data, connectedServer)}`}
+          {connectedServer !== null
+            ? `On ${serverName(connection.data, connectedServer)}`
+            : mobileApp
+              ? "Not connected"
+              : "On this computer"}
         </span>
       </div>
       {servers.length > 0 && (
@@ -65,7 +69,7 @@ export function ServerConnection() {
         </ul>
       )}
       <AddServerForm onError={setError} />
-      {connectedServer !== null && (
+      {connectedServer !== null && !mobileApp && (
         <Button
           variant="outline"
           size="sm"
@@ -464,9 +468,23 @@ function AddServerForm({ onError }: { onError: (message: string | null) => void 
         </div>
       </details>
       <p id={`${id}-help`} className="text-xs text-muted-foreground">
-        Switching to a server shows its data instead of this computer's, which stays as it is. The app signs in to
-        each server once and keeps a token for each.
+        {mobileApp
+          ? "Switching to a server shows its data. The app signs in to each server once and keeps a token for each."
+          : "Switching to a server shows its data instead of this computer's, which stays as it is. The app signs in to each server once and keeps a token for each."}
       </p>
     </form>
+  );
+}
+
+/** The Android app's first screen, until it is connected to a server. */
+export function ServerSetup() {
+  return (
+    <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-4 p-6 pt-[calc(1.5rem+env(safe-area-inset-top))]">
+      <h1 className="text-xl font-semibold tracking-tight">Connect to your Toodo server</h1>
+      <p className="text-sm text-muted-foreground">
+        Toodo on this phone shows the tasks and the lead chat of a Toodo server. Add the server, then switch to it.
+      </p>
+      <ServerConnection />
+    </main>
   );
 }

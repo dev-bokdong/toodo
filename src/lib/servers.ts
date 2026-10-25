@@ -8,7 +8,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { commands, type AccessTokenInput, type SavedServer } from "@/lib/bindings";
-import { builtForWeb, connectedServer } from "@/lib/platform";
+import { builtForWeb, connectedServer, mobileApp } from "@/lib/platform";
 import { unwrap } from "@/lib/queries";
 import { activeServer, forgetServer, server } from "@/web/server";
 import { forgetToken } from "@/web/session";
@@ -60,7 +60,8 @@ export function signOut(origin: string): void {
 /** Makes the app use `target` (a server address, or null for this computer's data). */
 export async function switchServer(target: string | null, reload = () => window.location.reload()): Promise<void> {
   const next = await unwrap(commands.setConnection(target));
-  if (connectedServer !== null && next !== null) {
+  // The Android app, which has no data of its own and cannot restart, reloads for any server.
+  if ((connectedServer !== null || mobileApp) && next !== null) {
     sessionStorage.setItem(SWITCHED_SERVER_KEY, next);
     reload();
     return;

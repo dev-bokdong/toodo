@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Capability for the main window of the Android app",
+  "windows": ["main"],
+  "platforms": ["android", "iOS"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "process:allow-restart",
+    "notification:default",
+    "opener:allow-open-url",
+    "opener:allow-default-urls",
+    "remote:default",
+    "deep-link:default",
+    "speech:default"
+  ]
+}

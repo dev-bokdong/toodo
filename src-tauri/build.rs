@@ -51,10 +51,24 @@ fn desktop() {
             "socket_close",
         ])
         .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
+    // Speech recognition by the phone, for the Android app's dictation (SpeechPlugin.kt).
+    let speech = tauri_build::InlinedPlugin::new()
+        .commands(&[
+            "start",
+            "stop",
+            "cancel",
+            "openSettings",
+            "checkPermissions",
+            "requestPermissions",
+            "registerListener",
+            "remove_listener",
+        ])
+        .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .windows_attributes(windows)
-            .plugin("remote", remote),
+            .plugin("remote", remote)
+            .plugin("speech", speech),
     )
     .expect("failed to run tauri-build");
 }

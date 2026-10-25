@@ -128,6 +128,8 @@ Run from the repository root unless noted. Package manager is npm.
   server: `npm run dev:web`
 - Server (Linux): `cargo build --no-default-features --features server --bin toodo-server`
   in `src-tauri/`; test and lint it with the same feature flags
+- Android APK: `npx tauri android build --apk --target aarch64` (JDK 17, Android SDK and
+  NDK); the Android project is `src-tauri/gen/android/`, see `docs/android.md`
 - Lint / format (Rust): `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`
   in `src-tauri/`
 

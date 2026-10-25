@@ -2,10 +2,15 @@
 //! state, emits events to the frontend, and owns the tray icon and the MCP server. Connected
 //! to a `toodo-server` (see [`connection`]), it keeps only the window and the tray: the
 //! frontend sends its commands to the server, and no local data or background work starts.
+//!
+//! The same shell builds the Android app, which is always a client of a server: it has no
+//! tray, updater, or local data, and adds links into the app and native speech recognition.
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
+#[cfg(desktop)]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
@@ -117,6 +122,7 @@ pub struct UpdateCheckRequested;
 
 const MAIN_WINDOW: &str = "main";
 
+#[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.unminimize();
@@ -126,6 +132,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 /// Adds the tray icon that keeps Toodo running after its window is closed.
+#[cfg(desktop)]
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Toodo", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
@@ -186,6 +193,20 @@ fn create_main_window(app: &tauri::App, connection: &connection::Connection) -> 
     Ok(())
 }
 
+/// Speech recognition by the phone (`SpeechPlugin.kt` in the Android project), for the
+/// dictation in the lead chat where the WebView has none (see `src/lib/voice.ts`).
+#[cfg(mobile)]
+fn speech_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("speech")
+        .setup(|_app, _api| {
+            #[cfg(target_os = "android")]
+            _api.register_android_plugin("dev.toodo.app", "SpeechPlugin")?;
+            Ok(())
+        })
+        .build()
+}
+
+#[cfg(desktop)]
 fn export_bindings(builder: &Builder<tauri::Wry>) {
     builder
         .export(specta_typescript::Typescript::default(), BINDINGS_PATH)
@@ -197,17 +218,19 @@ fn export_bindings(builder: &Builder<tauri::Wry>) {
 pub fn run() {
     let builder = specta_builder();
 
-    #[cfg(debug_assertions)]
+    // The bindings are written into the source tree, which only a desktop build can reach.
+    #[cfg(all(debug_assertions, desktop))]
     export_bindings(&builder);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(remote::plugin())
-        .invoke_handler(builder.invoke_handler())
+        .plugin(remote::plugin());
+    #[cfg(desktop)]
+    let app = app
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             // Closing the main window hides it to the tray; Quit in the tray menu exits.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event
@@ -216,16 +239,23 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
-        })
+        });
+    #[cfg(mobile)]
+    let app = app
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(speech_plugin());
+    app.invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            #[cfg(desktop)]
             create_tray(app)?;
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let connection = connection::load(&data_dir);
             app.manage(remote::access::AccessTokens::load(&data_dir));
             create_main_window(app, &connection)?;
-            if connection.server.is_some() {
+            // The phone app keeps no data of its own; until it connects, it asks for a server.
+            if cfg!(mobile) || connection.server.is_some() {
                 return Ok(());
             }
             let storage = storage::Storage::open(&data_dir.join(DATABASE_FILE))?;

@@ -191,12 +191,18 @@ fn server_name(input: &str) -> Result<String, String> {
 
 /// The script that tells the window which server to use before the page loads: the one
 /// the app started with or, once the window switched to another server (which the app
-/// started with a server allows without a restart), that one.
+/// started with a server allows without a restart), that one. A phone app cannot restart
+/// itself, so there the window also switches from no server to one by reloading.
 pub fn init_script(connection: &Connection) -> String {
     let server = serde_json::to_string(&connection.server).expect("a string serializes");
     let key = serde_json::to_string(SWITCHED_SERVER_KEY).expect("a string serializes");
+    let (mobile, without_server) = if cfg!(mobile) {
+        ("window.__TOODO_MOBILE__ = true; ", "")
+    } else {
+        ("", "if (started === null) return null; ")
+    };
     format!(
-        "window.__TOODO_SERVER__ = (() => {{ const started = {server}; if (started === null) return null; \
+        "{mobile}window.__TOODO_SERVER__ = (() => {{ const started = {server}; {without_server}\
          try {{ return sessionStorage.getItem({key}) ?? started; }} catch {{ return started; }} }})();"
     )
 }
