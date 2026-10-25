@@ -16,6 +16,8 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
     <>
       {offline && <OfflineBanner retrying={state === "retrying"} />}
       {children}
+      {/* Room to scroll the end of the page out from under the banner. */}
+      {offline && <div aria-hidden className="h-40" />}
     </>
   );
 }
@@ -29,7 +31,9 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
     >
       <WifiOff aria-hidden className="size-4 shrink-0" />
       <div className="min-w-0 flex-1">
-        <p className="font-medium">Can't reach the Toodo server</p>
+        <p className="font-medium">
+          Can't reach the Toodo server
+        </p>
         <p className="text-xs">
           {reason} What you see may be out of date, and changes are paused. Toodo reconnects on its own as soon as
           the server answers.

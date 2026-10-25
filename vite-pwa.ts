@@ -1,5 +1,5 @@
 /**
- * Makes the web build (`--mode web`) an installable app: a web app manifest with the icons
+ * Makes the build an installable app: a web app manifest with the icons
  * in `src/web/pwa`, and a service worker that keeps the app shell (the built HTML, scripts,
  * styles, and icons) for offline starts and shows the server's pushes as notifications (see
  * `src/web/push.ts`).
@@ -8,11 +8,10 @@
  * always go to the server. It precaches exactly the files of this build, so a new build
  * installs a new cache and drops the old one.
  *
- * The icons come from `src-tauri/icons/icon.svg` and its maskable variant
- * `src/web/pwa/icon-maskable.svg` (artwork inside the safe zone, full-bleed background):
- * `npx tauri icon <svg> -o <dir>` renders `icon.png` (512 px); the 192 px icons and the
- * 180 px `apple-touch-icon.png` (`ios/AppIcon-60x60@3x.png` of the maskable one) are
- * resized copies.
+ * The icons come from `src/web/pwa/icon.svg` and its maskable variant
+ * `src/web/pwa/icon-maskable.svg` (artwork inside the safe zone, full-bleed background),
+ * rendered to 512 px PNGs; the 192 px icons and the 180 px `apple-touch-icon.png` (of the
+ * maskable one) are resized copies.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";

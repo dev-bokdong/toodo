@@ -21,6 +21,11 @@ export type ScratchServer = {
   stop: () => Promise<void>;
 };
 
+export type ServerOptions = {
+  /** More environment for the server, such as `TOODO_PUSH_SUBJECT`. */
+  env?: Record<string, string>;
+};
+
 /** Workspaces the scratch database starts with; `herdr` is needed to create more. */
 export const workspaces = ["alpha", "beta"];
 
@@ -56,15 +61,14 @@ async function until(label: string, ready: () => Promise<boolean>, child: ChildP
   }
 }
 
-function launch(dataDir: string, port: number) {
+function launch(dataDir: string, port: number, env: Record<string, string> = {}) {
   const child = spawn(binary(), [], {
     env: {
       ...process.env,
       TOODO_LISTEN: `127.0.0.1:${port}`,
       TOODO_DATA_DIR: dataDir,
       TOODO_WEB_DIR: webDir(),
-      // The lead would add a workspace and start an agent in the real herdr.
-      TOODO_LEAD: "off",
+      ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -94,7 +98,7 @@ async function answers(port: number): Promise<boolean> {
  * never touches the data of a real server. The first start creates the database, which is
  * then seeded with workspaces (creating one through the API needs herdr) before the real start.
  */
-export async function startServer(): Promise<ScratchServer> {
+export async function startServer(options: ServerOptions = {}): Promise<ScratchServer> {
   const dataDir = mkdtempSync(path.join(tmpdir(), "toodo-e2e-"));
   const port = await freePort();
 
@@ -112,7 +116,7 @@ export async function startServer(): Promise<ScratchServer> {
   }
   db.close();
 
-  const running = launch(dataDir, port);
+  const running = launch(dataDir, port, options.env);
   await until("starting", () => answers(port), running.child, running.output);
 
   const url = `http://127.0.0.1:${port}`;

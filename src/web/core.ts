@@ -1,6 +1,6 @@
 /**
- * Stands in for `@tauri-apps/api/core` in the web build: the generated bindings invoke
- * commands through `invoke`, which posts them to `toodo-server`.
+ * Runs commands on `toodo-server`: the generated bindings invoke commands through `invoke`,
+ * which posts them to the server.
  */
 import { serverFetch } from "@/web/connection";
 import { authorization, forgetToken, getToken } from "@/web/session";
@@ -17,7 +17,7 @@ function isCommandError(value: unknown): value is CommandError {
 }
 
 /**
- * Runs a command on the server. Like Tauri's `invoke`, it resolves with the result and
+ * Runs a command on the server. It resolves with the result and
  * rejects with the command's error object (not an `Error`), which the bindings turn into
  * `{ status: "error" }`; transport failures reject with an `Error`.
  */
@@ -50,3 +50,4 @@ export async function invoke<T>(command: string, args: Record<string, unknown> =
   }
   throw new Error(text || `${response.status} ${response.statusText}`);
 }
+

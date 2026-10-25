@@ -23,7 +23,8 @@ test("edits tasks and memory entries through the same labelled pencil action", a
 });
 
 test("gives the backup actions one style and names the restore of a file", async ({ app }) => {
-  await app.getByText("Backups", { exact: true }).click();
+  await app.getByRole("button", { name: /^Settings/ }).click();
+  await app.getByRole("tab", { name: "Backups" }).click();
   // The server writes a backup each time it starts.
   const backup = app.getByRole("list", { name: "Saved backups" }).getByRole("listitem").first();
   const download = backup.getByRole("button", { name: /^Download backup from/ });

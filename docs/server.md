@@ -1,43 +1,35 @@
 # Linux Server
 
-`toodo-server` runs Toodo's core headless on a Linux machine without a desktop, next to the
-herdr server there, for one user. It is the same Rust core as the desktop app, built with
-the `server` feature instead of the Tauri shell, and is used locally on that machine:
+`toodo-server` is Toodo: it runs headless on a Linux machine next to the herdr server
+there, for one user, and is used from a browser. It serves:
 
+- the commands of the app as an HTTP API with a server-sent event stream (see [API](#api)),
+- the frontend, an installable web app (PWA) that uses them (see [Web App](#web-app)),
 - the MCP server for coding agents on the machine (`http://127.0.0.1:47616/mcp`),
-- the background work of the desktop app: herdr event subscriptions, pull request checks,
-  automatic backups, and MCP reverse tunnels to SSH machines,
-- SQLite storage in the server's data directory.
+- the background work: herdr event subscriptions, pull request checks, automatic backups,
+  and MCP reverse tunnels to SSH machines,
 
-It also serves the commands of the desktop app as an HTTP API with a server-sent event
-stream (see [API](#api)), and the web build of the frontend, an installable web app (PWA)
-that uses them from a browser (see [Web App](#web-app)).
+and keeps its data in SQLite in the server's data directory. Everything is served on one
+port, `127.0.0.1:47616` by default.
 
-Everything is served on one port, `127.0.0.1:47616` by default. The default is not the
-desktop app's MCP port, 47615, on purpose: the desktop app keeps
-`ssh -R 127.0.0.1:47615:127.0.0.1:47615` open to every SSH machine with a workspace, and the
-server forwards its own port to its SSH machines the same way. If the server's machine is
-also an SSH machine of the desktop app, or both reach the same SSH machine, the two would
-fight over the same port: the loser either fails to listen or keeps retrying its tunnel,
-and agents would get whichever token won. Keep `TOODO_LISTEN` off 47615 for that reason.
+Data of the Windows desktop app that earlier releases shipped can be moved into a server
+with `toodo-server import`; see [migrate-desktop-data.md](migrate-desktop-data.md).
 
 ## Machines and Paths
 
 The "Local" machine is the server: local workspaces and the local worktree root use POSIX
-paths on it, and the local herdr is the herdr server running there. Workspaces on saved
-herdr SSH machines work as in the desktop app. `herdr machine add <host>` asks questions in
-a terminal, so run it on the server yourself.
-
-The server is not a backend for the desktop app: each keeps its own database.
+paths on it, and the local herdr is the herdr server running there. Workspaces can also
+live on saved herdr SSH machines. `herdr machine add <host>` asks questions in a terminal,
+so run it on the server yourself.
 
 ## Versions and Releases
 
-`toodo-server` and the Windows app share one version and one release: every GitHub
-release `vX.Y.Z` carries the Windows installers and
+Every GitHub release `vX.Y.Z` carries
 `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` (the `toodo-server` binary for x86_64 Linux and,
 under `web/`, the web app) with its `.sha256`, built from the same commit. `toodo-server --version` prints the
-version, so an installed server compares directly with a release and with the Windows
-app's version. See "Releases and Updates" in the README for how a release is made.
+version, so an installed server compares directly with a release, and the commit it was built from (`toodo-server 0.12.0 (commit
+1c78b7a1a2b3)`), so a build of a later commit is told apart from the release it reports.
+The server prints the same line when it starts. See "Releases and Updates" in the README for how a release is made.
 
 ## Install and Update
 
@@ -57,10 +49,8 @@ systemd user service `toodo-server.service` (see [systemd](#systemd)), restarts 
 checks that it answers (`/api` without a token is `401`, `/` is the web app). It prints
 where the tokens are, never the tokens.
 
-- `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version, for example
-  the Windows app's.
-- `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`; 47615 is
-  refused, see above).
+- `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version.
+- `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`).
 - `--no-service`: install only; leave the service alone.
 
 To update, run it again with the same options; the database and tokens in the data
@@ -91,11 +81,11 @@ To build by hand instead, on the server (Rust installed):
 
 ```sh
 cd src-tauri
-cargo build --release --no-default-features --features server --bin toodo-server
+cargo build --release --bin toodo-server
 ```
 
 The binary is `src-tauri/target/release/toodo-server`. It needs `git`, `ssh`, `gh`, and
-`herdr` on `PATH` at runtime, like the desktop app.
+`herdr` on `PATH` at runtime.
 
 ## Run
 
@@ -105,20 +95,14 @@ toodo-server
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on; avoid port 47615 (see above) |
+| `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on |
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
-| `TOODO_LEAD` | `on` | `off` runs no lead (see [Lead](#lead)) |
-| `TOODO_LEAD_COMMAND` | omo (see below) | Shell command that starts the lead agent |
-| `TOODO_LEAD_MODEL` | none | Model for the lead, passed to the command as `$TOODO_LEAD_MODEL` |
-| `TOODO_LEAD_DIR` | `$TOODO_DATA_DIR/lead` | The lead's workspace |
 
-On first start the data directory gets three access tokens:
+On first start the data directory gets two access tokens:
 
 - `mcp-token`: agents send it to `/mcp` as `Authorization: Bearer <token>`.
-- `lead-token`: the lead's token for `/mcp`, which tells the tools that the lead calls
-  them (see [Lead tools](#lead-tools)). Only the lead's launcher carries it.
 - `web-token`: the shared web token. A browser signs in with it once and is registered
   as a device with a token of its own (see [Devices](#devices)); `/api` accepts the
   shared token too, so existing clients keep working.
@@ -127,6 +111,26 @@ The data directory is created readable by its owner only (`0700`) and the token 
 `0600`; the server tightens an existing directory and token files on start. To replace a
 token, delete its file and restart the server. Replacing `web-token` does not sign out
 registered devices; revoke them one by one.
+
+### Import
+
+```sh
+toodo-server import FILE
+```
+
+adds the data of another Toodo database, such as a Windows desktop app's (see
+[migrate-desktop-data.md](migrate-desktop-data.md)), to the data in `TOODO_DATA_DIR`, then
+exits. It imports workspaces, tasks (with dependencies, status history, commit records,
+notes, related links, criteria, and pull request snapshots), and project memory, in one
+transaction, after writing a pre-restore backup into `<data>/backups/`. Devices, push
+subscriptions, chat messages, and machine settings (worktree roots) are not imported, and
+tasks lose their herdr workspace link. The file is checked and migrated to the latest
+schema in memory first; a newer schema than the server's is refused, and the file itself
+is never modified.
+
+Imported IDs go after every ID the server has used: task #N becomes #(N + offset), and the
+command prints the offset. Into an empty server, tasks keep their numbers. Stop the
+service first (`systemctl --user stop toodo-server`) and start it again afterwards.
 
 ### Devices
 
@@ -139,7 +143,7 @@ with the shared token. Only the shared token registers devices, so a device toke
 mint more tokens. A device keeps its id after it is revoked, so data kept per device can
 refer to it.
 
-The web app lists the devices under **Devices** in the sidebar, marks the current one,
+The web app lists the devices under **Devices** in Settings, marks the current one,
 and revokes them. Devices live in the database, so restoring a backup also restores the
 devices of that backup: devices registered after it sign in again.
 
@@ -160,7 +164,7 @@ a plain tab). Web Push needs HTTPS, so phones reach the server through an
 authenticating HTTPS front (see [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access));
 on the server itself, `http://127.0.0.1` counts as secure.
 
-Under **Notifications** in the sidebar, a device turns notifications on, picks which
+Under **Notifications** in Settings, a device turns notifications on, picks which
 ones it gets, and sends itself a test notification:
 
 | Setting | Notifications |
@@ -205,68 +209,9 @@ contents of `mcp-token`):
 Agents on the server's SSH machines reach the same URL through the reverse tunnels the
 server keeps open to them.
 
-### Lead
+### Agent MCP Tools
 
-The server keeps one lead agent running in herdr. People talk to it in its pane (or
-through the pane view), and it turns their requests into Toodo tasks, starts them, runs
-coding agents in their worktrees, and follows them up, with Toodo as its only record of
-the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
-
-- **Workspace.** On first start the server creates `TOODO_LEAD_DIR` as a new git
-  repository without a remote and adds it as the workspace "Lead". The lead keeps
-  briefs, research, and scratch files there and never pushes it. Deleting the workspace
-  in Toodo only makes the server add it again on its next check; the files stay.
-- **Pane.** The server opens the workspace in herdr and runs the agent in its pane. Every
-  5 seconds it checks the pane: when the pane's shell is back in the foreground, the
-  agent has exited and is started again in the same pane. An agent that exits within a
-  minute of starting is retried after 10 s, 30 s, 1 min, 2 min, then every 5 min, and
-  after three such exits in a row the lead is reported `failed`. A closed pane or herdr
-  workspace is opened again. After a server restart an agent still running in the pane
-  is kept, not started a second time. When the server stops (Ctrl+C or SIGTERM) it
-  stops checking, waiting up to 10 s for a check in progress, then closes the lead's
-  herdr workspace, ending the agent; the next start opens it again.
-- **Command.** The server writes `lead-start` (owner-only, `0600`) and `lead-prompt.md`
-  to the data directory and types `sh <data dir>/lead-start` into the pane. The launcher
-  exports `TOODO_MCP_URL`, `TOODO_MCP_TOKEN` (the contents of `lead-token`),
-  `TOODO_LEAD_MODEL`, `TOODO_LEAD_PROMPT`
-  (the prompt file), and `TOODO_LEAD_DIR`, changes to the workspace, and runs
-  `TOODO_LEAD_COMMAND` with `sh`. The default runs omo:
-
-  ```sh
-  omo --approve ${TOODO_LEAD_MODEL:+--model "$TOODO_LEAD_MODEL"} \
-    --append-system-prompt "$TOODO_LEAD_PROMPT"
-  ```
-
-  Another agent works the same way, for example
-  `claude ${TOODO_LEAD_MODEL:+--model "$TOODO_LEAD_MODEL"} --append-system-prompt "$(cat "$TOODO_LEAD_PROMPT")"`.
-- **MCP.** The server writes this server's entry, named `toodo`, into the workspace's
-  `.omo/mcp.json` (omo, `bearerTokenEnv`) and `.mcp.json` (Claude Code, an
-  `Authorization` header with `${TOODO_MCP_TOKEN}`), keeping other servers in those
-  files. A file that is not plain JSON (comments included) is left alone and the lead is
-  reported `failed` until it is fixed or removed. Neither file holds the token, which only the launcher's environment carries, so
-  the lead reaches its own server even when another Toodo server uses a different token.
-  A `toodo` server in the agent's global configuration takes precedence over the project
-  one in omo; remove it, or point it at this server, on the machine the lead runs on.
-
-`get_lead` returns the lead's status for the chat panel: `{ state, workspaceId,
-herdrWorkspaceId, paneId, agent, agentStatus, restarts, startedAt, error }`, where `state`
-is `disabled`, `starting`, `running`, `restarting`, or `failed`. The `lead-changed` event
-carries the same object whenever it changes. The desktop app has no lead, and always
-reports `disabled`.
-
-The web app's **Lead chat** page talks to the lead. `send_chat_message { text, clientId }`
-types the message into the lead's pane as one line starting with `[Toodo chat]` (line
-breaks become ` / `) and stores it; it is rejected while the lead is not running, and a
-`clientId` already stored returns that message without typing it again. The lead
-answers with the MCP tool `reply_in_chat`, as its prompt tells it to. Both store the
-message in the database and send the `chat-changed` event, so every open client reloads
-`list_chat_messages` (the latest 500 messages). Each client keeps the ID of the last
-message it showed in local storage and counts the lead's later replies as unread.
-
-#### Lead tools
-
-The lead drives tasks through the same MCP tools as other agents, and the server knows
-its calls by the lead token:
+Besides the regular task tools, two arguments help an agent wire and start a plan:
 
 - **Create.** `create_task` takes `depends_on` and `related`, so a plan is wired in one
   call; an unknown task in either rejects the call and creates nothing.
@@ -275,24 +220,10 @@ its calls by the lead token:
   for workspaces on the server's machine). The reply is the task with `panes`, `ranIn`
   (the pane the command ran in), and `paneError` when the panes could not be listed or
   the command did not run; the task is started either way.
-- **Record.** Each task the lead creates, starts, completes, or concludes gets a
-  progress note in its history ("Started by the Toodo lead and ran `...` in its pane
-  ...") and a lead message in the chat, and the `chat-changed` event fires.
-- **Confirm.** `conclude_task`, `complete_task` with `merged_with`, and `complete_task`
-  of a task awaiting completion (which confirms its manual criteria for a person) do
-  nothing when the lead first calls them: Toodo posts a request with a random
-  six-character code to the chat, naming the action and its arguments, and rejects the
-  call. Once a person answers `confirm <code>` in the chat, the lead calls the tool again
-  with the same arguments and `confirmation` set to the code. The request must still be
-  among the latest chat messages and match the action exactly, so a code confirms only
-  the action it was asked for. The lead cannot answer for a person: it posts only through
-  `reply_in_chat`, as the lead, and has no web or device token.
-- **Merge.** Toodo has no merge tool. The lead's prompt forbids merging pull requests and
-  pushing to base branches; agents that implement tasks follow the workspace's agent
-  merge policy, which never allows merging past the base branch.
 
-Calls with `mcp-token` behave as before: no notes or chat messages, and no
-confirmations.
+`read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`). Toodo has
+no merge tool: agents follow the workspace's agent merge policy, which never allows merging
+past the base branch.
 
 ### systemd
 
@@ -329,7 +260,7 @@ the `Wants=` is ignored. To set the service up by hand, run
 
 The web build of the frontend uses the server from a browser. A release install serves it
 (`scripts/install-server.sh --release ...`); from a checkout, use `--with-web`, or
-`npm ci && npm run build:web` into `dist-web/` with `TOODO_WEB_DIR` pointing at it. The
+`npm ci && npm run build` into `dist-web/` with `TOODO_WEB_DIR` pointing at it. The
 browser asks for `web-token` and a device name once, registers itself as a device, and
 keeps its device token in local storage.
 
@@ -383,8 +314,8 @@ You need a domain on Cloudflare and a Zero Trust organization (the free plan doe
    `toodo.example.com` (the whole hostname, no path) with an *Allow* policy that includes
    only your own identity, for example your e-mail address with the one-time PIN login. Do
    it before the hostname resolves, so nothing is ever reachable without it. Add no
-   *Bypass* or *Service Auth* policy: the API, the event stream, and `/mcp` all sit behind
-   the same application.
+   *Bypass* policy: the API, the event stream, and `/mcp` all sit behind the same
+   application.
 2. **A tunnel of its own.** Create a new, remotely managed tunnel (*Networks > Tunnels*)
    for the server instead of adding a hostname to a tunnel the machine already runs for
    something else: it gets its own token, can be stopped or deleted alone, and a mistake in
@@ -448,28 +379,27 @@ Things to know:
   timeout.
 - Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels);
   do not point remote agents at the public hostname, where Access stops them.
-- If a phone is lost, revoke it under **Devices** from another device; the shared
+- If a phone is lost, revoke it under **Devices** in Settings from another device; the shared
   `web-token` and the other devices keep working.
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
 
 ## Development
 
-`npm run dev:web` starts the Vite dev server with the web build's modules and forwards
-`/api` and `/mcp` to a running `toodo-server` (`TOODO_SERVER`, default
+`npm run dev` starts the Vite dev server and forwards `/api` (WebSocket upgrades too) and
+`/mcp` to a running `toodo-server` (`TOODO_SERVER`, default
 `http://127.0.0.1:47616`).
 
 ## API
 
-- `POST /api/rpc/<command>`: runs a command by its Tauri name (e.g. `list_tasks`) with
+- `POST /api/rpc/<command>`: runs a command by its name in `src/lib/bindings.ts` (e.g. `list_tasks`) with
   its arguments as a JSON object with camelCase keys. A result is `200` with the JSON
   result; a command error is `{ "kind", "message" }` with `422` (invalidInput), `404`
   (notFound), `409` (rejected), `502` (external), or `500` (internal). An unknown command
   is `404` and malformed arguments `400`, both with a text body.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
-  desktop app's events, and `lead-changed` with the result of `get_lead` (see
-  [Lead](#lead)).
+  events in `src/lib/bindings.ts`.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
@@ -491,22 +421,19 @@ Things to know:
   outside that workspace is `404`. The ticket opens one stream within 30 seconds.
 - `GET /api/panes/stream?ticket=<ticket>`: the WebSocket of the pane view, authorized by
   the ticket instead of the token; `401` for an unknown, used, or expired ticket and `403`
-  for an `Origin` other than the server's own or the desktop app's. The server sends
+  for an `Origin` other than the server's own. The server sends
   `{ "type": "frame", "seq", "cols", "rows", "ansi" }` whenever the pane's screen
   changes, and `{ "type": "closed", "reason" }` before it closes. The view is read-only
   until the client sends `{ "type": "control", "on": true }` (answered with the same);
   then `{ "type": "text", "text" }` and `{ "type": "keys", "keys": [...] }` reach the
   pane. Messages are at most 64 KB. The server logs one line per control session.
 
-Commands that read or write a path on the desktop app's own machine are not served:
-`save_report` (the web app downloads reports instead), `export_database`, and
-`restore_database` (replaced by the endpoints above and the `restore_backup { name }`
-command). `list_directories { machine, path }` lists directories on the server for
-`{ "kind": "local" }` and on an SSH machine for `{ "kind": "ssh", "label": ... }`;
-`add_herdr_machine` is refused, since `herdr machine add` asks questions in a terminal.
+`list_directories { machine, path }` lists directories on the server for
+`{ "kind": "local" }` and on an SSH machine for `{ "kind": "ssh", "label": ... }`. Reports
+are downloaded in the browser, and backups go over the endpoints above and the
+`restore_backup { name }` command.
 
 All of them except the pane stream require `Authorization: Bearer <token>` with the shared web
-token or the token of a device that is not revoked; `/mcp` requires the MCP token. The web
-build swaps the Tauri modules for `src/web/`, so the generated bindings in
-`src/lib/bindings.ts` serve both apps; a test checks that the server routes every command
-they invoke.
+token or the token of a device that is not revoked; `/mcp` requires the MCP token. The
+generated bindings in `src/lib/bindings.ts` call the API through `src/web/core.ts` and
+`src/web/event.ts`; a test checks that the server routes every command they invoke.

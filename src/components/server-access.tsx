@@ -48,12 +48,11 @@ function TokenForm() {
   }
 
   return (
-    <main className="flex min-h-svh items-center justify-center p-6">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-4 p-6">
       <form onSubmit={submit} aria-label="Server access" className="flex w-full max-w-sm flex-col gap-3 rounded-lg border p-5">
         <h1 className="text-lg font-semibold">Toodo server</h1>
         <p className="text-sm text-muted-foreground">
-          Sign in with the server's access token. This browser then gets a token of its own, which you can revoke
-          under Devices.
+          Sign in with the server's access token. This browser then gets a token of its own, which you can revoke under Devices.
         </p>
         <div className="flex flex-col gap-1">
           <label htmlFor={`${id}-token`} className="text-xs text-muted-foreground">

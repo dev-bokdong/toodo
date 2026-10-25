@@ -1,5 +1,9 @@
 # Server/Client Split
 
+> **Note:** The Windows desktop app was removed after this document was written. Toodo now
+> has one client, the web app (PWA) served by `toodo-server`; see [server.md](server.md).
+> This record is kept as it was.
+
 Toodo is moving from "a desktop app that owns everything" to one **toodo-server** with
 thin clients:
 
@@ -12,7 +16,8 @@ thin clients:
 
 This document lists what the desktop app does locally today, decides where each piece
 lives after the split, records what already goes through the server, sketches the
-realtime streams for herdr panes and a Dori chat channel, and slices the follow-ups.
+realtime streams for herdr panes and a Dori chat channel (a lead chat was built later and
+then removed), and slices the follow-ups.
 References are `path:line` at the time of writing (release 0.11.0).
 
 ## Summary
@@ -388,33 +393,10 @@ Input safety:
 - Text frames are size-capped, for example 64 KB. The server logs one line per
   control session (pane, start, end), not the keystrokes.
 
-### 4.3 Dori Chat Channel: SSE Plus POST
+### 4.3 Chat Channel
 
-Chat is low-rate, text-only, and needs history, so it fits the existing pattern instead
-of a new socket:
-
-- `GET /api/chat/messages?after=<id>&limit=<n>` returns history, newest last.
-- `POST /api/chat/messages` with `{ "text": string, "clientId": string }` sends a
-  message. `clientId` makes retries idempotent. The response is the stored message.
-- A new SSE event `chat-message` on `GET /api/events` carries
-  `{ id, from: "user" | "dori", text, at, taskId? }`. After a reconnect the client
-  fetches `after=<last id>`, the same "refetch on reconnect" rule the app already
-  follows.
-- Storage is a new `chat_messages` table (id, from, text, at, optional task id) in a new
-  migration, so every client sees the same history.
-
-Dori sits behind an adapter (`adapters/dori.rs`), like herdr and gh:
-
-- **Toodo to Dori**: Dori can already take events from a local webhook source
-  (`dori source add --type webhook`, a POST to `127.0.0.1:<port>` with a shared secret
-  header). The server posts each user message there.
-- **Dori to Toodo**: Dori posts replies to `POST /api/chat/inbound` with a third,
-  separate token (`chat-token`) that can only append Dori messages. It does not open
-  the whole API. This needs a small Dori-side hook (a reply target besides Discord or
-  Telegram). That work lives in Dori, not in this repository.
-
-WebSocket would also work for chat. It is not needed, though: SSE already reconnects and
-resyncs, and a POST per message is fine at chat rates.
+This section planned a chat channel to an outside agent. A lead chat was built later and
+then removed from Toodo, so the design is no longer kept here.
 
 ### 4.4 Auth for Streams
 
@@ -476,17 +458,6 @@ Order: **251 first**. 252 and 253 are independent of each other after it.
 - Optional at the end: run `herdr machine add` in a pane (2.4).
 - Done when a client shows a live agent pane of a local and an SSH-machine task, and
   input reaches the pane only after taking control.
-
-### 253: Dori Chat Panel
-
-- `chat_messages` migration, `adapters/dori.rs` (webhook out), `chat-token`,
-  `POST /api/chat/inbound`, `GET`/`POST /api/chat/messages`, and the `chat-message` SSE
-  event.
-- UI: a chat panel (sidebar or sheet) with history, send, and unread badge, and
-  optionally "about this task" links through `taskId`.
-- Depends on a Dori-side reply hook (outside this repository).
-- Done when a message sent from a client reaches Dori, Dori's reply appears in every open
-  client without reload, and history survives a reload.
 
 ### Install and Connection Model
 

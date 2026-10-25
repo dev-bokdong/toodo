@@ -45,8 +45,7 @@ use crate::storage::{CriterionCheck, StorageError};
 
 /// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 /// the base branch and stores them as its commit records.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn refresh_commit_records(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -60,8 +59,7 @@ pub fn refresh_commit_records(
 /// of the branch opened elsewhere (e.g. from herdr) is adopted instead: an open one gets
 /// the push, a merged one is recorded without pushing. Run it again after more commits
 /// to push them to the pull request.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn open_pull_request(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -76,8 +74,7 @@ pub fn open_pull_request(
 /// ready. Toodo checks its automatic criteria first; a merged pull request's size,
 /// reviews, and commits are recorded for reviews. Its herdr workspace is closed; the
 /// worktree stays on disk. Rejected with the criteria that are not met.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn complete_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -94,8 +91,7 @@ pub fn complete_task(
 /// pull request of its branch, recorded or not, is closed with the conclusion as a
 /// comment and recorded, and its herdr workspace is closed. The branch and worktree stay,
 /// and its dependents keep waiting.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn conclude_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -637,8 +633,9 @@ fn finish_task(
     viewed: Option<&ViewedPullRequest>,
 ) -> CommandResult<model::Task> {
     let id = task.id;
-    let (merged_at, snapshot, commits) = match viewed.map(|viewed| &viewed.pull_request) {
-        Some(pull_request) if pull_request.state == PullRequestState::Merged => {
+    let (merged_at, snapshot, commits) = match viewed {
+        Some(viewed) if viewed.pull_request.state == PullRequestState::Merged => {
+            let pull_request = &viewed.pull_request;
             let merged = github.merged_pull_request(&pull_request.url)?;
             let commits = merged
                 .commits
@@ -1055,8 +1052,7 @@ fn adopt_pull_request(
 /// check.
 pub type PullRequestStatusState = Mutex<HashMap<model::TaskId, PullRequestStatus>>;
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_pull_request_statuses(
     statuses: State<'_, PullRequestStatusState>,
 ) -> Vec<types::TaskPullRequestStatus> {
@@ -1867,7 +1863,7 @@ mod tests {
                 "view",
                 PR,
                 "--json",
-                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews"
+                "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews,headRefOid"
             ]
             .map(str::to_owned)
         );
@@ -2396,8 +2392,6 @@ mod tests {
 
         fn memory_changed(&self) {}
 
-        fn chat_changed(&self) {}
-
         fn agent_statuses_changed(&self, _: &[types::TaskAgentStatus]) {}
 
         fn pull_request_statuses_changed(&self, statuses: &[types::TaskPullRequestStatus]) {
@@ -2460,6 +2454,42 @@ mod tests {
             &statuses,
         );
         assert_eq!(invocations(&gh_runner).len(), 3);
+    }
+
+    #[test]
+    fn an_open_pull_request_with_passing_checks_is_reported_ready_and_not_merged() {
+        let criterion = NewCriterion::parse(
+            "Pull request open with green checks",
+            CheckKind::PullRequestOpenChecksPassed,
+            None,
+        )
+        .unwrap();
+        let fixture = local_criteria_fixture(vec![criterion]);
+        lock(&fixture.storage)
+            .open_pull_request(fixture.task.id, &[], PR, None)
+            .unwrap();
+        let passing = r#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]"#;
+        let mut view: serde_json::Value =
+            serde_json::from_str(&viewed_with("OPEN", "main", passing, "\"\"").unwrap()).unwrap();
+        view["headRefOid"] = serde_json::json!(SHA_A);
+        let github = GitHub::new(Box::new(runner(vec![Ok(view.to_string())])));
+        let git = Git::new(Box::new(runner(vec![Err(failed()), log(&[SHA_A])])));
+        let (herdr, _) = closing_herdr();
+        let recorder = Recorder::default();
+
+        check_pull_requests(
+            &fixture.storage,
+            &git,
+            &github,
+            &herdr,
+            &recorder,
+            &mut HashMap::new(),
+            &PullRequestStatusState::default(),
+        );
+
+        let done = stored(&fixture, &fixture.task);
+        assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.pull_request_merged_at, None);
     }
 
     #[test]

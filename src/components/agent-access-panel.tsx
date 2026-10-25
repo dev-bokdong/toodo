@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { McpServerInfo, McpTunnel, McpTunnelState } from "@/lib/bindings";
-import { runsOnServer } from "@/lib/platform";
 import { useMcpServerInfo, useMcpTunnels } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { toneFill } from "@/lib/status-styles";
@@ -52,6 +51,16 @@ function TunnelList({ tunnels }: { tunnels: McpTunnel[] }) {
   );
 }
 
+/** How many tunnels to SSH machines are retrying, shown next to the Agent access settings; nothing while none is. */
+export function AgentAccessStatus() {
+  const tunnels = useMcpTunnels();
+  const retrying = (tunnels.data ?? []).filter((tunnel) => tunnel.state === "retrying").length;
+  if (retrying === 0) return null;
+  return (
+    <span className="text-destructive">{retrying === 1 ? "1 tunnel retrying" : `${retrying} tunnels retrying`}</span>
+  );
+}
+
 export function AgentAccessPanel() {
   const info = useMcpServerInfo();
   const tunnels = useMcpTunnels();
@@ -67,62 +76,47 @@ export function AgentAccessPanel() {
   }
 
   const data = info.data;
-  const retrying = (tunnels.data ?? []).filter((tunnel) => tunnel.state === "retrying").length;
 
   return (
-    <details className="group rounded-lg border p-2">
-      <summary className="cursor-pointer text-xs font-medium uppercase text-muted-foreground">
-        Agent access
-        {retrying > 0 && (
-          <span className="ml-1.5 normal-case text-destructive">
-            {retrying === 1 ? "1 tunnel retrying" : `${retrying} tunnels retrying`}
-          </span>
-        )}
-      </summary>
-      <section aria-label="Agent access" className="mt-2 flex flex-col gap-2 text-xs">
-        <p className="text-muted-foreground">
-          {runsOnServer
-            ? "Agents on the server can plan tasks and connect dependencies through the Toodo server's MCP endpoint."
-            : "Agents can plan tasks and connect dependencies through Toodo's MCP server while the app is running."}
-        </p>
-        {data && (
-          <>
-            <code
-              className="overflow-x-auto break-normal rounded bg-muted px-1.5 py-1 [overflow-wrap:normal]"
-              aria-label="MCP server URL"
-            >
-              {breakableUrl(data.url)}
-            </code>
-            {data.error ? (
-              <p role="alert" className="text-destructive">
-                MCP server is not running: {data.error}
+    <section aria-label="Agent access" className="flex flex-col gap-2 text-sm">
+      <p className="text-muted-foreground">
+        Agents on the server can plan tasks and connect dependencies through the Toodo server's MCP endpoint.
+      </p>
+      {data && (
+        <>
+          <code
+            className="overflow-x-auto break-normal rounded bg-muted px-1.5 py-1 [overflow-wrap:normal]"
+            aria-label="MCP server URL"
+          >
+            {breakableUrl(data.url)}
+          </code>
+          {data.error ? (
+            <p role="alert" className="text-destructive">
+              MCP server is not running: {data.error}
+            </p>
+          ) : (
+            data.token && (
+              <div className="flex flex-wrap gap-1.5">
+                <Button size="xs" onClick={() => void copy(mcpConfig(data), "the MCP config")}>
+                  Copy MCP config
+                </Button>
+                <Button size="xs" variant="outline" onClick={() => void copy(data.token ?? "", "the access token")}>
+                  Copy token
+                </Button>
+              </div>
+            )
+          )}
+          {!data.error && (
+            <>
+              <p className="text-muted-foreground">
+                Agents on SSH machines use the same config: the server forwards its port to each machine with a workspace.
               </p>
-            ) : (
-              data.token && (
-                <div className="flex flex-wrap gap-1.5">
-                  <Button size="xs" onClick={() => void copy(mcpConfig(data), "the MCP config")}>
-                    Copy MCP config
-                  </Button>
-                  <Button size="xs" variant="outline" onClick={() => void copy(data.token ?? "", "the access token")}>
-                    Copy token
-                  </Button>
-                </div>
-              )
-            )}
-            {!data.error && (
-              <>
-                <p className="text-muted-foreground">
-                  {runsOnServer
-                    ? "Agents on SSH machines use the same config: the server forwards its port to each machine with a workspace."
-                    : "Agents on SSH machines use the same config: Toodo forwards the port to each machine with a workspace."}
-                </p>
-                <TunnelList tunnels={tunnels.data ?? []} />
-              </>
-            )}
-          </>
-        )}
-        {notice && <p role="status">{notice}</p>}
-      </section>
-    </details>
+              <TunnelList tunnels={tunnels.data ?? []} />
+            </>
+          )}
+        </>
+      )}
+      {notice && <p role="status">{notice}</p>}
+    </section>
   );
 }

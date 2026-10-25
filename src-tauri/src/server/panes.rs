@@ -62,13 +62,6 @@ const LINGER: Duration = Duration::from_secs(5);
 /// Failed reads in a row after which a mirror gives up and closes its viewers.
 const MAX_FAILURES: u32 = 8;
 
-/// The origins of the desktop app's WebView (WebView2 on Windows, WebKit elsewhere).
-const DESKTOP_ORIGINS: &[&str] = &[
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-    "tauri://localhost",
-];
-
 pub type SharedConnector = Arc<dyn Connector + Send + Sync>;
 
 /// Opens connections to the herdr server of a machine; faked in tests.
@@ -379,8 +372,8 @@ pub async fn stream(
         .on_upgrade(move |socket| view(panes, ticket, socket))
 }
 
-/// Whether a WebSocket request with `headers` comes from this server's own pages, the
-/// desktop app, or a client that is not a browser (which sends no `Origin`); this keeps
+/// Whether a WebSocket request with `headers` comes from this server's own pages or a
+/// client that is not a browser (which sends no `Origin`); this keeps
 /// other sites from opening the stream with a ticket they got hold of.
 fn origin_allowed(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
@@ -389,9 +382,6 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
     let Ok(origin) = origin.to_str() else {
         return false;
     };
-    if DESKTOP_ORIGINS.contains(&origin) {
-        return true;
-    }
     let Some((_, authority)) = origin.split_once("://") else {
         return false;
     };
@@ -803,14 +793,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_servers_own_pages_and_the_desktop_app_may_open_streams() {
+    fn only_the_servers_own_pages_may_open_streams() {
         let host = ("host", "toodo.example:8443");
         assert!(origin_allowed(&headers(&[host])));
         assert!(origin_allowed(&headers(&[
             host,
             ("origin", "https://toodo.example:8443")
         ])));
-        assert!(origin_allowed(&headers(&[
+        assert!(!origin_allowed(&headers(&[
             host,
             ("origin", "http://tauri.localhost")
         ])));

@@ -1,7 +1,5 @@
 //! Commands for reviewing the work done in a period, such as a week or a year.
 
-use std::path::Path;
-
 use super::State;
 
 use super::types::{ReviewEntry, Task, Timestamp};
@@ -12,50 +10,13 @@ use crate::storage::Storage;
 /// Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 /// ordered by outcome, then by time. The caller picks the period, such as a week, a
 /// month, or a year in the local time zone.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn review_period(
     storage: State<'_, StorageState>,
     start: Timestamp,
     end: Timestamp,
 ) -> CommandResult<Vec<ReviewEntry>> {
     review_entries(&lock(&storage), start, end)
-}
-
-/// Writes a report built by the frontend to `path`, replacing any file there. Only
-/// Markdown (`.md`) and CSV (`.csv`) files are written. Desktop only: the web app
-/// downloads reports in the browser instead.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
-pub fn save_report(path: String, contents: String) -> CommandResult<()> {
-    write_report(Path::new(&path), &contents)
-}
-
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-fn write_report(path: &Path, contents: &str) -> CommandResult<()> {
-    if !path.is_absolute() {
-        return Err(CommandError::invalid_input(format!(
-            "{} is not an absolute path",
-            path.display()
-        )));
-    }
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase);
-    if !matches!(extension.as_deref(), Some("md" | "csv")) {
-        return Err(CommandError::invalid_input(format!(
-            "{} is not a Markdown (.md) or CSV (.csv) file",
-            path.display()
-        )));
-    }
-    std::fs::write(path, contents).map_err(|error| {
-        CommandError::internal(format!(
-            "failed to save the report to {}: {error}",
-            path.display()
-        ))
-    })
 }
 
 fn review_entries(
@@ -163,30 +124,6 @@ mod tests {
         );
 
         let error = review_entries(&storage, Timestamp(10), Timestamp(10)).unwrap_err();
-        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn saves_reports_only_as_markdown_or_csv_at_an_absolute_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let csv = dir.path().join("review.CSV");
-        write_report(&csv, "id,title\n1,Add storage\n").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&csv).unwrap(),
-            "id,title\n1,Add storage\n"
-        );
-        let markdown = dir.path().join("review.md");
-        write_report(&markdown, "# Review").unwrap();
-        write_report(&markdown, "# Year review").unwrap();
-        assert_eq!(std::fs::read_to_string(&markdown).unwrap(), "# Year review");
-
-        let text = dir.path().join("review.txt");
-        let error = write_report(&text, "text").unwrap_err();
-        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
-        assert!(!text.exists());
-        let error = write_report(Path::new("review.csv"), "text").unwrap_err();
-        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
-        let error = write_report(&dir.path().join("review"), "text").unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
     }
 }

@@ -98,9 +98,6 @@ if ! [[ $listen =~ ^(.+):([0-9]+)$ ]]; then
 fi
 listen_host=${BASH_REMATCH[1]}
 listen_port=${BASH_REMATCH[2]}
-if [ "$listen_port" = 47615 ]; then
-  die "port 47615 is the desktop app's MCP tunnel port; pick another (see docs/server.md)"
-fi
 # Health checks reach a wildcard address through loopback.
 case "$listen_host" in
   0.0.0.0) check_host=127.0.0.1 ;;
@@ -149,7 +146,7 @@ unit=$unit_dir/toodo-server.service
 
 if [ "$web" = 1 ]; then
   log "Building the web app"
-  (cd "$repo" && npm ci && npm run build:web)
+  (cd "$repo" && npm ci && npm run build)
 fi
 
 if [ "$from_release" = 1 ]; then
@@ -188,10 +185,11 @@ if [ "$from_release" = 1 ]; then
     log "$asset carries no web app; serving the API and MCP only"
   fi
   version=$("$new_bin" --version) || die "the downloaded toodo-server does not run on this machine"
-  [ "$version" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
+  # Builds since 0.12.0 add " (commit <sha>)".
+  [ "${version%% (commit *}" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
 else
   log "Building toodo-server"
-  (cd "$repo/src-tauri" && cargo build --release --no-default-features --features server --bin toodo-server)
+  (cd "$repo/src-tauri" && cargo build --release --bin toodo-server)
   new_bin=$repo/src-tauri/target/release/toodo-server
   version=$("$new_bin" --version)
   web_src=$repo/dist-web

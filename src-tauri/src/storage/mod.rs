@@ -8,10 +8,10 @@
 //! line with the dependencies after every change.
 
 mod backup;
-mod chat;
 mod commits;
 mod criteria;
 mod devices;
+mod import;
 mod memory;
 mod migrations;
 mod push;
@@ -37,6 +37,7 @@ use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
 pub use criteria::{CriterionCheck, CriterionEdit};
+pub use import::ImportSummary;
 pub use push::NewPushSubscription;
 pub use search::TaskSearch;
 pub use tasks::{AddedDependencies, NewTask};

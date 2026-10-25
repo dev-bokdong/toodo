@@ -201,9 +201,10 @@ mod tests {
             String::from_utf8(output.stdout).unwrap(),
         )]))));
         let listing = real.list_directories(&devbox(), None).unwrap();
+        // Canonical on both sides: the macOS temporary directory is behind a symlink.
         assert_eq!(
-            listing.path.as_str(),
-            root.canonicalize().unwrap().to_str().unwrap()
+            fs::canonicalize(listing.path.as_str()).unwrap(),
+            root.canonicalize().unwrap()
         );
         assert_eq!(listing.directories, [".hidden", "a", "b dir"]);
 

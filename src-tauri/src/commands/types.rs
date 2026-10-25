@@ -144,16 +144,7 @@ fn machine_label(raw: &str) -> CommandResult<model::MachineLabel> {
     model::MachineLabel::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
 }
 
-/// A path on the machine Toodo runs on: a Windows path in the desktop app.
-#[cfg(not(feature = "server"))]
-fn local_path(raw: &str) -> CommandResult<model::HostPath> {
-    path::WindowsPath::parse(raw)
-        .map(model::HostPath::Windows)
-        .map_err(|error| CommandError::invalid_input(error.to_string()))
-}
-
 /// A path on the machine Toodo runs on: a POSIX path on the server.
-#[cfg(feature = "server")]
 fn local_path(raw: &str) -> CommandResult<model::HostPath> {
     posix_path(raw).map(model::HostPath::Posix)
 }
@@ -1424,11 +1415,8 @@ mod tests {
     use super::*;
     use crate::commands::CommandErrorKind;
 
-    /// A local path as entered, its normalized form, and a path of the other kind: Windows
-    /// paths are local in the desktop app, POSIX paths on the server.
-    #[cfg(not(feature = "server"))]
-    const LOCAL: (&str, &str, &str) = ("C:/dev/toodo/", r"C:\dev\toodo", "/home/me/toodo");
-    #[cfg(feature = "server")]
+    /// A local path as entered, its normalized form, and a path of the other kind: local
+    /// paths are POSIX paths on the server.
     const LOCAL: (&str, &str, &str) = ("/home/me/toodo/", "/home/me/toodo", r"C:\dev\toodo");
 
     #[test]

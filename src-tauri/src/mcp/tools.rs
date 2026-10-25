@@ -162,13 +162,6 @@ pub struct Dependency {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub struct ChatReply {
-    /// The reply, in GitHub-flavored Markdown.
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub struct AddNote {
     /// The task the note is about, usually your current task.
     pub task_id: TaskId,
@@ -209,10 +202,6 @@ pub struct TaskStart {
 pub struct CompleteTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
-    /// Only for the Toodo lead: the code of the confirmation request a person answered
-    /// in the chat panel.
-    #[serde(default)]
-    pub confirmation: Option<String>,
     /// Only for a task whose work shipped with the merged pull request of another task,
     /// e.g. one pull request that fixed several tasks: that task's ID (`178` or `"#178"`),
     /// which must be done as merged, or the pull request URL. Omit it to complete the
@@ -229,14 +218,6 @@ pub enum MergedWithRef {
 }
 
 impl MergedWithRef {
-    /// `#178` or the pull request URL, for the lead's confirmation request.
-    pub(super) fn describe(&self) -> String {
-        match self {
-            Self::Task(id) => format!("#{id}"),
-            Self::Text(text) => text.trim().to_owned(),
-        }
-    }
-
     fn target(self) -> CommandResult<completion::MergedWithTarget> {
         let text = match self {
             Self::Task(id) => return Ok(completion::MergedWithTarget::Task(model::TaskId(id))),
@@ -296,10 +277,6 @@ pub struct ConcludeTask {
     /// The conclusion in GitHub-flavored Markdown: what was tried or found and why the
     /// work ends without a merge. Kept as the task's completion note.
     pub note: String,
-    /// Only for the Toodo lead: the code of the confirmation request a person answered
-    /// in the chat panel.
-    #[serde(default)]
-    pub confirmation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -989,6 +966,23 @@ mod tests {
         (storage, workspace.id.into())
     }
 
+    /// Agents started before the lead was removed may still send `request_id`; it is
+    /// ignored rather than failing the call.
+    #[test]
+    fn create_and_start_ignore_a_request_id() {
+        let create = serde_json::from_value::<CreateTask>(serde_json::json!({
+            "workspace_id": 1, "task_type": "feat", "title": "Add login",
+            "request_id": "chat-12/create-1"
+        }))
+        .unwrap();
+        assert_eq!(create.title, "Add login");
+        let start = serde_json::from_value::<StartTask>(serde_json::json!({
+            "id": 7, "request_id": "event-40/start-7"
+        }))
+        .unwrap();
+        assert_eq!(start.id, TaskId(7));
+    }
+
     fn create(
         storage: &mut Storage,
         workspace: WorkspaceId,
@@ -1654,7 +1648,6 @@ mod tests {
     fn own(id: TaskId) -> CompleteTask {
         CompleteTask {
             id,
-            confirmation: None,
             merged_with: None,
         }
     }
@@ -1662,7 +1655,6 @@ mod tests {
     fn merged_with(id: TaskId, target: MergedWithRef) -> CompleteTask {
         CompleteTask {
             id,
-            confirmation: None,
             merged_with: Some(target),
         }
     }
@@ -1933,7 +1925,6 @@ mod tests {
         ConcludeTask {
             id,
             note: note.to_owned(),
-            confirmation: None,
         }
     }
 

@@ -2,6 +2,7 @@
  * Devices of `toodo-server`: each browser signs in once with the shared web token and
  * then keeps a token of its own, which can be revoked without touching other devices.
  */
+import { activeServer } from "@/web/server";
 import { apiRequest, authorization, failureMessage } from "@/web/session";
 
 export interface Device {
@@ -31,11 +32,11 @@ async function checked(response: Response): Promise<Response> {
  * is kept as it is, and the shared web token registers a new device named `label`.
  */
 export async function signIn(token: string, label: string): Promise<string> {
-  const listed = await checked(await fetch("/api/devices", { headers: authorization(token) }));
+  const listed = await checked(await activeServer.fetch("/api/devices", { headers: authorization(token) }));
   const devices = (await listed.json()) as Device[];
   if (devices.some((device) => device.current)) return token;
   const created = await checked(
-    await fetch("/api/devices", {
+    await activeServer.fetch("/api/devices", {
       method: "POST",
       headers: { ...authorization(token), "Content-Type": "application/json" },
       body: JSON.stringify({ label }),

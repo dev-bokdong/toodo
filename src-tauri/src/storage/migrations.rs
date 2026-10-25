@@ -405,6 +405,113 @@ pub(super) const MIGRATIONS: &[&str] = &[
         at INTEGER NOT NULL
     );
     ",
+    // Version 19: when a person's message reached the lead's pane, and when the lead
+    // picked it up. Earlier messages were all typed into the pane before they were
+    // stored; those the lead answered afterwards count as picked up.
+    "
+    ALTER TABLE chat_messages ADD COLUMN delivered_at INTEGER
+        CHECK (delivered_at IS NULL OR author = 'user');
+    ALTER TABLE chat_messages ADD COLUMN seen_at INTEGER
+        CHECK (seen_at IS NULL OR delivered_at IS NOT NULL);
+    UPDATE chat_messages SET delivered_at = at WHERE author = 'user';
+    UPDATE chat_messages SET seen_at = delivered_at
+        WHERE author = 'user'
+          AND EXISTS (SELECT 1 FROM chat_messages AS later
+                      WHERE later.author = 'lead' AND later.id > chat_messages.id);
+    ",
+    // Version 20: the lead's inbox. A person's message is stored before it reaches the
+    // lead's pane, and status changes the lead acts on are kept for it, until the lead
+    // takes them; earlier messages were typed into the pane in full, so they count as
+    // taken. The lead names each task it creates or starts with a request ID, so a request
+    // it handles again does not create or start a task twice.
+    "
+    ALTER TABLE chat_messages ADD COLUMN taken_at INTEGER
+        CHECK (taken_at IS NULL OR author = 'user');
+    UPDATE chat_messages SET taken_at = delivered_at WHERE author = 'user';
+    ALTER TABLE task_events ADD COLUMN for_lead INTEGER NOT NULL DEFAULT 0
+        CHECK (for_lead IN (0, 1));
+    ALTER TABLE task_events ADD COLUMN taken_at INTEGER
+        CHECK (taken_at IS NULL OR for_lead = 1);
+    ALTER TABLE task_events ADD COLUMN request_id TEXT;
+    CREATE UNIQUE INDEX task_events_request_id ON task_events (request_id)
+        WHERE request_id IS NOT NULL;
+    CREATE INDEX task_events_for_lead ON task_events (id)
+        WHERE for_lead = 1 AND taken_at IS NULL;
+    ",
+    // Version 21: how each task finished, with what showed it, and the system's report of
+    // it in the chat. A finish is stored with the change that made it, so each one has one
+    // report; the chat keeps the report when the task is deleted.
+    "
+    CREATE TABLE task_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL
+            CHECK (kind IN ('pr_ready', 'merged', 'not_adopted', 'completed')),
+        pull_request_number INTEGER,
+        pull_request_url TEXT,
+        commit_sha TEXT,
+        at INTEGER NOT NULL
+    );
+    CREATE INDEX task_results_task ON task_results (task_id);
+    CREATE TABLE chat_messages_v21 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        author TEXT NOT NULL CHECK (author IN ('user', 'lead', 'system')),
+        body TEXT NOT NULL CHECK (trim(body) <> ''),
+        client_id TEXT UNIQUE CHECK (client_id IS NULL OR author = 'user'),
+        at INTEGER NOT NULL,
+        delivered_at INTEGER CHECK (delivered_at IS NULL OR author = 'user'),
+        seen_at INTEGER CHECK (seen_at IS NULL OR delivered_at IS NOT NULL),
+        taken_at INTEGER CHECK (taken_at IS NULL OR author = 'user'),
+        result_id INTEGER UNIQUE REFERENCES task_results (id) ON DELETE SET NULL
+            CHECK (result_id IS NULL OR author = 'system')
+    );
+    INSERT INTO chat_messages_v21
+        (id, author, body, client_id, at, delivered_at, seen_at, taken_at)
+        SELECT id, author, body, client_id, at, delivered_at, seen_at, taken_at
+        FROM chat_messages;
+    DROP TABLE chat_messages;
+    ALTER TABLE chat_messages_v21 RENAME TO chat_messages;
+    ",
+    // Version 22: receipts of the lead's work. A person's message gets the time it becomes
+    // overdue when it is stored, the lead's acknowledgement, and when and with what (its
+    // reply or a task made for it) the lead handled it; earlier messages have none, so
+    // they are never overdue, and their estimated `seen_at` never counts as handled. Each
+    // done event links the system's report of the finish, found for earlier events by the
+    // result stored with them.
+    "
+    ALTER TABLE chat_messages ADD COLUMN due_at INTEGER
+        CHECK (due_at IS NULL OR author = 'user');
+    ALTER TABLE chat_messages ADD COLUMN acked_at INTEGER
+        CHECK (acked_at IS NULL OR author = 'user');
+    ALTER TABLE chat_messages ADD COLUMN handled_at INTEGER
+        CHECK (handled_at IS NULL OR acked_at IS NOT NULL);
+    ALTER TABLE chat_messages ADD COLUMN handled_reply_id INTEGER
+        REFERENCES chat_messages (id)
+        CHECK (handled_reply_id IS NULL OR handled_at IS NOT NULL);
+    ALTER TABLE chat_messages ADD COLUMN handled_task_id INTEGER
+        REFERENCES tasks (id) ON DELETE SET NULL
+        CHECK (handled_task_id IS NULL OR handled_at IS NOT NULL);
+    CREATE INDEX chat_messages_open ON chat_messages (id)
+        WHERE handled_at IS NULL AND due_at IS NOT NULL;
+    ALTER TABLE task_events ADD COLUMN report_id INTEGER
+        REFERENCES chat_messages (id)
+        CHECK (report_id IS NULL OR status = 'done');
+    UPDATE task_events SET report_id =
+        (SELECT min(c.id) FROM chat_messages c JOIN task_results r ON r.id = c.result_id
+         WHERE r.task_id = task_events.task_id AND r.at = task_events.at)
+        WHERE status = 'done';
+    ",
+    // Version 23: messages imported from another chat (see `Storage::import_chat_message`)
+    // keep where they came from: the origin's label and the message's ID there, unique per
+    // origin so importing one again stores nothing.
+    "
+    ALTER TABLE chat_messages ADD COLUMN origin TEXT
+        CHECK (origin IS NULL OR author IN ('user', 'lead'));
+    ALTER TABLE chat_messages ADD COLUMN origin_id TEXT
+        CHECK ((origin IS NULL) = (origin_id IS NULL));
+    CREATE UNIQUE INDEX chat_messages_origin ON chat_messages (origin, origin_id)
+        WHERE origin IS NOT NULL;
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1377,5 +1484,255 @@ mod tests {
         assert!(insert("lead", "Hello", Some("c2")).is_err());
         assert!(insert("user", " ", None).is_err());
         assert!(insert("dori", "Hi", None).is_err());
+    }
+
+    #[test]
+    fn version_19_counts_earlier_messages_delivered_and_answered_ones_seen() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..18] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 18).unwrap();
+        for (author, at) in [("user", 10), ("lead", 20), ("user", 30)] {
+            conn.execute(
+                "INSERT INTO chat_messages (author, body, at) VALUES (?1, 'Hi', ?2)",
+                params![author, at],
+            )
+            .unwrap();
+        }
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let rows: Vec<(Option<i64>, Option<i64>)> = conn
+            .prepare("SELECT delivered_at, seen_at FROM chat_messages ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, [(Some(10), Some(10)), (None, None), (Some(30), None)]);
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(set("UPDATE chat_messages SET delivered_at = 1 WHERE author = 'lead'").is_err());
+        assert!(set("UPDATE chat_messages SET delivered_at = NULL WHERE id = 1").is_err());
+    }
+
+    #[test]
+    fn version_20_counts_earlier_messages_and_events_taken_by_the_lead() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..19] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 19).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_messages (author, body, at, delivered_at) VALUES ('user', 'Hi', 10, 10);
+             INSERT INTO chat_messages (author, body, at) VALUES ('lead', 'Hello', 20);
+             INSERT INTO workspaces (name, kind, path, default_base_branch)
+                 VALUES ('w', 'local', '/w', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'feat', 't', 'planned');
+             INSERT INTO task_events (task_id, status, at) VALUES (1, 'planned', 5);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let taken: Vec<Option<i64>> = conn
+            .prepare("SELECT taken_at FROM chat_messages ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(taken, [Some(10), None]);
+        let event: (i64, Option<i64>) = conn
+            .query_row("SELECT for_lead, taken_at FROM task_events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(event, (0, None));
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(set("UPDATE chat_messages SET taken_at = 1 WHERE author = 'lead'").is_err());
+        assert!(set("UPDATE task_events SET taken_at = 1").is_err());
+        set("UPDATE task_events SET request_id = 'r1'").unwrap();
+        let again = "INSERT INTO task_events (task_id, status, at, request_id)
+                     VALUES (1, 'in_progress', 6, 'r1')";
+        assert!(set(again).is_err());
+    }
+
+    #[test]
+    fn version_21_keeps_the_chat_and_lets_only_the_system_report_a_finish_once() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..20] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 20).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_messages (author, body, client_id, at, delivered_at, seen_at, taken_at)
+                 VALUES ('user', 'Hi', 'c1', 10, 10, 11, 11);
+             INSERT INTO chat_messages (author, body, at) VALUES ('lead', 'Hello', 20);
+             INSERT INTO workspaces (name, kind, path, default_base_branch)
+                 VALUES ('w', 'local', '/w', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'feat', 't', 'planned');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        type Kept = (i64, String, Option<String>, Option<i64>, Option<i64>);
+        let kept: Vec<Kept> = conn
+            .prepare(
+                "SELECT id, author, client_id, seen_at, taken_at FROM chat_messages ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            kept,
+            [
+                (1, "user".into(), Some("c1".into()), Some(11), Some(11)),
+                (2, "lead".into(), None, None, None)
+            ]
+        );
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(
+            set("INSERT INTO task_results (task_id, kind, at) VALUES (1, 'shipped', 1)").is_err()
+        );
+        set("INSERT INTO task_results (task_id, kind, at) VALUES (1, 'merged', 1)").unwrap();
+        let report = "INSERT INTO chat_messages (author, body, at, result_id)";
+        assert!(set(&format!("{report} VALUES ('lead', 'x', 1, 1)")).is_err());
+        set(&format!("{report} VALUES ('system', 'Merged', 1, 1)")).unwrap();
+        assert!(set(&format!("{report} VALUES ('system', 'Again', 1, 1)")).is_err());
+        assert!(
+            set("INSERT INTO chat_messages (author, body, at) VALUES ('user', 'x', 1)").is_ok()
+        );
+        let id: i64 = conn
+            .query_row("SELECT max(id) FROM chat_messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(id, 4, "IDs go on after the copied messages");
+        assert!(set("UPDATE chat_messages SET client_id = 'c1' WHERE id = 4").is_err());
+        // Deleting the task keeps its report in the chat.
+        set("DELETE FROM tasks").unwrap();
+        let orphan: Option<i64> = conn
+            .query_row(
+                "SELECT result_id FROM chat_messages WHERE id = 3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan, None);
+    }
+
+    #[test]
+    fn version_22_links_earlier_reports_and_never_counts_earlier_messages_handled() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..21] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 21).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_messages (author, body, at, delivered_at, seen_at, taken_at)
+                 VALUES ('user', 'Hi', 10, 10, 11, 11);
+             INSERT INTO workspaces (name, kind, path, default_base_branch)
+                 VALUES ('w', 'local', '/w', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status, resolution)
+                 VALUES (1, 'feat', 't', 'done', 'merged');
+             INSERT INTO task_events (task_id, status, at) VALUES (1, 'in_review', 30);
+             INSERT INTO task_events (task_id, status, at, for_lead) VALUES (1, 'done', 40, 1);
+             INSERT INTO task_results (task_id, kind, at) VALUES (1, 'merged', 40);
+             INSERT INTO chat_messages (author, body, at, result_id)
+                 VALUES ('system', 'Merged', 40, 1);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let receipts: (Option<i64>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT due_at, acked_at, handled_at FROM chat_messages WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(receipts, (None, None, None));
+        let reports: Vec<Option<i64>> = conn
+            .prepare("SELECT report_id FROM task_events ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(reports, [None, Some(2)]);
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(set("UPDATE task_events SET report_id = 2 WHERE status = 'in_review'").is_err());
+        assert!(set("UPDATE chat_messages SET acked_at = 1 WHERE author = 'system'").is_err());
+        assert!(set("UPDATE chat_messages SET handled_at = 1 WHERE id = 1").is_err());
+        assert!(set("UPDATE chat_messages SET handled_task_id = 1 WHERE id = 1").is_err());
+        set("UPDATE chat_messages SET acked_at = 50, handled_at = 51, handled_task_id = 1 WHERE id = 1")
+            .unwrap();
+        // Deleting the task keeps the receipt without its link.
+        set("DELETE FROM tasks").unwrap();
+        let kept: (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT handled_at, handled_task_id FROM chat_messages WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (Some(51), None));
+    }
+
+    #[test]
+    fn version_23_keeps_one_message_per_origin_and_only_of_people_and_the_lead() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..22] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 22).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_messages (author, body, at) VALUES ('user', 'Hi', 10)",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let origin: Option<String> = conn
+            .query_row("SELECT origin FROM chat_messages WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(origin, None);
+        let add = |author: &str, origin: Option<&str>, id: Option<&str>| {
+            conn.execute(
+                "INSERT INTO chat_messages (author, body, at, origin, origin_id)
+                 VALUES (?1, 'x', 20, ?2, ?3)",
+                params![author, origin, id],
+            )
+        };
+        add("user", Some("matrix"), Some("m1")).unwrap();
+        add("lead", Some("irc"), Some("m1")).unwrap();
+        assert!(
+            add("lead", Some("matrix"), Some("m1")).is_err(),
+            "one per origin"
+        );
+        assert!(add("system", Some("matrix"), Some("m2")).is_err());
+        assert!(add("user", Some("matrix"), None).is_err());
+        assert!(add("user", None, Some("m3")).is_err());
+        add("user", None, None).unwrap();
     }
 }

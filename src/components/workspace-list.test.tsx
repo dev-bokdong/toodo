@@ -2,8 +2,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
 
-vi.mock("@/lib/platform", () => ({ runsOnServer: true }));
-
 const mutation = { mutate: vi.fn(), isPending: false, isError: false };
 const query = <T,>(data: T) => ({ data, isPending: false, isError: false });
 
@@ -11,14 +9,11 @@ vi.mock("@/lib/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queries")>()),
   useWorkspaces: () => query([]),
   useHerdrMachines: () => query([]),
-  useSshHosts: () => query([]),
-  useAddHerdrMachine: () => mutation,
-  useAddSshHost: () => mutation,
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
 }));
 
-describe("Add machine on the server web UI", () => {
+describe("Add machine", () => {
   it("shows the command to run on the server and copies it instead of offering a form", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });

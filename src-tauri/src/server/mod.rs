@@ -1,7 +1,7 @@
 //! The headless server (`toodo-server`) for a Linux machine that runs herdr itself: the
-//! commands of the desktop app over HTTP for the web build of the frontend, the events the
-//! desktop app emits as a server-sent event stream, and the MCP server for agents, all on
-//! one port. Workspaces on "Local" are on the server, with POSIX paths.
+//! commands over HTTP for the web app (the PWA), its events as a server-sent event
+//! stream, and the MCP server for agents, all on one port. Workspaces on "Local" are on
+//! the server, with POSIX paths.
 //!
 //! - `POST /api/rpc/<command>` runs a command (see [`rpc`]).
 //! - `GET /api/events` streams `tasks-changed`, `agent-statuses-changed`, and
@@ -13,19 +13,15 @@
 //! - `POST /api/stream-tickets` and `GET /api/panes/stream` mirror a pane of a task's herdr
 //!   workspace over a WebSocket (see [`panes`]); the stream takes a ticket instead of the
 //!   token.
-//! - `/mcp` is the MCP endpoint, as in the desktop app.
-//! - `get_lead` and the `lead-changed` event report the lead, an agent the server keeps
-//!   running in herdr (see [`lead`]); `send_chat_message` types a message into its pane,
-//!   and the `chat-changed` event tells clients to read the chat again.
+//! - `/mcp` is the MCP endpoint.
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
 //! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
-//! access token or the lead's token, as a bearer token; the shared tokens are created in the data directory on
+//! access token, as a bearer token; the shared tokens are created in the data directory on
 //! first start.
 
 mod devices;
 mod files;
-mod lead;
 mod panes;
 mod push;
 mod rpc;
@@ -53,10 +49,9 @@ use crate::adapters::ssh_tunnel::SshForwarder;
 use crate::commands::backup::{self, Backups};
 use crate::commands::completion::{self, PullRequestStatusState};
 use crate::commands::events::{
-    self, AgentStatusState, AgentStatusesChanged, ChatChanged, MemoryChanged, Notifier,
+    self, AgentStatusState, AgentStatusesChanged, MemoryChanged, Notifier,
     PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
 };
-use crate::commands::lead::LeadStatusState;
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{
     GitHubState, GitState, HerdrState, Runtime, SshConfigState, SshState, StorageState,
@@ -69,39 +64,34 @@ use crate::storage::Storage;
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
 const WEB_TOKEN_FILE: &str = "web-token";
-/// The MCP token of the lead, which tells the tools that the lead calls them.
-const LEAD_TOKEN_FILE: &str = "lead-token";
 
-/// The default port, next to the desktop app's MCP port ([`mcp::PORT`]) rather than on it:
-/// the desktop app forwards that port to its SSH machines, which may include this server,
-/// and the server forwards its own port to its SSH machines the same way, so the two must
-/// differ to share a machine.
-pub const DEFAULT_PORT: u16 = mcp::PORT + 1;
+/// The default port. The server forwards it to its SSH machines too, so agents there reach
+/// the MCP endpoint on the same port.
+pub const DEFAULT_PORT: u16 = 47616;
 
 /// Events kept for subscribers that read slower than they arrive; a subscriber that falls
 /// further behind skips the oldest.
 const EVENT_BUFFER: usize = 64;
 
 const USAGE: &str = "Usage: toodo-server [--version]
+       toodo-server import FILE
 
 Serves Toodo on one port: the web app, its API, and the MCP server for agents.
---version prints the version, which is the version of the Toodo release it came from.
+--version prints the version, which is the version of the Toodo release it came from,
+and the commit it was built from.
+import adds the workspaces, tasks, and memory of the Toodo database FILE (e.g. a copy
+of the former Windows app's toodo.sqlite3) to the data in TOODO_DATA_DIR, after a
+pre-restore backup; stop the running server first.
 
 Environment:
   TOODO_LISTEN    address to listen on (default 127.0.0.1:47616)
   TOODO_DATA_DIR  database, backups, and access tokens
                   (default $XDG_DATA_HOME/toodo-server or ~/.local/share/toodo-server)
-  TOODO_WEB_DIR   web build of the frontend (`npm run build:web` writes dist-web);
+  TOODO_WEB_DIR   web build of the frontend (`npm run build` writes dist-web);
                   without it only the API and MCP are served
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
-                  (default https://github.com/dev-bokdong/toodo)
-  TOODO_LEAD      off to run no lead agent in herdr (default on)
-  TOODO_LEAD_COMMAND
-                  shell command that starts the lead agent (default: omo)
-  TOODO_LEAD_MODEL
-                  model for the lead, as $TOODO_LEAD_MODEL in the command
-  TOODO_LEAD_DIR  the lead's workspace (default $TOODO_DATA_DIR/lead)";
+                  (default https://github.com/dev-bokdong/toodo)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -110,8 +100,6 @@ pub struct Config {
     pub web_dir: Option<PathBuf>,
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
-    /// `None` when the lead is turned off.
-    pub lead: Option<lead::LeadConfig>,
 }
 
 impl Config {
@@ -143,13 +131,11 @@ impl Config {
             }
             None => push::DEFAULT_SUBJECT.to_owned(),
         };
-        let lead = lead::LeadConfig::from_env(&var, &data_dir)?;
         Ok(Self {
             listen,
             data_dir,
             web_dir,
             push_subject,
-            lead,
         })
     }
 }
@@ -179,7 +165,6 @@ pub struct Services {
     restore_limit: u64,
     panes: panes::Panes,
     push: push::Push,
-    lead: LeadStatusState,
 }
 
 impl Services {
@@ -207,10 +192,6 @@ impl Notifier for Services {
 
     fn memory_changed(&self) {
         self.emit(names::MEMORY_CHANGED, &MemoryChanged);
-    }
-
-    fn chat_changed(&self) {
-        self.emit(names::CHAT_CHANGED, &ChatChanged);
     }
 
     fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
@@ -262,6 +243,20 @@ impl Runtime for Services {
     }
 }
 
+/// `toodo-server <version> (commit <sha>)`: the release version and the commit of the
+/// build, which tells a build of a later commit apart from the release it reports.
+fn version() -> String {
+    with_commit(env!("CARGO_PKG_VERSION"), env!("TOODO_COMMIT"))
+}
+
+fn with_commit(version: &str, commit: &str) -> String {
+    if commit.is_empty() {
+        format!("toodo-server {version}")
+    } else {
+        format!("toodo-server {version} (commit {commit})")
+    }
+}
+
 /// Runs the server until it is interrupted (Ctrl+C or SIGTERM).
 pub fn main() {
     if std::env::args()
@@ -275,9 +270,18 @@ pub fn main() {
         .skip(1)
         .any(|arg| arg == "-V" || arg == "--version")
     {
-        println!("toodo-server {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", version());
         return;
     }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let source = match args.as_slice() {
+        [] => None,
+        [command, file] if command == "import" => Some(PathBuf::from(file)),
+        _ => {
+            eprintln!("toodo-server: unexpected arguments {args:?}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
     let config = match Config::from_env(|name| std::env::var(name).ok()) {
         Ok(config) => config,
         Err(error) => {
@@ -285,17 +289,47 @@ pub fn main() {
             std::process::exit(2);
         }
     };
-    if let Err(error) = run(config) {
+    let result = match source {
+        Some(source) => import(&config, &source),
+        None => run(config),
+    };
+    if let Err(error) = result {
         eprintln!("toodo-server: {error}");
         std::process::exit(1);
     }
+}
+
+/// Imports the Toodo database at `source` into the data directory, see
+/// [`backup::import_file`].
+fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    create_private_dir(&config.data_dir)?;
+    let storage = Mutex::new(Storage::open(&config.data_dir.join(DATABASE_FILE))?);
+    let backups = Backups::load(&config.data_dir);
+    let (safety, summary) = backup::import_file(&storage, &backups, source)?;
+    println!(
+        "Saved the data before the import as {}",
+        safety.path.display()
+    );
+    println!(
+        "Imported {} workspaces, {} tasks, and {} memory entries from {}.",
+        summary.workspaces,
+        summary.tasks,
+        summary.memory_entries,
+        source.display()
+    );
+    if summary.task_id_offset > 0 {
+        println!(
+            "Task #N of the imported database is task #(N + {}) here.",
+            summary.task_id_offset
+        );
+    }
+    Ok(())
 }
 
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
     let storage = Storage::open(&config.data_dir.join(DATABASE_FILE))?;
     let mcp_token = mcp::load_token(&config.data_dir.join(mcp::TOKEN_FILE))?;
-    let lead_token = mcp::load_token(&config.data_dir.join(LEAD_TOKEN_FILE))?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
     let web_token = mcp::load_token(&web_token_path)?;
     let push = push::Push::load(&config.data_dir, config.push_subject.clone())?;
@@ -322,19 +356,9 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         events: broadcast::channel(EVENT_BUFFER).0,
         restore_limit: files::RESTORE_LIMIT,
         push,
-        lead: LeadStatusState::default(),
     });
     push::spawn(services.clone())?;
     events::spawn(services.clone())?;
-    let lead_checks = match config.lead.clone() {
-        Some(lead) => {
-            let data_dir = std::fs::canonicalize(&config.data_dir)?;
-            let supervisor =
-                lead::Supervisor::new(lead, data_dir, services.mcp.url.clone(), lead_token.clone());
-            Some(lead::spawn(services.clone(), supervisor)?)
-        }
-        None => None,
-    };
     backup::spawn(services.clone())?;
     completion::spawn(services.clone())?;
     tunnels::spawn(services.clone(), services.tunnels.clone())?;
@@ -343,11 +367,11 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         services.clone(),
         web_token,
         mcp_token,
-        lead_token,
         config.web_dir.as_deref(),
     );
     println!(
-        "toodo-server: listening on http://{} (data in {}, web access token in {})",
+        "{}: listening on http://{} (data in {}, web access token in {})",
+        version(),
         config.listen,
         config.data_dir.display(),
         web_token_path.display()
@@ -370,13 +394,6 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .shut_down();
-    // Stop the checks first: one in progress may be opening the lead's workspace.
-    if let Some(checks) = lead_checks {
-        if !checks.stop(lead::STOP_TIMEOUT) {
-            eprintln!("toodo-server: the lead's check is still running; closing its workspace");
-        }
-        lead::close(&services.lead, &services.herdr);
-    }
     Ok(served?)
 }
 
@@ -404,7 +421,6 @@ fn router(
     services: Arc<Services>,
     web_token: String,
     mcp_token: String,
-    lead_token: String,
     web_dir: Option<&Path>,
 ) -> Router {
     // `route_layer` guards the routes only: other paths stay 404 (or the web app) rather
@@ -442,9 +458,7 @@ fn router(
     let streams = Router::new()
         .route("/api/panes/stream", get(panes::stream))
         .with_state(services.clone());
-    let app = api
-        .merge(streams)
-        .merge(mcp::router(services, mcp_token, Some(lead_token)));
+    let app = api.merge(streams).merge(mcp::router(services, mcp_token));
     match web_dir {
         Some(dir) => app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
@@ -509,18 +523,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_port_is_not_the_desktop_apps_mcp_port() {
+    fn the_default_config_listens_on_loopback_and_keeps_data_in_home() {
         let config =
             Config::from_env(|name| (name == "HOME").then(|| "/home/me".to_owned())).unwrap();
         assert_eq!(
             config.listen,
             SocketAddr::from((Ipv4Addr::LOCALHOST, 47616))
         );
-        assert_ne!(config.listen.port(), mcp::PORT);
         assert_eq!(
             config.data_dir,
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
+    }
+
+    #[test]
+    fn the_version_names_the_commit_of_the_build() {
+        assert_eq!(
+            with_commit("1.2.3", "0123456789ab"),
+            "toodo-server 1.2.3 (commit 0123456789ab)"
+        );
+        assert_eq!(with_commit("1.2.3", ""), "toodo-server 1.2.3");
+        assert!(version().starts_with(&format!("toodo-server {}", env!("CARGO_PKG_VERSION"))));
     }
 
     const TEST_RESTORE_LIMIT: u64 = 1024 * 1024;
@@ -556,7 +579,6 @@ mod tests {
             events: broadcast::channel(EVENT_BUFFER).0,
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
-            lead: LeadStatusState::default(),
         })
     }
 
@@ -592,13 +614,7 @@ mod tests {
 
     /// Serves `services` with the web token `web` and the MCP token `agent`.
     pub(super) fn serve(services: Arc<Services>, web_dir: Option<&Path>) -> SocketAddr {
-        let app = router(
-            services,
-            "web".to_owned(),
-            "agent".to_owned(),
-            "lead".to_owned(),
-            web_dir,
-        );
+        let app = router(services, "web".to_owned(), "agent".to_owned(), web_dir);
         let listener = mcp::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -623,7 +639,7 @@ mod tests {
         assert!(status(address, "GET", "/api/nothing", Some("web")).contains(" 404 "));
         assert!(status(address, "POST", "/mcp", None).contains(" 401 "));
         assert!(status(address, "POST", "/mcp", Some("web")).contains(" 401 "));
-        assert!(!status(address, "POST", "/mcp", Some("lead")).contains(" 401 "));
+        assert!(!status(address, "POST", "/mcp", Some("agent")).contains(" 401 "));
         // Without a web build, other paths are simply not there.
         assert!(status(address, "GET", "/", None).contains(" 404 "));
         assert!(status(address, "GET", "/tasks", None).contains(" 404 "));

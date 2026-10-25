@@ -69,7 +69,7 @@ fn parse_task_resolution(raw: &str) -> Result<TaskResolution> {
         .ok_or_else(|| StorageError::InvalidData(format!("unknown task resolution {raw:?}")))
 }
 
-fn parse_task_status(raw: &str) -> Result<TaskStatus> {
+pub(super) fn parse_task_status(raw: &str) -> Result<TaskStatus> {
     TASK_STATUSES
         .into_iter()
         .find(|status| status.as_str() == raw)

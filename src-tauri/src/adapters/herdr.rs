@@ -13,9 +13,7 @@ use std::fmt;
 
 use serde_json::Value;
 
-use super::git::{
-    GitError, Invocation, Runner, describe, is_plain_word, shell_quote, ssh_invocation,
-};
+use super::git::{GitError, Invocation, Runner, describe, shell_quote, ssh_invocation};
 use crate::domain::model::{Machine, MachineLabel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +33,6 @@ pub enum HerdrError {
     MachineNotSaved { host: String },
     /// Every saved herdr machine for the SSH host is disabled.
     MachineDisabled { host: String, profile_id: String },
-    /// The SSH host cannot be passed to `herdr machine add` safely.
-    InvalidHost { host: String },
 }
 
 impl fmt::Display for HerdrError {
@@ -61,11 +57,6 @@ impl fmt::Display for HerdrError {
                 f,
                 "the herdr machine for SSH host '{host}' is disabled; run \
                  `herdr machine enable {profile_id}`, then try again"
-            ),
-            Self::InvalidHost { host } => write!(
-                f,
-                "SSH host {host:?} must use only letters, digits, and . _ - @ : / = \
-                 and must not start with '-'"
             ),
         }
     }
@@ -147,22 +138,6 @@ pub struct PaneAgent {
     pub cwd: Option<String>,
 }
 
-/// The shell of a local herdr pane and the process group in its foreground.
-#[cfg(feature = "server")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PaneProcess {
-    pub shell_pid: u32,
-    pub foreground_pid: u32,
-}
-
-#[cfg(feature = "server")]
-impl PaneProcess {
-    /// Whether a command runs in the foreground, rather than the shell waiting for input.
-    pub fn busy(&self) -> bool {
-        self.foreground_pid != self.shell_pid
-    }
-}
-
 /// A git worktree to create and open as a herdr workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewWorktree<'a> {
@@ -230,26 +205,6 @@ impl Herdr {
             .and_then(Value::as_array)
             .and_then(|rows| rows.iter().map(pane).collect())
             .ok_or_else(|| unexpected(&invocation, &output))
-    }
-
-    /// The shell and foreground process group of a pane of the local herdr server.
-    #[cfg(feature = "server")]
-    pub fn pane_process(&self, pane_id: &str) -> Result<PaneProcess, HerdrError> {
-        let invocation = invocation(None, &["pane", "process-info", "--pane", pane_id]);
-        let output = self.runner.run(&invocation)?;
-        let info = parse(&invocation, &output)?;
-        let pid = |key: &str| {
-            info.pointer(&format!("/result/process_info/{key}"))
-                .and_then(Value::as_u64)
-                .and_then(|pid| u32::try_from(pid).ok())
-        };
-        match (pid("shell_pid"), pid("foreground_process_group_id")) {
-            (Some(shell_pid), Some(foreground_pid)) => Ok(PaneProcess {
-                shell_pid,
-                foreground_pid,
-            }),
-            _ => Err(unexpected(&invocation, &output)),
-        }
     }
 
     /// Types `command` into a pane of the local herdr server and presses Enter, e.g. to run
@@ -411,20 +366,6 @@ impl Herdr {
             .as_array()
             .and_then(|rows| rows.iter().map(SavedMachine::parse).collect())
             .ok_or_else(|| unexpected(&invocation, &output))
-    }
-
-    /// Runs `herdr machine add <host>` in a terminal window and waits for the user to
-    /// finish it. herdr asks there before installing or replacing the remote herdr, and
-    /// saves nothing when the user cancels.
-    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-    pub fn add_machine(&self, host: &MachineLabel) -> Result<(), HerdrError> {
-        if !is_plain_word(host.as_str()) || host.as_str().starts_with('-') {
-            return Err(HerdrError::InvalidHost {
-                host: host.as_str().to_owned(),
-            });
-        }
-        let invocation = invocation(None, &["machine", "add", host.as_str()]);
-        Ok(self.runner.run_in_terminal(&invocation)?)
     }
 
     /// ID of the saved herdr machine to target for `machine`, or `None` for this machine.
@@ -725,38 +666,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn machines_are_added_in_a_terminal() {
-        let (herdr, runner) = herdr(vec![Ok(String::new())]);
-        herdr
-            .add_machine(&MachineLabel::parse("admin@analysis-server").unwrap())
-            .unwrap();
-        assert_eq!(
-            runner.invocations.lock().unwrap()[0],
-            Invocation {
-                program: "herdr",
-                args: ["machine", "add", "admin@analysis-server"]
-                    .map(str::to_owned)
-                    .to_vec(),
-            }
-        );
-    }
-
-    #[test]
-    fn hosts_that_need_quoting_are_not_added() {
-        let (herdr, runner) = herdr(Vec::new());
-        for host in ["dev box", "devbox&calc", "-oProxyCommand=x", "dev\"box"] {
-            assert_eq!(
-                herdr.add_machine(&MachineLabel::parse(host).unwrap()),
-                Err(HerdrError::InvalidHost {
-                    host: host.to_owned()
-                }),
-                "{host}"
-            );
-        }
-        assert!(runner.invocations.lock().unwrap().is_empty());
     }
 
     #[test]

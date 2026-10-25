@@ -21,36 +21,32 @@ function render(app: ReactNode) {
   );
 }
 
-// A literal condition, so the desktop build drops the web build's access form and event stream.
-if (import.meta.env.MODE === "web") {
-  // The browser may announce that it can install the app before the app has loaded.
-  watchInstallOffer();
-  watchConnection();
-  void Promise.all([
-    import("@/components/server-access"),
-    import("@/components/offline-screen"),
-    import("@/web/event"),
-  ]).then(
-    ([{ ServerAccess }, { ConnectionGate }, { onReconnect }]) => {
-      // Events sent while the stream was down are lost; refetch what they would have changed.
-      onReconnect(() => void queryClient.invalidateQueries());
-      // What failed while the server was unreachable shows its data again.
-      onReachable(() => void queryClient.invalidateQueries());
-      // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
-      if (import.meta.env.PROD && "serviceWorker" in navigator) {
-        navigator.serviceWorker.register("/sw.js").catch((error: unknown) => {
-          console.error("Toodo: could not register the service worker", error);
-        });
-      }
-      render(
-        <ConnectionGate>
-          <ServerAccess>
-            <App />
-          </ServerAccess>
-        </ConnectionGate>,
-      );
-    },
-  );
-} else {
-  render(<App />);
-}
+// The app signs in to the server that serves it and follows it.
+// The browser may announce that it can install the app before the app has loaded.
+watchInstallOffer();
+watchConnection();
+void Promise.all([
+  import("@/components/server-access"),
+  import("@/components/offline-screen"),
+  import("@/web/event"),
+]).then(
+  ([{ ServerAccess }, { ConnectionGate }, { onReconnect }]) => {
+    // Events sent while the stream was down are lost; refetch what they would have changed.
+    onReconnect(() => void queryClient.invalidateQueries());
+    // What failed while the server was unreachable shows its data again.
+    onReachable(() => void queryClient.invalidateQueries());
+    // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
+    if (import.meta.env.PROD && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch((error: unknown) => {
+        console.error("Toodo: could not register the service worker", error);
+      });
+    }
+    render(
+      <ConnectionGate>
+        <ServerAccess>
+          <App />
+        </ServerAccess>
+      </ConnectionGate>,
+    );
+  },
+);

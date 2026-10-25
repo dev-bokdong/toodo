@@ -6,12 +6,10 @@ import {
   type BackupSettings,
   type CommandError,
   type CriterionId,
-  type LeadStatus,
   type Machine,
   type MachineSettings,
   type MemoryContent,
   type MemoryId,
-  type NewSshHost,
   type NewTask,
   type NewWorkspace,
   type Task,
@@ -24,9 +22,6 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
-import { listen } from "@tauri-apps/api/event";
-import { homeDir } from "@tauri-apps/api/path";
-import { runsOnServer } from "@/lib/platform";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
@@ -42,7 +37,7 @@ export class CommandFailure extends Error {
   }
 }
 
-async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
+export async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
   const outcome = await result;
   if (outcome.status === "error") {
     throw new CommandFailure(outcome.error);
@@ -65,7 +60,6 @@ export const queryKeys = {
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
   taskPanes: (taskId: TaskId) => ["tasks", taskId, "panes"] as const,
   herdrMachines: ["herdr-machines"] as const,
-  sshHosts: ["ssh-hosts"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
   mcpServerInfo: ["mcp-server-info"] as const,
@@ -76,44 +70,7 @@ export const queryKeys = {
   memory: (workspace: WorkspaceId | null, includeSuperseded: boolean) =>
     ["memory", workspace, includeSuperseded] as const,
   allMemory: ["memory"] as const,
-  lead: ["lead"] as const,
-  chatMessages: ["chat-messages"] as const,
 };
-
-/** The server's lead; the desktop app has none. Kept current by `lead-changed` events. */
-export function useLead() {
-  const queryClient = useQueryClient();
-  useEffect(() => {
-    if (!runsOnServer) return;
-    const subscription = listen<LeadStatus>("lead-changed", ({ payload }) =>
-      queryClient.setQueryData(queryKeys.lead, payload),
-    );
-    return () => void subscription.then((unlisten) => unlisten());
-  }, [queryClient]);
-  return useQuery({
-    queryKey: queryKeys.lead,
-    queryFn: () => commands.getLead(),
-    enabled: runsOnServer,
-  });
-}
-
-/** The chat with the lead; kept current by `useHerdrEvents`. */
-export function useChatMessages(enabled: boolean) {
-  return useQuery({
-    queryKey: queryKeys.chatMessages,
-    queryFn: () => unwrap(commands.listChatMessages()),
-    enabled,
-  });
-}
-
-export function useSendChatMessage() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ text, clientId }: { text: string; clientId: string }) =>
-      unwrap(commands.sendChatMessage(text, clientId)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages }),
-  });
-}
 
 export function useMemoryEntries(workspace: WorkspaceId | null, includeSuperseded: boolean) {
   return useQuery({
@@ -194,21 +151,6 @@ export function useSaveBackupSettings() {
   });
 }
 
-export function useExportDatabase() {
-  return useMutation({
-    mutationFn: (path: string) => unwrap(commands.exportDatabase(path)),
-  });
-}
-
-/** Replaces all data with a backup, so every query is refetched afterwards. */
-export function useRestoreDatabase() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (path: string) => unwrap(commands.restoreDatabase(path)),
-    onSuccess: () => queryClient.invalidateQueries(),
-  });
-}
-
 /** Replaces all data with a backup from Toodo's backup directory, by its file name. */
 export function useRestoreBackup() {
   const queryClient = useQueryClient();
@@ -218,17 +160,17 @@ export function useRestoreBackup() {
   });
 }
 
-/** Web build: downloads a snapshot of the server's database; resolves with its file name. */
+/** Downloads a snapshot of the server's database; resolves with its file name. */
 export function useDownloadExport() {
   return useMutation({ mutationFn: downloadExport });
 }
 
-/** Web build: downloads a backup from the server's backup directory. */
+/** Downloads a backup from the server's backup directory. */
 export function useDownloadBackup() {
   return useMutation({ mutationFn: downloadBackup });
 }
 
-/** Web build: replaces all data on the server with an uploaded database file. */
+/** Replaces all data on the server with an uploaded database file. */
 export function useUploadRestore() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -245,33 +187,8 @@ export function useHerdrMachines() {
   });
 }
 
-/** Runs `herdr machine add <host>` in a terminal window; settles when that window closes. */
-export function useAddHerdrMachine() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (host: string) => unwrap(commands.addHerdrMachine(host)),
-    onSuccess: (machines) => queryClient.setQueryData(queryKeys.herdrMachines, machines),
-  });
-}
-
-/** Host aliases of the user's SSH config; refetched when the window regains focus. */
-export function useSshHosts() {
-  return useQuery({
-    queryKey: queryKeys.sshHosts,
-    queryFn: () => unwrap(commands.listSshHosts()),
-  });
-}
-
-export function useAddSshHost() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (host: NewSshHost) => unwrap(commands.addSshHost(host)),
-    onSuccess: (hosts) => queryClient.setQueryData(queryKeys.sshHosts, hosts),
-  });
-}
-
 /**
- * Subdirectories of `path` on `machine` (the server for `local` in the web build); `null`
+ * Subdirectories of `path` on `machine` (the server for `local`); `null`
  * lists the home directory.
  */
 export function useDirectories(machine: Machine, path: string | null) {
@@ -282,17 +199,11 @@ export function useDirectories(machine: Machine, path: string | null) {
   });
 }
 
-/**
- * The home directory of `machine`: listed through the server or over SSH, and asked of
- * Windows for the desktop app's own machine, whose folders are not listed in the app.
- */
+/** The home directory of `machine`, listed through the server or over SSH. */
 export function useHomeDirectory(machine: Machine) {
   return useQuery({
     queryKey: ["home-directory", machine] as const,
-    queryFn: async () =>
-      machine.kind === "local" && !runsOnServer
-        ? homeDir()
-        : (await unwrap(commands.listDirectories(machine, null))).path,
+    queryFn: async () => (await unwrap(commands.listDirectories(machine, null))).path,
     staleTime: Infinity,
     retry: false,
   });
@@ -398,14 +309,6 @@ export function useReview(start: Timestamp, end: Timestamp) {
   });
 }
 
-/** Writes a Markdown or CSV report to a path picked in the save dialog. */
-export function useSaveReport() {
-  return useMutation({
-    mutationFn: ({ path, contents }: { path: string; contents: string }) =>
-      unwrap(commands.saveReport(path, contents)),
-  });
-}
-
 export function useHerdrStatus() {
   return useQuery({
     queryKey: queryKeys.herdrStatus,
@@ -474,7 +377,6 @@ export function useHerdrEvents() {
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
       events.memoryChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory })),
-      events.chatChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.chatMessages })),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),

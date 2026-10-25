@@ -1,19 +1,14 @@
 import { useId, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Laptop, Plus, Server, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
 import { normalizePath, shortPath } from "@/lib/paths";
-import { runsOnServer } from "@/lib/platform";
 import {
-  useAddHerdrMachine,
-  useAddSshHost,
   useCreateWorkspace,
   useDeleteWorkspace,
   useHerdrMachines,
   useHomeDirectory,
-  useSshHosts,
   useWorkspaces,
 } from "@/lib/queries";
 import { cn } from "@/lib/utils";
@@ -68,15 +63,9 @@ function herdrProblem(host: string, machines: HerdrMachine[]): string | null {
   return saved.some((machine) => machine.enabled) ? null : "Disabled in herdr";
 }
 
-function joinLocal(base: string, name: string): string {
-  if (runsOnServer) return joinPosix(base, name);
-  return /[\\/]$/.test(base) ? `${base}${name}` : `${base}\\${name}`;
-}
-
 /** `path` ending in a separator, ready for a folder name to be typed after it. */
-function withSeparator(path: string, local: boolean): string {
-  if (/[\\/]$/.test(path)) return path;
-  return local && !runsOnServer ? `${path}\\` : `${path}/`;
+function withSeparator(path: string): string {
+  return path.endsWith("/") ? path : `${path}/`;
 }
 
 /** A field with a visible label above it and optional help text below. */
@@ -148,14 +137,7 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         </Button>
       </div>
 
-      {addingMachine && runsOnServer && <AddMachineHelp onClose={() => setAddingMachine(false)} />}
-      {addingMachine && !runsOnServer && (
-        <AddMachineForm
-          saved={saved.map((machine) => machine.target)}
-          onAdded={() => setAddingMachine(false)}
-          onCancel={() => setAddingMachine(false)}
-        />
-      )}
+      {addingMachine && <AddMachineHelp onClose={() => setAddingMachine(false)} />}
       {herdrMachines.isError && (
         <p role="alert" className="text-xs text-destructive">
           Failed to list herdr machines: {herdrMachines.error.message}
@@ -385,122 +367,6 @@ function AddMachineHelp({ onClose }: { onClose: () => void }) {
   );
 }
 
-function AddMachineForm({ saved, onAdded, onCancel }: { saved: string[]; onAdded: () => void; onCancel: () => void }) {
-  const sshHosts = useSshHosts();
-  const addMachine = useAddHerdrMachine();
-  const [host, setHost] = useState("");
-  const [addingHost, setAddingHost] = useState(false);
-
-  const candidates = [...new Set([...(sshHosts.data ?? []), ...(host ? [host] : [])])].filter(
-    (alias) => !saved.includes(alias),
-  );
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    addMachine.mutate(host, { onSuccess: onAdded });
-  }
-
-  return (
-    <div className="flex flex-col gap-2" onKeyDown={escapeCloses(onCancel, addMachine.isPending)}>
-      <form onSubmit={submit} aria-label="Add machine" className="flex flex-col gap-2 rounded-lg border p-2">
-        <p className="text-xs text-muted-foreground">
-          Runs herdr machine add in a terminal window. Answer its prompts there; herdr offers to install itself on
-          the host when it is missing.
-        </p>
-        <div className="flex gap-1">
-          <select
-            className={inputClass}
-            aria-label="SSH host"
-            autoFocus
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            required
-          >
-            <option value="">SSH host...</option>
-            {candidates.map((alias) => (
-              <option key={alias} value={alias}>
-                {alias}
-              </option>
-            ))}
-          </select>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            aria-expanded={addingHost}
-            onClick={() => setAddingHost((open) => !open)}
-          >
-            New host
-          </Button>
-        </div>
-        {sshHosts.isError && (
-          <p role="alert" className="text-xs text-destructive">
-            Failed to read the SSH config: {sshHosts.error.message}
-          </p>
-        )}
-        {addMachine.isError && (
-          <p role="alert" className="text-xs text-destructive">
-            {addMachine.error.message}
-          </p>
-        )}
-        <Button type="submit" size="sm" disabled={addMachine.isPending}>
-          {addMachine.isPending ? "Waiting for the herdr terminal..." : "Add to herdr"}
-        </Button>
-      </form>
-      {addingHost && (
-        <NewSshHostForm
-          onAdded={(alias) => {
-            setHost(alias);
-            setAddingHost(false);
-          }}
-          onCancel={() => setAddingHost(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-function NewSshHostForm({ onAdded, onCancel }: { onAdded: (alias: string) => void; onCancel: () => void }) {
-  const addHost = useAddSshHost();
-  const [alias, setAlias] = useState("");
-  const [hostName, setHostName] = useState("");
-  const [user, setUser] = useState("");
-  const [port, setPort] = useState("");
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    addHost.mutate(
-      { alias, hostName, user: user.trim() || null, port: port.trim() ? Number(port) : null },
-      { onSuccess: () => onAdded(alias.trim()) },
-    );
-  }
-
-  return (
-    <form
-      onSubmit={submit}
-      aria-label="New SSH host"
-      className="flex flex-col gap-2 rounded-lg border p-2"
-      onKeyDown={escapeCloses(onCancel, addHost.isPending)}
-    >
-      <p className="text-xs text-muted-foreground">Saved as a Host entry in ~/.ssh/config.</p>
-      <input className={inputClass} placeholder="Alias, e.g. devbox" aria-label="Host alias" value={alias} onChange={(e) => setAlias(e.target.value)} required />
-      <input className={inputClass} placeholder="Host name or IP" aria-label="Host name" value={hostName} onChange={(e) => setHostName(e.target.value)} required />
-      <div className="grid grid-cols-[1fr_5rem] gap-1">
-        <input className={inputClass} placeholder="User (optional)" aria-label="User" value={user} onChange={(e) => setUser(e.target.value)} />
-        <input className={inputClass} placeholder="Port" aria-label="Port" inputMode="numeric" pattern="[0-9]*" value={port} onChange={(e) => setPort(e.target.value)} />
-      </div>
-      {addHost.isError && (
-        <p role="alert" className="text-xs text-destructive">
-          {addHost.error.message}
-        </p>
-      )}
-      <Button type="submit" size="sm" disabled={addHost.isPending}>
-        {addHost.isPending ? "Adding..." : "Add host"}
-      </Button>
-    </form>
-  );
-}
-
 type NewWorkspaceFormProps = {
   machine: MachineKey;
   mode: Mode;
@@ -515,41 +381,18 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
   const [name, setName] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [browsing, setBrowsing] = useState(false);
-  const [pickError, setPickError] = useState<string | null>(null);
 
   const cloning = mode === "clone";
   const home = useHomeDirectory(machine === null ? { kind: "local" } : { kind: "ssh", label: machine }).data;
   // A clone makes a new folder under home. Open and Init name the repository's own folder,
   // so they start inside home, and the folder has to be finished before submitting.
-  const startFolder = home === undefined ? "" : cloning ? home : withSeparator(home, machine === null);
+  const startFolder = home === undefined ? "" : cloning ? home : withSeparator(home);
   const folder = folderDraft ?? startFolder;
   const folderUntouched = !cloning && folderDraft === null;
   const effectiveName = name ?? (cloning ? repositoryName(url) : folderUntouched ? "" : baseName(folder));
   const folderLabel = cloning ? "Parent folder" : "Folder";
   const path =
-    cloning && folder.trim() && effectiveName.trim()
-      ? machine === null
-        ? joinLocal(folder.trim(), effectiveName.trim())
-        : joinPosix(folder.trim(), effectiveName.trim())
-      : folder.trim();
-
-  // The desktop app picks local folders with the system dialog; everything else, the
-  // server's own folders included, is browsed in the app.
-  const browsesInApp = machine !== null || runsOnServer;
-
-  async function browse() {
-    if (browsesInApp) {
-      setBrowsing((open) => !open);
-      return;
-    }
-    setPickError(null);
-    try {
-      const picked = await openDialog({ directory: true, multiple: false, title: folderLabel });
-      if (typeof picked === "string") setFolder(picked);
-    } catch (error) {
-      setPickError(`Could not open the folder dialog: ${String(error)}`);
-    }
-  }
+    cloning && folder.trim() && effectiveName.trim() ? joinPosix(folder.trim(), effectiveName.trim()) : folder.trim();
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -593,13 +436,13 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
               onChange={(e) => setFolder(e.target.value)}
               required
             />
-            <Button type="button" size="sm" variant="outline" onClick={browse} aria-expanded={browsesInApp ? browsing : undefined}>
+            <Button type="button" size="sm" variant="outline" onClick={() => setBrowsing((open) => !open)} aria-expanded={browsing}>
               Browse...
             </Button>
           </div>
         )}
       </Field>
-      {browsing && browsesInApp && (
+      {browsing && (
         <RemoteFolderBrowser
           machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
           initialPath={folder}
@@ -609,11 +452,6 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
           }}
           onCancel={() => setBrowsing(false)}
         />
-      )}
-      {pickError && (
-        <p role="alert" className="text-xs text-destructive">
-          {pickError}
-        </p>
       )}
       <Field label="Name">
         {({ id }) => (

@@ -15,14 +15,12 @@ use crate::storage::{self, CriterionEdit, Storage, StorageError};
 
 /// Tasks of every workspace ordered by ID, each with its dependencies, which may belong
 /// to another workspace.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_tasks(storage: State<'_, StorageState>) -> CommandResult<Vec<Task>> {
     Ok(types::map_all(&lock(&storage).list_all_tasks()?))
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
     let task = lock(&storage)
         .get_task(id.into())?
@@ -33,8 +31,7 @@ pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<T
 /// Creates a `planned` task without dependencies, with its completion criteria. The merge
 /// criterion depends on whether the repository has an `origin` remote, which git may
 /// check over `ssh`, so this runs off the main thread.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn create_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -85,8 +82,7 @@ pub(crate) fn merge_criterion(
     )))
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn update_task(storage: State<'_, StorageState>, task: TaskEdit) -> CommandResult<Task> {
     edit_task(&mut lock(&storage), task)
 }
@@ -126,8 +122,7 @@ pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<
 /// Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
 /// with what shows it; blank evidence is none. A task in progress whose criteria are then
 /// all met awaits completion until it is completed.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn check_criterion(
     storage: State<'_, StorageState>,
     task_id: TaskId,
@@ -164,8 +159,7 @@ pub(crate) fn check(
 /// Pauses an `in_progress` or `in_review` task: it becomes `planned` again and keeps
 /// its branch, worktree, herdr workspace, commit records, and pull request, so starting
 /// it again resumes the work.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn pause_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
     pause(&mut lock(&storage), id)
 }
@@ -186,8 +180,7 @@ fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
 /// Stores what the user wrote about the outcome of a `done` task, for reviews. The note
 /// is trimmed; an empty one clears it, except for a task that was not adopted, whose note
 /// is its required conclusion.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn set_completion_note(
     storage: State<'_, StorageState>,
     id: TaskId,
@@ -219,8 +212,7 @@ fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResu
 /// first removes it through herdr, which also closes its herdr workspace; the branch is
 /// kept. Without `force`, a worktree with modified or untracked files is rejected and the
 /// task is kept.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn delete_task(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -233,8 +225,7 @@ pub fn delete_task(
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
 /// self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
 /// paused and its herdr workspace closed.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn add_dependency(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
@@ -245,8 +236,7 @@ pub fn add_dependency(
     Ok(())
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn remove_dependency(
     storage: State<'_, StorageState>,
     task_id: TaskId,
@@ -256,8 +246,7 @@ pub fn remove_dependency(
 }
 
 /// Every related link between tasks, which neither block nor wait on each other.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_task_relations(storage: State<'_, StorageState>) -> CommandResult<Vec<TaskRelation>> {
     Ok(lock(&storage)
         .list_relations()?
@@ -270,8 +259,7 @@ pub fn list_task_relations(storage: State<'_, StorageState>) -> CommandResult<Ve
 }
 
 /// Links two tasks, from any workspaces, as related; linking twice keeps one link.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn add_task_relation(
     storage: State<'_, StorageState>,
     task_id: TaskId,
@@ -281,8 +269,7 @@ pub fn add_task_relation(
 }
 
 /// Removes the related link between two tasks, given in either order.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn remove_task_relation(
     storage: State<'_, StorageState>,
     task_id: TaskId,
@@ -291,8 +278,7 @@ pub fn remove_task_relation(
     Ok(lock(&storage).remove_related(task_id.into(), related_id.into())?)
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_commit_records(
     storage: State<'_, StorageState>,
     task_id: TaskId,

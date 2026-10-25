@@ -1,4 +1,4 @@
-/** Stands in for `@tauri-apps/plugin-notification` in the web build: browser notifications. */
+/** Browser notifications for the alerts the page shows. */
 import { pushCovers } from "@/web/push";
 
 export async function isPermissionGranted(): Promise<boolean> {
