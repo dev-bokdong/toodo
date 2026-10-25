@@ -54,6 +54,15 @@ const BASE_BRANCH: &str = "main";
 const LAUNCHER_FILE: &str = "lead-start";
 const PROMPT_FILE: &str = "lead-prompt.md";
 const PROMPT: &str = include_str!("lead-prompt.md");
+
+/// The system prompt the lead starts with: [`PROMPT`] followed by the lead skill (without
+/// its front matter), so that every session follows the skill without having to call
+/// `read_toodo_skill` first.
+fn prompt() -> String {
+    let skill = crate::mcp::LEAD_SKILL;
+    let body = skill.splitn(3, "---").nth(2).unwrap_or(skill).trim_start();
+    format!("{}\n\n{body}", PROMPT.trim_end())
+}
 /// The name of this server in the lead's MCP configurations.
 const MCP_SERVER: &str = "toodo";
 const TOKEN_VARIABLE: &str = "TOODO_MCP_TOKEN";
@@ -408,7 +417,7 @@ impl Supervisor {
         let prompt = self.data_dir.join(PROMPT_FILE);
         let launcher = self.data_dir.join(LAUNCHER_FILE);
         let failed = |path: &Path, error: io::Error| format!("{}: {error}", path.display());
-        fs::write(&prompt, PROMPT).map_err(|error| failed(&prompt, error))?;
+        fs::write(&prompt, self::prompt()).map_err(|error| failed(&prompt, error))?;
         let script = launcher_script(&Launch {
             dir,
             command: &self.config.command,
@@ -982,7 +991,14 @@ mod tests {
             let mode = fs::metadata(&launcher).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        assert_eq!(fs::read_to_string(data.join(PROMPT_FILE)).unwrap(), PROMPT);
+        let written = fs::read_to_string(data.join(PROMPT_FILE)).unwrap();
+        assert!(written.starts_with(PROMPT.trim_end()), "{written}");
+        // The skill follows the prompt, without the front matter of the skill file.
+        assert!(
+            written.contains("\n\n# Leading the work of a Toodo server"),
+            "{written}"
+        );
+        assert!(!written.contains("name: toodo-lead"), "{written}");
         let omo = fs::read_to_string(Path::new(&dir).join(".omo/mcp.json")).unwrap();
         assert!(omo.contains("47616") && !omo.contains("secret"), "{omo}");
 
