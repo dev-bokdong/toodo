@@ -177,10 +177,34 @@ pub struct ChatReply {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct TakePending {
-    /// The items to take, e.g. `["chat-12", "event-40"]` from a `[Toodo inbox]` line, taken
-    /// before or not. Omit it to take the oldest items not taken yet.
-    #[serde(default)]
+    /// The items to take, an array such as `["chat-12", "event-40"]` from a `[Toodo inbox]`
+    /// line, taken before or not. Omit it to take the oldest items not taken yet.
+    #[serde(default, deserialize_with = "item_ids")]
     pub ids: Option<Vec<String>>,
+}
+
+/// The `ids` of [`TakePending`]: an array, or, as agents also send them, one string with
+/// the IDs separated by spaces or commas, or with the array encoded as JSON. An empty
+/// string counts as omitted.
+fn item_ids<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<String>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Ids {
+        List(Vec<String>),
+        Text(String),
+    }
+    let text = match Option::<Ids>::deserialize(deserializer)? {
+        None => return Ok(None),
+        Some(Ids::List(ids)) => return Ok(Some(ids)),
+        Some(Ids::Text(text)) => text,
+    };
+    let ids = serde_json::from_str::<Vec<String>>(text.trim()).unwrap_or_else(|_| {
+        text.split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect()
+    });
+    Ok((!ids.is_empty()).then_some(ids))
 }
 
 /// What `take_pending` returns.
@@ -1171,6 +1195,38 @@ mod tests {
             })
             .unwrap();
         (storage, workspace.id.into())
+    }
+
+    #[test]
+    fn take_pending_reads_ids_as_an_array_or_as_one_string() {
+        let ids = |arguments: serde_json::Value| {
+            serde_json::from_value::<TakePending>(arguments)
+                .unwrap()
+                .ids
+        };
+        let both = Some(vec!["chat-12".to_owned(), "event-40".to_owned()]);
+        assert_eq!(
+            ids(serde_json::json!({ "ids": ["chat-12", "event-40"] })),
+            both
+        );
+        assert_eq!(ids(serde_json::json!({ "ids": "chat-12 event-40" })), both);
+        assert_eq!(ids(serde_json::json!({ "ids": "chat-12, event-40" })), both);
+        assert_eq!(
+            ids(serde_json::json!({ "ids": r#"["chat-12","event-40"]"# })),
+            both
+        );
+        assert_eq!(
+            ids(serde_json::json!({ "ids": "chat-12" })),
+            Some(vec!["chat-12".to_owned()])
+        );
+        for omitted in [
+            serde_json::json!({}),
+            serde_json::json!({ "ids": null }),
+            serde_json::json!({ "ids": " " }),
+        ] {
+            assert_eq!(ids(omitted), None);
+        }
+        assert!(serde_json::from_value::<TakePending>(serde_json::json!({ "ids": 12 })).is_err());
     }
 
     fn create(
