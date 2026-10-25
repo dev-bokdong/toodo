@@ -95,7 +95,8 @@ const EVENT_BUFFER: usize = 64;
 const USAGE: &str = "Usage: toodo-server [--version]
 
 Serves Toodo on one port: the web app, its API, and the MCP server for agents.
---version prints the version, which is the version of the Toodo release it came from.
+--version prints the version, which is the version of the Toodo release it came from,
+and the commit it was built from.
 
 Environment:
   TOODO_LISTEN    address to listen on (default 127.0.0.1:47616)
@@ -272,6 +273,20 @@ impl Runtime for Services {
     }
 }
 
+/// `toodo-server <version> (commit <sha>)`: the release version and the commit of the
+/// build, which tells a build of a later commit apart from the release it reports.
+fn version() -> String {
+    with_commit(env!("CARGO_PKG_VERSION"), env!("TOODO_COMMIT"))
+}
+
+fn with_commit(version: &str, commit: &str) -> String {
+    if commit.is_empty() {
+        format!("toodo-server {version}")
+    } else {
+        format!("toodo-server {version} (commit {commit})")
+    }
+}
+
 /// Runs the server until it is interrupted (Ctrl+C or SIGTERM).
 pub fn main() {
     if std::env::args()
@@ -285,7 +300,7 @@ pub fn main() {
         .skip(1)
         .any(|arg| arg == "-V" || arg == "--version")
     {
-        println!("toodo-server {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", version());
         return;
     }
     let config = match Config::from_env(|name| std::env::var(name).ok()) {
@@ -357,7 +372,8 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         config.web_dir.as_deref(),
     );
     println!(
-        "toodo-server: listening on http://{} (data in {}, web access token in {})",
+        "{}: listening on http://{} (data in {}, web access token in {})",
+        version(),
         config.listen,
         config.data_dir.display(),
         web_token_path.display()
@@ -550,6 +566,16 @@ mod tests {
             config.data_dir,
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
+    }
+
+    #[test]
+    fn the_version_names_the_commit_of_the_build() {
+        assert_eq!(
+            with_commit("1.2.3", "0123456789ab"),
+            "toodo-server 1.2.3 (commit 0123456789ab)"
+        );
+        assert_eq!(with_commit("1.2.3", ""), "toodo-server 1.2.3");
+        assert!(version().starts_with(&format!("toodo-server {}", env!("CARGO_PKG_VERSION"))));
     }
 
     const TEST_RESTORE_LIMIT: u64 = 1024 * 1024;

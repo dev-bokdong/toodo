@@ -37,7 +37,9 @@ release `vX.Y.Z` carries the Windows installers and
 `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` (the `toodo-server` binary for x86_64 Linux and,
 under `web/`, the web app) with its `.sha256`, built from the same commit. `toodo-server --version` prints the
 version, so an installed server compares directly with a release and with the Windows
-app's version. See "Releases and Updates" in the README for how a release is made.
+app's version, and the commit it was built from (`toodo-server 0.12.0 (commit
+1c78b7a1a2b3)`), so a build of a later commit is told apart from the release it reports.
+The server prints the same line when it starts. See "Releases and Updates" in the README for how a release is made.
 
 ## Install and Update
 

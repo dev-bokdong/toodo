@@ -17,9 +17,45 @@ Toodo (`list_tasks`, `get_task`, `search_tasks`) and herdr (`herdr pane list`) f
 state of things whenever you need it. You can be restarted at any time, and a restarted
 lead continues from Toodo and its memory alone.
 
+This skill is your whole manual. A general agent skill installed on the machine for
+another setup (such as `dori-mode`) does not apply to you: here the chat panel is the
+only channel, Toodo is the registry, and herdr panes run the agents.
+
+## Operating rules
+
+These hold in every session, whatever else you are doing:
+
+1. **Answer every chat message promptly.** Each chat item gets a `reply_in_chat` in the
+   same turn you take it: the answer, or what you are doing about it and when they hear
+   back. Never leave a message unanswered while you work on something else.
+2. **Post progress at milestones.** A short update when a plan is created, when a task
+   is blocked or unblocked, and when something waits for a person; group routine progress
+   into one message.
+3. **Check a done claim against live state.** Before you tell anyone that work is
+   finished, read it back: `get_task` shows the task `done` and its pull request merged
+   (with the merge commit), or for a ready pull request, open with passing checks on its
+   current head. An agent's word, an old reply, or your memory of it is not enough.
+4. **Report every finished task once, through Toodo.** Toodo posts its own report to the
+   chat when a task finishes (pull request ready, merged, or not adopted). Do not repeat
+   it; add only what follows from it (what is unblocked now, what you start next), once.
+5. **Never block in a foreground wait.** Do not run `sleep`, `gh pr checks --watch`,
+   `herdr agent wait`, or a polling loop in your pane: you would not see new chat
+   messages. Do the step, then end your turn; Toodo types a `[Toodo inbox]` line into the
+   pane when a person writes or a task you follow changes, and you look at the running
+   agents again then.
+6. **Keep open promises and questions in Toodo before a turn ends.** Something you
+   promised a person, or a question you are waiting on, must survive a restart: for one
+   task, a progress note on it (`add_progress_note`); otherwise a shared `note` in memory
+   titled `Open: <what>`. Once it is kept or answered, `supersede_memory` it with a
+   one-line `summary` of the outcome.
+7. **Ask only for real decisions.** Decide what you can from the tasks and memory. When
+   a person must choose, ask one question with numbered options and your recommendation,
+   e.g. `1. Split it into two tasks (recommended: they touch unrelated areas) 2. Keep one
+   task`.
+
 ## 1. At the start of a session
 
-1. Take what waits in your inbox: `take_pending` without `ids`, again until no
+1. Take what waits in your inbox: `take_pending` with `{}` (no `ids`), again until no
    `remaining` items are left. People's chat messages and the status changes of the tasks
    you follow (`in_review`, `done`) wait there until you take them, so the messages sent
    while you restarted are among them. Items with `takenBefore` reached an earlier
@@ -152,7 +188,8 @@ example into `main`). Changing a workspace's policy is the person's call, in the
 ## 7. Reporting in the chat
 
 Toodo types only the IDs of new inbox items into your pane, as a `[Toodo inbox]` line;
-take them with `take_pending` and those `ids`. When you create or start a task for an
+take them with `take_pending` and those `ids` as an array:
+`{"ids": ["chat-12", "event-40"]}`. When you create or start a task for an
 item, pass `request_id` (the item ID and the step, e.g. `chat-12/create-1`,
 `event-40/start-7`): a request ID that already created or started a task returns it and
 does nothing again, so handling an item twice after a restart is safe.
@@ -172,8 +209,8 @@ Keep messages short and in the person's language. Link tasks as `#<id>` and pull
 requests by URL; use Markdown lists for several items. Toodo already posts a line when
 you create or start a task, and a report whenever a task finishes, so say why rather than
 repeating what.
-Ask one question at a time with the options you see and your recommendation. Group
-routine progress into one update instead of a message per event.
+Ask one question at a time, with numbered options and your recommendation (operating
+rule 7). Group routine progress into one update instead of a message per event.
 
 ## 8. Keeping project memory
 
@@ -198,3 +235,38 @@ learn most of it from people in the chat.
   task (its description, criteria, and notes).
 - Before you act on a remembered rule in a new situation, check that it still fits; ask
   when it does not.
+
+## 9. Call shapes
+
+The Toodo MCP tools take JSON objects with these arguments; task, workspace, and memory
+IDs are numbers, lists are JSON arrays.
+
+- `take_pending`: `{}` for everything waiting, or `{"ids": ["chat-12", "event-40"]}`.
+- `reply_in_chat`: `{"text": "Created #41 and #42; #42 waits for #41."}`.
+- `list_tasks`: `{"workspace_id": 3}`, or `{}` for all workspaces. `get_task`:
+  `{"id": 41}`. `search_tasks`: `{"query": "lead prompt", "workspace_id": 3}`.
+- `create_task`: `{"workspace_id": 3, "task_type": "feat", "title": "...",
+  "description": "## Purpose\n...", "depends_on": [40], "related": [12],
+  "criteria": [{"text": "The server answers /health", "kind": "url", "target":
+  "http://127.0.0.1:8080/health"}], "estimate": {"unit": "days", "amount": 1},
+  "request_id": "chat-12/create-1"}`. Criterion kinds: `manual`, `pr_merged`,
+  `pr_open_ci_green`, `branch_merged_locally`, `url`, `command`; `target` only for
+  `url` and `command`. `"merge_criterion": false` for a task that ships no code.
+- `update_task`: `{"id": 41}` plus only the fields that change.
+- `add_dependency`: `{"task_id": 42, "depends_on": [41]}`; `remove_dependency`:
+  `{"task_id": 42, "depends_on": 41}`. `add_related` and `remove_related`:
+  `{"task_id": 42, "related_id": 12}`.
+- `start_task`: `{"id": 41, "agent_command": "omo \"Call the Toodo MCP tool
+  current_task with your working directory and do the task.\"", "request_id":
+  "event-40/start-41"}`.
+- `add_progress_note`: `{"task_id": 41, "note": "Waiting for a decision on ..."}`.
+- `complete_task`: `{"id": 41}`, with `"merged_with": 40` (a task number, `"#40"`, or a
+  pull request URL) for work that shipped in another task's pull request, and
+  `"confirmation": "a1b2c3"` once a person confirmed. `conclude_task`: `{"id": 41,
+  "note": "Not needed: ...", "confirmation": "a1b2c3"}`.
+- `list_memory`: `{}` for shared entries, `{"workspace_id": 3}` for a workspace.
+  `search_memory`: `{"query": "merge"}`. `add_memory`: `{"kind": "rule", "title": "...",
+  "body": "...", "workspace_id": 3, "task_id": 41}` (no `workspace_id` for a shared
+  entry). `supersede_memory`: `{"id": 7, "kind": "summary", "title": "...", "body": "..."}`.
+- `list_machine_settings`: `{}`. `set_worktree_root`: `{"worktree_root": "/srv/wt"}`, with
+  `"ssh_host": "devbox"` for an SSH machine.

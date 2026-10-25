@@ -55,7 +55,7 @@ pub(crate) const TOKEN_FILE: &str = "mcp-token";
 
 const SKILL: &str = include_str!("toodo-skill.md");
 
-const LEAD_SKILL: &str = include_str!("toodo-lead-skill.md");
+pub(crate) const LEAD_SKILL: &str = include_str!("toodo-lead-skill.md");
 
 const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
 a task becomes ready only when all tasks it depends on are done.
@@ -2257,6 +2257,37 @@ mod tests {
         assert!(agent.starts_with("HTTP/1.1 200"), "{agent}");
         assert!(agent.contains(&encoded(SKILL)), "{agent}");
         assert!(!agent.contains("name: toodo-lead"), "{agent}");
+    }
+
+    #[test]
+    fn a_call_without_a_caller_reads_the_worker_skill() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let server = ToodoMcp::new(Arc::new(TestBackend::new(storage)));
+        let parts = axum::http::Request::new(()).into_parts().0;
+        let result = serde_json::to_value(server.read_toodo_skill(Extension(parts)).unwrap());
+        assert_eq!(result.unwrap()["content"][0]["text"], SKILL);
+    }
+
+    #[test]
+    fn the_lead_token_reads_the_lead_skill_after_a_restart_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lead-token");
+        let token = load_token(&file).unwrap();
+        // A restarted server reads the same file, and the lead keeps the token it started
+        // with.
+        let reloaded = load_token(&file).unwrap();
+        assert_eq!(reloaded, token);
+        let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let app = router(backend, "secret".to_owned(), Some(reloaded));
+        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
+        let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_toodo_skill","arguments":{}}}"#;
+
+        let lead = post(address, &format!("Authorization: Bearer {token}\r\n"), call);
+        assert!(lead.starts_with("HTTP/1.1 200"), "{lead}");
+        assert!(lead.contains("name: toodo-lead"), "{lead}");
     }
 
     #[test]

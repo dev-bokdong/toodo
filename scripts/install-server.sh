@@ -188,7 +188,8 @@ if [ "$from_release" = 1 ]; then
     log "$asset carries no web app; serving the API and MCP only"
   fi
   version=$("$new_bin" --version) || die "the downloaded toodo-server does not run on this machine"
-  [ "$version" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
+  # Builds since 0.12.0 add " (commit <sha>)".
+  [ "${version%% (commit *}" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
 else
   log "Building toodo-server"
   (cd "$repo/src-tauri" && cargo build --release --no-default-features --features server --bin toodo-server)
