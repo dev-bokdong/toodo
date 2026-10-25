@@ -1,5 +1,51 @@
-import { describe, expect, it } from "vitest";
-import { speakableText, speechChunks } from "@/lib/voice";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { speakableText, speechChunks, useDictating, useDictation } from "@/lib/voice";
+
+class FakeRecognition {
+  static last: FakeRecognition | null = null;
+  lang = "";
+  interimResults = false;
+  continuous = false;
+  maxAlternatives = 1;
+  onresult: (() => void) | null = null;
+  onerror: ((event: { error: string }) => void) | null = null;
+  onend: (() => void) | null = null;
+  start() {
+    FakeRecognition.last = this;
+  }
+  stop() {
+    this.onend?.();
+  }
+  abort() {
+    this.onerror?.({ error: "aborted" });
+    this.onend?.();
+  }
+}
+
+describe("useDictating", () => {
+  afterEach(() => {
+    delete (window as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
+  });
+
+  it("is true while any dictation listens, so the wake word can hold", () => {
+    (window as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition = FakeRecognition;
+    const dictating = renderHook(() => useDictating());
+    const first = renderHook(() => useDictation(() => {}, () => {}));
+    const second = renderHook(() => useDictation(() => {}, () => {}));
+    expect(dictating.result.current).toBe(false);
+
+    act(() => first.result.current.start());
+    const firstRecognition = FakeRecognition.last!;
+    act(() => second.result.current.start());
+    expect(dictating.result.current).toBe(true);
+
+    act(() => firstRecognition.stop());
+    expect(dictating.result.current).toBe(true);
+    second.unmount();
+    expect(dictating.result.current).toBe(false);
+  });
+});
 
 describe("speakableText", () => {
   it("drops markup, code blocks and addresses but keeps the words", () => {

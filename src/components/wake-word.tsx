@@ -1,7 +1,8 @@
 /**
- * The wake word in the window of the macOS app: follows what the app hears, holds detection
- * while a reply is read aloud, and shows what is heard after "Dori-ya" until the sentence
- * ends. A click on the indicator, or Escape, drops the sentence.
+ * The wake word in the window of the macOS and Windows apps: follows what the app hears,
+ * holds detection while a reply is read aloud or a message is dictated, and shows what is
+ * heard after "Dori-ya" until the sentence ends. A click on the indicator, or Escape, drops
+ * the sentence.
  */
 import { useEffect, useState } from "react";
 import { Mic, XIcon } from "lucide-react";
@@ -9,15 +10,23 @@ import { Button } from "@/components/ui/button";
 import type { WakeWordStatus } from "@/lib/bindings";
 import { openPrivacySettings } from "@/lib/mac-dictation";
 import { useNarrow } from "@/lib/narrow";
+import { appPlatform } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { useSpeaking } from "@/lib/voice";
+import { useDictating, useSpeaking } from "@/lib/voice";
 import {
   cancelWakeWord,
   followWakeWord,
+  setWakeWordDictating,
   setWakeWordEnabled,
   setWakeWordSpeaking,
   useWakeWord,
 } from "@/lib/wake-word";
+
+const onWindows = appPlatform === "windows";
+/** What the app's privacy settings are called, and the computer it runs on. */
+const systemSettings = onWindows ? "Windows Settings" : "System Settings";
+const computer = onWindows ? "this PC" : "this Mac";
+const hiddenIn = onWindows ? "in the tray" : "closed";
 
 /** How many characters of a long sentence the indicator shows while it is heard. */
 const TAIL = { narrow: 16, wide: 32 };
@@ -25,6 +34,7 @@ const TAIL = { narrow: 16, wide: 32 };
 export function WakeWord() {
   const wake = useWakeWord();
   const speaking = useSpeaking();
+  const dictating = useDictating();
   const hearing = wake.status.state === "hearing" ? wake.status.transcript : null;
   const isHearing = hearing !== null;
   const tail = useNarrow() ? TAIL.narrow : TAIL.wide;
@@ -34,6 +44,10 @@ export function WakeWord() {
   useEffect(() => {
     if (wake.enabled) setWakeWordSpeaking(speaking);
   }, [wake.enabled, speaking]);
+
+  useEffect(() => {
+    if (wake.enabled) setWakeWordDictating(dictating);
+  }, [wake.enabled, dictating]);
 
   useEffect(() => {
     if (!isHearing) return;
@@ -132,7 +146,7 @@ export function WakeWordSetting() {
           className="self-start"
           onClick={() => void openPrivacySettings("microphone").catch(console.error)}
         >
-          Open System Settings
+          Open {systemSettings}
         </Button>
       )}
       {wake.enabled && failed !== null && failed.kind !== "microphoneNotAllowed" && (
@@ -153,8 +167,8 @@ export function WakeWordSetting() {
         </p>
       )}
       <p className="text-xs text-muted-foreground">
-        Toodo listens on this Mac only while it runs, also with its window closed, and stops on Quit. The first time,
-        it downloads its speech model (about 140 MB); what you say is recognized on this Mac.
+        Toodo listens on {computer} only while it runs, also with its window {hiddenIn}, and stops on Quit. The first
+        time, it downloads its speech model (about 140 MB); what you say is recognized on {computer}.
       </p>
     </div>
   );

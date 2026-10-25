@@ -358,6 +358,7 @@ mod tests {
         "set_wake_word",
         "cancel_wake_word",
         "set_wake_word_speaking",
+        "set_wake_word_dictating",
     ];
 
     /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.

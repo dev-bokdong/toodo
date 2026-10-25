@@ -1,26 +1,34 @@
-//! The wake word of the macOS app: saying "do-ri-ya" and a sentence sends the sentence to
-//! the lead chat without touching the Mac, while the app runs with its window shown or
-//! hidden in the menu bar. It is off until turned on in the settings, listens only while the
-//! app runs (no login item, no system-wide hotword), and closes the microphone on Quit or
-//! when turned off.
+//! The wake word of the macOS and Windows apps: saying "do-ri-ya" and a sentence sends the
+//! sentence to the lead chat hands-free, while the app runs with its window shown or hidden
+//! in the menu bar or the tray. It is off until turned on in the settings, listens only while
+//! the app runs (no login item, service, or system-wide hotword), and closes the microphone on
+//! Quit or when turned off.
 //!
 //! The detector is the measured one of docs/wake-word.md ([`rule`], [`detector`],
-//! [`engine`]) on the app's one microphone owner ([`super::capture`]). It reports what it
-//! hears as [`WakeWordChanged`] events and each sentence to send as a [`WakeWordHeard`]
-//! event; the frontend sends it to the lead chat, so it goes to the server the app uses.
+//! [`engine`]), run by one [`worker`] for both apps on the platform's microphone: the macOS
+//! app's one microphone owner ([`super::capture`]), the Windows app's default input device.
+//! It reports what it hears as [`WakeWordChanged`] events and each sentence to send as a
+//! [`WakeWordHeard`] event; the frontend sends it to the lead chat, so it goes to the server
+//! the app uses.
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod detector;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod download;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod engine;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(windows)]
+mod microphone;
+#[cfg(any(target_os = "macos", windows, test))]
 mod model;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod rule;
+#[cfg(windows)]
+mod windows;
+#[cfg(any(target_os = "macos", windows))]
+mod worker;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -70,8 +78,8 @@ pub struct WakeWordError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum WakeWordErrorKind {
-    /// The microphone is turned off for the app in the system's privacy settings; listening
-    /// starts again by itself once it is allowed.
+    /// The microphone is turned off for the app (on Windows, for desktop apps) in the
+    /// system's privacy settings; listening starts again by itself once it is allowed.
     MicrophoneNotAllowed,
     /// No microphone, or it stopped; the app keeps trying to open the default one.
     NoMicrophone,
@@ -90,17 +98,17 @@ pub struct WakeWordHeard {
 }
 
 /// The file in the app data directory that keeps the setting.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 const SETTING_FILE: &str = "wake-word.json";
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Setting {
     enabled: bool,
 }
 
 /// Whether the wake word is turned on; off unless it was turned on and saved.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn load_enabled(data_dir: &std::path::Path) -> bool {
     std::fs::read(data_dir.join(SETTING_FILE))
         .ok()
@@ -108,41 +116,51 @@ fn load_enabled(data_dir: &std::path::Path) -> bool {
         .is_some_and(|setting| setting.enabled)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn save_enabled(data_dir: &std::path::Path, enabled: bool) -> std::io::Result<()> {
     let json = serde_json::to_vec(&Setting { enabled }).expect("the setting serializes");
     std::fs::write(data_dir.join(SETTING_FILE), json)
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Whether Windows' privacy settings let a desktop app use the microphone, from the `Value`
+/// of each of its microphone switches; a switch never set allows.
+#[cfg(any(windows, test))]
+fn consent_allows(values: &[Option<String>]) -> bool {
+    !values
+        .iter()
+        .flatten()
+        .any(|value| value.trim().eq_ignore_ascii_case("deny"))
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn unsupported() -> CommandError {
-    CommandError::rejected("the wake word is only available in the macOS app")
+    CommandError::rejected("the wake word is only available in the macOS and Windows apps")
 }
 
 /// Starts listening at app start if the wake word was turned on, for an app connected to a
 /// server (whose lead takes the sentences).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub fn start_if_enabled(app: &tauri::AppHandle, data_dir: &std::path::Path, connected: bool) {
-    macos::init(app, data_dir.to_owned());
+    worker::init(app, data_dir.to_owned());
     if connected && load_enabled(data_dir) {
-        macos::set_enabled(app, true);
+        worker::set_enabled(app, true);
     }
 }
 
 /// Closes the microphone as the app exits.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub fn shut_down() {
-    macos::shut_down();
+    worker::shut_down();
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_wake_word() -> CommandResult<WakeWordChanged> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
-        Ok(macos::current())
+        Ok(worker::current())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         Err(unsupported())
     }
@@ -153,16 +171,16 @@ pub fn get_wake_word() -> CommandResult<WakeWordChanged> {
 #[tauri::command]
 #[specta::specta]
 pub fn set_wake_word(app: tauri::AppHandle, enabled: bool) -> CommandResult<WakeWordChanged> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
-        let data_dir = macos::data_dir()
+        let data_dir = worker::data_dir()
             .ok_or_else(|| CommandError::internal("the wake word is not set up"))?;
         save_enabled(&data_dir, enabled)
             .map_err(|error| CommandError::internal(format!("cannot save the setting: {error}")))?;
-        macos::set_enabled(&app, enabled);
-        Ok(macos::current())
+        worker::set_enabled(&app, enabled);
+        Ok(worker::current())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (app, enabled);
         Err(unsupported())
@@ -173,12 +191,12 @@ pub fn set_wake_word(app: tauri::AppHandle, enabled: bool) -> CommandResult<Wake
 #[tauri::command]
 #[specta::specta]
 pub fn cancel_wake_word() -> CommandResult<()> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
-        macos::cancel();
+        worker::cancel();
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         Err(unsupported())
     }
@@ -189,14 +207,32 @@ pub fn cancel_wake_word() -> CommandResult<()> {
 #[tauri::command]
 #[specta::specta]
 pub fn set_wake_word_speaking(speaking: bool) -> CommandResult<()> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
-        macos::set_speaking(speaking);
+        worker::set_speaking(speaking);
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = speaking;
+        Err(unsupported())
+    }
+}
+
+/// Tells the detector whether a message is dictated in the lead chat by the WebView's speech
+/// recognition (the Windows app's), so the dictated words cannot also wake it: detection
+/// holds while it listens.
+#[tauri::command]
+#[specta::specta]
+pub fn set_wake_word_dictating(dictating: bool) -> CommandResult<()> {
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        worker::set_dictating(dictating);
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = dictating;
         Err(unsupported())
     }
 }
@@ -215,6 +251,16 @@ mod tests {
         assert!(load_enabled(dir.path()));
         save_enabled(dir.path(), false).unwrap();
         assert!(!load_enabled(dir.path()));
+    }
+
+    #[test]
+    fn any_microphone_switch_turned_off_denies() {
+        let set = |value: &str| Some(value.to_owned());
+        assert!(consent_allows(&[None, None, None]));
+        assert!(consent_allows(&[set("Allow"), set("Allow"), set("Allow")]));
+        assert!(!consent_allows(&[set("Allow"), None, set("Deny")]));
+        assert!(!consent_allows(&[set("deny "), set("Allow"), None]));
+        assert!(consent_allows(&[set("Prompt"), None, set("Allow")]));
     }
 
     #[test]
