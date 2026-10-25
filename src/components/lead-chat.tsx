@@ -16,7 +16,18 @@ import {
   type KeyboardEvent,
   type Ref,
 } from "react";
-import { Check, CheckCheck, MessageCircle, MessagesSquare, SendHorizontal, XIcon } from "lucide-react";
+import {
+  Check,
+  CheckCheck,
+  MessageCircle,
+  MessagesSquare,
+  Mic,
+  SendHorizontal,
+  Square,
+  Volume2,
+  VolumeX,
+  XIcon,
+} from "lucide-react";
 import doriAvatar from "@/assets/dori-avatar.webp";
 import { Button } from "@/components/ui/button";
 import type { ChatMessage, LeadStatus } from "@/lib/bindings";
@@ -24,6 +35,15 @@ import { markRead, newClientId, receipt, unreadCount, useReadUpTo, type Receipt 
 import { useChatMessages, useSendChatMessage } from "@/lib/queries";
 import { useSwipeClose } from "@/lib/swipe-close";
 import { formatFull } from "@/lib/timeline";
+import {
+  setReadAloud,
+  speak,
+  speechSupported,
+  stopSpeaking,
+  useDictation,
+  useReadAloud,
+  useSpeaking,
+} from "@/lib/voice";
 import { When } from "@/components/when";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +84,7 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
   const unread = open ? 0 : unreadCount(messages.data ?? [], readUpTo);
   const close = () => setOpen(false);
   const drag = useSwipeClose(close);
+  const speaking = useSpeaking();
 
   useLayoutEffect(() => {
     if (open) {
@@ -110,6 +131,17 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
           </span>
         )}
       </button>
+      {speaking && !open && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={stopSpeaking}
+          className="fixed right-4 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-20 rounded-full shadow-md md:right-6 md:bottom-[6.5rem]"
+        >
+          <Square />
+          Stop reading aloud
+        </Button>
+      )}
       <div
         ref={panel}
         id={panelId}
@@ -171,6 +203,30 @@ export function LeadChat({
   const list = messages.data ?? [];
   const lastId = list.at(-1)?.id;
   const state = leadState(lead);
+  const readAloud = useReadAloud();
+  const speaking = useSpeaking();
+  // The text typed before dictation started; what is heard goes after it.
+  const typed = useRef("");
+  const withTyped = (heard: string) => [typed.current.trimEnd(), heard.trim()].filter(Boolean).join(" ");
+  const dictation = useDictation(
+    (heard) => setText(withTyped(heard)),
+    (heard) => {
+      if (heard.trim() && state.ready) sendText(withTyped(heard));
+    },
+  );
+  // Replies newer than this are read aloud; the history there on opening is not.
+  const spokenUpTo = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!messages.data) return;
+    const newest = messages.data.at(-1)?.id ?? 0;
+    const from = spokenUpTo.current;
+    spokenUpTo.current = Math.max(from ?? 0, newest);
+    if (from === null || !readAloud) return;
+    for (const message of messages.data) {
+      if (message.author === "lead" && message.id > from) speak(message.body);
+    }
+  }, [messages.data, readAloud]);
 
   useEffect(() => {
     if (!open) return;
@@ -178,8 +234,18 @@ export function LeadChat({
     if (log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [open, lastId, lead.typing]);
 
+  function startDictation() {
+    typed.current = text;
+    setClientId(newClientId());
+    dictation.start();
+  }
+
   function submit(event?: FormEvent) {
     event?.preventDefault();
+    sendText(text);
+  }
+
+  function sendText(text: string) {
     if (!text.trim() || send.isPending) return;
     send.mutate(
       { text, clientId },
@@ -216,18 +282,37 @@ export function LeadChat({
             {lead.error && ` - ${lead.error}`}
           </span>
         </div>
-        {onClose && (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            className="ml-auto"
-            aria-label="Close lead chat"
-            title="Close lead chat (Esc)"
-            onClick={onClose}
-          >
-            <XIcon />
-          </Button>
-        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {speaking && (
+            <Button size="sm" variant="outline" onClick={stopSpeaking}>
+              <Square />
+              Stop reading aloud
+            </Button>
+          )}
+          {speechSupported() && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Read replies aloud"
+              aria-pressed={readAloud}
+              title={readAloud ? "Replies are read aloud" : "Read replies aloud"}
+              onClick={() => setReadAloud(!readAloud)}
+            >
+              {readAloud ? <Volume2 /> : <VolumeX />}
+            </Button>
+          )}
+          {onClose && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Close lead chat"
+              title="Close lead chat (Esc)"
+              onClick={onClose}
+            >
+              <XIcon />
+            </Button>
+          )}
+        </div>
       </header>
       {messages.error && (
         <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">
@@ -267,7 +352,19 @@ export function LeadChat({
         )}
         {lead.typing && <TypingBubble />}
       </ol>
-      <form onSubmit={submit} aria-label="Message the lead" className="flex shrink-0 items-end gap-2 border-t p-3">
+      <form
+        onSubmit={submit}
+        aria-label="Message the lead"
+        onKeyDown={(event) => {
+          // Escape drops what is being dictated before it closes the chat.
+          if (event.key === "Escape" && dictation.listening) {
+            event.preventDefault();
+            dictation.cancel();
+            setText(typed.current);
+          }
+        }}
+        className="flex shrink-0 items-end gap-2 border-t p-3"
+      >
         <textarea
           ref={inputRef}
           aria-label="Message to the lead"
@@ -281,11 +378,46 @@ export function LeadChat({
           onKeyDown={onKeyDown}
           className="max-h-40 min-h-16 min-w-0 flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
+        {dictation.supported &&
+          (dictation.listening ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="destructive"
+              aria-label="Stop voice input and send"
+              title="Stop voice input and send (Esc cancels)"
+              onClick={dictation.stop}
+            >
+              <Square className="motion-safe:animate-pulse" />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              aria-label="Voice input"
+              title="Speak a message"
+              disabled={!state.ready || send.isPending}
+              onClick={startDictation}
+            >
+              <Mic />
+            </Button>
+          ))}
         <Button type="submit" disabled={!state.ready || !text.trim() || send.isPending}>
           <SendHorizontal />
           Send
         </Button>
       </form>
+      {dictation.listening && (
+        <p role="status" aria-label="Voice input" className="shrink-0 px-3 pb-3 text-xs text-muted-foreground">
+          Listening. Speak, then pause; Esc cancels.
+        </p>
+      )}
+      {dictation.error && (
+        <p role="alert" className="shrink-0 px-3 pb-3 text-sm text-destructive">
+          {dictation.error}
+        </p>
+      )}
       {send.error && (
         <p role="alert" className="shrink-0 px-3 pb-3 text-sm text-destructive">
           {send.error.message}

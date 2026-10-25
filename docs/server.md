@@ -267,6 +267,10 @@ message in the database and send the `chat-changed` event, so every open client 
 message it showed in the open chat in local storage and counts the lead's later replies as
 unread.
 
+The chat also takes voice: a microphone button dictates a message and sends it, and the
+lead's new replies can be read aloud (off by default, a per-browser setting). Both run in
+the browser, not on the server; see [`voice.md`](voice.md).
+
 #### Lead tools
 
 The lead drives tasks through the same MCP tools as other agents, and the server knows
