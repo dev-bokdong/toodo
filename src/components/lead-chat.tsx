@@ -25,6 +25,7 @@ import {
   MessageCircle,
   MessagesSquare,
   Mic,
+  RotateCw,
   SendHorizontal,
   Square,
   Volume2,
@@ -48,7 +49,7 @@ import {
 import { openPrivacySettings } from "@/lib/mac-dictation";
 import { openAppSettings } from "@/lib/native-speech";
 import { builtForWeb, mobileApp } from "@/lib/platform";
-import { useChatMessages, useSendChatMessage } from "@/lib/queries";
+import { useChatMessages, useSendChatMessage, useShowSentChatMessage } from "@/lib/queries";
 import { useSwipeClose } from "@/lib/swipe-close";
 import { formatFull } from "@/lib/timeline";
 import {
@@ -60,6 +61,14 @@ import {
   useReadAloud,
   useSpeaking,
 } from "@/lib/voice";
+import {
+  discardVoiceMessage,
+  retryVoiceMessage,
+  sendVoiceMessage,
+  useVoiceOutbox,
+  useVoiceSent,
+  type OutgoingVoice,
+} from "@/lib/voice-outbox";
 import { When } from "@/components/when";
 import { cn } from "@/lib/utils";
 
@@ -260,12 +269,19 @@ export function LeadChat({
   // The text typed before dictation started; what is heard goes after it.
   const typed = useRef("");
   const withTyped = (heard: string) => [typed.current.trimEnd(), heard.trim()].filter(Boolean).join(" ");
+  // A dictated message goes out through the voice outbox, so one said while another is
+  // still sending waits its turn, and a retry keeps the client ID it was heard with.
   const dictation = useDictation(
     (heard) => setText(withTyped(heard)),
     (heard) => {
-      if (heard.trim() && state.accepts) sendText(withTyped(heard));
+      if (!heard.trim() || !state.accepts) return;
+      sendVoiceMessage(withTyped(heard));
+      setText("");
+      setClientId(newClientId());
     },
   );
+  const outbox = useVoiceOutbox();
+  useVoiceSent(useShowSentChatMessage());
   // Replies newer than this are read aloud; the history there on opening is not.
   const spokenUpTo = useRef<number | null>(null);
 
@@ -288,15 +304,14 @@ export function LeadChat({
 
   function startDictation() {
     typed.current = text;
-    setClientId(newClientId());
     dictation.start();
   }
 
-  // A request waits until the lead takes messages and nothing is being sent or heard.
+  // A request waits until the lead takes messages and nothing is being heard.
   const voiceStarted = useRef(0);
   useEffect(() => {
     if (voiceRequests <= voiceStarted.current) return;
-    if (!dictation.supported || !state.accepts || send.isPending || dictation.listening) return;
+    if (!dictation.supported || !state.accepts || dictation.listening) return;
     voiceStarted.current = voiceRequests;
     startDictation();
   });
@@ -395,7 +410,7 @@ export function LeadChat({
         aria-label="Messages"
         className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain bg-muted/30 p-3"
       >
-        {messages.data && list.length === 0 && (
+        {messages.data && list.length === 0 && outbox.length === 0 && (
           <li className="m-auto flex max-w-64 flex-col items-center gap-2 text-center text-sm text-muted-foreground">
             <MessagesSquare className="size-6" />
             No messages yet.
@@ -425,6 +440,9 @@ export function LeadChat({
             }}
           />
         )}
+        {outbox.map((item) => (
+          <OutgoingMessage key={item.clientId} item={item} />
+        ))}
         {lead.typing && <TypingBubble />}
       </ol>
       <form
@@ -478,7 +496,7 @@ export function LeadChat({
               variant="outline"
               aria-label="Voice input"
               title="Speak a message"
-              disabled={!state.accepts || send.isPending}
+              disabled={!state.accepts}
               onClick={startDictation}
             >
               <Mic />
@@ -536,6 +554,55 @@ function TypingBubble() {
       >
         <TypingDots className="size-1.5 bg-muted-foreground" />
       </div>
+    </li>
+  );
+}
+
+/** A spoken message not taken by the server yet: sending, or failed with a retry. */
+function OutgoingMessage({ item }: { item: OutgoingVoice }) {
+  return (
+    <li
+      data-author="user"
+      data-outgoing={item.state}
+      aria-label="You"
+      className="flex max-w-[85%] flex-col items-end gap-1 self-end"
+    >
+      <div
+        className={cn(
+          "rounded-lg bg-primary px-3 py-2 text-sm break-words text-primary-foreground",
+          item.state === "sending" && "opacity-70",
+        )}
+      >
+        <p className="whitespace-pre-wrap break-words-keep">{item.text}</p>
+      </div>
+      {item.state === "sending" ? (
+        <span className="text-xs text-muted-foreground">Sending</span>
+      ) : (
+        <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs">
+          <span role="alert" className="text-destructive">
+            Not sent: {item.error}
+          </span>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            changesData={false}
+            onClick={() => retryVoiceMessage(item.clientId)}
+          >
+            <RotateCw />
+            Retry
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            changesData={false}
+            onClick={() => discardVoiceMessage(item.clientId)}
+          >
+            Discard
+          </Button>
+        </div>
+      )}
     </li>
   );
 }
