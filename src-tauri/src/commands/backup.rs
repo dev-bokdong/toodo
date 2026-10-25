@@ -69,7 +69,6 @@ impl Backups {
 
     /// A new path in the backup directory for a file on its way in or out, such as an
     /// uploaded backup; [`list_backups`] does not list it. The caller removes it.
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn scratch_path(&self, purpose: &str) -> io::Result<PathBuf> {
         fs::create_dir_all(&self.dir)?;
         let mut random = [0_u8; 8];
@@ -101,29 +100,14 @@ fn read_settings(path: &Path) -> Result<backup::BackupSettings, String> {
     backup::BackupSettings::try_from(settings).map_err(|error| error.message)
 }
 
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-fn absolute_path(path: &str) -> CommandResult<&Path> {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Err(CommandError::invalid_input(format!(
-            "{} is not an absolute path",
-            path.display()
-        )))
-    }
-}
-
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn get_backup_settings(backups: State<'_, Backups>) -> BackupSettings {
     backups.settings().into()
 }
 
 /// Saves the automatic backup settings, then writes an automatic backup if one is now
 /// due.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn save_backup_settings(
     storage: State<'_, StorageState>,
     backups: State<'_, Backups>,
@@ -138,39 +122,15 @@ pub fn save_backup_settings(
 }
 
 /// Backups in Toodo's backup directory, newest first.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_backups(backups: State<'_, Backups>) -> CommandResult<Vec<BackupEntry>> {
     Ok(types::map_all(&storage::list_backups(&backups.dir)?))
-}
-
-/// Writes a snapshot of the database to `path`, replacing any file there. Desktop only:
-/// the server sends snapshots over HTTP instead of writing them at a path.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
-pub fn export_database(storage: State<'_, StorageState>, path: String) -> CommandResult<()> {
-    Ok(lock(&storage).export_to(absolute_path(&path)?)?)
-}
-
-/// Replaces all data with the backup at `path`. The current data is first saved as a
-/// pre-restore backup, which is returned. Desktop only: the server takes uploads instead.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
-pub fn restore_database(
-    storage: State<'_, StorageState>,
-    backups: State<'_, Backups>,
-    path: String,
-) -> CommandResult<BackupEntry> {
-    restore_file(&storage, &backups, absolute_path(&path)?)
 }
 
 /// Replaces all data with the backup named `name` in Toodo's backup directory (see
 /// [`list_backups`]). The current data is first saved as a pre-restore backup, which is
 /// returned.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn restore_backup(
     storage: State<'_, StorageState>,
     backups: State<'_, Backups>,
@@ -199,7 +159,6 @@ pub fn restore_file(
 
 /// Writes a consistent snapshot of the database to a new file in the backup directory and
 /// returns its path; the caller removes it.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub fn export_snapshot(storage: &StorageState, backups: &Backups) -> CommandResult<PathBuf> {
     let path = backups
         .scratch_path("export")
@@ -209,9 +168,23 @@ pub fn export_snapshot(storage: &StorageState, backups: &Backups) -> CommandResu
 }
 
 /// The file name a snapshot of the database is saved under, with today's date (UTC).
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub fn export_file_name(storage: &StorageState) -> String {
     backup::export_file_name(lock(storage).now())
+}
+
+/// Adds the workspaces, tasks, and memory of the Toodo database at `path`, such as one of
+/// the former desktop app, to the data (see [`storage::Storage::import`]), after saving
+/// the current data as a pre-restore backup, which is returned with what was added.
+pub fn import_file(
+    storage: &StorageState,
+    backups: &Backups,
+    path: &Path,
+) -> storage::Result<(BackupFile, storage::ImportSummary)> {
+    let staged = storage::stage_backup(path)?;
+    let mut storage = lock(storage);
+    let safety = storage.backup_into(&backups.dir, BackupKind::PreRestore)?;
+    let summary = storage.import(&staged)?;
+    Ok((safety, summary))
 }
 
 fn restore(storage: &StorageState, backups: &Backups, path: &Path) -> storage::Result<BackupFile> {
@@ -494,13 +467,5 @@ mod tests {
         assert!(storage::list_backups(&backups.dir).unwrap().is_empty());
         restore_file(&fixture.storage, &backups, &snapshot).unwrap();
         assert_eq!(fixture.workspace_names(), ["toodo"]);
-    }
-
-    #[test]
-    fn exports_need_an_absolute_path() {
-        assert_eq!(
-            absolute_path("backup.sqlite3").unwrap_err().kind,
-            super::super::CommandErrorKind::InvalidInput
-        );
     }
 }

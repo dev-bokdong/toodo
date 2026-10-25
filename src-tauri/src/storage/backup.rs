@@ -27,6 +27,12 @@ pub struct BackupFile {
 /// the live data with [`Storage::restore`].
 pub struct StagedBackup(Connection);
 
+impl StagedBackup {
+    pub(super) fn connection(&self) -> &Connection {
+        &self.0
+    }
+}
+
 impl Storage {
     /// Writes a consistent snapshot of the database to `path`, replacing any file there.
     /// The snapshot is written next to `path` first, so a failed export never leaves a

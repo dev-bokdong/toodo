@@ -130,7 +130,6 @@ import { When } from "@/components/when";
 import { firstParagraph, markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
 import { normalizePath, shortPath } from "@/lib/paths";
-import { runsOnServer } from "@/lib/platform";
 import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { reachability, subscribeReachability } from "@/web/connection";
@@ -138,8 +137,8 @@ import { reachability, subscribeReachability } from "@/web/connection";
 const Markdown = lazy(() => import("@/components/markdown"));
 // The timeline pulls in React Flow, so it loads only when it is first shown.
 const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
-// Pane views are streamed by `toodo-server`, so only the web build has them (and xterm.js).
-const PaneView = runsOnServer ? lazy(() => import("@/components/pane-view")) : null;
+// Pane views pull in xterm.js, so they load only when a pane is first shown.
+const PaneView = lazy(() => import("@/components/pane-view"));
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
@@ -1114,7 +1113,7 @@ function TaskRow({
       {detailed && hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       {detailed && <TaskPlan task={task} />}
       {detailed && <TaskTimeline task={task} detailed />}
-      {detailed && active && task.herdrWorkspaceId && PaneView && (
+      {detailed && active && task.herdrWorkspaceId && (
         <Suspense fallback={null}>
           <PaneView task={task} />
         </Suspense>
@@ -2274,7 +2273,7 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [changing, setChanging] = useState(false);
   const saved = settings.data?.worktreeRoot ?? "";
-  const machineName = machine.kind === "local" ? (runsOnServer ? "the server" : "this computer") : machine.label;
+  const machineName = machine.kind === "local" ? "the server" : machine.label;
   const error = settings.error ?? saveSettings.error;
   const closeChange = () => {
     setDraft(null);
@@ -2327,7 +2326,7 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         <input
           id="worktree-root"
           className={cn(inputClass, "font-mono max-md:min-w-0 max-md:flex-1")}
-          placeholder={machine.kind === "local" && !runsOnServer ? "D:\\worktrees" : "/srv/worktrees"}
+          placeholder="/srv/worktrees"
           value={draft ?? saved}
           onChange={(e) => setDraft(e.target.value)}
           disabled={!settings.isSuccess}

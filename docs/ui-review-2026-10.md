@@ -1,5 +1,9 @@
 # UI/UX Review (October 2026)
 
+> **Note:** The Windows desktop app was removed after this document was written. Toodo now
+> has one client, the web app (PWA) served by `toodo-server`; see [server.md](server.md).
+> This record is kept as it was.
+
 A review of the Toodo frontend as of `dev` at 0.5.1 (`11c7d9b`), on 2026-10-16. It
 records what the review found and what to fix. It is a snapshot: check a finding against
 the current code before acting on it.

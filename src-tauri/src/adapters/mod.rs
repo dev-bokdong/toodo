@@ -5,9 +5,6 @@ pub mod git;
 pub mod github;
 pub mod herdr;
 pub mod herdr_events;
-#[cfg(feature = "server")]
 pub mod herdr_panes;
 pub mod ssh;
 pub mod ssh_tunnel;
-#[cfg(windows)]
-pub mod windows_process;

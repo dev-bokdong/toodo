@@ -25,7 +25,7 @@ describe("invoke", () => {
     expect(new Headers(init.headers).get("Authorization")).toBe("Bearer secret");
   });
 
-  it("rejects with the command error object, as Tauri does", async () => {
+  it("rejects with the command error object", async () => {
     vi.stubGlobal("fetch", reply(409, '{"kind":"rejected","message":"cycle"}'));
 
     await expect(invoke("add_dependency")).rejects.toEqual({ kind: "rejected", message: "cycle" });

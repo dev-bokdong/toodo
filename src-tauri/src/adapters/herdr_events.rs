@@ -113,37 +113,19 @@ pub struct LocalSocket {
 }
 
 impl LocalSocket {
-    /// On Windows, herdr serves the socket path as the named pipe
-    /// `\\.\pipe\<socket path>`; elsewhere the path is a Unix domain socket.
+    /// The socket path is a Unix domain socket.
     pub fn new(socket_path: &str) -> Self {
-        let endpoint = if cfg!(windows) && !socket_path.starts_with(PIPE_PREFIX) {
-            format!("{PIPE_PREFIX}{socket_path}")
-        } else {
-            socket_path.to_owned()
-        };
-        Self { endpoint }
+        Self {
+            endpoint: socket_path.to_owned(),
+        }
     }
 }
 
-const PIPE_PREFIX: &str = r"\\.\pipe\";
-
 impl Connector for LocalSocket {
-    #[cfg(unix)]
     fn connect(&self) -> io::Result<Box<dyn Connection>> {
         Ok(Box::new(std::os::unix::net::UnixStream::connect(
             &self.endpoint,
         )?))
-    }
-
-    #[cfg(windows)]
-    fn connect(&self) -> io::Result<Box<dyn Connection>> {
-        // A named pipe client is a file opened for reading and writing.
-        Ok(Box::new(
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&self.endpoint)?,
-        ))
     }
 }
 
@@ -168,12 +150,10 @@ impl SshSocket {
 
     /// Like [`SshSocket::new`], for many short connections (herdr answers one request per
     /// connection): they share one SSH connection, which OpenSSH keeps for a minute after
-    /// the last, so only the first pays for the handshake. OpenSSH on Windows cannot
-    /// share connections.
-    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    /// the last, so only the first pays for the handshake.
     pub fn multiplexed(host: MachineLabel, socket_path: String) -> Self {
         Self {
-            multiplexed: !cfg!(windows),
+            multiplexed: true,
             ..Self::new(host, socket_path)
         }
     }
@@ -204,12 +184,6 @@ impl Connector for SshSocket {
     fn connect(&self) -> io::Result<Box<dyn Connection>> {
         let mut command = Command::new("ssh");
         command.args(self.args());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
         Ok(Box::new(ChildConnection::spawn(command)?))
     }
 }
@@ -674,16 +648,9 @@ mod tests {
 
     #[test]
     fn unix_sockets_are_used_as_is() {
-        if cfg!(windows) {
-            assert_eq!(
-                LocalSocket::new(r"C:\Users\u\.config\herdr\herdr.sock").endpoint,
-                r"\\.\pipe\C:\Users\u\.config\herdr\herdr.sock"
-            );
-        } else {
-            assert_eq!(
-                LocalSocket::new("/home/u/.config/herdr/herdr.sock").endpoint,
-                "/home/u/.config/herdr/herdr.sock"
-            );
-        }
+        assert_eq!(
+            LocalSocket::new("/home/u/.config/herdr/herdr.sock").endpoint,
+            "/home/u/.config/herdr/herdr.sock"
+        );
     }
 }

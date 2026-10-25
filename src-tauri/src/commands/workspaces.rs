@@ -13,14 +13,12 @@ use crate::domain::model;
 use crate::domain::status::TaskStatus;
 use crate::storage::{self, StorageError};
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_workspaces(storage: State<'_, StorageState>) -> CommandResult<Vec<Workspace>> {
     Ok(types::map_all(&lock(&storage).list_workspaces()?))
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn get_workspace(
     storage: State<'_, StorageState>,
     id: WorkspaceId,
@@ -34,8 +32,7 @@ pub fn get_workspace(
 /// Clones the repository or checks the existing one, opens it as a herdr workspace, then
 /// saves the workspace. Git and herdr run on a blocking thread because a clone can take
 /// minutes.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub async fn create_workspace(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -160,8 +157,7 @@ fn prepare_workspace(
 }
 
 /// Saves the name, location, and default base branch of an existing workspace.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn update_workspace(
     storage: State<'_, StorageState>,
     workspace: Workspace,
@@ -174,8 +170,7 @@ pub fn update_workspace(
 /// Branches of the workspace repository to pick a base branch from: local and `origin`
 /// branches after fetching `origin`. Git may run over `ssh`, so this runs off the main
 /// thread.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_workspace_branches(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -191,8 +186,7 @@ pub fn list_workspace_branches(
 
 /// Creates branch `name` from the existing branch `from` in the workspace repository,
 /// pushes it to `origin`, and makes it the default base branch of the workspace.
-#[cfg_attr(feature = "desktop", tauri::command(async))]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn create_workspace_base_branch(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
@@ -255,14 +249,12 @@ fn create_base_branch(
 }
 
 /// Deletes a workspace together with its tasks, dependencies, and commit records.
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn delete_workspace(storage: State<'_, StorageState>, id: WorkspaceId) -> CommandResult<()> {
     Ok(lock(&storage).delete_workspace(id.into())?)
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn get_machine_settings(
     storage: State<'_, StorageState>,
     machine: types::Machine,
@@ -279,8 +271,7 @@ pub(crate) fn machine_settings(
     Ok((&storage.get_machine_settings(&machine)?).into())
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn save_machine_settings(
     storage: State<'_, StorageState>,
     settings: MachineSettings,

@@ -85,7 +85,7 @@ function boundTo(subscription: PushSubscription, key: Uint8Array): boolean {
   );
 }
 
-/** The service worker, which the built app installs; `npm run dev:web` has none. */
+/** The service worker, which the built app installs; `npm run dev` has none. */
 function registration(): Promise<ServiceWorkerRegistration | undefined> {
   return navigator.serviceWorker.getRegistration();
 }

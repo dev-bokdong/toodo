@@ -7,11 +7,9 @@ import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { UpdateCheck } from "@/components/update-banner";
 import { commands } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
-import { builtForWeb, checksForUpdates, runsOnServer } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 
 export type SettingsSection = "general" | "agents" | "devices" | "notifications" | "backups";
@@ -23,22 +21,15 @@ type Section = {
   status?: ReactNode;
 };
 
-const serverSections: Section[] = [
-  { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
-  // Web Push needs the service worker of the web build.
-  ...(builtForWeb
-    ? [{ id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> } as const]
-    : []),
-];
-
 const sections: Section[] = [
   { id: "general", label: "General", icon: <SlidersHorizontal /> },
   { id: "agents", label: "Agent access", icon: <Bot />, status: <AgentAccessStatus /> },
-  ...(runsOnServer ? serverSections : []),
+  { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
+  { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
   { id: "backups", label: "Backups", icon: <DatabaseBackup /> },
 ];
 
-function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: () => void }) {
+function GeneralSettings() {
   const appInfo = useQuery({ queryKey: ["app-info"], queryFn: () => commands.appInfo() });
   return (
     <section aria-label="General" className="flex flex-col gap-5 text-sm">
@@ -51,7 +42,6 @@ function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: (
         <span className="ml-auto text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </span>
-        {checksForUpdates && <UpdateCheck onRequested={onUpdateCheckRequested} />}
       </div>
     </section>
   );
@@ -240,7 +230,7 @@ export function SettingsDialog({
                 hidden={item.id !== shown}
               >
                 {item.id === "general" ? (
-                  <GeneralSettings onUpdateCheckRequested={() => onShow("general")} />
+                  <GeneralSettings />
                 ) : item.id === "agents" ? (
                   <AgentAccessPanel />
                 ) : item.id === "devices" ? (

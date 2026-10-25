@@ -43,8 +43,6 @@ use crate::commands::types::Task;
 use crate::commands::{CommandResult, StorageState, lock};
 use crate::domain::model;
 
-pub const PORT: u16 = 47615;
-
 pub(crate) const TOKEN_FILE: &str = "mcp-token";
 
 const SKILL: &str = include_str!("toodo-skill.md");
@@ -190,45 +188,6 @@ pub struct ServerStatus {
 /// The URL agents on this machine reach the server at when it listens on `port`.
 pub fn url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/mcp")
-}
-
-/// Prepares the server on its fixed loopback port: the access token and the listener to
-/// serve [`router`] on. Failures, e.g. the port being taken, are reported in the status
-/// rather than stopping the app.
-#[cfg(feature = "desktop")]
-pub fn open(data_dir: &Path) -> (ServerStatus, Option<(TcpListener, String)>) {
-    let url = url(PORT);
-    let token = match load_token(&data_dir.join(TOKEN_FILE)) {
-        Ok(token) => token,
-        Err(error) => {
-            let status = ServerStatus {
-                url,
-                token: None,
-                error: Some(format!(
-                    "could not read or create the access token: {error}"
-                )),
-            };
-            return (status, None);
-        }
-    };
-    match bind(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, PORT))) {
-        Ok(listener) => {
-            let status = ServerStatus {
-                url,
-                token: Some(token.clone()),
-                error: None,
-            };
-            (status, Some((listener, token)))
-        }
-        Err(error) => {
-            let status = ServerStatus {
-                url,
-                token: Some(token),
-                error: Some(format!("could not listen on port {PORT}: {error}")),
-            };
-            (status, None)
-        }
-    }
 }
 
 pub(crate) fn bind(address: SocketAddr) -> io::Result<TcpListener> {
@@ -954,23 +913,14 @@ mod tests {
         serde_json::to_value(result).unwrap()
     }
 
-    /// The local path for POSIX `posix` in this build: itself on the server, the same path
-    /// on drive C: in the desktop app.
+    /// The local path for POSIX `posix`: local paths are the server's own.
     fn host(posix: &str) -> String {
-        if cfg!(feature = "server") {
-            posix.to_owned()
-        } else {
-            format!("C:{}", posix.replace('/', "\\"))
-        }
+        posix.to_owned()
     }
 
-    /// What `git rev-parse --show-toplevel` prints for `posix` in this build.
+    /// What `git rev-parse --show-toplevel` prints for `posix`.
     fn toplevel(posix: &str) -> Result<String, crate::adapters::git::GitError> {
-        Ok(if cfg!(feature = "server") {
-            format!("{posix}\n")
-        } else {
-            format!("C:{posix}\n")
-        })
+        Ok(format!("{posix}\n"))
     }
 
     /// `herdr workspace list` without the repository, then `herdr workspace create`.

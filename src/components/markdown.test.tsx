@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import Markdown from "./markdown";
 
 const openUrl = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl }));
+vi.mock("@/web/opener", () => ({ openUrl }));
 
 describe("Markdown", () => {
   beforeEach(() => openUrl.mockClear());

@@ -29,8 +29,8 @@ env:
 jobs:
   rust:
     name: Rust
-    # Toodo targets Windows, so the backend (including its cfg(windows) code) is checked there.
-    runs-on: windows-latest
+    # toodo-server runs on Linux, so it is checked there.
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: src-tauri
@@ -52,34 +52,9 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       # Every test lives in the library, so build only its test binary: this skips linking
-      # the app binary, its empty test binary, and the staticlib/cdylib, plus the doc-test pass.
+      # the server binary and its empty test binary, plus the doc-test pass.
       - name: Test
         run: cargo test --lib
 
       - name: Check that the TypeScript bindings are up to date
         run: git diff --exit-code -- ../src/lib/bindings.ts
-
-  server:
-    name: Server (Linux)
-    # toodo-server runs on Linux, so its build (the server feature, without Tauri) is
-    # checked there.
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: src-tauri
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Clippy
-        run: cargo clippy --no-default-features --features server --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test --lib --no-default-features --features server

@@ -9,11 +9,9 @@ import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
-import { UpdateBanner } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
-import { builtForWeb, checksForUpdates, runsOnServer } from "@/lib/platform";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
@@ -86,7 +84,7 @@ export default function App() {
     openPage(null);
     setShownTask({ id });
   };
-  // A clicked notification of the web build opens its task.
+  // A clicked notification opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
   const onPage = reviewing || sharedMemory;
   const showingAll = selectedId === "all" && !onPage;
@@ -201,7 +199,7 @@ export default function App() {
           <span className="font-semibold tracking-tight">Toodo</span>
         </header>
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
-          {builtForWeb ? <InstallBanner /> : checksForUpdates && <UpdateBanner />}
+          <InstallBanner />
           <HerdrBanner />
           {reviewing ? (
             <Review onShowTask={showTask} />
@@ -260,7 +258,7 @@ export default function App() {
               <EmptyState
                 icon={<FolderPlus />}
                 title="Create a workspace to start planning tasks."
-                hint={`Clone a repository, open one already cloned, or make a folder a new repository, on ${runsOnServer ? "the server" : "this computer"} or a saved herdr machine.`}
+                hint={`Clone a repository, open one already cloned, or make a folder a new repository, on the server or a saved herdr machine.`}
               />
             )
           )}

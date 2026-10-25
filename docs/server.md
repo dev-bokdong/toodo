@@ -1,43 +1,33 @@
 # Linux Server
 
-`toodo-server` runs Toodo's core headless on a Linux machine without a desktop, next to the
-herdr server there, for one user. It is the same Rust core as the desktop app, built with
-the `server` feature instead of the Tauri shell, and is used locally on that machine:
+`toodo-server` is Toodo: it runs headless on a Linux machine next to the herdr server
+there, for one user, and is used from a browser. It serves:
 
+- the commands of the app as an HTTP API with a server-sent event stream (see [API](#api)),
+- the frontend, an installable web app (PWA) that uses them (see [Web App](#web-app)),
 - the MCP server for coding agents on the machine (`http://127.0.0.1:47616/mcp`),
-- the background work of the desktop app: herdr event subscriptions, pull request checks,
-  automatic backups, and MCP reverse tunnels to SSH machines,
-- SQLite storage in the server's data directory.
+- the background work: herdr event subscriptions, pull request checks, automatic backups,
+  and MCP reverse tunnels to SSH machines,
 
-It also serves the commands of the desktop app as an HTTP API with a server-sent event
-stream (see [API](#api)), and the web build of the frontend, an installable web app (PWA)
-that uses them from a browser (see [Web App](#web-app)).
+and keeps its data in SQLite in the server's data directory. Everything is served on one
+port, `127.0.0.1:47616` by default.
 
-Everything is served on one port, `127.0.0.1:47616` by default. The default is not the
-desktop app's MCP port, 47615, on purpose: the desktop app keeps
-`ssh -R 127.0.0.1:47615:127.0.0.1:47615` open to every SSH machine with a workspace, and the
-server forwards its own port to its SSH machines the same way. If the server's machine is
-also an SSH machine of the desktop app, or both reach the same SSH machine, the two would
-fight over the same port: the loser either fails to listen or keeps retrying its tunnel,
-and agents would get whichever token won. Keep `TOODO_LISTEN` off 47615 for that reason.
+Data of the Windows desktop app that earlier releases shipped can be moved into a server
+with `toodo-server import`; see [migrate-desktop-data.md](migrate-desktop-data.md).
 
 ## Machines and Paths
 
 The "Local" machine is the server: local workspaces and the local worktree root use POSIX
-paths on it, and the local herdr is the herdr server running there. Workspaces on saved
-herdr SSH machines work as in the desktop app. `herdr machine add <host>` asks questions in
-a terminal, so run it on the server yourself.
-
-The server is not a backend for the desktop app: each keeps its own database.
+paths on it, and the local herdr is the herdr server running there. Workspaces can also
+live on saved herdr SSH machines. `herdr machine add <host>` asks questions in a terminal,
+so run it on the server yourself.
 
 ## Versions and Releases
 
-`toodo-server` and the Windows app share one version and one release: every GitHub
-release `vX.Y.Z` carries the Windows installers and
+Every GitHub release `vX.Y.Z` carries
 `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` (the `toodo-server` binary for x86_64 Linux and,
 under `web/`, the web app) with its `.sha256`, built from the same commit. `toodo-server --version` prints the
-version, so an installed server compares directly with a release and with the Windows
-app's version, and the commit it was built from (`toodo-server 0.12.0 (commit
+version, so an installed server compares directly with a release, and the commit it was built from (`toodo-server 0.12.0 (commit
 1c78b7a1a2b3)`), so a build of a later commit is told apart from the release it reports.
 The server prints the same line when it starts. See "Releases and Updates" in the README for how a release is made.
 
@@ -59,10 +49,8 @@ systemd user service `toodo-server.service` (see [systemd](#systemd)), restarts 
 checks that it answers (`/api` without a token is `401`, `/` is the web app). It prints
 where the tokens are, never the tokens.
 
-- `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version, for example
-  the Windows app's.
-- `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`; 47615 is
-  refused, see above).
+- `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version.
+- `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`).
 - `--no-service`: install only; leave the service alone.
 
 To update, run it again with the same options; the database and tokens in the data
@@ -93,11 +81,11 @@ To build by hand instead, on the server (Rust installed):
 
 ```sh
 cd src-tauri
-cargo build --release --no-default-features --features server --bin toodo-server
+cargo build --release --bin toodo-server
 ```
 
 The binary is `src-tauri/target/release/toodo-server`. It needs `git`, `ssh`, `gh`, and
-`herdr` on `PATH` at runtime, like the desktop app.
+`herdr` on `PATH` at runtime.
 
 ## Run
 
@@ -107,7 +95,7 @@ toodo-server
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on; avoid port 47615 (see above) |
+| `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on |
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
@@ -123,6 +111,26 @@ The data directory is created readable by its owner only (`0700`) and the token 
 `0600`; the server tightens an existing directory and token files on start. To replace a
 token, delete its file and restart the server. Replacing `web-token` does not sign out
 registered devices; revoke them one by one.
+
+### Import
+
+```sh
+toodo-server import FILE
+```
+
+adds the data of another Toodo database, such as a Windows desktop app's (see
+[migrate-desktop-data.md](migrate-desktop-data.md)), to the data in `TOODO_DATA_DIR`, then
+exits. It imports workspaces, tasks (with dependencies, status history, commit records,
+notes, related links, criteria, and pull request snapshots), and project memory, in one
+transaction, after writing a pre-restore backup into `<data>/backups/`. Devices, push
+subscriptions, chat messages, and machine settings (worktree roots) are not imported, and
+tasks lose their herdr workspace link. The file is checked and migrated to the latest
+schema in memory first; a newer schema than the server's is refused, and the file itself
+is never modified.
+
+Imported IDs go after every ID the server has used: task #N becomes #(N + offset), and the
+command prints the offset. Into an empty server, tasks keep their numbers. Stop the
+service first (`systemctl --user stop toodo-server`) and start it again afterwards.
 
 ### Devices
 
@@ -252,7 +260,7 @@ the `Wants=` is ignored. To set the service up by hand, run
 
 The web build of the frontend uses the server from a browser. A release install serves it
 (`scripts/install-server.sh --release ...`); from a checkout, use `--with-web`, or
-`npm ci && npm run build:web` into `dist-web/` with `TOODO_WEB_DIR` pointing at it. The
+`npm ci && npm run build` into `dist-web/` with `TOODO_WEB_DIR` pointing at it. The
 browser asks for `web-token` and a device name once, registers itself as a device, and
 keeps its device token in local storage.
 
@@ -378,20 +386,20 @@ Things to know:
 
 ## Development
 
-`npm run dev:web` starts the Vite dev server with the web build's modules and forwards
-`/api` and `/mcp` to a running `toodo-server` (`TOODO_SERVER`, default
+`npm run dev` starts the Vite dev server and forwards `/api` (WebSocket upgrades too) and
+`/mcp` to a running `toodo-server` (`TOODO_SERVER`, default
 `http://127.0.0.1:47616`).
 
 ## API
 
-- `POST /api/rpc/<command>`: runs a command by its Tauri name (e.g. `list_tasks`) with
+- `POST /api/rpc/<command>`: runs a command by its name in `src/lib/bindings.ts` (e.g. `list_tasks`) with
   its arguments as a JSON object with camelCase keys. A result is `200` with the JSON
   result; a command error is `{ "kind", "message" }` with `422` (invalidInput), `404`
   (notFound), `409` (rejected), `502` (external), or `500` (internal). An unknown command
   is `404` and malformed arguments `400`, both with a text body.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
-  desktop app's events.
+  events in `src/lib/bindings.ts`.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
@@ -413,22 +421,19 @@ Things to know:
   outside that workspace is `404`. The ticket opens one stream within 30 seconds.
 - `GET /api/panes/stream?ticket=<ticket>`: the WebSocket of the pane view, authorized by
   the ticket instead of the token; `401` for an unknown, used, or expired ticket and `403`
-  for an `Origin` other than the server's own or the desktop app's. The server sends
+  for an `Origin` other than the server's own. The server sends
   `{ "type": "frame", "seq", "cols", "rows", "ansi" }` whenever the pane's screen
   changes, and `{ "type": "closed", "reason" }` before it closes. The view is read-only
   until the client sends `{ "type": "control", "on": true }` (answered with the same);
   then `{ "type": "text", "text" }` and `{ "type": "keys", "keys": [...] }` reach the
   pane. Messages are at most 64 KB. The server logs one line per control session.
 
-Commands that read or write a path on the desktop app's own machine are not served:
-`save_report` (the web app downloads reports instead), `export_database`, and
-`restore_database` (replaced by the endpoints above and the `restore_backup { name }`
-command). `list_directories { machine, path }` lists directories on the server for
-`{ "kind": "local" }` and on an SSH machine for `{ "kind": "ssh", "label": ... }`;
-`add_herdr_machine` is refused, since `herdr machine add` asks questions in a terminal.
+`list_directories { machine, path }` lists directories on the server for
+`{ "kind": "local" }` and on an SSH machine for `{ "kind": "ssh", "label": ... }`. Reports
+are downloaded in the browser, and backups go over the endpoints above and the
+`restore_backup { name }` command.
 
 All of them except the pane stream require `Authorization: Bearer <token>` with the shared web
-token or the token of a device that is not revoked; `/mcp` requires the MCP token. The web
-build swaps the Tauri modules for `src/web/`, so the generated bindings in
-`src/lib/bindings.ts` serve both apps; a test checks that the server routes every command
-they invoke.
+token or the token of a device that is not revoked; `/mcp` requires the MCP token. The
+generated bindings in `src/lib/bindings.ts` call the API through `src/web/core.ts` and
+`src/web/event.ts`; a test checks that the server routes every command they invoke.

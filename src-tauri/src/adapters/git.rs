@@ -41,21 +41,6 @@ impl std::error::Error for GitError {}
 /// Runs an invocation and returns its standard output.
 pub trait Runner: Send + Sync {
     fn run(&self, invocation: &Invocation) -> Result<String, GitError>;
-
-    /// Runs an invocation in a terminal window the user can see and answer, and waits for
-    /// it to exit. Every argument must be a [plain word](is_plain_word). Only the desktop
-    /// app has a user at a terminal to run it for.
-    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-    fn run_in_terminal(&self, invocation: &Invocation) -> Result<(), GitError>;
-}
-
-/// Whether `word` means the same to `cmd.exe` and every shell without quoting.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-pub fn is_plain_word(word: &str) -> bool {
-    !word.is_empty()
-        && word.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@' | ':' | '/' | '=')
-        })
 }
 
 pub struct ProcessRunner;
@@ -68,12 +53,6 @@ impl Runner for ProcessRunner {
             // Fail instead of waiting for input on a terminal the user cannot see.
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
         let output = command.output().map_err(|error| GitError::Spawn {
             program: invocation.program.to_owned(),
             message: error.to_string(),
@@ -85,47 +64,6 @@ impl Runner for ProcessRunner {
             });
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
-    fn run_in_terminal(&self, invocation: &Invocation) -> Result<(), GitError> {
-        let spawn_error = |message: String| GitError::Spawn {
-            program: invocation.program.to_owned(),
-            message,
-        };
-        if let Some(arg) = invocation.args.iter().find(|arg| !is_plain_word(arg)) {
-            return Err(spawn_error(format!(
-                "argument {arg:?} cannot be passed to a terminal"
-            )));
-        }
-        // A new console window; on failure it waits for a key so the user can read the
-        // error before it closes.
-        #[cfg(windows)]
-        let mut command = {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-            let mut command = Command::new("cmd.exe");
-            command
-                .raw_arg(format!("/c {} || (pause & exit 1)", describe(invocation)))
-                .creation_flags(CREATE_NEW_CONSOLE);
-            command
-        };
-        // Elsewhere the app's own terminal, which is only used during development.
-        #[cfg(not(windows))]
-        let mut command = {
-            let mut command = Command::new(invocation.program);
-            command.args(&invocation.args);
-            command
-        };
-        let status = command
-            .status()
-            .map_err(|error| spawn_error(error.to_string()))?;
-        if !status.success() {
-            return Err(GitError::Failed {
-                command: describe(invocation),
-                stderr: format!("exited with {status}"),
-            });
-        }
-        Ok(())
     }
 }
 
@@ -716,7 +654,6 @@ impl Git {
     /// Fetches `url` with `curl` on this machine, following redirects; fails unless the
     /// final response has a 2xx or 3xx status.
     pub fn fetch_url(&self, url: &str) -> Result<(), GitError> {
-        let discard = if cfg!(windows) { "NUL" } else { "/dev/null" };
         self.runner.run(&Invocation {
             program: "curl",
             args: [
@@ -727,7 +664,7 @@ impl Git {
                 "--max-time",
                 "30",
                 "--output",
-                discard,
+                "/dev/null",
                 url,
             ]
             .map(str::to_owned)
@@ -899,11 +836,6 @@ pub mod fake {
                 .unwrap()
                 .pop_front()
                 .expect("unexpected git invocation")
-        }
-
-        /// Takes the next scripted result like [`Runner::run`] and drops its output.
-        fn run_in_terminal(&self, invocation: &Invocation) -> Result<(), GitError> {
-            self.run(invocation).map(drop)
         }
     }
 

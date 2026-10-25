@@ -1,4 +1,4 @@
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { isPermissionGranted, requestPermission, sendNotification } from "@/web/notification";
 import type { Task, TaskAgentStatus, TaskPullRequestStatus, TaskStatus } from "@/lib/bindings";
 
 export type AgentAlert = { title: string; body: string };
@@ -104,7 +104,7 @@ export function pullRequestAlerts(
   });
 }
 
-/** Shows the alerts as desktop notifications, asking for permission if needed. */
+/** Shows the alerts as browser notifications, asking for permission if needed. */
 export async function notify(alerts: readonly AgentAlert[]): Promise<void> {
   if (alerts.length === 0) {
     return;

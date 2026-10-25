@@ -4,8 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notification";
+import { isPermissionGranted, sendNotification } from "@/web/notification";
 import {
   commands,
   events,
@@ -18,10 +17,7 @@ import {
   type Workspace,
 } from "@/lib/bindings";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
-vi.mock("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
-vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
-vi.mock("@tauri-apps/plugin-notification", () => ({
+vi.mock("@/web/notification", () => ({
   isPermissionGranted: vi.fn(),
   requestPermission: vi.fn(),
   sendNotification: vi.fn(),
@@ -65,7 +61,6 @@ vi.mock("@/lib/bindings", () => ({
     linkIssue: vi.fn(),
     createIssue: vi.fn(),
     listHerdrMachines: vi.fn(),
-    addHerdrMachine: vi.fn(),
     listSshHosts: vi.fn(),
     addSshHost: vi.fn(),
     listDirectories: vi.fn(),
@@ -76,11 +71,8 @@ vi.mock("@/lib/bindings", () => ({
     listMcpTunnels: vi.fn(),
     getBackupSettings: vi.fn(),
     saveBackupSettings: vi.fn(),
-    exportDatabase: vi.fn(),
-    restoreDatabase: vi.fn(),
     restoreBackup: vi.fn(),
     reviewPeriod: vi.fn(),
-    saveReport: vi.fn(),
     listMemory: vi.fn(),
     addMemory: vi.fn(),
     updateMemory: vi.fn(),
@@ -92,14 +84,11 @@ vi.mock("@/lib/bindings", () => ({
     memoryChanged: { listen: vi.fn() },
     agentStatusesChanged: { listen: vi.fn() },
     pullRequestStatusesChanged: { listen: vi.fn() },
-    updateCheckRequested: { listen: vi.fn() },
   },
 }));
 
 const mocked = vi.mocked(commands);
 const mockedEvents = vi.mocked(events, { deep: true });
-const mockedOpenDialog = vi.mocked(openDialog);
-const mockedSaveDialog = vi.mocked(saveDialog);
 const weekPeriod = (day: string) => periodBounds(weekStarting(day));
 
 const toodo: Workspace = {
@@ -231,6 +220,13 @@ describe("App", () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.resetAllMocks();
+    // jsdom has no matchMedia; the install banner asks whether the app runs installed.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
     mocked.appInfo.mockResolvedValue({ name: "toodo", version: "1.2.3" });
     mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: true, version: "0.9.3" } });
     mocked.getMachineSettings.mockImplementation(async (machine) => ({
@@ -256,7 +252,6 @@ describe("App", () => {
     mockedEvents.memoryChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.pullRequestStatusesChanged.listen.mockResolvedValue(() => {});
-    mockedEvents.updateCheckRequested.listen.mockResolvedValue(() => {});
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -434,7 +429,7 @@ describe("App", () => {
     expect(screen.queryByRole("form", { name: "New task" })).not.toBeInTheDocument();
   });
 
-  it("reviews the chosen period across workspaces, copies it as Markdown, and saves it as CSV", async () => {
+  it("reviews the chosen period across workspaces, copies it as Markdown, and downloads it as CSV", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 9, 14, 10));
     const at = new Date(2026, 9, 13, 15).getTime() / 1000;
@@ -443,8 +438,13 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     const year = periodBounds(periodContaining("year", "2026-10-12"));
-    mocked.saveReport.mockResolvedValue({ status: "ok", data: null });
-    mockedSaveDialog.mockResolvedValue("C:\\reports\\review.csv");
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:review");
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
+    const downloads: string[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push(this.download);
+    });
     mocked.reviewPeriod.mockImplementation(async (start) => ({
       status: "ok",
       data:
@@ -513,12 +513,10 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Save as CSV" }));
-    expect(await screen.findByText("Saved to C:\\reports\\review.csv")).toBeInTheDocument();
-    expect(mockedSaveDialog).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "toodo-review-2026.csv" }));
-    expect(mocked.saveReport).toHaveBeenCalledWith(
-      "C:\\reports\\review.csv",
-      expect.stringContaining(",toodo,feat,Add storage,Completed,"),
-    );
+    expect(await screen.findByText("Downloaded toodo-review-2026.csv")).toBeInTheDocument();
+    expect(downloads).toEqual(["toodo-review-2026.csv"]);
+    expect(await createObjectURL.mock.calls[0][0].text()).toContain(",toodo,feat,Add storage,Completed,");
+    click.mockRestore();
 
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     expect(await screen.findByRole("heading", { name: "toodo" })).toBeInTheDocument();
@@ -923,52 +921,64 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
   });
 
-  it("opens a local repository picked in the folder dialog", async () => {
+  it("opens a repository browsed on the server", async () => {
+    const opened: Workspace = { ...toodo, location: { kind: "local", path: "/home/me/toodo" } };
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
-    mocked.createWorkspace.mockResolvedValue({ status: "ok", data: toodo });
-    mockedOpenDialog.mockResolvedValue("C:\\dev\\toodo");
+    mocked.createWorkspace.mockResolvedValue({ status: "ok", data: opened });
+    mocked.listDirectories.mockImplementation(async (_machine, path) => ({
+      status: "ok",
+      data:
+        path === "/home/me/toodo"
+          ? { path: "/home/me/toodo", directories: [] }
+          : { path: "/home/me", directories: ["toodo"] },
+    }));
     renderApp();
 
     await screen.findByText("No workspaces yet.");
-    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [opened] });
     fireEvent.click(screen.getByRole("button", { name: "Open on Local" }));
+    await waitFor(() => expect(screen.getByLabelText("Folder")).toHaveValue("/home/me/"));
     fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
-    await waitFor(() => expect(screen.getByLabelText("Folder")).toHaveValue("C:\\dev\\toodo"));
+    const browser = screen.getByRole("group", { name: "Browse folders on the server" });
+    fireEvent.click(await within(browser).findByRole("button", { name: "toodo/" }));
+    await within(browser).findByText("No subfolders");
+    fireEvent.click(within(browser).getByRole("button", { name: "Select folder" }));
+    expect(screen.getByLabelText("Folder")).toHaveValue("/home/me/toodo");
     expect(screen.getByLabelText("Name")).toHaveValue("toodo");
-    expect(mockedOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false }));
+    expect(mocked.listDirectories).toHaveBeenCalledWith({ kind: "local" }, null);
     fireEvent.click(screen.getByRole("button", { name: "Open workspace" }));
 
     expect(await screen.findByRole("heading", { name: "toodo" })).toBeInTheDocument();
     expect(mocked.createWorkspace).toHaveBeenCalledWith({
       name: "toodo",
-      location: { kind: "local", path: "C:\\dev\\toodo" },
+      location: { kind: "local", path: "/home/me/toodo" },
       source: { kind: "open" },
       defaultBaseBranch: null,
     });
   });
 
   it("makes a local folder a new repository", async () => {
-    const notes: Workspace = { ...toodo, id: 3, name: "notes", location: { kind: "local", path: "C:\\dev\\notes" } };
+    const notes: Workspace = { ...toodo, id: 3, name: "notes", location: { kind: "local", path: "/home/me/notes" } };
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: notes });
-    mockedOpenDialog.mockResolvedValue("C:\\dev\\notes");
+    mocked.listDirectories.mockResolvedValue({ status: "ok", data: { path: "/home/me", directories: [] } });
     renderApp();
 
     await screen.findByText("No workspaces yet.");
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [notes] });
     fireEvent.click(screen.getByRole("button", { name: "Init on Local" }));
     const form = screen.getByRole("form", { name: "Init workspace on Local" });
-    fireEvent.click(within(form).getByRole("button", { name: "Browse..." }));
-    await waitFor(() => expect(within(form).getByLabelText("Folder")).toHaveValue("C:\\dev\\notes"));
+    await waitFor(() => expect(within(form).getByLabelText("Folder")).toHaveValue("/home/me/"));
+    fireEvent.change(within(form).getByLabelText("Folder"), { target: { value: "/home/me/notes" } });
     expect(within(form).getByLabelText("Name")).toHaveValue("notes");
     fireEvent.click(within(form).getByRole("button", { name: "Init workspace" }));
 
     expect(await screen.findByRole("heading", { name: "notes" })).toBeInTheDocument();
     expect(mocked.createWorkspace).toHaveBeenCalledWith({
       name: "notes",
-      location: { kind: "local", path: "C:\\dev\\notes" },
+      location: { kind: "local", path: "/home/me/notes" },
       source: { kind: "init" },
       defaultBaseBranch: null,
     });
@@ -1022,50 +1032,6 @@ describe("App", () => {
       source: { kind: "clone", url: "git@github.com:o/herdr.git" },
       defaultBaseBranch: null,
     });
-  });
-
-  it("adds a new SSH host to herdr and lists it as a machine", async () => {
-    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
-    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["gpu"] });
-    mocked.addSshHost.mockResolvedValue({ status: "ok", data: ["gpu", "devbox"] });
-    mocked.addHerdrMachine.mockResolvedValue({ status: "ok", data: [savedMachine("devbox")] });
-    renderApp();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
-    expect(screen.queryByRole("region", { name: "Machine gpu" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "New host" }));
-    fireEvent.change(screen.getByLabelText("Host alias"), { target: { value: "devbox" } });
-    fireEvent.change(screen.getByLabelText("Host name"), { target: { value: "10.0.0.5" } });
-    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "2222" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add host" }));
-
-    await waitFor(() => expect(screen.getByLabelText("SSH host")).toHaveValue("devbox"));
-    expect(screen.queryByLabelText("Host alias")).not.toBeInTheDocument();
-    expect(mocked.addSshHost).toHaveBeenCalledWith({ alias: "devbox", hostName: "10.0.0.5", user: null, port: 2222 });
-    fireEvent.click(screen.getByRole("button", { name: "Add to herdr" }));
-
-    expect(await screen.findByRole("region", { name: "Machine devbox" })).toBeInTheDocument();
-    expect(screen.queryByRole("form", { name: "Add machine" })).not.toBeInTheDocument();
-    expect(mocked.addHerdrMachine).toHaveBeenCalledWith("devbox");
-  });
-
-  it("keeps the add machine form open when herdr saves nothing", async () => {
-    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
-    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["gpu"] });
-    mocked.addHerdrMachine.mockResolvedValue({
-      status: "error",
-      error: { kind: "rejected", message: "herdr saved no machine for SSH host 'gpu'" },
-    });
-    renderApp();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
-    const host = screen.getByLabelText("SSH host");
-    await within(host).findByRole("option", { name: "gpu" });
-    fireEvent.change(host, { target: { value: "gpu" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add to herdr" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("herdr saved no machine for SSH host 'gpu'");
-    expect(screen.getByRole("form", { name: "Add machine" })).toBeInTheDocument();
   });
 
   it("creates a task and reloads the task list", async () => {
@@ -1343,7 +1309,7 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: /^site/ })).toBeInTheDocument();
   });
 
-  it("notifies the desktop once when an agent needs input while the app is in the background", async () => {
+  it("notifies once when an agent needs input while the app is in the background", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
@@ -1509,23 +1475,6 @@ describe("App", () => {
     const panel = await screen.findByRole("region", { name: "Agent access" });
     expect(await within(panel).findByRole("alert")).toHaveTextContent("address in use");
     expect(within(panel).queryByRole("button", { name: "Copy MCP config" })).not.toBeInTheDocument();
-  });
-
-  it("opens the settings on General when the tray menu asks for an update check", async () => {
-    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
-    renderApp();
-    await screen.findByRole("button", { name: /^Settings/ });
-    await waitFor(() => expect(mockedEvents.updateCheckRequested.listen).toHaveBeenCalled());
-    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
-
-    const [[onRequested]] = mockedEvents.updateCheckRequested.listen.mock.calls;
-    act(() => {
-      onRequested({ event: "update-check-requested", id: 1, payload: null });
-    });
-
-    const dialog = screen.getByRole("dialog", { name: "Settings" });
-    expect(within(dialog).getByRole("tab", { name: "General" })).toHaveAttribute("aria-selected", "true");
-    expect(await within(dialog).findByRole("status", { name: "Update check" })).toHaveTextContent("Toodo is up to date");
   });
 
   it("groups the settings in a dialog that Escape and a click beside it close", async () => {

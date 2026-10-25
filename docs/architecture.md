@@ -25,8 +25,8 @@ cloning a repository into a path or by opening a repository already cloned at a 
 | `id` | Stable identifier. |
 | `name` | Display name. |
 | `kind` | `local` or `ssh`. |
-| `path` | Absolute path to the repository root: a Windows path for `local`, a POSIX path for `ssh`. Keep the two as distinct types. |
-| `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh.exe` host. |
+| `path` | Absolute path to the repository root: a POSIX path on the server's machine for `local`, a POSIX path on the SSH machine for `ssh`. Paths stored by older Toodo versions may be Windows paths (see [migrate-desktop-data.md](migrate-desktop-data.md)); they stay as history. |
+| `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh` host. |
 | `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). Detected or entered at registration and editable afterwards from the workspace header, except while a task of the workspace is `in_review` (its open PR targets the current branch). |
 | `agentMerge` | Whether agents merge their own task PR: `never` (default; they stop once the PR is open) or `afterChecks` (they merge it into `defaultBaseBranch` once every check on it passed, never into another branch). Editable from the workspace header; agents read it from the MCP `current_task` tool. Toodo itself never merges. |
 
@@ -38,7 +38,7 @@ saved herdr SSH machine that hosts a workspace.
 | Field | Description |
 | --- | --- |
 | `machine` | `local` or the SSH target of the saved herdr machine. |
-| `worktreeRoot` | Absolute directory under which task worktrees are created on that machine (Windows path for `local`, POSIX path for SSH machines). Required before a task on that machine can be started. |
+| `worktreeRoot` | Absolute directory under which task worktrees are created on that machine (a POSIX path). Required before a task on that machine can be started. |
 
 ### Task Types
 
@@ -319,42 +319,39 @@ generated or guessed by an agent.
   time`, `Late`, `Overdue`, or `Not due yet`), the size and review count of its pull request, and its completion
   note; UTF-8 with a byte
   order mark). The frontend
-  builds the file, since it knows the local time zone, and the `save_report` command
-  writes it to the path picked in the save dialog; it only writes `.md` and `.csv` files.
+  builds the file, since it knows the local time zone, and the browser downloads it.
 
 ## Runtime Context
 
-Toodo is a Tauri 2 Windows desktop app that runs next to an already installed and running
-herdr. herdr owns terminals, agents, worktree checkouts, and SSH machine connections;
-Toodo owns planning, task state, commit records, and pull requests.
-
-The same core also runs headless as `toodo-server` on a Linux machine with herdr, serving
-the commands over HTTP to the web build of the frontend, with the server as the "Local"
-machine; see [server.md](server.md).
+Toodo runs as `toodo-server` on a Linux machine next to an already installed and running
+herdr. The server serves its commands over HTTP to the frontend, an installable web app
+(PWA) used from a browser, and the server's machine is the "Local" machine; see
+[server.md](server.md). herdr owns terminals, agents, worktree checkouts, and SSH machine
+connections; Toodo owns planning, task state, commit records, and pull requests.
 
 ## Components
 
 ```
 +-----------------+      +-------------------+      +------------------+
-| Toodo UI        | ---> | Toodo Core (Rust) | ---> | Storage (SQLite) |
-| React + React   |      | (tasks, DAG rules,|      | (workspaces,     |
-| Flow (WebView2) |      |  lifecycle)       |      |  tasks, commits) |
+| Toodo UI (PWA)  | ---> | Toodo Core (Rust) | ---> | Storage (SQLite) |
+| React + React   | HTTP | (tasks, DAG rules,|      | (workspaces,     |
+| Flow, browser   | SSE  |  lifecycle)       |      |  tasks, commits) |
 +-----------------+      +-------------------+      +------------------+
                                   |
           +-----------------------+------------------------+
           v                       v                        v
 +-------------------+   +-------------------+   +----------------------+
 | Workspace adapter |   | herdr adapter     |   | Git hosting adapter  |
-| (git.exe locally, |   | (CLI commands +   |   | (gh CLI: push and    |
-|  ssh.exe + git    |   |  named-pipe event |   |  open pull requests) |
+| (git locally,     |   | (CLI commands +   |   | (gh CLI: push and    |
+|  ssh + git        |   |  socket event     |   |  open pull requests) |
 |  for remote)      |   |  subscription)    |   |                      |
 +-------------------+   +-------------------+   +----------------------+
 ```
 
 - **Toodo Core**: owns the domain rules: DAG validation, readiness, and the task state
   machine. It has no direct I/O; it calls adapters.
-- **Workspace adapter**: runs `git.exe` for local workspaces and `ssh.exe <machine> git ...`
-  for remote ones. Uses the user's `~/.ssh/config` and Windows ssh-agent, the same
+- **Workspace adapter**: runs `git` for local workspaces and `ssh <machine> git ...`
+  for remote ones. Uses the server user's `~/.ssh/config` and ssh-agent, the same
   configuration herdr uses.
 - **herdr adapter**: wraps herdr, which is a required, preinstalled dependency.
   - Startup health check: `herdr` on `PATH` and `herdr status --json` reports
@@ -363,16 +360,14 @@ machine; see [server.md](server.md).
     `herdr --machine <profile-id> ...`. `--machine` accepts only a saved profile ID or
     label, so the profile is looked up in `herdr machine list --json` by its SSH target
     on every call, preferring an enabled profile on the `default` session.
-  - The sidebar lists Local and the machines of `herdr machine list --json`. Adding a
-    machine runs `herdr machine add <host>` in a new console window and waits for it to
-    close; herdr asks there before installing or replacing the remote herdr. Toodo never
-    installs herdr itself.
+  - The sidebar lists Local and the machines of `herdr machine list --json`. Machines are
+    added with `herdr machine add <host>` in a terminal on the server, since herdr asks
+    questions there. Toodo never installs herdr itself.
   - Failures exit non-zero and print `{"error": {"code", "message"}}` on stderr.
-  - Commands use the herdr CLI (recommended by herdr for portable Windows behavior).
+  - Commands use the herdr CLI.
   - Events use the socket API (`src-tauri/src/adapters/herdr_events.rs`,
     `src-tauri/src/commands/events.rs`): newline-delimited JSON over the server socket
-    that `herdr status --json` reports as `server.socket`. On Windows herdr serves it as
-    the named pipe `\\.\pipe\<socket path>`; elsewhere it is a Unix domain socket.
+    that `herdr status --json` reports as `server.socket`, a Unix domain socket.
     - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -W
       <socket path> -- <host>`, which forwards ssh's standard input and output to the
       remote socket. The socket path comes from running the remote herdr over SSH
@@ -395,8 +390,7 @@ machine; see [server.md](server.md).
     - herdr IDs are scoped to one server, so a thread only touches the tasks of its own
       machine. `worktree.removed` forgets the worktree and herdr workspace of the task
       bound to that herdr workspace; `worktree.created`/`worktree.opened` stores the new
-      herdr workspace of the task with that worktree path (compared case-insensitively
-      for Windows paths). The frontend gets a
+      herdr workspace of the task with that worktree path. The frontend gets a
       `TasksChanged` event and refetches the workspace's tasks.
     - Agent status is read again with `herdr [--machine <id>] pane list` on every pane
       or agent event
@@ -419,16 +413,16 @@ machine; see [server.md](server.md).
   names the repository with `--repo <host>/<owner>/<name>`, derived from the `origin`
   remote URL, so it needs no local checkout. The task branch is pushed by the workspace
   adapter, on the machine that holds the worktree.
-- **MCP server** (`src-tauri/src/mcp/`): lets coding agents plan in Toodo while the app
+- **MCP server** (`src-tauri/src/mcp/`): lets coding agents plan in Toodo while the server
   runs, so an agent can split its work into follow-up tasks and connect them, and start
   and finish other tasks without the user clicking through the app.
-  - Served by the app itself (rmcp, Streamable HTTP, stateless JSON responses) on
-    `http://127.0.0.1:47615/mcp`, loopback only. Embedding it shares the database lock
-    with the Tauri commands and emits `TasksChanged`, so the UI refreshes like after any
+  - Served by `toodo-server` itself (rmcp, Streamable HTTP, stateless JSON responses) on
+    `/mcp` of its port (`http://127.0.0.1:47616/mcp` by default), loopback only. Embedding
+    it shares the database lock with the commands and emits `TasksChanged`, so the UI refreshes like after any
     command; a separate process would need its own SQLite locking and change
     notifications.
   - Every request needs `Authorization: Bearer <token>`. The token is 32 random bytes,
-    hex encoded, created once in `mcp-token` in the app data directory. rmcp also
+    hex encoded, created once in `mcp-token` in the server's data directory. rmcp also
     rejects non-loopback `Host` headers against DNS rebinding.
   - Tools: `list_workspaces`, `list_tasks`, `current_task` (the task whose worktree
     contains a given directory), `create_task` (with optional `depends_on`; unknown
@@ -483,31 +477,23 @@ machine; see [server.md](server.md).
     the `toodo` skill tell agents never to start, complete, or conclude the task
     `current_task` finds for them, since its pull request's merge completes it.
   - Deleting tasks is not exposed: it cannot be undone and stays in the app.
-  - If the port is taken, the app runs without the server and Agent access in
-    Settings shows why. That section copies an MCP client config with the URL and
-    token (`mcp_server_info`).
+  - Agent access in Settings copies an MCP client config with the URL and token
+    (`mcp_server_info`).
   - Agents on SSH machines reach the server through reverse tunnels
     (`src-tauri/src/mcp/tunnels.rs`): while the server runs, Toodo keeps one
-    `ssh -v -N -R 127.0.0.1:47615:127.0.0.1:47615 -- <host>` per machine with an SSH
+    `ssh -v -N -R 127.0.0.1:<port>:127.0.0.1:<port> -- <host>` (the server's own port) per machine with an SSH
     workspace (`BatchMode`, `ExitOnForwardFailure`, `ServerAliveInterval=15`,
     `ControlPath=none` so the forward never outlives the process in a shared master
     connection). Agents there use the same URL and token as local ones.
   - A tunnel counts as open once ssh logs `remote forward success`. One that ends,
     e.g. because the remote port is taken by another Toodo, is opened again after
     1 s, doubling up to 30 s; the delay resets once a tunnel opens. Tunnels of
-    machines without workspaces are stopped, and all of them when the app exits. The
+    machines without workspaces are stopped, and all of them when the server exits. The
     Agent access section of Settings lists each machine's tunnel state and last error
     (`list_mcp_tunnels`); its tab and the sidebar's Settings entry count retrying tunnels.
-  - On Windows a child process outlives its parent, so each ssh joins one job object
-    with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` that the app holds until it exits
-    (`src-tauri/src/adapters/windows_process.rs`): the system ends the tunnels however
-    the app ends. Before opening a forward, Toodo also ends leftover `ssh.exe`
-    processes whose command line is exactly that forward to that host and whose
-    parent is gone, another program, or a later process with a reused id
-    (`stale_forwards` in `src-tauri/src/adapters/ssh_tunnel.rs`).
   - The forwarded port listens on the remote loopback only, so other users of that
     machine can reach it; the bearer token keeps them out.
-- **Storage**: SQLite database `toodo.sqlite3` in the app data directory (`%APPDATA%`)
+- **Storage**: SQLite database `toodo.sqlite3` in the server's data directory (`TOODO_DATA_DIR`)
   for workspaces, machine settings, tasks, dependencies, and commit records
   (`src-tauri/src/storage/`).
   - The schema is versioned with `PRAGMA user_version` and migrated forward on startup;
@@ -524,10 +510,10 @@ machine; see [server.md](server.md).
 
 ## Decisions
 
-- Target: Windows desktop app built with Tauri 2.
+- Target: `toodo-server` on Linux, used through the web app (PWA) in a browser.
 - herdr is a prerequisite; Toodo only checks that it is running and never installs it.
 - Backend in Rust (tokio); frontend in React + TypeScript with React Flow for the DAG.
-- External tools are invoked as processes (`herdr`, `git.exe`, `ssh.exe`, `gh`) rather than
+- External tools are invoked as processes (`herdr`, `git`, `ssh`, `gh`) rather than
   reimplemented through libraries.
 - Worktree location is configured per machine (`worktreeRoot`); worktree paths and branch
   names are derived from task type, name, and ID; see
@@ -535,14 +521,12 @@ machine; see [server.md](server.md).
 - herdr CLI output is parsed as JSON. herdr CLI commands print the same
   `{"id": ..., "result": ...}` envelope as the socket API (verified for `workspace list`,
   `worktree list`, and `agent list` on herdr 0.9.3). Any command found not to return JSON
-  is sent over the named pipe instead.
+  is sent over the socket instead.
 - Commits are recorded automatically: when it opens or updates a task's pull request,
   Toodo runs `git log <baseBranch>..<taskBranch>` in the worktree and stores the result. While a task
   is in progress, the user can refresh commit records manually.
 - Storage uses SQLite through `rusqlite` (single-user local app; no async pool needed).
 - Pull requests target GitHub only, through the `gh` CLI.
-- Repositories inside WSL (`\\wsl$\...`) are not supported as local workspaces. Register
-  them as SSH workspaces if needed.
 - Task types are a fixed set (see [Task Types](#task-types)).
 - Toodo is used for year-end performance reporting, so every task status change is
   timestamped and kept as history, and the dependency graph is drawn on a time axis
@@ -555,11 +539,7 @@ Out of the first scope; revisit when needed.
 - User-defined task types.
 - Git hosting providers beyond GitHub (for example GitLab), added as another Git hosting
   adapter.
-- Code signing for the installer; decide before public distribution (unsigned builds
-  trigger SmartScreen warnings).
-- A herdr plugin for in-herdr actions such as "complete task"; herdr plugins are in
-  preview on Windows.
-- Native WSL repository support.
+- A herdr plugin for in-herdr actions such as "complete task".
 - Rotating the MCP access token from the UI.
 - Correcting timeline timestamps by hand, for example to enter work done before the task
   was created in Toodo.

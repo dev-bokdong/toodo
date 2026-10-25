@@ -36,7 +36,6 @@ pub type AgentStatusState = Mutex<HashMap<Machine, Vec<TaskAgentStatus>>>;
 
 /// Tasks of the workspace changed outside a command, e.g. herdr removed a worktree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 #[serde(rename_all = "camelCase")]
 pub struct TasksChanged {
     pub workspace_id: WorkspaceId,
@@ -44,18 +43,15 @@ pub struct TasksChanged {
 
 /// Workspaces were added outside the app's own forms, e.g. by an agent through MCP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 pub struct WorkspacesChanged;
 
 /// Project memory entries changed outside the app's own forms, e.g. by an agent through
 /// MCP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 pub struct MemoryChanged;
 
 /// The agent statuses of tasks changed; carries all of them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 pub struct AgentStatusesChanged {
     pub statuses: Vec<TaskAgentStatus>,
 }
@@ -63,7 +59,6 @@ pub struct AgentStatusesChanged {
 /// The CI or review state of the pull request of an `in_review` task changed; carries
 /// all of them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[cfg_attr(feature = "desktop", derive(tauri_specta::Event))]
 pub struct PullRequestStatusesChanged {
     pub statuses: Vec<TaskPullRequestStatus>,
 }
@@ -78,8 +73,7 @@ pub mod names {
     pub const PULL_REQUEST_STATUSES_CHANGED: &str = "pull-request-statuses-changed";
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn list_agent_statuses(statuses: State<'_, AgentStatusState>) -> Vec<TaskAgentStatus> {
     all_statuses(&lock_statuses(&statuses))
 }

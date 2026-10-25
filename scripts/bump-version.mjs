@@ -30,7 +30,6 @@ function nextVersion(current, request) {
 const files = [
   { path: "package.json", pattern: /("version": ")([^"]+)(")/, count: 1 },
   { path: "package-lock.json", pattern: /("version": ")([^"]+)(")/, count: 2 },
-  { path: "src-tauri/tauri.conf.json", pattern: /("version": ")([^"]+)(")/, count: 1 },
   { path: "src-tauri/Cargo.toml", pattern: /^(version = ")([^"]+)(")/m, count: 1 },
   { path: "src-tauri/Cargo.lock", pattern: /(name = "toodo"\r?\nversion = ")([^"]+)(")/, count: 1 },
 ];
@@ -39,7 +38,7 @@ function main() {
   const request = process.argv[2];
   if (!request || process.argv.length > 3) throw new Error(usage);
 
-  const current = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8")).version;
+  const current = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   // --check replaces each version with itself, so it fails exactly where a bump would.
   const check = request === "--check";
   const next = check ? current : nextVersion(current, request);

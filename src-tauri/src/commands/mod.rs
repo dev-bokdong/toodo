@@ -1,9 +1,9 @@
 //! Commands exposed to the frontend. Arguments and results use the serializable shapes in
 //! [`types`]; failures are reported as a [`CommandError`].
 //!
-//! The desktop app registers them as Tauri commands. The server (`toodo-server`) calls the
-//! same functions for its HTTP API, passing the state they take by reference, see
-//! [`State`].
+//! The server (`toodo-server`) serves them over HTTP (`server/rpc.rs`), passing the state
+//! they take by reference, see [`State`]. Each is annotated with `#[specta::specta]` so
+//! that `bindings.rs` can generate the frontend's typed bindings from its signature.
 
 pub mod backup;
 pub mod completion;
@@ -33,18 +33,17 @@ use crate::domain::naming::NamingError;
 use crate::domain::ssh_config::SshHostError;
 use crate::storage::{Storage, StorageError};
 
-/// State a command takes: Tauri-managed state in the desktop app, a plain reference in the
-/// server, which owns its state itself.
-#[cfg(feature = "desktop")]
-pub use tauri::State;
-
-/// State a command takes: Tauri-managed state in the desktop app, a reference to state the
-/// server owns itself. Like `tauri::State`, it dereferences to the state.
-#[cfg(not(feature = "desktop"))]
+/// State a command takes: a reference to state the server owns. It dereferences to the
+/// state and is left out of the generated bindings.
 #[derive(Debug)]
 pub struct State<'a, T>(pub &'a T);
 
-#[cfg(not(feature = "desktop"))]
+impl<T> specta::function::FunctionArg for State<'_, T> {
+    fn to_datatype(_: &mut specta::Types) -> Option<specta::datatype::DataType> {
+        None
+    }
+}
+
 impl<T> std::ops::Deref for State<'_, T> {
     type Target = T;
 
@@ -53,8 +52,8 @@ impl<T> std::ops::Deref for State<'_, T> {
     }
 }
 
-/// What the background threads use besides what the MCP server does: the state the app
-/// keeps in memory. The desktop app and the server each provide one.
+/// What the background threads use besides what the MCP server does: the state the
+/// server keeps in memory.
 pub trait Runtime: crate::mcp::Backend {
     fn agent_statuses(&self) -> &events::AgentStatusState;
     fn pull_request_statuses(&self) -> &completion::PullRequestStatusState;
@@ -158,7 +157,6 @@ impl From<HerdrError> for CommandError {
             | HerdrError::Failed { .. }
             | HerdrError::MachineNotSaved { .. }
             | HerdrError::MachineDisabled { .. } => CommandErrorKind::External,
-            HerdrError::InvalidHost { .. } => CommandErrorKind::InvalidInput,
             HerdrError::UnexpectedOutput { .. } => CommandErrorKind::Internal,
         };
         Self {
@@ -248,8 +246,7 @@ pub struct AppInfo {
     pub version: String,
 }
 
-#[cfg_attr(feature = "desktop", tauri::command)]
-#[cfg_attr(feature = "desktop", specta::specta)]
+#[specta::specta]
 pub fn app_info() -> AppInfo {
     AppInfo {
         name: env!("CARGO_PKG_NAME").to_owned(),
