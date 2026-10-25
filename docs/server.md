@@ -268,6 +268,11 @@ message it showed in local storage and counts the lead's later replies as unread
 The lead drives tasks through the same MCP tools as other agents, and the server knows
 its calls by the lead token:
 
+- **Skill.** `read_toodo_skill` returns the lead skill (`src-tauri/src/mcp/toodo-lead-skill.md`,
+  named `toodo-lead`) for the lead token and the worker skill (`toodo-skill.md`) for
+  `mcp-token`. The lead skill is the lead's manual for running the work: requests into
+  tasks, links, starting agents, following them up, merge rules, chat reports, and
+  memory. The prompt tells the lead to read it at the start of every session.
 - **Create.** `create_task` takes `depends_on` and `related`, so a plan is wired in one
   call; an unknown task in either rejects the call and creates nothing.
 - **Start.** `start_task` takes `agent_command`, which Toodo runs in the shell pane of
@@ -291,8 +296,8 @@ its calls by the lead token:
   pushing to base branches; agents that implement tasks follow the workspace's agent
   merge policy, which never allows merging past the base branch.
 
-Calls with `mcp-token` behave as before: no notes or chat messages, and no
-confirmations.
+Calls with `mcp-token` behave as before: the worker skill, no notes or chat messages,
+and no confirmations.
 
 ### systemd
 

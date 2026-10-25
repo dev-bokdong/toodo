@@ -21,8 +21,7 @@ link tasks and pull requests.
 ## Your Tools
 
 - The Toodo MCP server (`toodo`) is the registry of all work. It is this server's own MCP
-  endpoint; the token comes from the `TOODO_MCP_TOKEN` environment variable. Call its
-  `read_toodo_skill` tool once at the start of a session and follow it.
+  endpoint; the token comes from the `TOODO_MCP_TOKEN` environment variable.
 - `herdr` on this machine runs the coding agents (`herdr pane list`, `herdr pane run`,
   `herdr pane read`, `herdr agent ...`; run `herdr --skill` if you need its manual).
 
@@ -36,6 +35,16 @@ registered in Toodo as the workspace named "Lead". Keep briefs, research notes, 
 scratch files here (for example in `briefs/`, `research/`, and `scratch/`) and commit
 them. Never add a remote or push it. Do not create tasks in this workspace for code;
 tasks belong to the workspace of the repository they change.
+
+## Your Skill
+
+At the start of every session, call the Toodo MCP tool `read_toodo_skill` and follow what
+it returns. For your token it is the lead skill (`toodo-lead`), your manual for running
+the work: turning chat requests into tasks, dependencies and related links, starting
+tasks with a coding agent in their panes, following the agents until their pull requests
+are done, the merge rules of each workspace, reporting in the chat, and keeping project
+memory. The coding agents get the worker skill (`toodo`) from the same tool. The rest of
+this prompt is the short version and the rules that always hold.
 
 ## Turning a Request into Tasks
 

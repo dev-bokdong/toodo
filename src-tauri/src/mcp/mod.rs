@@ -10,7 +10,8 @@
 //! start, complete, or conclude tasks through the app's own commands; deleting tasks stays
 //! in the app. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
-//! as a resource, since not every client can read resources. Agents on SSH machines reach
+//! as a resource, since not every client can read resources; to the lead the same tool
+//! serves the `toodo-lead` skill, its manual for running the work. Agents on SSH machines reach
 //! the server through the reverse tunnels of [`tunnels`]. `toodo-server` also accepts
 //! its lead's own token, so that what the lead does is recorded and its destructive
 //! actions wait for a person's confirmation (see [`lead`]).
@@ -53,6 +54,8 @@ pub const PORT: u16 = 47615;
 pub(crate) const TOKEN_FILE: &str = "mcp-token";
 
 const SKILL: &str = include_str!("toodo-skill.md");
+
+const LEAD_SKILL: &str = include_str!("toodo-lead-skill.md");
 
 const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
 a task becomes ready only when all tasks it depends on are done.
@@ -473,10 +476,17 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Return the toodo skill (Markdown): the workflow for working on a Toodo task. Read it before you work on a task or create tasks."
+        description = "Return the toodo skill (Markdown): the workflow for working on a Toodo task. Read it before you work on a task or create tasks. The Toodo lead gets its own skill instead: how to turn chat requests into tasks, start coding agents, follow them up, and report."
     )]
-    fn read_toodo_skill(&self) -> Result<CallToolResult, ErrorData> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(SKILL)]))
+    fn read_toodo_skill(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let skill = match lead::Caller::of(&parts) {
+            lead::Caller::Lead => LEAD_SKILL,
+            lead::Caller::Agent => SKILL,
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::text(skill)]))
     }
 
     #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
@@ -1965,8 +1975,12 @@ mod tests {
     }
 
     fn post_initialize(address: SocketAddr, authorization: &str) -> String {
-        use std::io::{Read, Write};
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+        post(address, authorization, body)
+    }
+
+    fn post(address: SocketAddr, authorization: &str, body: &str) -> String {
+        use std::io::{Read, Write};
         let mut stream = std::net::TcpStream::connect(address).unwrap();
         write!(
             stream,
@@ -2024,10 +2038,44 @@ mod tests {
             assert!(server.tool_router.has_route(tool), "{tool}");
         }
         assert!(!server.tool_router.has_route("delete_task"));
-        let result = serde_json::to_value(server.read_toodo_skill().unwrap()).unwrap();
+        let skill =
+            |caller| serde_json::to_value(server.read_toodo_skill(by(caller)).unwrap()).unwrap();
+        let result = skill(lead::Caller::Agent);
         assert_eq!(result["content"][0]["text"], SKILL);
-        assert!(SKILL.starts_with("---") && SKILL.contains("name: toodo"));
+        // `lines` also drops the `\r` of a CRLF checkout on Windows.
+        assert_eq!(
+            SKILL.lines().take(2).collect::<Vec<_>>(),
+            ["---", "name: toodo"]
+        );
         assert_ne!(result["isError"], true);
+    }
+
+    #[test]
+    fn the_lead_token_reads_the_lead_skill_and_the_agent_token_the_worker_skill() {
+        assert_eq!(
+            LEAD_SKILL.lines().take(2).collect::<Vec<_>>(),
+            ["---", "name: toodo-lead"]
+        );
+        let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let app = router(backend, "secret".to_owned(), Some("leader".to_owned()));
+        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
+        let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_toodo_skill","arguments":{}}}"#;
+        // The skill text as it appears in the JSON reply.
+        let encoded = |skill: &str| {
+            let json = serde_json::to_string(skill).unwrap();
+            json[1..json.len() - 1].to_owned()
+        };
+
+        let lead = post(address, "Authorization: Bearer leader\r\n", call);
+        assert!(lead.starts_with("HTTP/1.1 200"), "{lead}");
+        assert!(lead.contains(&encoded(LEAD_SKILL)), "{lead}");
+        let agent = post(address, "Authorization: Bearer secret\r\n", call);
+        assert!(agent.starts_with("HTTP/1.1 200"), "{agent}");
+        assert!(agent.contains(&encoded(SKILL)), "{agent}");
+        assert!(!agent.contains("name: toodo-lead"), "{agent}");
     }
 
     #[test]
