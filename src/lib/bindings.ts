@@ -271,11 +271,22 @@ export const commands = {
 	 *  message already stored under it is returned without storing or typing it again.
 	 */
 	sendChatMessage: (text: string, clientId: string) => typedError<ChatMessage, CommandError>(__TAURI_INVOKE("send_chat_message", { text, clientId })),
+	/**  The server in use and the servers saved in the app. */
+	getConnection: () => typedError<Connection, CommandError>(__TAURI_INVOKE("get_connection")),
 	/**
-	 *  Sets which server the app uses from its next start: `server` (an `http` or `https`
-	 *  address) or, for `None`, the local data. Returns the server as it will be used.
+	 *  Sets which server the app uses: `server` (an `http` or `https` address, saved if it is
+	 *  not saved yet) or, for `None`, the local data. Returns the server as it will be used.
+	 *  The app uses it from its next start, or, switching from one server to another, from the
+	 *  window's next load.
 	 */
 	setConnection: (server: string | null) => typedError<string | null, CommandError>(__TAURI_INVOKE("set_connection", { server })),
+	/**  Saves the server at `url` as `name`, or renames it if it is saved already. */
+	saveServer: (url: string, name: string) => typedError<Connection, CommandError>(__TAURI_INVOKE("save_server", { url, name })),
+	/**
+	 *  Removes the saved server at `url`, and the Access service token the app keeps for it;
+	 *  the server in use cannot be removed.
+	 */
+	removeServer: (url: string) => typedError<Connection, CommandError>(__TAURI_INVOKE("remove_server", { url })),
 	/**  The Cloudflare Access service token kept for the server at `server`, without its secret. */
 	getAccessToken: (server: string) => typedError<{
 	clientId: string,
@@ -476,6 +487,13 @@ export type CommitRecord = {
 	author: string,
 	/**  Commit timestamp in seconds since the Unix epoch. */
 	committedAt: number,
+};
+
+export type Connection = {
+	/**  The origin of the server in use, e.g. `https://toodo.example`; `None` for local data. */
+	server: string | null,
+	/**  The servers saved in the app, in the order they were added; `server` is one of them. */
+	servers?: SavedServer[],
 };
 
 /**  A completion criterion of a task. */
@@ -790,6 +808,13 @@ export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "wor
 
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";
+
+/**  A server saved in the app, to switch to by its name. */
+export type SavedServer = {
+	name: string,
+	/**  The origin of the server. */
+	url: string,
+};
 
 export type Task = {
 	id: TaskId,

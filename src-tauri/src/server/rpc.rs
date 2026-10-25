@@ -341,8 +341,11 @@ mod tests {
     /// moves database files over `/api/backups` instead.
     const DESKTOP_ONLY: &[&str] = &[
         "export_database",
+        "get_connection",
+        "remove_server",
         "restore_database",
         "save_report",
+        "save_server",
         "set_connection",
         "get_access_token",
         "set_access_token",

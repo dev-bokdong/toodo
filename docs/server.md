@@ -554,16 +554,38 @@ Things to know:
 ### The Desktop App as a Client
 
 The desktop app can show a server's data instead of its own, as one more client of the
-server next to the browsers. Under **General** in Settings, enter the server's address
-(for example `http://192.168.0.5:47616`) and choose **Connect**; the app restarts, asks for
-`web-token` and a name once, and then keeps a device token of its own, like a browser.
-**Use this computer's data** switches back; the local data is untouched meanwhile.
+server next to the browsers. Under **General** in Settings, add the server's address
+(for example `http://192.168.0.5:47616`) with a name such as "Home", and choose **Switch**;
+the app restarts, asks for `web-token` and a device name once, and then keeps a device
+token of its own, like a browser. **Use this computer's data** switches back; the local
+data is untouched meanwhile.
+
+The app keeps a list of servers, for example a home server and a work server:
+
+- The name of the server in use is at the top of the sidebar (in the header on a phone);
+  its menu switches to another saved server. Switching from one server to another only
+  reloads the window, so the other server shows within a second or two, with nothing of
+  the first one left: the cached data, the event stream, and the pane views go with the
+  page. Switching between a server and this computer's data restarts the app.
+- **Rename** changes a server's name; **Remove** takes it off the list and forgets the
+  app's token and Access service token for it (revoke that token under **Devices** on the
+  server, too). The server in use cannot be removed.
+- Each saved server has its own Cloudflare Access service token, if it needs one
+  ([Through Cloudflare Access](#through-cloudflare-access)), so switching servers sends
+  each one only its own.
+- **Sign in again** forgets the app's token for a server, so the app asks for `web-token`
+  again, at once for the server in use and otherwise when it switches to it. A token one
+  server revokes leaves the other servers signed in.
+- When the server in use does not answer, the offline banner names it and offers the
+  other saved servers.
 
 - Connected, the app starts no database, MCP server, SSH tunnels, or background checks
   of its own: the server does all of that. It keeps its window, tray, updates, and
-  notifications. The choice is `connection.json` in the app data directory.
+  notifications. The saved servers and the one in use are `connection.json` in the app
+  data directory.
 - The app keeps its token and the lead chat's read mark per server address, so switching
-  between servers signs in to each once and keeps them apart.
+  between servers signs in to each once and keeps them apart. The theme and the voice
+  settings are the app's own and stay the same on every server.
 - The app sends its requests to the server from its Rust side, not from its pages: the
   API calls, the event stream, backup downloads and uploads, and the pane view's
   WebSocket. So no CORS applies, and the app can add a Cloudflare Access service token
@@ -595,9 +617,10 @@ Access application of [Off the Machine](#off-the-machine-cloudflare-tunnel-and-a
    *Bypass* policy and leave **Bypass OPTIONS requests to origin** off: the app sends no
    CORS preflight, so everything stays behind Access.
 3. **Enter it in the app.** Under **General** in Settings, enter the server's address
-   (`https://toodo.example.com`), the client ID, and the client secret, and choose
-   **Connect**. The app restarts, asks for `web-token` and a name once, and keeps a device
-   token, as with any server.
+   (`https://toodo.example.com`) and, under **Cloudflare Access service token**, the
+   client ID and the client secret, and choose **Add server**; for a server saved
+   already, choose **Add service token** on it instead. Then **Switch** to it: the app
+   asks for `web-token` and a name once, and keeps a device token, as with any server.
 4. **Check from outside**, with the token (any machine; the answer must come from the
    server, `401` without a Toodo token, not Access's `302` to its login):
 
@@ -611,9 +634,10 @@ Things to know:
 
 - The app keeps the tokens per server address in `access-tokens.json` in its app data
   directory, readable by your user only. It never hands the secret to its pages, never
-  shows it again, and never writes it to a log; Settings shows the client ID only.
-  **Remove service token** forgets it; to replace it, enter a new client ID and secret and
-  choose **Save service token**, which takes effect at once.
+  shows it again, and never writes it to a log; Settings shows the client ID only, on
+  the saved server. **Remove service token** forgets it; to replace it, choose **Change
+  service token**, enter a new client ID and secret, and choose **Save service token**,
+  which takes effect at once.
 - When Access turns a request away (no token, a wrong or revoked one, an expired one, or
   no *Service Auth* policy for it), the app says so in its banner, with the client ID it
   sent, and keeps retrying; it keeps its Toodo token, so fixing the service token is

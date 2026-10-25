@@ -83,8 +83,9 @@ Layout:
     `server` (`toodo-server`, built with `--no-default-features --features server`); a
     build has exactly one of them.
   - `src-tauri/src/desktop.rs`: Tauri builder, tauri-specta command registration, tray.
-  - `src-tauri/src/connection.rs`: whether the desktop app uses its own data or a
-    `toodo-server` (`connection.json`); connected, it starts no local data or background work.
+  - `src-tauri/src/connection.rs`: whether the desktop app uses its own data or one of the
+    `toodo-server`s saved in it (`connection.json`); connected, it starts no local data or
+    background work. Switching between servers is in `src/lib/servers.ts`.
   - `src-tauri/src/server/`: headless Linux server: commands over HTTP (`rpc.rs`), events
     over SSE, MCP, Web Push notifications (`push/`), and the web build on one port, plus
     the lead agent it keeps running in herdr (`lead.rs`, prompt in `lead-prompt.md`); see

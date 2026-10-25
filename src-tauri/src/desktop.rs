@@ -92,7 +92,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::lead::get_lead,
             commands::lead::list_chat_messages,
             commands::lead::send_chat_message,
+            connection::get_connection,
             connection::set_connection,
+            connection::save_server,
+            connection::remove_server,
             remote::access::get_access_token,
             remote::access::set_access_token,
         ])

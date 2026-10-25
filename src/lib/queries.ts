@@ -43,7 +43,7 @@ export class CommandFailure extends Error {
   }
 }
 
-async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
+export async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
   const outcome = await result;
   if (outcome.status === "error") {
     throw new CommandFailure(outcome.error);
