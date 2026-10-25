@@ -37,7 +37,7 @@ Toodo asks for confirmation first ("Pause and add"), whatever the state of the t
 agent, and then closes its herdr workspace, since that stops the agent. An agent's
 `add_dependency` cannot wait for that answer, so it leaves the workspace open: the paused
 task then asks whether to close it ("Close workspace" or "Keep open", after which a small
-"Close workspace" button stays), and a desktop notification tells the user when the app
+"Close workspace" button stays), and a notification tells the user when the app
 is in the background. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
 until those prerequisites are done; resuming opens the kept worktree in herdr again. If
 herdr fails to close the workspace, the task stays paused and the error says so.
@@ -74,7 +74,7 @@ it when (`user`, `agent`, or `toodo`):
 | `pr_open_ci_green` | Toodo | the task's pull request is open and all its checks passed (or it is merged) |
 | `branch_merged_locally` | Toodo | the task branch has commits since it started and the local base branch contains it |
 | `url` | Toodo | `curl --fail --location` of its target, an http(s) URL, succeeds |
-| `command` | Toodo | its target, a shell command, exits with status 0 in the task worktree (`cmd.exe` for Windows paths, `sh` elsewhere, over `ssh` for SSH workspaces) |
+| `command` | Toodo | its target, a shell command, exits with status 0 in the task worktree (`sh`, over `ssh` for SSH workspaces) |
 
 Criteria are set when the task is created, in the app or through MCP (`create_task`), and
 can be edited later (`update_task`) until the task is done: a kept criterion keeps its
@@ -125,7 +125,7 @@ GitHub repository to open it on.
 
 ### 1. Register a workspace
 
-The user picks a local Windows directory, or a remote directory on a saved herdr SSH
+The user picks a directory on the server's machine ("Local"), or a remote directory on a saved herdr SSH
 machine (its SSH target plus POSIX path), and one of two sources:
 
 - **Clone**: Toodo runs `git clone <url> <path>`. The path must not exist or must be an
@@ -138,11 +138,10 @@ machine (its SSH target plus POSIX path), and one of two sources:
   git only (see Workspaces Without a Remote); its first task start creates the
   `Initial commit` (step 3).
 
-A remote machine is added once from the sidebar: the user picks a host from `~/.ssh/config`
-(or adds a new `Host` entry) and Toodo runs `herdr machine add <host>` in a console window
-where the user answers herdr's setup prompts.
+A remote machine is saved once in herdr: run `herdr machine add <host>` in a terminal on
+the server and answer herdr's setup prompts. Toodo lists the saved machines in the sidebar.
 
-Git runs locally as `git.exe` and remotely as `ssh.exe <machine> git ...`. The default
+Git runs locally as `git` and remotely as `ssh <machine> git ...`. The default
 base branch is the one the user enters, or else the branch `origin/HEAD` points to, or
 else the checked-out branch. It can be changed later by picking one of the repository's
 branches (local and `origin` branches, listed after `git fetch --prune origin`) or by
@@ -245,7 +244,7 @@ never rebases or merges the branch.
 ### 5. Record commits
 
 Toodo reads the commits on the task branch that are not on the base branch
-(`git log --reverse <baseBranch>..<taskBranch>` in the worktree, over `ssh.exe` for remote
+(`git log --reverse <baseBranch>..<taskBranch>` in the worktree, over `ssh` for remote
 workspaces) and stores a `CommitRecord` (SHA, message, author, timestamp) for each one,
 oldest first, replacing the previous records. This runs automatically when the task is
 completed; while the task is in progress, the user can trigger it manually ("Refresh
@@ -267,7 +266,7 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    merged one is recorded without pushing (if the branch log is empty after the merge,
    the commit records stored earlier are kept) and the next step is skipped.
 4. Pushes the task branch to `origin` (`git push --set-upstream origin <branch>`, over
-   `ssh.exe` for remote workspaces), then reuses the open pull request, or, when there
+   `ssh` for remote workspaces), then reuses the open pull request, or, when there
    is none or the last one was closed, opens one with
    `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
    title and described with the task description, followed by `Closes #<number>` when
@@ -314,7 +313,7 @@ failure keeps the task `in_review`, and completing it again is safe. An open pul
 merged; a pull request closed without merging is rejected too, so the user reopens it or
 pauses the task.
 
-The user rarely needs to complete a task by hand: while the app runs, Toodo checks the
+The user rarely needs to complete a task by hand: while the server runs, Toodo checks the
 pull request of every `in_review` task once a minute and completes each task whose pull
 request was merged, in the same way and with the same checks. Closed pull requests are
 left alone; an open one only gets the closing reference to the task's issue if its body
