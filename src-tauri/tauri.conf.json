@@ -35,6 +35,9 @@
     ]
   },
   "plugins": {
+    "deep-link": {
+      "mobile": [{ "scheme": ["toodo"], "appLink": false }]
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0RkY1QTA1MDVCNzM1MTQKUldRVU5iY0ZCVnIvUko4Y0ZpOFZUUXlXV3pWUlQ1ZzUzcGxvK2RpU2xIenN0UG1mWTFURTN3QnoK",
       "endpoints": ["https://github.com/bok-dong/toodo/releases/latest/download/latest.json"],
