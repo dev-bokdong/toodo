@@ -36,5 +36,15 @@ export function server(origin: string | null): Server {
   };
 }
 
+/** The names of what the app keeps for each server (see `src/web/session.ts` and `src/lib/chat.ts`). */
+const perServerNames = ["toodo-server-token", "toodo-chat-read"] as const;
+
+/** Forgets what the app keeps for the server at `origin`. */
+export function forgetServer(origin: string): void {
+  for (const name of perServerNames) {
+    localStorage.removeItem(server(origin).key(name));
+  }
+}
+
 /** The server this app talks to. */
 export const activeServer: Server = server(connectedServer);
