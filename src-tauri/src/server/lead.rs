@@ -9,6 +9,12 @@
 //! starts working, after it was not at the last check, has picked up the chat messages
 //! typed into its pane by then, so they are marked as seen.
 //!
+//! While the agent runs, the server types the IDs of what waits in the lead's inbox (see
+//! [`crate::domain::inbox`]) into its pane: everything pending once for each agent
+//! session, then each person's message not delivered yet (stored while the lead was not
+//! running, or while typing failed) and each new task event. The agent takes the items
+//! themselves with the MCP tool `take_pending`.
+//!
 //! The launcher (`lead-start` in the data directory, readable by the owner only) exports
 //! the server's MCP URL and token, the model, and the system prompt file, then runs the
 //! configured command in the workspace. The workspace gets MCP configurations for omo and
@@ -31,6 +37,7 @@ use crate::commands::lead::{LeadState, LeadStatus, LeadStatusState};
 use crate::commands::types::{AgentStatus, Timestamp, WorkspaceSetup, WorkspaceSource};
 use crate::commands::{StorageState, lock, workspaces};
 use crate::domain::chat::ChatAuthor;
+use crate::domain::inbox::ItemId;
 use crate::domain::model::{self, HostPath, Machine, WorkspaceLocation};
 use crate::domain::path::PosixPath;
 
@@ -193,6 +200,10 @@ pub struct Supervisor {
     agent: Agent,
     /// The last check found the agent working.
     working: bool,
+    /// The agent session (when it started) the inbox was last signalled to.
+    signalled_session: Option<i64>,
+    /// The newest task event signalled to that session.
+    signalled_event: i64,
 }
 
 impl Supervisor {
@@ -209,7 +220,53 @@ impl Supervisor {
             pane: None,
             agent: Agent::default(),
             working: false,
+            signalled_session: None,
+            signalled_event: 0,
         }
+    }
+
+    /// Types the IDs of the items waiting for the lead into its pane while it runs:
+    /// everything pending once per agent session, so a new session learns of what an
+    /// earlier one never took, then each chat message not delivered yet and each new
+    /// event. Returns whether chat messages were delivered.
+    fn signal_inbox(&mut self, storage: &StorageState, herdr: &Herdr, status: &LeadStatus) -> bool {
+        let (LeadState::Running, Some(pane)) = (status.state, status.pane_id.as_deref()) else {
+            return false;
+        };
+        let session = status.started_at.map(|at| at.0);
+        let new_session = session != self.signalled_session;
+        let since = if new_session { 0 } else { self.signalled_event };
+        let items = {
+            let storage = lock(storage);
+            match (storage.pending_items(), storage.undelivered_chat()) {
+                (Ok(pending), Ok(undelivered)) => pending
+                    .into_iter()
+                    .filter(|item| match item {
+                        ItemId::Chat(id) => new_session || undelivered.contains(id),
+                        ItemId::Event(id) => *id > since,
+                    })
+                    .collect::<Vec<_>>(),
+                (Err(error), _) | (_, Err(error)) => {
+                    eprintln!("toodo-server: cannot read the lead's inbox: {error}");
+                    return false;
+                }
+            }
+        };
+        if !items.is_empty()
+            && let Err(error) = crate::commands::lead::signal(storage, herdr, pane, &items)
+        {
+            eprintln!("toodo-server: cannot signal the lead's inbox: {error}");
+            return false;
+        }
+        self.signalled_session = session;
+        self.signalled_event = items
+            .iter()
+            .filter_map(|item| match item {
+                ItemId::Event(id) => Some(*id),
+                ItemId::Chat(_) => None,
+            })
+            .fold(since, i64::max);
+        items.iter().any(|item| matches!(item, ItemId::Chat(_)))
     }
 
     /// Marks the chat messages delivered by `now`, when the check that started then found
@@ -422,7 +479,8 @@ pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<
                 elapsed.as_secs().try_into().unwrap_or(i64::MAX)
             });
         let mut status = supervisor.check(&services.storage, &services.git, &services.herdr, now);
-        if supervisor.note_turn(&services.storage, &status, now) {
+        let delivered = supervisor.signal_inbox(&services.storage, &services.herdr, &status);
+        if supervisor.note_turn(&services.storage, &status, now) || delivered {
             services.chat_changed();
         }
         status.typing = Supervisor::typing(&services.storage, &status, now);
@@ -948,9 +1006,10 @@ mod tests {
         let add = |at: i64, client: &str| {
             let mut storage = lock(&storage);
             storage.set_clock(move || at);
-            storage
+            let message = storage
                 .add_chat_message(ChatAuthor::User, "Hi", Some(client))
                 .unwrap();
+            storage.mark_chat_delivered(&[message.id]).unwrap();
         };
         let seen = || -> Vec<Option<i64>> {
             let messages = lock(&storage).list_chat_messages().unwrap();
@@ -1000,7 +1059,10 @@ mod tests {
         let add = |at: i64, author: ChatAuthor| {
             let mut storage = lock(&storage);
             storage.set_clock(move || at);
-            storage.add_chat_message(author, "Hi", None).unwrap();
+            let message = storage.add_chat_message(author, "Hi", None).unwrap();
+            if author == ChatAuthor::User {
+                storage.mark_chat_delivered(&[message.id]).unwrap();
+            }
         };
         let status = |state, agent_status| LeadStatus {
             state,
@@ -1029,6 +1091,97 @@ mod tests {
 
         add(110, ChatAuthor::Lead);
         assert!(!typing(&working, 111), "the reply ends it");
+    }
+
+    #[test]
+    fn a_message_stored_but_never_typed_reaches_the_lead_once_it_runs() {
+        use crate::domain::chat::ChatAuthor;
+
+        let storage: StorageState = Mutex::new(Storage::open_in_memory().unwrap());
+        // The server stopped after storing the message and before typing its ID.
+        let message = lock(&storage)
+            .add_chat_message(ChatAuthor::User, "Plan it", Some("c1"))
+            .unwrap();
+        let runner = Arc::new(FakeRunner::new([
+            Ok(String::new()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]));
+        let herdr = Herdr::new(Box::new(runner.clone()));
+        let config = LeadConfig::from_env(env(&[]), Path::new("/srv"))
+            .unwrap()
+            .unwrap();
+        let mut supervisor = Supervisor::new(
+            config,
+            "/srv".into(),
+            "http://x/mcp".to_owned(),
+            "t".to_owned(),
+        );
+        let session = |started| LeadStatus {
+            state: LeadState::Running,
+            pane_id: Some("wL:p1".to_owned()),
+            started_at: Some(Timestamp(started)),
+            ..LeadStatus::default()
+        };
+        let typed = || -> Vec<String> {
+            runner
+                .invocations
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|call| call.args[3].clone())
+                .collect()
+        };
+        let line = |ids: &str| {
+            format!("[Toodo inbox] {ids} - take them with the Toodo MCP tool take_pending")
+        };
+
+        let restarting = LeadStatus {
+            state: LeadState::Restarting,
+            ..session(1)
+        };
+        assert!(!supervisor.signal_inbox(&storage, &herdr, &restarting));
+        assert!(typed().is_empty());
+
+        assert!(supervisor.signal_inbox(&storage, &herdr, &session(1)));
+        assert_eq!(typed(), [line(&format!("chat-{}", message.id))]);
+        assert!(lock(&storage).undelivered_chat().unwrap().is_empty());
+        assert!(!supervisor.signal_inbox(&storage, &herdr, &session(1)));
+        assert_eq!(typed().len(), 1, "signalled once per session");
+
+        // A task the lead follows awaits completion: only the new event is signalled.
+        let event = {
+            let mut storage = lock(&storage);
+            let workspace = storage
+                .create_workspace(&crate::storage::NewWorkspace {
+                    name: "w".to_owned(),
+                    location: WorkspaceLocation::Local {
+                        path: HostPath::Posix(PosixPath::parse("/w").unwrap()),
+                    },
+                    default_base_branch: "main".to_owned(),
+                })
+                .unwrap();
+            let task = storage
+                .create_task(&crate::storage::NewTask {
+                    workspace_id: workspace.id,
+                    task_type: model::TaskType::Docs,
+                    title: "t".to_owned(),
+                    description: String::new(),
+                    estimate: None,
+                    due_date: None,
+                    criteria: Vec::new(),
+                })
+                .unwrap();
+            storage.record_event_for_tests(task.id, crate::domain::status::TaskStatus::Done, 5);
+            storage.pending_items().unwrap()[1]
+        };
+        assert!(!supervisor.signal_inbox(&storage, &herdr, &session(1)));
+        assert_eq!(typed()[1], line(&event.to_string()));
+
+        // A new session, after the agent restarted, hears of everything it has not taken.
+        assert!(supervisor.signal_inbox(&storage, &herdr, &session(9)));
+        assert_eq!(typed()[2], line(&format!("chat-{} {event}", message.id)));
+        assert!(runner.results.lock().unwrap().is_empty());
     }
 
     #[test]

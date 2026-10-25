@@ -264,9 +264,11 @@ export const commands = {
 	/**  The latest messages of the chat with the lead, oldest first. */
 	listChatMessages: () => typedError<ChatMessage[], CommandError>(__TAURI_INVOKE("list_chat_messages")),
 	/**
-	 *  Types `text` into the lead's pane and stores it as the user's message. `client_id`,
-	 *  chosen by the client for each message, makes sending it again harmless: a message
-	 *  already stored under it is returned without typing it again.
+	 *  Stores `text` as the user's message in the lead's inbox, then types its ID into the
+	 *  lead's pane if the lead runs. A lead that is starting, restarting, or failing gets it
+	 *  once it runs (see `crate::server::lead`); only a server without a lead rejects it.
+	 *  `client_id`, chosen by the client for each message, makes sending it again harmless: a
+	 *  message already stored under it is returned without storing or typing it again.
 	 */
 	sendChatMessage: (text: string, clientId: string) => typedError<ChatMessage, CommandError>(__TAURI_INVOKE("send_chat_message", { text, clientId })),
 };
@@ -363,7 +365,10 @@ export type ChatMessage = {
 	/**  Markdown. */
 	body: string,
 	at: Timestamp,
-	/**  When a person's message was typed into the lead's pane; null for the lead's. */
+	/**
+	 *  When the ID of a person's message was typed into the lead's pane, or the lead took
+	 *  it; null for the lead's, and for a person's that waits for the lead to run.
+	 */
 	deliveredAt: Timestamp | null,
 	/**
 	 *  When the lead picked the message up: it started a turn after the message reached

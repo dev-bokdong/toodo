@@ -6,7 +6,6 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::criteria::NewCriterion;
-use crate::domain::dag;
 use crate::domain::model::{
     CommitRecord, HostPath, LinkedIssue, MergedWith, NoteKind, PullRequestSnapshot, Task, TaskId,
     TaskNote, TaskResolution, TaskType, WorkspaceId,
@@ -16,6 +15,7 @@ use crate::domain::path::PosixPath;
 use crate::domain::plan::{DueDate, Estimate, EstimateUnit};
 use crate::domain::status::TaskStatus;
 use crate::domain::timeline::TaskEvent;
+use crate::domain::{dag, inbox};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTask {
@@ -69,7 +69,7 @@ fn parse_task_resolution(raw: &str) -> Result<TaskResolution> {
         .ok_or_else(|| StorageError::InvalidData(format!("unknown task resolution {raw:?}")))
 }
 
-fn parse_task_status(raw: &str) -> Result<TaskStatus> {
+pub(super) fn parse_task_status(raw: &str) -> Result<TaskStatus> {
     TASK_STATUSES
         .into_iter()
         .find(|status| status.as_str() == raw)
@@ -318,7 +318,8 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
         .collect()
 }
 
-/// Appends a status change of `task` at `at` to its status history.
+/// Appends a status change of `task` at `at` to its status history; one the lead follows
+/// waits in its inbox.
 pub(super) fn record_event(
     conn: &Connection,
     task: TaskId,
@@ -326,8 +327,8 @@ pub(super) fn record_event(
     at: i64,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO task_events (task_id, status, at) VALUES (?1, ?2, ?3)",
-        params![task.0, status.as_str(), at],
+        "INSERT INTO task_events (task_id, status, at, for_lead) VALUES (?1, ?2, ?3, ?4)",
+        params![task.0, status.as_str(), at, inbox::follows(status)],
     )?;
     Ok(())
 }

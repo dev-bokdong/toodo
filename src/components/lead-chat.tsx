@@ -49,21 +49,26 @@ import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
 
-function leadState(lead: LeadStatus): { text: string; ready: boolean } {
+/**
+ * `ready`: the lead runs. `accepts`: the server takes messages, which wait for a lead that is
+ * starting, restarting, or failing until it runs; only a server without a lead refuses them.
+ */
+function leadState(lead: LeadStatus): { text: string; ready: boolean; accepts: boolean } {
   switch (lead.state) {
     case "running":
       return {
         text: lead.agentStatus === "working" ? "Working" : lead.agentStatus === "blocked" ? "Waiting for input" : "Ready",
         ready: true,
+        accepts: true,
       };
     case "starting":
-      return { text: "Starting", ready: false };
+      return { text: "Starting", ready: false, accepts: true };
     case "restarting":
-      return { text: "Restarting", ready: false };
+      return { text: "Restarting", ready: false, accepts: true };
     case "failed":
-      return { text: "Not running", ready: false };
+      return { text: "Not running", ready: false, accepts: true };
     case "disabled":
-      return { text: "Off", ready: false };
+      return { text: "Off", ready: false, accepts: false };
   }
 }
 
@@ -211,7 +216,7 @@ export function LeadChat({
   const dictation = useDictation(
     (heard) => setText(withTyped(heard)),
     (heard) => {
-      if (heard.trim() && state.ready) sendText(withTyped(heard));
+      if (heard.trim() && state.accepts) sendText(withTyped(heard));
     },
   );
   // Replies newer than this are read aloud; the history there on opening is not.
@@ -370,7 +375,13 @@ export function LeadChat({
           aria-label="Message to the lead"
           value={text}
           rows={2}
-          placeholder={state.ready ? "Message Dori (Enter sends, Shift+Enter for a new line)" : "The lead is not running"}
+          placeholder={
+            state.ready
+              ? "Message Dori (Enter sends, Shift+Enter for a new line)"
+              : state.accepts
+                ? "Dori is not running yet; your message waits for it"
+                : "The lead is not running"
+          }
           onChange={(event) => {
             setText(event.target.value);
             setClientId(newClientId());
@@ -397,13 +408,13 @@ export function LeadChat({
               variant="outline"
               aria-label="Voice input"
               title="Speak a message"
-              disabled={!state.ready || send.isPending}
+              disabled={!state.accepts || send.isPending}
               onClick={startDictation}
             >
               <Mic />
             </Button>
           ))}
-        <Button type="submit" disabled={!state.ready || !text.trim() || send.isPending}>
+        <Button type="submit" disabled={!state.accepts || !text.trim() || send.isPending}>
           <SendHorizontal />
           Send
         </Button>

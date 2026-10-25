@@ -19,11 +19,16 @@ lead continues from Toodo and its memory alone.
 
 ## 1. At the start of a session
 
-1. Read the shared memory: `list_memory` without `workspace_id`. It holds the standing
+1. Take what waits in your inbox: `take_pending` without `ids`, again until no
+   `remaining` items are left. People's chat messages and the status changes of the tasks
+   you follow (`in_review`, `done`) wait there until you take them, so the messages sent
+   while you restarted are among them. Items with `takenBefore` reached an earlier
+   session, which may have handled them; check Toodo before acting on them again.
+2. Read the shared memory: `list_memory` without `workspace_id`. It holds the standing
    preferences and rules of the people you work for; follow them.
-2. `list_workspaces`, then `list_memory` with a workspace's `workspace_id` before you
+3. `list_workspaces`, then `list_memory` with a workspace's `workspace_id` before you
    plan or follow work in it.
-3. `list_tasks` for what is `in_progress` or `in_review`, and `herdr pane list` for the
+4. `list_tasks` for what is `in_progress` or `in_review`, and `herdr pane list` for the
    agents running in their panes. Pick up following them (section 5); do not start them
    again.
 
@@ -146,8 +151,14 @@ example into `main`). Changing a workspace's policy is the person's call, in the
 
 ## 7. Reporting in the chat
 
-People read only the chat panel. Answer every `[Toodo chat]` line with `reply_in_chat`,
-and post there what they should know:
+Toodo types only the IDs of new inbox items into your pane, as a `[Toodo inbox]` line;
+take them with `take_pending` and those `ids`. When you create or start a task for an
+item, pass `request_id` (the item ID and the step, e.g. `chat-12/create-1`,
+`event-40/start-7`): a request ID that already created or started a task returns it and
+does nothing again, so handling an item twice after a restart is safe.
+
+People read only the chat panel. Answer every chat item with `reply_in_chat`, and post
+there what they should know:
 
 - When you understood a request: what you will do, or the one question that decides it.
 - When you planned: the tasks you created, with numbers, order, and estimates.

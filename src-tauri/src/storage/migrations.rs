@@ -419,6 +419,25 @@ pub(super) const MIGRATIONS: &[&str] = &[
           AND EXISTS (SELECT 1 FROM chat_messages AS later
                       WHERE later.author = 'lead' AND later.id > chat_messages.id);
     ",
+    // Version 20: the lead's inbox. A person's message is stored before it reaches the
+    // lead's pane, and status changes the lead acts on are kept for it, until the lead
+    // takes them; earlier messages were typed into the pane in full, so they count as
+    // taken. The lead names each task it creates or starts with a request ID, so a request
+    // it handles again does not create or start a task twice.
+    "
+    ALTER TABLE chat_messages ADD COLUMN taken_at INTEGER
+        CHECK (taken_at IS NULL OR author = 'user');
+    UPDATE chat_messages SET taken_at = delivered_at WHERE author = 'user';
+    ALTER TABLE task_events ADD COLUMN for_lead INTEGER NOT NULL DEFAULT 0
+        CHECK (for_lead IN (0, 1));
+    ALTER TABLE task_events ADD COLUMN taken_at INTEGER
+        CHECK (taken_at IS NULL OR for_lead = 1);
+    ALTER TABLE task_events ADD COLUMN request_id TEXT;
+    CREATE UNIQUE INDEX task_events_request_id ON task_events (request_id)
+        WHERE request_id IS NOT NULL;
+    CREATE INDEX task_events_for_lead ON task_events (id)
+        WHERE for_lead = 1 AND taken_at IS NULL;
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1422,5 +1441,48 @@ mod tests {
         let set = |sql: &str| conn.execute(sql, []);
         assert!(set("UPDATE chat_messages SET delivered_at = 1 WHERE author = 'lead'").is_err());
         assert!(set("UPDATE chat_messages SET delivered_at = NULL WHERE id = 1").is_err());
+    }
+
+    #[test]
+    fn version_20_counts_earlier_messages_and_events_taken_by_the_lead() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..19] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 19).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_messages (author, body, at, delivered_at) VALUES ('user', 'Hi', 10, 10);
+             INSERT INTO chat_messages (author, body, at) VALUES ('lead', 'Hello', 20);
+             INSERT INTO workspaces (name, kind, path, default_base_branch)
+                 VALUES ('w', 'local', '/w', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'feat', 't', 'planned');
+             INSERT INTO task_events (task_id, status, at) VALUES (1, 'planned', 5);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let taken: Vec<Option<i64>> = conn
+            .prepare("SELECT taken_at FROM chat_messages ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(taken, [Some(10), None]);
+        let event: (i64, Option<i64>) = conn
+            .query_row("SELECT for_lead, taken_at FROM task_events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(event, (0, None));
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(set("UPDATE chat_messages SET taken_at = 1 WHERE author = 'lead'").is_err());
+        assert!(set("UPDATE task_events SET taken_at = 1").is_err());
+        set("UPDATE task_events SET request_id = 'r1'").unwrap();
+        let again = "INSERT INTO task_events (task_id, status, at, request_id)
+                     VALUES (1, 'in_progress', 6, 'r1')";
+        assert!(set(again).is_err());
     }
 }
