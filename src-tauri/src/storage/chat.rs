@@ -3,16 +3,19 @@
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, invalid_data};
-use crate::domain::chat::{ChatAuthor, ChatMessage, ChatMessageId};
+use crate::domain::chat::{self, ChatAuthor, ChatMessage, ChatMessageId, HandledBy};
 use crate::domain::finish::Finish;
 use crate::domain::model::TaskId;
 
-/// The most messages the chat panel shows: the latest ones.
+/// The most messages the chat panel shows: the latest ones, and older ones still open.
 const HISTORY: i64 = 500;
 
-const COLUMNS: &str = "id, author, body, at, delivered_at, seen_at";
+const COLUMNS: &str = "id, author, body, at, delivered_at, seen_at, due_at, acked_at,
+    handled_at, handled_reply_id, handled_task_id";
 
 fn message(row: &Row<'_>) -> rusqlite::Result<(ChatMessage, String)> {
+    let reply: Option<i64> = row.get(9)?;
+    let task: Option<i64> = row.get(10)?;
     Ok((
         ChatMessage {
             id: ChatMessageId(row.get(0)?),
@@ -21,29 +24,119 @@ fn message(row: &Row<'_>) -> rusqlite::Result<(ChatMessage, String)> {
             at: row.get(3)?,
             delivered_at: row.get(4)?,
             seen_at: row.get(5)?,
+            due_at: row.get(6)?,
+            acked_at: row.get(7)?,
+            handled_at: row.get(8)?,
+            handled_by: reply
+                .map(|id| HandledBy::Reply(ChatMessageId(id)))
+                .or(task.map(|id| HandledBy::Task(TaskId(id)))),
+            overdue: false,
         },
         row.get(1)?,
     ))
 }
 
-fn with_author((mut message, author): (ChatMessage, String)) -> Result<ChatMessage> {
-    message.author = ChatAuthor::parse(&author)
-        .ok_or_else(|| invalid_data(format!("unknown chat author {author}")))?;
-    Ok(message)
-}
-
 impl Storage {
-    /// The latest messages, oldest first.
+    fn with_author(&self, (mut message, author): (ChatMessage, String)) -> Result<ChatMessage> {
+        message.author = ChatAuthor::parse(&author)
+            .ok_or_else(|| invalid_data(format!("unknown chat author {author}")))?;
+        message.overdue = message.is_overdue(self.now());
+        Ok(message)
+    }
+
+    /// The latest messages, and older messages of people the lead has not handled yet,
+    /// oldest first.
     pub fn list_chat_messages(&self) -> Result<Vec<ChatMessage>> {
         let mut statement = self.conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM
-                 (SELECT {COLUMNS} FROM chat_messages ORDER BY id DESC LIMIT ?1)
+            "SELECT {COLUMNS} FROM chat_messages
+             WHERE id IN (SELECT id FROM chat_messages ORDER BY id DESC LIMIT ?1)
+                OR (handled_at IS NULL AND due_at IS NOT NULL)
              ORDER BY id"
         ))?;
         let rows = statement
             .query_map([HISTORY], message)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.into_iter().map(with_author).collect()
+        rows.into_iter().map(|row| self.with_author(row)).collect()
+    }
+
+    /// One message, wherever it is in the history.
+    pub fn chat_message(&self, id: ChatMessageId) -> Result<Option<ChatMessage>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM chat_messages WHERE id = ?1"),
+                [id.0],
+                message,
+            )
+            .optional()?
+            .map(|row| self.with_author(row))
+            .transpose()
+    }
+
+    /// Records that the lead acknowledged a person's message, now; a message acknowledged
+    /// before keeps its first time. Returns whether `id` names a person's message.
+    pub fn ack_chat_message(&mut self, id: ChatMessageId) -> Result<bool> {
+        let at = self.now();
+        Ok(self.conn.execute(
+            "UPDATE chat_messages SET acked_at = coalesce(acked_at, ?1)
+             WHERE id = ?2 AND author = 'user'",
+            [at, id.0],
+        )? > 0)
+    }
+
+    /// Records that the lead handled a person's message with `by`, now, acknowledging it
+    /// too. A message handled before keeps its first time and link, so the state never
+    /// goes back. Whether `by` is a valid link for the message is up to the caller. Returns
+    /// whether `id` names a person's message.
+    pub fn handle_chat_message(&mut self, id: ChatMessageId, by: HandledBy) -> Result<bool> {
+        let at = self.now();
+        let (reply, task) = match by {
+            HandledBy::Reply(reply) => (Some(reply.0), None),
+            HandledBy::Task(task) => (None, Some(task.0)),
+        };
+        Ok(self.conn.execute(
+            "UPDATE chat_messages SET acked_at = coalesce(acked_at, ?1),
+                 handled_reply_id = CASE WHEN handled_at IS NULL THEN ?3 ELSE handled_reply_id END,
+                 handled_task_id = CASE WHEN handled_at IS NULL THEN ?4 ELSE handled_task_id END,
+                 handled_at = coalesce(handled_at, ?1)
+             WHERE id = ?2 AND author = 'user'",
+            params![at, id.0, reply, task],
+        )? > 0)
+    }
+
+    /// Whether the lead created or started `task` for the inbox item `item` (such as
+    /// `chat-12`): it named the change with a request ID of that item.
+    pub fn task_made_for(&self, task: TaskId, item: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM task_events WHERE task_id = ?1
+                 AND (request_id = ?2 OR substr(request_id, 1, length(?2) + 1) = ?2 || '/'))",
+            params![task.0, item],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// People's messages the lead took but has not handled yet, oldest first, however far
+    /// back in the history; messages from before receipts were kept are not among them.
+    pub fn open_chat(&self) -> Result<Vec<ChatMessageId>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM chat_messages
+             WHERE handled_at IS NULL AND due_at IS NOT NULL AND taken_at IS NOT NULL
+             ORDER BY id",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get(0).map(ChatMessageId))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
+    /// Whether an unhandled message of a person fell due after `after` and by `up_to`
+    /// (server time), so that the chat should now show it as overdue.
+    pub fn chat_fell_due(&self, after: i64, up_to: i64) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM chat_messages
+                 WHERE handled_at IS NULL AND due_at > ?1 AND due_at <= ?2)",
+            [after, up_to],
+            |row| row.get(0),
+        )?)
     }
 
     /// The newest message of a person or the lead, if there is any; the system's reports
@@ -59,7 +152,7 @@ impl Storage {
                 message,
             )
             .optional()?
-            .map(with_author)
+            .map(|row| self.with_author(row))
             .transpose()
     }
 
@@ -72,7 +165,7 @@ impl Storage {
                 message,
             )
             .optional()?
-            .map(with_author)
+            .map(|row| self.with_author(row))
             .transpose()
     }
 
@@ -93,9 +186,11 @@ impl Storage {
             return Ok(stored);
         }
         let at = self.now();
+        let due_at = (author == ChatAuthor::User).then(|| chat::due_at(at));
         self.conn.execute(
-            "INSERT INTO chat_messages (author, body, client_id, at) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![author.as_str(), body, client_id, at],
+            "INSERT INTO chat_messages (author, body, client_id, at, due_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![author.as_str(), body, client_id, at, due_at],
         )?;
         Ok(ChatMessage {
             id: ChatMessageId(self.conn.last_insert_rowid()),
@@ -104,6 +199,11 @@ impl Storage {
             at,
             delivered_at: None,
             seen_at: None,
+            due_at,
+            acked_at: None,
+            handled_at: None,
+            handled_by: None,
+            overdue: false,
         })
     }
 
@@ -151,6 +251,14 @@ pub(super) fn record_finish(
             at,
             result
         ],
+    )?;
+    // The done event recorded with this finish, if it made one, is reported by it.
+    conn.execute(
+        "UPDATE task_events SET report_id = ?1
+         WHERE id = (SELECT max(id) FROM task_events
+                     WHERE task_id = ?2 AND status = 'done' AND at = ?3)
+           AND report_id IS NULL",
+        params![conn.last_insert_rowid(), task.0, at],
     )?;
     Ok(())
 }

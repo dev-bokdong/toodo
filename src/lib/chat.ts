@@ -46,13 +46,33 @@ export function unreadCount(messages: readonly ChatMessage[], readUpTo: number):
 
 /**
  * How far a person's message got: sent by this client and not confirmed yet, typed into
- * the lead's pane, or picked up by the lead.
+ * the lead's pane, picked up by the lead (an estimate), acknowledged by the lead, or
+ * handled by a reply or a task of the lead.
  */
-export type Receipt = "sent" | "delivered" | "seen";
+export type Receipt = "sent" | "delivered" | "seen" | "acked" | "handled";
 
-export function receipt(message: Pick<ChatMessage, "deliveredAt" | "seenAt">): Receipt {
+export function receipt(
+  message: Pick<ChatMessage, "deliveredAt" | "seenAt" | "ackedAt" | "handledAt">,
+): Receipt {
+  if (message.handledAt !== null) return "handled";
+  if (message.ackedAt !== null) return "acked";
   if (message.seenAt !== null) return "seen";
   return message.deliveredAt !== null ? "delivered" : "sent";
+}
+
+/**
+ * People's messages the lead has not handled within the time the server gives it. The
+ * server decides by its own clock and tells clients when a message falls due.
+ */
+export function overdueCount(messages: readonly ChatMessage[]): number {
+  return messages.filter((message) => message.overdue).length;
+}
+
+/** What handled a message, in words: the lead's reply, or a task by number. */
+export function handledByText(message: Pick<ChatMessage, "handledBy">): string {
+  const by = message.handledBy;
+  if (by === null) return "Handled";
+  return by.kind === "reply" ? "Handled in a reply" : `Handled by #${by.taskId}`;
 }
 
 export function newClientId(): string {

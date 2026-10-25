@@ -20,6 +20,8 @@ import {
   Check,
   CheckCheck,
   CircleCheck,
+  CircleCheckBig,
+  Clock,
   MessageCircle,
   MessagesSquare,
   Mic,
@@ -32,7 +34,16 @@ import {
 import doriAvatar from "@/assets/dori-avatar.webp";
 import { Button } from "@/components/ui/button";
 import type { ChatMessage, LeadStatus } from "@/lib/bindings";
-import { markRead, newClientId, receipt, unreadCount, useReadUpTo, type Receipt } from "@/lib/chat";
+import {
+  handledByText,
+  markRead,
+  newClientId,
+  overdueCount,
+  receipt,
+  unreadCount,
+  useReadUpTo,
+  type Receipt,
+} from "@/lib/chat";
 import { useChatMessages, useSendChatMessage } from "@/lib/queries";
 import { useSwipeClose } from "@/lib/swipe-close";
 import { formatFull } from "@/lib/timeline";
@@ -208,6 +219,7 @@ export function LeadChat({
   const log = useRef<HTMLOListElement>(null);
   const list = messages.data ?? [];
   const lastId = list.at(-1)?.id;
+  const overdue = overdueCount(list);
   const state = leadState(lead);
   const readAloud = useReadAloud();
   const speaking = useSpeaking();
@@ -287,6 +299,15 @@ export function LeadChat({
             {state.text}
             {lead.error && ` - ${lead.error}`}
           </span>
+          {overdue > 0 && (
+            <span
+              data-overdue-count
+              className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+            >
+              <Clock aria-hidden className="size-3" />
+              {overdue === 1 ? "1 message waits too long" : `${overdue} messages wait too long`}
+            </span>
+          )}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {speaking && (
@@ -353,6 +374,11 @@ export function LeadChat({
               at: Math.floor(send.submittedAt / 1000),
               deliveredAt: null,
               seenAt: null,
+              dueAt: null,
+              ackedAt: null,
+              handledAt: null,
+              handledBy: null,
+              overdue: false,
             }}
           />
         )}
@@ -492,9 +518,19 @@ function Message({ message }: { message: ChatMessage }) {
       <div className="rounded-lg bg-primary px-3 py-2 text-sm break-words text-primary-foreground">
         <p className="whitespace-pre-wrap">{message.body}</p>
       </div>
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center justify-end gap-x-2 text-xs text-muted-foreground">
         <When at={message.at} prefix="You, " />
         <ReceiptMark message={message} />
+        {message.overdue && (
+          <span
+            data-overdue
+            title={message.dueAt === null ? undefined : `Not handled since ${formatFull(message.dueAt)}`}
+            className="inline-flex items-center gap-0.5 font-medium text-amber-700 dark:text-amber-400"
+          >
+            <Clock aria-hidden className="size-3.5" />
+            Overdue
+          </span>
+        )}
       </div>
     </li>
   );
@@ -504,17 +540,29 @@ const receipts: Record<Receipt, { text: string; seen: boolean }> = {
   sent: { text: "Sent", seen: false },
   delivered: { text: "Delivered", seen: false },
   seen: { text: "Seen", seen: true },
+  acked: { text: "Received", seen: true },
+  handled: { text: "Handled", seen: true },
 };
 
-/** Sent, delivered to the lead's pane, or seen by the lead, with the time in the tooltip. */
+/**
+ * Sent, delivered to the lead's pane, seen by the lead, acknowledged by it, or handled by its
+ * reply or a task, with the time and what handled it in the tooltip.
+ */
 function ReceiptMark({ message }: { message: ChatMessage }) {
   const state = receipt(message);
-  const at = state === "seen" ? message.seenAt : state === "delivered" ? message.deliveredAt : null;
-  const Icon = state === "sent" ? Check : CheckCheck;
+  const at = {
+    sent: null,
+    delivered: message.deliveredAt,
+    seen: message.seenAt,
+    acked: message.ackedAt,
+    handled: message.handledAt,
+  }[state];
+  const text = state === "handled" ? handledByText(message) : receipts[state].text;
+  const Icon = state === "sent" ? Check : state === "handled" ? CircleCheckBig : CheckCheck;
   return (
     <span
       data-receipt={state}
-      title={at === null ? undefined : `${receipts[state].text} ${formatFull(at)}`}
+      title={at === null ? undefined : `${text} ${formatFull(at)}`}
       className={cn("inline-flex items-center gap-0.5", receipts[state].seen && "text-sky-700 dark:text-sky-400")}
     >
       <Icon aria-hidden className="size-3.5" />

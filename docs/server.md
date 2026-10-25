@@ -267,7 +267,8 @@ or fails too, and rejected only without a lead; a `clientId` already stored retu
 message without storing or typing it again. The lead reads the message with the MCP tool
 `take_pending` and answers with `reply_in_chat`, as its prompt tells it to. Both store the
 message in the database and send the `chat-changed` event, so every open client reloads
-`list_chat_messages` (the latest 500 messages). Each client keeps the ID of the last
+`list_chat_messages` (the latest 500 messages, and any older message of a person the lead
+has not handled yet; see Receipts below). Each client keeps the ID of the last
 message it showed in the open chat in local storage and counts the lead's later replies,
 and the server's finish reports, as unread.
 
@@ -320,6 +321,37 @@ lead takes them; their IDs are `chat-<id>` and `event-<id>`.
   builds from the item it acts on (`chat-12/create-1`). The ID is kept on the task event
   the call made; calling again with it returns that task and creates, starts, or runs
   nothing, so an item handled again after a restart does not repeat its effects.
+
+#### Receipts
+
+Each person's message shows how far it got. `delivered` (its ID reached the pane) and
+`seen` (the lead started a turn after that, or replied) are the server's observations;
+`seen` is an estimate and never counts as handled. The lead itself writes the two
+receipts that say it acted, and only with the lead token:
+
+- **Acknowledged.** `ack_chat { ids }` records `ackedAt`: the lead received the message
+  and is on it. It is never an approval, and confirms nothing.
+- **Handled.** `reply_in_chat { text, handles }` posts a reply and records it as what
+  handled the messages in `handles`; `mark_chat_handled { id, reply_id | task_id }` links
+  a reply posted earlier, or a task. A reply must be the lead's and newer than the message;
+  a task must carry a request ID of the message (`chat-12` or `chat-12/...`) on one of its
+  events. Other links, other authors' messages, and event IDs are rejected, and nothing is
+  recorded for a call with one bad ID. Handled means answered or turned into a task, not
+  that the task is done.
+
+Both are kept once: repeating a call changes nothing, and a message handled before keeps
+its first time and link, so a receipt never goes back. Handling a message acknowledges it
+too. A message gets `dueAt`, its time plus 10 minutes by the server's clock, when it is
+stored; past it and unhandled it is `overdue`, decided by the server when it lists the
+chat, and the supervisor sends `chat-changed` when a message falls due so that clients show
+it. Messages stored before receipts existed have no `dueAt` and are never overdue. A take
+without IDs also returns `open`: the messages taken before and never handled, however
+far back in the history.
+
+Each `done` event the lead follows links the system's finish report of it (`report_id`,
+written in the transaction of the finish; earlier events got theirs from the result stored
+with them), and `take_pending` returns it as `reportId`, so the lead does not report the
+finish again.
 
 #### Lead tools
 

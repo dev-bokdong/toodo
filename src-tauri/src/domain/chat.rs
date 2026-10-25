@@ -3,8 +3,27 @@
 
 use std::fmt;
 
+use super::model::TaskId;
+
 /// The longest message, in characters; longer text belongs in a task description.
 pub const MAX_BODY_CHARS: usize = 20_000;
+
+/// How long the lead has to handle a person's message, in seconds from when the server
+/// stored it, before the chat shows the message as overdue.
+pub const HANDLE_WITHIN_SECS: i64 = 10 * 60;
+
+/// When a person's message stored at `at` (server time) becomes overdue.
+pub fn due_at(at: i64) -> i64 {
+    at.saturating_add(HANDLE_WITHIN_SECS)
+}
+
+/// What the lead handled a person's message with: a reply it posted after the message,
+/// or a task it created or started for it (named with the message's request ID).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HandledBy {
+    Reply(ChatMessageId),
+    Task(TaskId),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChatMessageId(pub i64);
@@ -53,8 +72,27 @@ pub struct ChatMessage {
     /// When a person's message was typed into the lead's pane; `None` for the lead's.
     pub delivered_at: Option<i64>,
     /// When the lead picked a delivered message up: it started a turn after the message
-    /// reached its pane, or it replied.
+    /// reached its pane, or it replied. An estimate: it never counts as handled.
     pub seen_at: Option<i64>,
+    /// When a person's message becomes overdue unless handled; `None` for the lead's and
+    /// the system's, and for people's messages stored before receipts were kept.
+    pub due_at: Option<i64>,
+    /// When the lead acknowledged the message: it received it and is on it. Never an
+    /// approval of anything.
+    pub acked_at: Option<i64>,
+    /// When the lead handled the message, with what (see [`HandledBy`]); `handled_by` is
+    /// `None` for a handled message whose task was deleted since.
+    pub handled_at: Option<i64>,
+    pub handled_by: Option<HandledBy>,
+    /// Whether the message was past its `due_at`, unhandled, when it was read.
+    pub overdue: bool,
+}
+
+impl ChatMessage {
+    /// Whether the message is unhandled past its due time at `now`, server time.
+    pub fn is_overdue(&self, now: i64) -> bool {
+        self.handled_at.is_none() && self.due_at.is_some_and(|due| now >= due)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +145,34 @@ mod tests {
         assert_eq!(
             body(&"x".repeat(MAX_BODY_CHARS + 1)).unwrap_err(),
             ChatBodyError::TooLong
+        );
+    }
+
+    #[test]
+    fn an_unhandled_message_is_overdue_from_its_due_time_on() {
+        let mut message = ChatMessage {
+            id: ChatMessageId(1),
+            author: ChatAuthor::User,
+            body: "Plan it".to_owned(),
+            at: 100,
+            delivered_at: Some(100),
+            seen_at: Some(101),
+            due_at: Some(due_at(100)),
+            acked_at: None,
+            handled_at: None,
+            handled_by: None,
+            overdue: false,
+        };
+        assert!(!message.is_overdue(100 + HANDLE_WITHIN_SECS - 1));
+        assert!(message.is_overdue(100 + HANDLE_WITHIN_SECS));
+        message.handled_at = Some(900);
+        assert!(!message.is_overdue(i64::MAX));
+        // Seen is an estimate: a message seen but not handled stays overdue.
+        message.handled_at = None;
+        message.due_at = None;
+        assert!(
+            !message.is_overdue(i64::MAX),
+            "messages without a due time never are"
         );
     }
 

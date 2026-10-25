@@ -592,13 +592,83 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Post a message to the people in the Toodo chat panel. Only the Toodo lead uses it: it takes their messages with take_pending, and they read only the panel, never the pane. Answer each of them here, and post updates they should see. GitHub-flavored Markdown."
+        description = "Post a message to the people in the Toodo chat panel. Only the Toodo lead uses it: it takes their messages with take_pending, and they read only the panel, never the pane. Answer each of them here, and post updates they should see. GitHub-flavored Markdown. Pass handles with the IDs of the messages the reply answers (e.g. [\"chat-12\"]) to mark them handled by it."
     )]
     fn reply_in_chat(
         &self,
+        Extension(parts): Extension<Parts>,
         Parameters(request): Parameters<tools::ChatReply>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = crate::commands::lead::reply(&mut lock(self.backend.storage()), &request.text);
+        let handles = request.handles.unwrap_or_default();
+        if !handles.is_empty() && lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<crate::commands::lead::ChatMessage>(Err(
+                crate::commands::CommandError::rejected(
+                    "only the Toodo lead marks people's messages handled",
+                ),
+            ));
+        }
+        let result = crate::commands::lead::reply(
+            &mut lock(self.backend.storage()),
+            &request.text,
+            &handles,
+        );
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Only the Toodo lead: acknowledge people's chat messages by ID (e.g. {\"ids\": [\"chat-12\"]}) as soon as you take them: you received them and are on them. The chat panel shows the acknowledgement; it is never an approval. Acknowledging again changes nothing."
+    )]
+    fn ack_chat(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(request): Parameters<tools::AckChat>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<Vec<crate::commands::lead::ChatMessage>>(Err(
+                crate::commands::CommandError::rejected(
+                    "only the Toodo lead acknowledges people's messages",
+                ),
+            ));
+        }
+        let result = crate::commands::lead::ack(
+            &mut lock(self.backend.storage()),
+            &request.ids.unwrap_or_default(),
+        );
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Only the Toodo lead: mark a person's chat message handled, with what handled it: reply_id, your reply_in_chat message that answers it, or task_id, the task you created or started for it with a request_id of the message (e.g. chat-12/create-1). Other links are rejected. Usually reply_in_chat with handles does this in one call. A message handled before keeps its first link."
+    )]
+    fn mark_chat_handled(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(request): Parameters<tools::MarkChatHandled>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use crate::commands::CommandError;
+        use crate::domain::chat::{ChatMessageId, HandledBy};
+        if lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<crate::commands::lead::ChatMessage>(Err(CommandError::rejected(
+                "only the Toodo lead marks people's messages handled",
+            )));
+        }
+        let by = match (request.reply_id, request.task_id) {
+            (Some(reply), None) => HandledBy::Reply(ChatMessageId(reply)),
+            (None, Some(task)) => HandledBy::Task(task.into()),
+            _ => {
+                return reply::<crate::commands::lead::ChatMessage>(Err(
+                    CommandError::invalid_input("pass exactly one of reply_id and task_id"),
+                ));
+            }
+        };
+        let result =
+            crate::commands::lead::handle(&mut lock(self.backend.storage()), &request.id, by);
         if result.is_ok() {
             self.backend.chat_changed();
         }
@@ -1770,9 +1840,13 @@ mod tests {
         let call = |text: &str| {
             serde_json::to_value(
                 server
-                    .reply_in_chat(Parameters(tools::ChatReply {
-                        text: text.to_owned(),
-                    }))
+                    .reply_in_chat(
+                        by(lead::Caller::Agent),
+                        Parameters(tools::ChatReply {
+                            text: text.to_owned(),
+                            handles: None,
+                        }),
+                    )
                     .unwrap(),
             )
             .unwrap()
@@ -1793,6 +1867,58 @@ mod tests {
             lock(backend.storage()).list_chat_messages().unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn only_the_lead_acknowledges_and_marks_messages_handled() {
+        let mut storage = crate::storage::Storage::open_in_memory().unwrap();
+        let message = storage
+            .add_chat_message(crate::domain::chat::ChatAuthor::User, "Plan it", None)
+            .unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let id = format!("chat-{}", message.id);
+        let value = |result: Result<CallToolResult, ErrorData>| {
+            serde_json::to_value(result.unwrap()).unwrap()
+        };
+        let ack = |caller| {
+            let request = serde_json::from_value(serde_json::json!({ "ids": id })).unwrap();
+            value(server.ack_chat(by(caller), Parameters(request)))
+        };
+        let answer = |caller| {
+            let request = serde_json::from_value(
+                serde_json::json!({ "text": "Planned #4.", "handles": [id] }),
+            )
+            .unwrap();
+            value(server.reply_in_chat(by(caller), Parameters(request)))
+        };
+        let mark = |caller, arguments: serde_json::Value| {
+            let request = serde_json::from_value(arguments).unwrap();
+            value(server.mark_chat_handled(by(caller), Parameters(request)))
+        };
+
+        assert!(error_text(&ack(lead::Caller::Agent)).starts_with("Rejected:"));
+        assert!(error_text(&answer(lead::Caller::Agent)).starts_with("Rejected:"));
+        let reply_id = serde_json::json!({ "id": id, "reply_id": 1 });
+        assert!(error_text(&mark(lead::Caller::Agent, reply_id)).starts_with("Rejected:"));
+        assert_eq!(*backend.chat_changed.lock().unwrap(), 0, "nothing changed");
+        let stored = lock(backend.storage()).list_chat_messages().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!((stored[0].acked_at, stored[0].handled_at), (None, None));
+
+        let acked = created_workspace(&ack(lead::Caller::Lead));
+        assert!(acked[0]["ackedAt"].is_number(), "{acked}");
+        let posted = created_workspace(&answer(lead::Caller::Lead));
+        let both = serde_json::json!({ "id": id, "reply_id": posted["id"], "task_id": 1 });
+        assert!(error_text(&mark(lead::Caller::Lead, both)).starts_with("InvalidInput:"));
+        let again = serde_json::json!({ "id": id, "reply_id": posted["id"] });
+        let handled = created_workspace(&mark(lead::Caller::Lead, again));
+        assert_eq!(
+            handled["handledBy"],
+            serde_json::json!({ "kind": "reply", "messageId": posted["id"] })
+        );
+        assert_eq!(handled["overdue"], false);
+        assert_eq!(*backend.chat_changed.lock().unwrap(), 3);
     }
 
     fn error_text(result: &serde_json::Value) -> &str {
@@ -2215,6 +2341,8 @@ mod tests {
             "supersede_memory",
             "reply_in_chat",
             "take_pending",
+            "ack_chat",
+            "mark_chat_handled",
         ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
         }

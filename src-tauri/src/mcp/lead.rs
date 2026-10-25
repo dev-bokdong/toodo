@@ -122,7 +122,7 @@ pub(crate) fn record(
 ) -> CommandResult<Task> {
     let noted = storage.add_task_note(task, NoteKind::Progress, &activity.note)?;
     if let Some(chat) = &activity.chat {
-        reply(storage, chat)?;
+        reply(storage, chat, &[])?;
     }
     Ok((&noted).into())
 }
@@ -167,7 +167,7 @@ pub(crate) fn guard(
 ) -> CommandResult<Guard> {
     let Some(code) = confirmation.map(str::trim) else {
         let code = new_code()?;
-        reply(storage, &request(action, &code))?;
+        reply(storage, &request(action, &code), &[])?;
         return Ok(Guard::Refused {
             error: CommandError::rejected(format!(
                 "a person must confirm this first: Toodo posted a request for it to the chat \

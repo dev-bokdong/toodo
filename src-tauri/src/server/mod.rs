@@ -684,6 +684,87 @@ mod tests {
         assert!(status(address, "GET", "/tasks", None).contains(" 404 "));
     }
 
+    /// The body of a tool call to `/mcp` with `token`.
+    fn call_tool(
+        address: SocketAddr,
+        token: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> String {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments },
+        })
+        .to_string();
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\
+             Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn the_lead_token_writes_receipts_without_a_lead_running() {
+        use crate::domain::chat::{ChatAuthor, HandledBy};
+
+        let (address, _temp, services) = serve_services(None);
+        // As with TOODO_LEAD=off: no supervisor, no pane; an outside lead holds the token.
+        assert_eq!(
+            services.lead.lock().unwrap().state,
+            crate::commands::lead::LeadState::Disabled
+        );
+        let message = crate::commands::lock(&services.storage)
+            .add_chat_message(ChatAuthor::User, "Plan it", None)
+            .unwrap();
+        let id = format!("chat-{}", message.id);
+        let stored = || {
+            crate::commands::lock(&services.storage)
+                .chat_message(message.id)
+                .unwrap()
+                .unwrap()
+        };
+
+        let refused = call_tool(
+            address,
+            "agent",
+            "ack_chat",
+            serde_json::json!({ "ids": [id] }),
+        );
+        assert!(refused.contains("only the Toodo lead"), "{refused}");
+        assert_eq!(stored().acked_at, None);
+
+        let acked = call_tool(
+            address,
+            "lead",
+            "ack_chat",
+            serde_json::json!({ "ids": [id] }),
+        );
+        assert!(acked.contains("ackedAt"), "{acked}");
+        assert!(stored().acked_at.is_some());
+        let replied = call_tool(
+            address,
+            "lead",
+            "reply_in_chat",
+            serde_json::json!({ "text": "Planned.", "handles": [id] }),
+        );
+        assert!(replied.contains("Planned."), "{replied}");
+        let reply = crate::commands::lock(&services.storage)
+            .list_chat_messages()
+            .unwrap()[1]
+            .id;
+        assert_eq!(stored().handled_by, Some(HandledBy::Reply(reply)));
+    }
+
     #[test]
     fn memory_commands_are_served_over_rpc() {
         let temp = tempfile::tempdir().unwrap();
