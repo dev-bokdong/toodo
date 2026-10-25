@@ -501,6 +501,17 @@ pub(super) const MIGRATIONS: &[&str] = &[
          WHERE r.task_id = task_events.task_id AND r.at = task_events.at)
         WHERE status = 'done';
     ",
+    // Version 23: messages imported from another chat (see `Storage::import_chat_message`)
+    // keep where they came from: the origin's label and the message's ID there, unique per
+    // origin so importing one again stores nothing.
+    "
+    ALTER TABLE chat_messages ADD COLUMN origin TEXT
+        CHECK (origin IS NULL OR author IN ('user', 'lead'));
+    ALTER TABLE chat_messages ADD COLUMN origin_id TEXT
+        CHECK ((origin IS NULL) = (origin_id IS NULL));
+    CREATE UNIQUE INDEX chat_messages_origin ON chat_messages (origin, origin_id)
+        WHERE origin IS NOT NULL;
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1683,5 +1694,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, (Some(51), None));
+    }
+
+    #[test]
+    fn version_23_keeps_one_message_per_origin_and_only_of_people_and_the_lead() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..22] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 22).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_messages (author, body, at) VALUES ('user', 'Hi', 10)",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let origin: Option<String> = conn
+            .query_row("SELECT origin FROM chat_messages WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(origin, None);
+        let add = |author: &str, origin: Option<&str>, id: Option<&str>| {
+            conn.execute(
+                "INSERT INTO chat_messages (author, body, at, origin, origin_id)
+                 VALUES (?1, 'x', 20, ?2, ?3)",
+                params![author, origin, id],
+            )
+        };
+        add("user", Some("matrix"), Some("m1")).unwrap();
+        add("lead", Some("irc"), Some("m1")).unwrap();
+        assert!(
+            add("lead", Some("matrix"), Some("m1")).is_err(),
+            "one per origin"
+        );
+        assert!(add("system", Some("matrix"), Some("m2")).is_err());
+        assert!(add("user", Some("matrix"), None).is_err());
+        assert!(add("user", None, Some("m3")).is_err());
+        add("user", None, None).unwrap();
     }
 }

@@ -37,6 +37,7 @@ use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
+pub use chat::MAX_FEED;
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use inbox::{InboxContent, InboxItem, Taken};
 pub use push::NewPushSubscription;

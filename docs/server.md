@@ -111,7 +111,7 @@ toodo-server
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
-| `TOODO_LEAD` | `on` | `off` runs no lead (see [Lead](#lead)) |
+| `TOODO_LEAD` | `on` | `off` runs no lead; `external` runs none and keeps the chat for a lead outside the server (see [Lead](#lead) and [`external-lead.md`](external-lead.md)) |
 | `TOODO_LEAD_COMMAND` | omo (see below) | Shell command that starts the lead agent |
 | `TOODO_LEAD_MODEL` | none | Model for the lead, passed to the command as `$TOODO_LEAD_MODEL` |
 | `TOODO_LEAD_DIR` | `$TOODO_DATA_DIR/lead` | The lead's workspace |
@@ -120,7 +120,9 @@ On first start the data directory gets three access tokens:
 
 - `mcp-token`: agents send it to `/mcp` as `Authorization: Bearer <token>`.
 - `lead-token`: the lead's token for `/mcp`, which tells the tools that the lead calls
-  them (see [Lead tools](#lead-tools)). Only the lead's launcher carries it.
+  them (see [Lead tools](#lead-tools)). Only the lead's launcher carries it, or, with
+  `TOODO_LEAD=external`, the lead outside the server. It also opens `GET /api/events`,
+  and nothing else under `/api`.
 - `web-token`: the shared web token. A browser signs in with it once and is registered
   as a device with a token of its own (see [Devices](#devices)); `/api` accepts the
   shared token too, so existing clients keep working.
@@ -251,10 +253,16 @@ the work. Its system prompt is `src-tauri/src/server/lead-prompt.md`.
   one in omo; remove it, or point it at this server, on the machine the lead runs on.
 
 `get_lead` returns the lead's status for the chat panel: `{ state, workspaceId,
-herdrWorkspaceId, paneId, agent, agentStatus, restarts, startedAt, error }`, where `state`
-is `disabled`, `starting`, `running`, `restarting`, or `failed`. The `lead-changed` event
-carries the same object whenever it changes. The desktop app has no lead, and always
-reports `disabled`.
+herdrWorkspaceId, paneId, agent, agentStatus, typing, restarts, startedAt, error,
+connected, lastContactAt }`, where `state` is `disabled`, `starting`, `running`,
+`restarting`, `failed`, or `external`. The `lead-changed` event carries the same object
+whenever it changes. The desktop app has no lead, and always reports `disabled`.
+
+With `TOODO_LEAD=external` the server runs no lead, opens no herdr workspace for one,
+and reports `external`: the chat, the inbox, the receipts, and the finish reports work as
+below, and a lead outside the server reads and answers them with the lead token.
+`connected` and `lastContactAt` tell whether it is in touch. See
+[`external-lead.md`](external-lead.md) for that API.
 
 The web app talks to the lead in a floating chat: a round Dori button at the bottom right of
 every view opens a chat panel over it, or a full-screen sheet on a phone. While the chat is
@@ -263,7 +271,8 @@ The panel keeps an unsent message while closed or while moving between views. `s
 stores the message in the lead's inbox first, then, while the lead runs, types only its
 ID into the lead's pane (`[Toodo inbox] chat-12 - take them with the Toodo MCP tool
 take_pending`) and marks it delivered. It is accepted while the lead starts, restarts,
-or fails too, and rejected only without a lead; a `clientId` already stored returns that
+or fails too, and by a server with an outside lead (which reads it itself), and rejected
+only with `TOODO_LEAD=off`; a `clientId` already stored returns that
 message without storing or typing it again. The lead reads the message with the MCP tool
 `take_pending` and answers with `reply_in_chat`, as its prompt tells it to. Both store the
 message in the database and send the `chat-changed` event, so every open client reloads

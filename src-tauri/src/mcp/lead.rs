@@ -295,6 +295,27 @@ mod tests {
     }
 
     #[test]
+    fn a_persons_answer_imported_from_another_chat_confirms() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        let action = "conclude #3 Spike without a merge.";
+        let code = request_code(&mut storage, action);
+        let lead = chat::ChatOrigin::parse("matrix", "m1").unwrap();
+        storage
+            .import_chat_message(ChatAuthor::Lead, &format!("confirm {code}"), &lead)
+            .unwrap();
+        assert!(
+            outcome(&mut storage, action, &code).is_err(),
+            "not the lead's"
+        );
+
+        let person = chat::ChatOrigin::parse("matrix", "m2").unwrap();
+        storage
+            .import_chat_message(ChatAuthor::User, &format!("confirm {code}"), &person)
+            .unwrap();
+        assert_eq!(outcome(&mut storage, action, &code), Ok(code));
+    }
+
+    #[test]
     fn a_malformed_code_is_invalid_input_and_posts_nothing() {
         let mut storage = Storage::open_in_memory().unwrap();
         for code in ["", "abc", "zzzzzz", "abcdef0"] {

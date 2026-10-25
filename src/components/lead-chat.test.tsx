@@ -35,6 +35,8 @@ const running: LeadStatus = {
   restarts: 0,
   startedAt: 1,
   error: null,
+  connected: false,
+  lastContactAt: null,
 };
 
 /** No receipts of the lead's work. */
