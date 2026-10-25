@@ -32,13 +32,17 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, io, thread};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use super::Services;
 use crate::adapters::git::{Git, shell_quote};
 use crate::adapters::herdr::{Herdr, PaneAgent};
 use crate::commands::events::Notifier;
-use crate::commands::lead::{LeadState, LeadStatus, LeadStatusState};
+use crate::commands::lead::{
+    DEFAULT_LEAD_NAME, LeadProfile, LeadState, LeadStatus, LeadStatusState,
+};
 use crate::commands::types::{AgentStatus, Timestamp, WorkspaceSetup, WorkspaceSource};
 use crate::commands::{StorageState, lock, workspaces};
 use crate::domain::chat::ChatAuthor;
@@ -135,6 +139,60 @@ pub struct LeadConfig {
     /// Shell command that starts the agent, run in `dir`.
     pub command: String,
     pub model: Option<String>,
+}
+
+/// The longest name `TOODO_LEAD_NAME` may give the lead, in characters.
+const MAX_NAME_CHARS: usize = 40;
+/// The largest picture `TOODO_LEAD_AVATAR` may name, in bytes: every client loads it.
+const MAX_AVATAR_BYTES: usize = 256 * 1024;
+
+/// The name the chat shows for the lead, from `TOODO_LEAD_NAME`; [`DEFAULT_LEAD_NAME`]
+/// without one.
+pub fn name_from_env(var: impl Fn(&str) -> Option<String>) -> Result<String, String> {
+    let Some(name) = var("TOODO_LEAD_NAME")
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+    else {
+        return Ok(DEFAULT_LEAD_NAME.to_owned());
+    };
+    if name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_control) {
+        return Err(format!(
+            "TOODO_LEAD_NAME {name:?} is longer than {MAX_NAME_CHARS} characters or holds control characters"
+        ));
+    }
+    Ok(name)
+}
+
+/// How the chat shows the lead: `name`, and the picture in the file `avatar`, if any.
+pub fn profile(name: String, avatar: Option<&Path>) -> Result<LeadProfile, String> {
+    let avatar = avatar
+        .map(|path| {
+            fs::read(path)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| avatar_url(&bytes))
+                .map_err(|error| format!("TOODO_LEAD_AVATAR {}: {error}", path.display()))
+        })
+        .transpose()?;
+    Ok(LeadProfile { name, avatar })
+}
+
+/// A PNG, JPEG, WebP, or GIF picture as a `data:` URL, its type told by its first bytes.
+fn avatar_url(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() > MAX_AVATAR_BYTES {
+        return Err(format!("larger than {} KiB", MAX_AVATAR_BYTES / 1024));
+    }
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        return Err("not a PNG, JPEG, WebP, or GIF picture".to_owned());
+    };
+    Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
 
 /// What the server knows of a lead outside it (`TOODO_LEAD=external`) from its requests
@@ -987,6 +1045,58 @@ mod tests {
             Ok(LeadMode::External)
         );
         assert!(config_from(env(&[("TOODO_LEAD", "maybe")]), data).is_err());
+    }
+
+    #[test]
+    fn the_lead_is_called_lead_unless_the_server_names_it() {
+        assert_eq!(name_from_env(env(&[])).as_deref(), Ok("Lead"));
+        assert_eq!(
+            name_from_env(env(&[("TOODO_LEAD_NAME", "  ")])).as_deref(),
+            Ok("Lead")
+        );
+        assert_eq!(
+            name_from_env(env(&[("TOODO_LEAD_NAME", " Planner ")])).as_deref(),
+            Ok("Planner")
+        );
+        assert!(name_from_env(env(&[("TOODO_LEAD_NAME", "x".repeat(41).as_str())])).is_err());
+        assert!(name_from_env(env(&[("TOODO_LEAD_NAME", "Two\nlines")])).is_err());
+    }
+
+    #[test]
+    fn the_avatar_is_a_picture_file_sent_as_a_data_url() {
+        let temp = tempfile::tempdir().unwrap();
+        let png = temp.path().join("lead.png");
+        fs::write(&png, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        let shown = profile("Lead".to_owned(), Some(&png)).unwrap();
+        assert_eq!(
+            shown.avatar.as_deref(),
+            Some("data:image/png;base64,iVBORw0KGgpyZXN0")
+        );
+        assert_eq!(
+            profile("Lead".to_owned(), None).unwrap(),
+            LeadProfile::default()
+        );
+        assert!(
+            avatar_url(b"RIFF\0\0\0\0WEBPVP8 ")
+                .unwrap()
+                .starts_with("data:image/webp;")
+        );
+        assert!(
+            avatar_url(b"\xff\xd8\xff\xe0")
+                .unwrap()
+                .starts_with("data:image/jpeg;")
+        );
+
+        let svg = temp.path().join("lead.svg");
+        fs::write(&svg, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
+        let error = profile("Lead".to_owned(), Some(&svg)).unwrap_err();
+        assert!(error.contains("not a PNG"), "{error}");
+        let large = temp.path().join("large.png");
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.resize(MAX_AVATAR_BYTES + 1, 0);
+        fs::write(&large, bytes).unwrap();
+        assert!(profile("Lead".to_owned(), Some(&large)).is_err());
+        assert!(profile("Lead".to_owned(), Some(&temp.path().join("missing.png"))).is_err());
     }
 
     #[test]

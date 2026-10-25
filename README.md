@@ -33,7 +33,7 @@ into a performance report.
 - [docs/server.md](docs/server.md): running Toodo headless on a Linux server, used from a
   browser.
 - [docs/android.md](docs/android.md): the Android app, a client of a server, with voice
-  input to Dori in one tap.
+  input to the lead in one tap.
 - [docs/macos.md](docs/macos.md): the macOS app, a client of the server with native
   dictation.
 

@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FloatingChat, LeadChat } from "@/components/lead-chat";
 import { requestChat } from "@/lib/app-links";
-import { commands, type ChatMessage, type LeadStatus } from "@/lib/bindings";
+import { commands, type ChatMessage, type LeadProfile, type LeadStatus } from "@/lib/bindings";
 import { QUIET_MS, stopSpeaking } from "@/lib/voice";
 
 const appEvents = vi.hoisted(() => ({ voiceMessage: null as (() => void) | null }));
@@ -59,26 +59,50 @@ function sent(id: number, body: string, seenAt: number | null = null): ChatMessa
   return { id, author: "user", body, at: 1_790_000_120, deliveredAt: 1_790_000_120, seenAt, ...open };
 }
 
-function renderChat(lead: LeadStatus) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <LeadChat lead={lead} />
-    </QueryClientProvider>,
-  );
-}
+/** A lead the server names and gives a picture. */
+const planner: LeadProfile = { name: "Planner", avatar: "data:image/png;base64,iVBORw0KGgo=" };
 
-function renderFloating(lead: LeadStatus) {
+/** A lead outside the server that is out of touch. */
+const away: LeadStatus = {
+  ...running,
+  state: "external",
+  workspaceId: null,
+  herdrWorkspaceId: null,
+  paneId: null,
+  agent: null,
+  agentStatus: null,
+  startedAt: null,
+  connected: false,
+  lastContactAt: 1_790_000_000,
+};
+
+function renderChat(lead: LeadStatus, profile?: LeadProfile) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <FloatingChat lead={lead} />
+      <LeadChat lead={lead} profile={profile} />
     </QueryClientProvider>,
   );
   const rerender = (next: LeadStatus) =>
     view.rerender(
       <QueryClientProvider client={client}>
-        <FloatingChat lead={next} />
+        <LeadChat lead={next} profile={profile} />
+      </QueryClientProvider>,
+    );
+  return { ...view, rerender };
+}
+
+function renderFloating(lead: LeadStatus, profile?: LeadProfile) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <FloatingChat lead={lead} profile={profile} />
+    </QueryClientProvider>,
+  );
+  const rerender = (next: LeadStatus) =>
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <FloatingChat lead={next} profile={profile} />
       </QueryClientProvider>,
     );
   return { rerender };
@@ -133,15 +157,17 @@ describe("LeadChat", () => {
     expect(second[1]).toBe(first[1]);
   });
 
-  it("shows replies as Dori's and how far each message got", async () => {
+  it("shows replies as the lead's, under a generic icon unless the server names it, and how far each message got", async () => {
     let deliver: (reply: Awaited<ReturnType<typeof commands.sendChatMessage>>) => void = () => {};
     mocked.sendChatMessage.mockReturnValue(new Promise((resolve) => (deliver = resolve)));
     renderChat(running);
 
+    expect(screen.getByRole("heading", { name: "Lead" })).toBeInTheDocument();
     const log = await screen.findByRole("log", { name: "Messages" });
-    const reply = await within(log).findByRole("listitem", { name: "Dori" });
-    expect(within(reply).getByText("Dori")).toBeInTheDocument();
-    expect(reply.querySelector("img")).toHaveAttribute("src", expect.stringContaining("dori-avatar"));
+    const reply = await within(log).findByRole("listitem", { name: "Lead" });
+    expect(within(reply).getByText("Lead")).toBeInTheDocument();
+    expect(reply.querySelector("img")).toBeNull();
+    expect(reply.querySelector("[data-lead-avatar] svg")).not.toBeNull();
     const first = within(log).getByRole("listitem", { name: "You" });
     expect(within(first).getByText("Seen")).toHaveAttribute("data-receipt", "seen");
 
@@ -157,6 +183,48 @@ describe("LeadChat", () => {
     expect(await within(log).findByText("Delivered")).toHaveAttribute("data-receipt", "delivered");
     expect(within(log).queryByText("Sent")).toBeNull();
     expect(within(log).getAllByRole("listitem", { name: "You" })).toHaveLength(2);
+  });
+
+  it("shows the name and picture the server gives the lead", async () => {
+    renderChat({ ...running, typing: true }, planner);
+
+    expect(screen.getByRole("heading", { name: "Planner" })).toBeInTheDocument();
+    const log = await screen.findByRole("log", { name: "Messages" });
+    const reply = await within(log).findByRole("listitem", { name: "Planner" });
+    expect(reply.querySelector("img")).toHaveAttribute("src", planner.avatar);
+    const bubble = within(log).getByRole("listitem", { name: "Reply is being written" });
+    expect(bubble.querySelector("img")).toHaveAttribute("src", planner.avatar);
+    expect(screen.getByRole("textbox", { name: "Message to the lead" })).toHaveAttribute(
+      "placeholder",
+      "Message Planner (Enter sends, Shift+Enter for a new line)",
+    );
+  });
+
+  it("keeps messages for a disconnected outside lead and shows them waiting until it takes them", async () => {
+    mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: { ...sent(3, "Hi"), deliveredAt: null } });
+    const { rerender } = renderChat(away, planner);
+
+    const status = screen.getByRole("status", { name: "Lead status" });
+    expect(status).toHaveTextContent("Disconnected");
+    expect(status.getAttribute("title")).toMatch(/^Last in touch /);
+    expect(screen.getByText("Planner is disconnected. Messages wait here until it connects.")).toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "Message to the lead" });
+    expect(input).toHaveAttribute("placeholder", "Planner is disconnected; your message waits for it");
+    fireEvent.change(input, { target: { value: "Hi" } });
+    mocked.listChatMessages.mockResolvedValue({
+      status: "ok",
+      data: [...history, { ...sent(3, "Hi"), deliveredAt: null }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    const log = screen.getByRole("log", { name: "Messages" });
+    expect(await within(log).findByText("Waiting")).toHaveAttribute("data-receipt", "waiting");
+    expect(within(log).queryByText("Sent")).toBeNull();
+
+    rerender({ ...away, connected: true, lastContactAt: 1_790_000_100 });
+    expect(status).toHaveTextContent("Connected");
+    expect(screen.queryByText(/Messages wait here/)).toBeNull();
+    expect(input).toHaveAttribute("placeholder", "Message Planner (Enter sends, Shift+Enter for a new line)");
   });
 
   it("shows which messages the lead acknowledged, handled, or let wait too long", async () => {
@@ -184,7 +252,7 @@ describe("LeadChat", () => {
     expect(screen.getByText("1 message waits too long")).toBeInTheDocument();
   });
 
-  it("shows the server's finish reports apart from Dori's replies and the person's messages", async () => {
+  it("shows the server's finish reports apart from the lead's replies and the person's messages", async () => {
     const report: ChatMessage = {
       id: 3,
       author: "system",
@@ -206,25 +274,21 @@ describe("LeadChat", () => {
     );
     expect(shown.querySelector("img")).toBeNull();
     expect(shown.querySelector("[data-receipt]")).toBeNull();
-    expect(within(log).getAllByRole("listitem", { name: "Dori" })).toHaveLength(1);
+    expect(within(log).getAllByRole("listitem", { name: "Lead" })).toHaveLength(1);
     expect(within(log).getAllByRole("listitem", { name: "You" })).toHaveLength(1);
     await waitFor(() => expect(localStorage.getItem("toodo-chat-read")).toBe("3"));
   });
 
-  it("shows Dori's typing bubble only while the lead is typing, still when motion is reduced", async () => {
+  it("shows the lead's typing bubble only while the lead is typing, still when motion is reduced", async () => {
     const view = renderChat(running);
     const log = await screen.findByRole("log", { name: "Messages" });
     await within(log).findByText("Plan the release");
     expect(within(log).queryByRole("listitem", { name: "Reply is being written" })).toBeNull();
 
-    view.rerender(
-      <QueryClientProvider client={new QueryClient()}>
-        <LeadChat lead={{ ...running, agentStatus: "working", typing: true }} />
-      </QueryClientProvider>,
-    );
+    view.rerender({ ...running, agentStatus: "working", typing: true });
     const bubble = await within(log).findByRole("listitem", { name: "Reply is being written" });
-    expect(bubble.querySelector("img")).toHaveAttribute("src", expect.stringContaining("dori-avatar"));
-    const dots = bubble.querySelectorAll("span");
+    expect(bubble.querySelector("[data-lead-avatar]")).not.toBeNull();
+    const dots = bubble.querySelectorAll("[role=status] span");
     expect(dots).toHaveLength(3);
     for (const dot of dots) {
       expect(dot).toHaveClass("animate-bounce", "motion-reduce:animate-none");
@@ -239,7 +303,7 @@ describe("LeadChat", () => {
 
     expect(await screen.findByRole("status", { name: "Lead status" })).toHaveTextContent("Restarting");
     const input = screen.getByRole("textbox", { name: "Message to the lead" });
-    expect(input).toHaveAttribute("placeholder", "Dori is not running yet; your message waits for it");
+    expect(input).toHaveAttribute("placeholder", "Lead is not running yet; your message waits for it");
     fireEvent.change(input, { target: { value: "Hi" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
@@ -346,7 +410,7 @@ describe("FloatingChat", () => {
     expect(mark.querySelectorAll(".animate-bounce")).toHaveLength(0);
 
     rerender({ ...running, agentStatus: "working", typing: true });
-    expect(button).toHaveAccessibleName(expect.stringContaining("Dori is typing"));
+    expect(button).toHaveAccessibleName(expect.stringContaining("Lead is typing"));
     expect(mark.querySelectorAll(".animate-bounce")).toHaveLength(3);
   });
 });

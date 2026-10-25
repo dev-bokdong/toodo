@@ -294,6 +294,7 @@ commands!(s => {
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
 
     "get_lead"() => sync Reply::value(lead::get_lead(State(&s.lead)));
+    "get_lead_profile"() => sync Reply::value(lead::get_lead_profile(State(&s.lead_profile)));
     "list_chat_messages"() => sync Reply::result(lead::list_chat_messages(State(&s.storage)));
     "send_chat_message"(text: String, client_id: String) => sync {
         let sent = lead::send_chat_message(State(&s.storage), State(&s.herdr), State(&s.lead), text, client_id);

@@ -96,6 +96,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::memory::supersede_memory,
             commands::backup::restore_backup,
             commands::lead::get_lead,
+            commands::lead::get_lead_profile,
             commands::lead::list_chat_messages,
             commands::lead::send_chat_message,
             connection::get_connection,
@@ -366,6 +367,7 @@ pub fn run() {
             app.manage::<commands::events::AgentStatusState>(Mutex::default());
             app.manage::<commands::completion::PullRequestStatusState>(Mutex::default());
             app.manage::<commands::lead::LeadStatusState>(Mutex::default());
+            app.manage(commands::lead::LeadProfile::default());
             let runtime: Arc<AppHandle> = Arc::new(app.handle().clone());
             commands::events::spawn(runtime.clone())?;
             commands::backup::spawn(runtime.clone())?;

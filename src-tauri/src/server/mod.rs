@@ -59,7 +59,7 @@ use crate::commands::events::{
     self, AgentStatusState, AgentStatusesChanged, ChatChanged, MemoryChanged, Notifier,
     PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
 };
-use crate::commands::lead::LeadStatusState;
+use crate::commands::lead::{LeadProfile, LeadStatusState};
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{
     GitHubState, GitState, HerdrState, Runtime, SshConfigState, SshState, StorageState,
@@ -115,7 +115,11 @@ Environment:
                   shell command that starts the lead agent (default: omo)
   TOODO_LEAD_MODEL
                   model for the lead, as $TOODO_LEAD_MODEL in the command
-  TOODO_LEAD_DIR  the lead's workspace (default $TOODO_DATA_DIR/lead)";
+  TOODO_LEAD_DIR  the lead's workspace (default $TOODO_DATA_DIR/lead)
+  TOODO_LEAD_NAME the lead's name in the chat (default Lead)
+  TOODO_LEAD_AVATAR
+                  PNG, JPEG, WebP, or GIF file of up to 256 KiB with the lead's
+                  picture in the chat (default: a generic icon)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -125,6 +129,10 @@ pub struct Config {
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
     pub lead: lead::LeadMode,
+    /// The lead's name in the chat.
+    pub lead_name: String,
+    /// The file with the lead's picture in the chat.
+    pub lead_avatar: Option<PathBuf>,
 }
 
 impl Config {
@@ -157,12 +165,18 @@ impl Config {
             None => push::DEFAULT_SUBJECT.to_owned(),
         };
         let lead = lead::LeadMode::from_env(&var, &data_dir)?;
+        let lead_name = lead::name_from_env(&var)?;
+        let lead_avatar = var("TOODO_LEAD_AVATAR")
+            .filter(|path| !path.trim().is_empty())
+            .map(PathBuf::from);
         Ok(Self {
             listen,
             data_dir,
             web_dir,
             push_subject,
             lead,
+            lead_name,
+            lead_avatar,
         })
     }
 }
@@ -193,6 +207,7 @@ pub struct Services {
     panes: panes::Panes,
     push: push::Push,
     lead: LeadStatusState,
+    lead_profile: LeadProfile,
     /// The outside lead's contact, with `TOODO_LEAD=external` only.
     contact: Option<lead::ContactState>,
 }
@@ -348,6 +363,7 @@ pub fn main() {
 }
 
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
+    let lead_profile = lead::profile(config.lead_name.clone(), config.lead_avatar.as_deref())?;
     create_private_dir(&config.data_dir)?;
     let storage = Storage::open(&config.data_dir.join(DATABASE_FILE))?;
     let mcp_token = mcp::load_token(&config.data_dir.join(mcp::TOKEN_FILE))?;
@@ -379,6 +395,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         restore_limit: files::RESTORE_LIMIT,
         push,
         lead: LeadStatusState::default(),
+        lead_profile,
         contact: (config.lead == lead::LeadMode::External)
             .then(|| lead::ContactState::new(lead::Contact::default())),
     });
@@ -657,6 +674,7 @@ mod tests {
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
             lead: LeadStatusState::default(),
+            lead_profile: LeadProfile::default(),
             contact: None,
         })
     }

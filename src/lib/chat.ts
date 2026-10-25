@@ -45,19 +45,22 @@ export function unreadCount(messages: readonly ChatMessage[], readUpTo: number):
 }
 
 /**
- * How far a person's message got: sent by this client and not confirmed yet, typed into
- * the lead's pane, picked up by the lead (an estimate), acknowledged by the lead, or
+ * How far a person's message got: sent by this client and not confirmed yet, stored by the
+ * server and waiting for a lead that is not running or not connected, typed into the lead's
+ * pane or taken by it, picked up by the lead (an estimate), acknowledged by the lead, or
  * handled by a reply or a task of the lead.
  */
-export type Receipt = "sent" | "delivered" | "seen" | "acked" | "handled";
+export type Receipt = "sent" | "waiting" | "delivered" | "seen" | "acked" | "handled";
 
+/** `message.id` is 0 for a message this client is still sending. */
 export function receipt(
-  message: Pick<ChatMessage, "deliveredAt" | "seenAt" | "ackedAt" | "handledAt">,
+  message: Pick<ChatMessage, "id" | "deliveredAt" | "seenAt" | "ackedAt" | "handledAt">,
 ): Receipt {
   if (message.handledAt !== null) return "handled";
   if (message.ackedAt !== null) return "acked";
   if (message.seenAt !== null) return "seen";
-  return message.deliveredAt !== null ? "delivered" : "sent";
+  if (message.deliveredAt !== null) return "delivered";
+  return message.id > 0 ? "waiting" : "sent";
 }
 
 /**
