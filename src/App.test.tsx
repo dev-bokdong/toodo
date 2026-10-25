@@ -185,6 +185,14 @@ function renderApp() {
   );
 }
 
+/** Opens the settings dialog on one of its sections. */
+async function openSettings(section: string) {
+  fireEvent.click(await screen.findByRole("button", { name: /^Settings/ }));
+  const dialog = screen.getByRole("dialog", { name: "Settings" });
+  fireEvent.click(within(dialog).getByRole("tab", { name: new RegExp(`^${section}`) }));
+  return dialog;
+}
+
 /** Renders the app and opens one workspace, since the app starts on All workspaces. */
 async function renderWorkspace(name: RegExp = /^toodo/) {
   renderApp();
@@ -1454,10 +1462,11 @@ describe("App", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
+    await openSettings("Agent access");
 
-    const panel = await screen.findByRole("region", { name: "Agent access", hidden: true });
+    const panel = await screen.findByRole("region", { name: "Agent access" });
     expect(await within(panel).findByLabelText("MCP server URL")).toHaveTextContent("http://127.0.0.1:47615/mcp");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy MCP config", hidden: true }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy MCP config" }));
     expect(await within(panel).findByText("Copied the MCP config.")).toBeInTheDocument();
     expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual({
       mcpServers: {
@@ -1477,14 +1486,16 @@ describe("App", () => {
     ]);
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
+    await openSettings("Agent access");
 
-    const panel = await screen.findByRole("region", { name: "Agent access", hidden: true });
-    const devbox = await within(panel).findByRole("listitem", { name: "Tunnel to devbox", hidden: true });
+    const panel = await screen.findByRole("region", { name: "Agent access" });
+    const devbox = await within(panel).findByRole("listitem", { name: "Tunnel to devbox" });
     expect(devbox).toHaveTextContent("Connected");
-    const gpu = within(panel).getByRole("listitem", { name: "Tunnel to gpu", hidden: true });
+    const gpu = within(panel).getByRole("listitem", { name: "Tunnel to gpu" });
     expect(gpu).toHaveTextContent("Retrying");
     expect(gpu).toHaveTextContent("remote port forwarding failed");
-    expect(panel.closest("details")?.querySelector("summary")).toHaveTextContent("1 tunnel retrying");
+    expect(screen.getByRole("tab", { name: /^Agent access/ })).toHaveTextContent("1 tunnel retrying");
+    expect(screen.getByRole("button", { name: /^Settings/, hidden: true })).toHaveTextContent("1 tunnel retrying");
   });
 
   it("shows why the MCP server is not running", async () => {
@@ -1495,10 +1506,59 @@ describe("App", () => {
     });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
+    await openSettings("Agent access");
 
-    const panel = await screen.findByRole("region", { name: "Agent access", hidden: true });
-    expect(await within(panel).findByRole("alert", { hidden: true })).toHaveTextContent("address in use");
-    expect(within(panel).queryByRole("button", { name: "Copy MCP config", hidden: true })).not.toBeInTheDocument();
+    const panel = await screen.findByRole("region", { name: "Agent access" });
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("address in use");
+    expect(within(panel).queryByRole("button", { name: "Copy MCP config" })).not.toBeInTheDocument();
+  });
+
+  it("opens the settings on General when the tray menu asks for an update check", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+    await screen.findByRole("button", { name: /^Settings/ });
+    await waitFor(() => expect(mockedEvents.updateCheckRequested.listen).toHaveBeenCalled());
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+
+    const [[onRequested]] = mockedEvents.updateCheckRequested.listen.mock.calls;
+    act(() => {
+      onRequested({ event: "update-check-requested", id: 1, payload: null });
+    });
+
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(dialog).getByRole("tab", { name: "General" })).toHaveAttribute("aria-selected", "true");
+    expect(await within(dialog).findByRole("status", { name: "Update check" })).toHaveTextContent("Toodo is up to date");
+  });
+
+  it("groups the settings in a dialog that Escape and a click beside it close", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+    const settings = await screen.findByRole("button", { name: /^Settings/ });
+    expect(screen.queryByRole("region", { name: "Backups" })).not.toBeInTheDocument();
+
+    fireEvent.click(settings);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(settings).toHaveAttribute("aria-expanded", "true");
+    const general = within(dialog).getByRole("tab", { name: "General" });
+    expect(general).toHaveAttribute("aria-selected", "true");
+    expect(general).toHaveFocus();
+    expect(within(dialog).getByRole("group", { name: "Theme" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("tab", { name: "Backups" })).toBeInTheDocument();
+
+    fireEvent.keyDown(general, { key: "ArrowDown" });
+    const agents = within(dialog).getByRole("tab", { name: "Agent access" });
+    expect(agents).toHaveAttribute("aria-selected", "true");
+    expect(agents).toHaveFocus();
+    expect(within(dialog).getByRole("region", { name: "Agent access" })).toBeVisible();
+    expect(within(dialog).queryByRole("region", { name: "General" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(agents, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(settings).toHaveFocus();
+
+    fireEvent.click(settings);
+    fireEvent.click(document.querySelector("[aria-hidden].bg-black\\/40")!);
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("warns while herdr is not running and blocks starting tasks", async () => {

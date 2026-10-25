@@ -120,29 +120,34 @@ function PushControls({ state }: { state: PushState }) {
   );
 }
 
-export function NotificationsPanel() {
+function usePushState() {
   // Whether the browser can get pushes does not change while the page is open.
   const [support] = useState(pushSupport);
   const state = useQuery({ queryKey: pushKey, queryFn: getPushState, enabled: support === "supported" });
+  return { support, state };
+}
+
+/** Whether notifications are on for this device, shown next to the Notifications settings once known. */
+export function NotificationsStatus() {
+  const { state } = usePushState();
+  return state.data ? <>{summary(state.data)}</> : null;
+}
+
+export function NotificationsPanel() {
+  const { support, state } = usePushState();
 
   return (
-    <details className="group rounded-lg border p-2">
-      <summary className="cursor-pointer text-xs font-medium uppercase text-muted-foreground">
-        Notifications
-        {state.data && <span className="ml-1.5 normal-case">{summary(state.data)}</span>}
-      </summary>
-      <section aria-label="Notifications" className="mt-2 flex flex-col gap-2 text-xs">
-        <p className="text-muted-foreground">
-          {support === "supported" ? "Alerts reach this device even while Toodo is closed." : unavailable[support]}
+    <section aria-label="Notifications" className="flex flex-col gap-2 text-sm">
+      <p className="text-muted-foreground">
+        {support === "supported" ? "Alerts reach this device even while Toodo is closed." : unavailable[support]}
+      </p>
+      {state.isLoading && <p className="text-muted-foreground">Checking this device...</p>}
+      {state.error && (
+        <p role="alert" className="break-words text-destructive">
+          {state.error.message}
         </p>
-        {state.isLoading && <p className="text-muted-foreground">Checking this device...</p>}
-        {state.error && (
-          <p role="alert" className="break-words text-destructive">
-            {state.error.message}
-          </p>
-        )}
-        {state.data && <PushControls state={state.data} />}
-      </section>
-    </details>
+      )}
+      {state.data && <PushControls state={state.data} />}
+    </section>
   );
 }

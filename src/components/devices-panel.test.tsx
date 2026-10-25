@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DevicesPanel } from "@/components/devices-panel";
+import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { listDevices, registerDevice, revokeDevice, type Device } from "@/web/devices";
 import { getToken } from "@/web/session";
 
@@ -19,6 +19,7 @@ const tablet: Device = { id: 3, label: "Tablet", createdAt: 1_791_900_000, lastS
 function renderPanel() {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <DevicesStatus />
       <DevicesPanel />
     </QueryClientProvider>,
   );

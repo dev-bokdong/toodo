@@ -483,8 +483,8 @@ machine; see [server.md](server.md).
     the `toodo` skill tell agents never to start, complete, or conclude the task
     `current_task` finds for them, since its pull request's merge completes it.
   - Deleting tasks is not exposed: it cannot be undone and stays in the app.
-  - If the port is taken, the app runs without the server and the sidebar's Agent
-    access panel shows why. That panel copies an MCP client config with the URL and
+  - If the port is taken, the app runs without the server and Agent access in
+    Settings shows why. That section copies an MCP client config with the URL and
     token (`mcp_server_info`).
   - Agents on SSH machines reach the server through reverse tunnels
     (`src-tauri/src/mcp/tunnels.rs`): while the server runs, Toodo keeps one
@@ -496,8 +496,8 @@ machine; see [server.md](server.md).
     e.g. because the remote port is taken by another Toodo, is opened again after
     1 s, doubling up to 30 s; the delay resets once a tunnel opens. Tunnels of
     machines without workspaces are stopped, and all of them when the app exits. The
-    Agent access panel lists each machine's tunnel state and last error
-    (`list_mcp_tunnels`), and its collapsed summary counts retrying tunnels.
+    Agent access section of Settings lists each machine's tunnel state and last error
+    (`list_mcp_tunnels`); its tab and the sidebar's Settings entry count retrying tunnels.
   - On Windows a child process outlives its parent, so each ssh joins one job object
     with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` that the app holds until it exits
     (`src-tauri/src/adapters/windows_process.rs`): the system ends the tunnels however

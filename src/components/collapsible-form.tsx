@@ -1,25 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useNarrow } from "@/lib/narrow";
 import { cn } from "@/lib/utils";
-
-// Below the md breakpoint (48rem) the open form is a bottom sheet.
-const narrowQuery = "(max-width: 47.99rem)";
-
-function useNarrow(): boolean {
-  const [narrow, setNarrow] = useState(
-    () => typeof window.matchMedia === "function" && window.matchMedia(narrowQuery).matches,
-  );
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const query = window.matchMedia(narrowQuery);
-    const update = () => setNarrow(query.matches);
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return narrow;
-}
 
 /**
  * A create form that rests as one line and opens to the full form when anything in it takes

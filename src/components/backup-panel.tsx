@@ -126,103 +126,100 @@ export function BackupPanel() {
     backups.error;
 
   return (
-    <details className="group rounded-lg border p-2">
-      <summary className="cursor-pointer text-xs font-medium uppercase text-muted-foreground">Backups</summary>
-      <section aria-label="Backups" className="mt-2 flex flex-col gap-2">
-        <div className="flex gap-1">
-          <Button size="sm" variant="outline" onClick={exportToFile} disabled={exporting}>
-            {exporting ? "Exporting..." : "Export..."}
-          </Button>
-          <Button size="sm" variant="outline" onClick={pickBackup} disabled={restoring}>
-            Restore...
-          </Button>
-          {runsOnServer && (
-            <input
-              ref={upload}
-              type="file"
-              accept=".sqlite3,.db"
-              aria-label="Database file to restore"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = "";
-                if (file) setConfirming({ kind: "upload", file });
-              }}
-            />
-          )}
-        </div>
-        {confirming && (
-          <div role="alertdialog" aria-label="Confirm restore" className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
-            <p className="text-xs break-words">
-              Replace all workspaces and tasks with <span className="font-medium">{sourceName(confirming)}</span>? The
-              current data is backed up first.
-            </p>
-            <div className="flex gap-1">
-              <Button size="xs" variant="destructive" onClick={() => restore(confirming)} disabled={restoring}>
-                {restoring ? "Restoring..." : "Replace data"}
-              </Button>
-              <Button size="xs" variant="ghost" onClick={() => setConfirming(null)} disabled={restoring}>
-                Cancel
-              </Button>
-            </div>
+    <section aria-label="Backups" className="flex flex-col gap-2">
+      <div className="flex gap-1">
+        <Button size="sm" variant="outline" onClick={exportToFile} disabled={exporting}>
+          {exporting ? "Exporting..." : "Export..."}
+        </Button>
+        <Button size="sm" variant="outline" onClick={pickBackup} disabled={restoring}>
+          Restore...
+        </Button>
+        {runsOnServer && (
+          <input
+            ref={upload}
+            type="file"
+            accept=".sqlite3,.db"
+            aria-label="Database file to restore"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) setConfirming({ kind: "upload", file });
+            }}
+          />
+        )}
+      </div>
+      {confirming && (
+        <div role="alertdialog" aria-label="Confirm restore" className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
+          <p className="text-xs break-words">
+            Replace all workspaces and tasks with <span className="font-medium">{sourceName(confirming)}</span>? The
+            current data is backed up first.
+          </p>
+          <div className="flex gap-1">
+            <Button size="xs" variant="destructive" onClick={() => restore(confirming)} disabled={restoring}>
+              {restoring ? "Restoring..." : "Replace data"}
+            </Button>
+            <Button size="xs" variant="ghost" onClick={() => setConfirming(null)} disabled={restoring}>
+              Cancel
+            </Button>
           </div>
-        )}
-        {notice && (
-          <p role="status" className="text-xs break-words text-muted-foreground">
-            {notice}
-          </p>
-        )}
-        {(dialogError ?? error) && (
-          <p role="alert" className="text-xs break-words text-destructive">
-            {dialogError ?? error?.message}
-          </p>
-        )}
-        <AutoBackupSettings />
-        <ul aria-label="Saved backups" className="flex max-h-48 flex-col divide-y overflow-y-auto">
-          {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">No backups yet.</li>}
-          {backups.data?.map((backup) => (
-            <li key={backup.path} className="flex flex-col gap-1 py-1.5 text-xs first:pt-0" title={backup.path}>
-              <span className="flex flex-col">
-                <time className="font-medium" dateTime={new Date(backup.createdAt * 1000).toISOString()}>
-                  {formatFull(backup.createdAt)}
-                </time>
-                <span className="text-muted-foreground">
-                  <When at={backup.createdAt} /> · {kindLabels[backup.kind]} · {formatSize(backup.sizeBytes)}
-                </span>
+        </div>
+      )}
+      {notice && (
+        <p role="status" className="text-xs break-words text-muted-foreground">
+          {notice}
+        </p>
+      )}
+      {(dialogError ?? error) && (
+        <p role="alert" className="text-xs break-words text-destructive">
+          {dialogError ?? error?.message}
+        </p>
+      )}
+      <AutoBackupSettings />
+      <ul aria-label="Saved backups" className="flex flex-col divide-y">
+        {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">No backups yet.</li>}
+        {backups.data?.map((backup) => (
+          <li key={backup.path} className="flex flex-col gap-1 py-1.5 text-xs first:pt-0" title={backup.path}>
+            <span className="flex flex-col">
+              <time className="font-medium" dateTime={new Date(backup.createdAt * 1000).toISOString()}>
+                {formatFull(backup.createdAt)}
+              </time>
+              <span className="text-muted-foreground">
+                <When at={backup.createdAt} /> · {kindLabels[backup.kind]} · {formatSize(backup.sizeBytes)}
               </span>
-              <span className="flex flex-wrap gap-1">
-                {runsOnServer && (
-                  <Button
-                    changesData
-                    size="xs"
-                    variant="outline"
-                    aria-label={`Download backup from ${formatFull(backup.createdAt)}`}
-                    disabled={downloadBackup.isPending}
-                    onClick={() => {
-                      setNotice(null);
-                      downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
-                    }}
-                  >
-                    Download
-                  </Button>
-                )}
+            </span>
+            <span className="flex flex-wrap gap-1">
+              {runsOnServer && (
                 <Button
+                  changesData
                   size="xs"
                   variant="outline"
-                  aria-label={`Restore this backup from ${formatFull(backup.createdAt)}`}
+                  aria-label={`Download backup from ${formatFull(backup.createdAt)}`}
+                  disabled={downloadBackup.isPending}
                   onClick={() => {
                     setNotice(null);
-                    setConfirming({ kind: "backup", path: backup.path });
+                    downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
                   }}
                 >
-                  Restore this backup
+                  Download
                 </Button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      </section>
-    </details>
+              )}
+              <Button
+                size="xs"
+                variant="outline"
+                aria-label={`Restore this backup from ${formatFull(backup.createdAt)}`}
+                onClick={() => {
+                  setNotice(null);
+                  setConfirming({ kind: "backup", path: backup.path });
+                }}
+              >
+                Restore this backup
+              </Button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
