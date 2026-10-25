@@ -33,6 +33,8 @@ pub enum InboxContent {
         task: TaskId,
         title: String,
         status: TaskStatus,
+        /// The system's report of the finish this event recorded, for a done event.
+        report: Option<ChatMessageId>,
     },
 }
 
@@ -220,7 +222,7 @@ fn item(conn: &rusqlite::Connection, id: ItemId) -> Result<Option<InboxItem>> {
         ItemId::Event(event) => {
             let row = conn
                 .query_row(
-                    "SELECT e.at, e.taken_at, e.task_id, t.title, e.status
+                    "SELECT e.at, e.taken_at, e.task_id, t.title, e.status, e.report_id
                      FROM task_events e JOIN tasks t ON t.id = e.task_id
                      WHERE e.id = ?1 AND e.for_lead = 1",
                     [event],
@@ -231,11 +233,12 @@ fn item(conn: &rusqlite::Connection, id: ItemId) -> Result<Option<InboxItem>> {
                             row.get::<_, i64>(2)?,
                             row.get::<_, String>(3)?,
                             row.get::<_, String>(4)?,
+                            row.get::<_, Option<i64>>(5)?,
                         ))
                     },
                 )
                 .optional()?;
-            row.map(|(at, taken_before, task, title, status)| {
+            row.map(|(at, taken_before, task, title, status, report)| {
                 Ok(InboxItem {
                     id,
                     at,
@@ -244,6 +247,7 @@ fn item(conn: &rusqlite::Connection, id: ItemId) -> Result<Option<InboxItem>> {
                         task: TaskId(task),
                         title,
                         status: parse_task_status(&status)?,
+                        report: report.map(ChatMessageId),
                     },
                 })
             })
@@ -330,6 +334,7 @@ mod tests {
                         task,
                         title: "Write the guide".to_owned(),
                         status: TaskStatus::InReview,
+                        report: None,
                     },
                 },
             ]
@@ -356,6 +361,38 @@ mod tests {
         assert_eq!(again.items[0].taken_before, Some(30));
         // The planned event of the new task is not one the lead follows.
         assert_eq!(again.missing, [ItemId::Event(1), ItemId::Event(999)]);
+    }
+
+    #[test]
+    fn a_done_event_names_the_systems_report_of_its_finish() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        let task = task(&mut storage);
+        for status in [
+            TaskStatus::InProgress,
+            TaskStatus::InReview,
+            TaskStatus::Done,
+        ] {
+            storage.set_task_status(task, status).unwrap();
+        }
+        let report = storage.list_chat_messages().unwrap().pop().unwrap();
+        assert_eq!(report.author, ChatAuthor::System);
+
+        let taken = storage.take_pending(None).unwrap();
+        let reports: Vec<_> = taken
+            .items
+            .iter()
+            .map(|item| match &item.content {
+                InboxContent::Event { status, report, .. } => (*status, *report),
+                InboxContent::Chat { .. } => panic!("no chat"),
+            })
+            .collect();
+        assert_eq!(
+            reports,
+            [
+                (TaskStatus::InReview, None),
+                (TaskStatus::Done, Some(report.id))
+            ]
+        );
     }
 
     #[test]

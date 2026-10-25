@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ChatMessage } from "@/lib/bindings";
-import { markRead, receipt, unreadCount } from "@/lib/chat";
+import { handledByText, markRead, overdueCount, receipt, unreadCount } from "@/lib/chat";
 
 const message = (id: number, author: ChatMessage["author"]): ChatMessage => ({
   id,
@@ -9,6 +9,11 @@ const message = (id: number, author: ChatMessage["author"]): ChatMessage => ({
   at: id,
   deliveredAt: author === "user" ? id : null,
   seenAt: null,
+  dueAt: null,
+  ackedAt: null,
+  handledAt: null,
+  handledBy: null,
+  overdue: false,
 });
 
 describe("chat read mark", () => {
@@ -22,10 +27,22 @@ describe("chat read mark", () => {
     expect(unreadCount(messages, 5)).toBe(0);
   });
 
-  it("tells how far a message got from when it was delivered and seen", () => {
-    expect(receipt({ deliveredAt: null, seenAt: null })).toBe("sent");
-    expect(receipt({ deliveredAt: 1, seenAt: null })).toBe("delivered");
-    expect(receipt({ deliveredAt: 1, seenAt: 2 })).toBe("seen");
+  it("tells how far a message got from its receipts", () => {
+    const none = { deliveredAt: null, seenAt: null, ackedAt: null, handledAt: null };
+    expect(receipt(none)).toBe("sent");
+    expect(receipt({ ...none, deliveredAt: 1 })).toBe("delivered");
+    expect(receipt({ ...none, deliveredAt: 1, seenAt: 2 })).toBe("seen");
+    expect(receipt({ ...none, deliveredAt: 1, seenAt: 2, ackedAt: 3 })).toBe("acked");
+    // Taken without a turn being seen: handled outranks the estimate.
+    expect(receipt({ ...none, deliveredAt: 1, ackedAt: 3, handledAt: 4 })).toBe("handled");
+  });
+
+  it("counts what the server marked overdue and says what handled a message", () => {
+    const late = { ...message(1, "user"), overdue: true };
+    expect(overdueCount([late, message(2, "user"), message(3, "lead")])).toBe(1);
+    expect(handledByText({ handledBy: { kind: "reply", messageId: 9 } })).toBe("Handled in a reply");
+    expect(handledByText({ handledBy: { kind: "task", taskId: 7 } })).toBe("Handled by #7");
+    expect(handledByText({ handledBy: null })).toBe("Handled");
   });
 
   it("never moves the read mark back", () => {

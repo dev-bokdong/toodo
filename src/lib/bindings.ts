@@ -379,9 +379,24 @@ export type ChatMessage = {
 	deliveredAt: Timestamp | null,
 	/**
 	 *  When the lead picked the message up: it started a turn after the message reached
-	 *  its pane, or it replied in the chat.
+	 *  its pane, or it replied in the chat. An estimate, never a sign it was handled.
 	 */
 	seenAt: Timestamp | null,
+	/**
+	 *  When a person's message becomes overdue unless the lead handles it; null for the
+	 *  lead's and the system's, and for messages from before receipts were kept.
+	 */
+	dueAt: Timestamp | null,
+	/**  When the lead acknowledged a person's message: it received it and is on it. */
+	ackedAt: Timestamp | null,
+	/**  When the lead handled a person's message, and with what. */
+	handledAt: Timestamp | null,
+	handledBy: HandledBy | null,
+	/**
+	 *  The message was past `dueAt` without being handled when the server listed it, by
+	 *  the server's clock.
+	 */
+	overdue: boolean,
 };
 
 /**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */
@@ -501,6 +516,13 @@ export type Estimate = {
  *  progress or in review. A day is 24 hours, a week 7 days, and a month 30 days.
  */
 export type EstimateUnit = "hours" | "days" | "weeks" | "months";
+
+/**  What the lead handled a person's message with. */
+export type HandledBy = 
+/**  Its reply in the chat. */
+{ kind: "reply"; messageId: number } | 
+/**  A task it created or started for the message. */
+{ kind: "task"; taskId: TaskId };
 
 /**  A machine saved in herdr with `herdr machine add`. */
 export type HerdrMachine = {

@@ -213,6 +213,8 @@ pub struct Supervisor {
     signalled_session: Option<i64>,
     /// The newest task event signalled to that session.
     signalled_event: i64,
+    /// When the last check looked for chat messages falling due.
+    due_checked: i64,
 }
 
 impl Supervisor {
@@ -231,6 +233,20 @@ impl Supervisor {
             working: false,
             signalled_session: None,
             signalled_event: 0,
+            due_checked: 0,
+        }
+    }
+
+    /// Whether an unhandled chat message fell due since the last check, by `now` (server
+    /// time), so that clients should list the chat again to show it overdue.
+    fn note_due(&mut self, storage: &StorageState, now: i64) -> bool {
+        let after = std::mem::replace(&mut self.due_checked, now);
+        match lock(storage).chat_fell_due(after, now) {
+            Ok(fell_due) => fell_due,
+            Err(error) => {
+                eprintln!("toodo-server: cannot look for overdue chat messages: {error}");
+                false
+            }
         }
     }
 
@@ -489,7 +505,8 @@ pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<
             });
         let mut status = supervisor.check(&services.storage, &services.git, &services.herdr, now);
         let delivered = supervisor.signal_inbox(&services.storage, &services.herdr, &status);
-        if supervisor.note_turn(&services.storage, &status, now) || delivered {
+        let fell_due = supervisor.note_due(&services.storage, now);
+        if supervisor.note_turn(&services.storage, &status, now) || delivered || fell_due {
             services.chat_changed();
         }
         status.typing = Supervisor::typing(&services.storage, &status, now);
@@ -1012,6 +1029,31 @@ mod tests {
         );
         assert!(herdr_runner.results.lock().unwrap().is_empty());
         assert_eq!(git_runner.invocations.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn clients_hear_once_when_an_unhandled_message_falls_due() {
+        use crate::domain::chat::{ChatAuthor, HANDLE_WITHIN_SECS};
+
+        let storage: StorageState = Mutex::new(Storage::open_in_memory().unwrap());
+        lock(&storage).set_clock(|| 100);
+        lock(&storage)
+            .add_chat_message(ChatAuthor::User, "Hi", Some("c1"))
+            .unwrap();
+        let config = LeadConfig::from_env(env(&[]), Path::new("/srv"))
+            .unwrap()
+            .unwrap();
+        let mut supervisor = Supervisor::new(
+            config,
+            "/srv".into(),
+            "http://x/mcp".to_owned(),
+            "t".to_owned(),
+        );
+        let due = 100 + HANDLE_WITHIN_SECS;
+
+        assert!(!supervisor.note_due(&storage, due - 1));
+        assert!(supervisor.note_due(&storage, due + 4));
+        assert!(!supervisor.note_due(&storage, due + 9));
     }
 
     #[test]

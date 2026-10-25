@@ -22,13 +22,24 @@ const running: LeadStatus = {
   error: null,
 };
 
+/** No receipts of the lead's work. */
+const open = { dueAt: null, ackedAt: null, handledAt: null, handledBy: null, overdue: false } as const;
+
 const history: ChatMessage[] = [
-  { id: 1, author: "user", body: "Plan the release", at: 1_790_000_000, deliveredAt: 1_790_000_000, seenAt: 1_790_000_005 },
-  { id: 2, author: "lead", body: "Created **#4**.", at: 1_790_000_060, deliveredAt: null, seenAt: null },
+  {
+    id: 1,
+    author: "user",
+    body: "Plan the release",
+    at: 1_790_000_000,
+    deliveredAt: 1_790_000_000,
+    seenAt: 1_790_000_005,
+    ...open,
+  },
+  { id: 2, author: "lead", body: "Created **#4**.", at: 1_790_000_060, deliveredAt: null, seenAt: null, ...open },
 ];
 
 function sent(id: number, body: string, seenAt: number | null = null): ChatMessage {
-  return { id, author: "user", body, at: 1_790_000_120, deliveredAt: 1_790_000_120, seenAt };
+  return { id, author: "user", body, at: 1_790_000_120, deliveredAt: 1_790_000_120, seenAt, ...open };
 }
 
 function renderChat(lead: LeadStatus) {
@@ -131,6 +142,31 @@ describe("LeadChat", () => {
     expect(within(log).getAllByRole("listitem", { name: "You" })).toHaveLength(2);
   });
 
+  it("shows which messages the lead acknowledged, handled, or let wait too long", async () => {
+    const acked = { ...sent(3, "Start #4", 1_790_000_125), ackedAt: 1_790_000_126, dueAt: 1_790_000_720 };
+    const handled: ChatMessage = {
+      ...sent(4, "What runs?", 1_790_000_125),
+      ackedAt: 1_790_000_126,
+      handledAt: 1_790_000_130,
+      handledBy: { kind: "task", taskId: 7 },
+    };
+    const late: ChatMessage = { ...sent(5, "Any news?", 1_790_000_125), dueAt: 1_790_000_720, overdue: true };
+    mocked.listChatMessages.mockResolvedValue({ status: "ok", data: [...history, acked, handled, late] });
+    renderChat(running);
+
+    const log = await screen.findByRole("log", { name: "Messages" });
+    const row = async (text: string) => (await within(log).findByText(text)).closest("li")!;
+    expect(within(await row("Start #4")).getByText("Received")).toHaveAttribute("data-receipt", "acked");
+    const done = within(await row("What runs?")).getByText("Handled");
+    expect(done).toHaveAttribute("data-receipt", "handled");
+    expect(done.getAttribute("title")).toMatch(/^Handled by #7 /);
+    const waiting = await row("Any news?");
+    expect(within(waiting).getByText("Seen")).toBeInTheDocument();
+    expect(within(waiting).getByText("Overdue")).toHaveAttribute("data-overdue");
+    expect(within(log).getAllByText("Overdue")).toHaveLength(1);
+    expect(screen.getByText("1 message waits too long")).toBeInTheDocument();
+  });
+
   it("shows the server's finish reports apart from Dori's replies and the person's messages", async () => {
     const report: ChatMessage = {
       id: 3,
@@ -139,6 +175,7 @@ describe("LeadChat", () => {
       at: 1_790_000_120,
       deliveredAt: null,
       seenAt: null,
+      ...open,
     };
     mocked.listChatMessages.mockResolvedValue({ status: "ok", data: [...history, report] });
     renderChat(running);
@@ -451,7 +488,15 @@ describe("LeadChat voice", () => {
     const toggle = screen.getByRole("button", { name: "Read replies aloud" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
 
-    const reply = (id: number, body: string): ChatMessage => ({ id, author: "lead", body, at: 1_790_000_200, deliveredAt: null, seenAt: null });
+    const reply = (id: number, body: string): ChatMessage => ({
+      id,
+      author: "lead",
+      body,
+      at: 1_790_000_200,
+      deliveredAt: null,
+      seenAt: null,
+      ...open,
+    });
     mocked.listChatMessages.mockResolvedValue({ status: "ok", data: [...history, reply(3, "Quiet one.")] });
     await client.invalidateQueries();
     await within(log).findByText("Quiet one.");
@@ -491,7 +536,7 @@ describe("LeadChat voice", () => {
 
     mocked.listChatMessages.mockResolvedValue({
       status: "ok",
-      data: [...history, { id: 3, author: "lead", body: "Done.", at: 1_790_000_200, deliveredAt: null, seenAt: null }],
+      data: [...history, { id: 3, author: "lead", body: "Done.", at: 1_790_000_200, deliveredAt: null, seenAt: null, ...open }],
     });
     await client.invalidateQueries();
     const stop = await screen.findByRole("button", { name: "Stop reading aloud" });

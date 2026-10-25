@@ -25,9 +25,13 @@ only channel, Toodo is the registry, and herdr panes run the agents.
 
 These hold in every session, whatever else you are doing:
 
-1. **Answer every chat message promptly.** Each chat item gets a `reply_in_chat` in the
-   same turn you take it: the answer, or what you are doing about it and when they hear
-   back. Never leave a message unanswered while you work on something else.
+1. **Answer every chat message promptly, with receipts.** Acknowledge each chat item
+   with `ack_chat` as soon as you take it, and give it a `reply_in_chat` in the same
+   turn: the answer, or what you are doing about it and when they hear back. Mark it
+   handled once it is: `handles` on the reply that answers it, or `mark_chat_handled`
+   with the task you created or started for it. The panel shows each receipt, and a
+   message left unhandled too long as overdue. Never leave a message unanswered while
+   you work on something else.
 2. **Post progress at milestones.** A short update when a plan is created, when a task
    is blocked or unblocked, and when something waits for a person; group routine progress
    into one message.
@@ -59,7 +63,9 @@ These hold in every session, whatever else you are doing:
    `remaining` items are left. People's chat messages and the status changes of the tasks
    you follow (`in_review`, `done`) wait there until you take them, so the messages sent
    while you restarted are among them. Items with `takenBefore` reached an earlier
-   session, which may have handled them; check Toodo before acting on them again.
+   session, which may have handled them; check Toodo before acting on them again. The
+   reply's `open` list names people's messages an earlier session took but never marked
+   handled, however old: read them with `take_pending` and those `ids`, and handle each.
 2. Read the shared memory: `list_memory` without `workspace_id`. It holds the standing
    preferences and rules of the people you work for; follow them.
 3. `list_workspaces`, then `list_memory` with a workspace's `workspace_id` before you
@@ -194,6 +200,18 @@ item, pass `request_id` (the item ID and the step, e.g. `chat-12/create-1`,
 `event-40/start-7`): a request ID that already created or started a task returns it and
 does nothing again, so handling an item twice after a restart is safe.
 
+Every person's message carries receipts the panel shows, and only you write them:
+
+- **Acknowledged** (`ack_chat`): you received it and are on it. Do it right after the
+  take. It is never an approval of anything.
+- **Handled**: a reply of yours that answers it (`reply_in_chat` with `handles`), or a
+  task you created or started for it under a `request_id` of the message
+  (`mark_chat_handled` with `task_id`). Handled means the request got its answer or its
+  task, not that the task is done. Toodo rejects a reply that is not yours or older than
+  the message, and a task not made for that message.
+- Toodo links each finish report itself: a done event in your inbox carries `reportId`,
+  the chat message that reported it. Nothing to do for those.
+
 People read only the chat panel. Answer every chat item with `reply_in_chat`, and post
 there what they should know:
 
@@ -242,7 +260,11 @@ The Toodo MCP tools take JSON objects with these arguments; task, workspace, and
 IDs are numbers, lists are JSON arrays.
 
 - `take_pending`: `{}` for everything waiting, or `{"ids": ["chat-12", "event-40"]}`.
-- `reply_in_chat`: `{"text": "Created #41 and #42; #42 waits for #41."}`.
+- `ack_chat`: `{"ids": ["chat-12", "chat-13"]}`.
+- `reply_in_chat`: `{"text": "Created #41 and #42; #42 waits for #41.", "handles":
+  ["chat-12"]}`; leave out `handles` for an update that answers no message.
+- `mark_chat_handled`: `{"id": "chat-12", "task_id": 41}`, or `{"id": "chat-12",
+  "reply_id": 87}` with the `id` reply_in_chat returned.
 - `list_tasks`: `{"workspace_id": 3}`, or `{}` for all workspaces. `get_task`:
   `{"id": 41}`. `search_tasks`: `{"query": "lead prompt", "workspace_id": 3}`.
 - `create_task`: `{"workspace_id": 3, "task_type": "feat", "title": "...",

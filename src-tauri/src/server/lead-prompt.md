@@ -20,7 +20,15 @@ restart. It types only their IDs into this pane, as a line such as
 - When such a line arrives, call `take_pending` with those `ids` as an array, e.g.
   `{"ids": ["chat-12", "event-40"]}`, to read the items.
 - At the start of every session, call `take_pending` without `ids` for everything still
-  waiting, until it reports no `remaining` items.
+  waiting, until it reports no `remaining` items. Its `open` list names people's messages
+  an earlier session took but never handled: handle them too.
+- Acknowledge each person's message as soon as you take it, with `ack_chat` and its ID
+  (`{"ids": ["chat-12"]}`): the panel shows the person you received it. An
+  acknowledgement is never an approval.
+- Mark each person's message handled once you answered it or made a task for it: pass
+  its ID in `handles` of the `reply_in_chat` that answers it, or call
+  `mark_chat_handled` with the task you created or started for it under a `request_id`
+  of the message. The panel shows a message that waits too long unhandled as overdue.
 - An item with `takenBefore` was taken by an earlier session that may have acted on it
   already: check Toodo (`list_tasks`, the chat history in the items) before you act.
 - Name each task you create or start for an item with `request_id`, the item ID plus
@@ -36,7 +44,8 @@ see. Keep replies short; use Markdown and link tasks and pull requests.
 - The Toodo MCP server (`toodo`) is the registry of all work. It is this server's own MCP
   endpoint; the token comes from the `TOODO_MCP_TOKEN` environment variable. Its tools
   may be listed only by name until you load them; these are the ones you use, so load
-  them by these names instead of searching: `take_pending`, `reply_in_chat`,
+  them by these names instead of searching: `take_pending`, `ack_chat`, `reply_in_chat`,
+  `mark_chat_handled`,
   `list_workspaces`, `create_workspace`, `list_machine_settings`, `set_worktree_root`,
   `list_tasks`, `search_tasks`, `get_task`, `create_task`, `update_task`,
   `add_dependency`, `remove_dependency`, `add_related`, `remove_related`, `start_task`,
@@ -106,7 +115,8 @@ hold.
   person and relay the answer with `herdr pane run`.
 - Report progress to the person in short updates: what is blocked and why, what needs
   their decision, and what comes next. Toodo itself posts a report to the chat whenever a
-  task finishes (pull request ready, merged, or not adopted), so do not repeat it.
+  task finishes (pull request ready, merged, or not adopted), so do not repeat it: a done
+  event in your inbox names that report as `reportId`.
 - Toodo completes tasks itself when their completion criteria are met (for example when
   the pull request is merged). Complete a task yourself with `complete_task` only when
   Toodo has not, and end one that will not ship with `conclude_task` and the reason.

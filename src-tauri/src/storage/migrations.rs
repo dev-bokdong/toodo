@@ -472,6 +472,35 @@ pub(super) const MIGRATIONS: &[&str] = &[
     DROP TABLE chat_messages;
     ALTER TABLE chat_messages_v21 RENAME TO chat_messages;
     ",
+    // Version 22: receipts of the lead's work. A person's message gets the time it becomes
+    // overdue when it is stored, the lead's acknowledgement, and when and with what (its
+    // reply or a task made for it) the lead handled it; earlier messages have none, so
+    // they are never overdue, and their estimated `seen_at` never counts as handled. Each
+    // done event links the system's report of the finish, found for earlier events by the
+    // result stored with them.
+    "
+    ALTER TABLE chat_messages ADD COLUMN due_at INTEGER
+        CHECK (due_at IS NULL OR author = 'user');
+    ALTER TABLE chat_messages ADD COLUMN acked_at INTEGER
+        CHECK (acked_at IS NULL OR author = 'user');
+    ALTER TABLE chat_messages ADD COLUMN handled_at INTEGER
+        CHECK (handled_at IS NULL OR acked_at IS NOT NULL);
+    ALTER TABLE chat_messages ADD COLUMN handled_reply_id INTEGER
+        REFERENCES chat_messages (id)
+        CHECK (handled_reply_id IS NULL OR handled_at IS NOT NULL);
+    ALTER TABLE chat_messages ADD COLUMN handled_task_id INTEGER
+        REFERENCES tasks (id) ON DELETE SET NULL
+        CHECK (handled_task_id IS NULL OR handled_at IS NOT NULL);
+    CREATE INDEX chat_messages_open ON chat_messages (id)
+        WHERE handled_at IS NULL AND due_at IS NOT NULL;
+    ALTER TABLE task_events ADD COLUMN report_id INTEGER
+        REFERENCES chat_messages (id)
+        CHECK (report_id IS NULL OR status = 'done');
+    UPDATE task_events SET report_id =
+        (SELECT min(c.id) FROM chat_messages c JOIN task_results r ON r.id = c.result_id
+         WHERE r.task_id = task_events.task_id AND r.at = task_events.at)
+        WHERE status = 'done';
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1593,5 +1622,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(orphan, None);
+    }
+
+    #[test]
+    fn version_22_links_earlier_reports_and_never_counts_earlier_messages_handled() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..21] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 21).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_messages (author, body, at, delivered_at, seen_at, taken_at)
+                 VALUES ('user', 'Hi', 10, 10, 11, 11);
+             INSERT INTO workspaces (name, kind, path, default_base_branch)
+                 VALUES ('w', 'local', '/w', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status, resolution)
+                 VALUES (1, 'feat', 't', 'done', 'merged');
+             INSERT INTO task_events (task_id, status, at) VALUES (1, 'in_review', 30);
+             INSERT INTO task_events (task_id, status, at, for_lead) VALUES (1, 'done', 40, 1);
+             INSERT INTO task_results (task_id, kind, at) VALUES (1, 'merged', 40);
+             INSERT INTO chat_messages (author, body, at, result_id)
+                 VALUES ('system', 'Merged', 40, 1);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let receipts: (Option<i64>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT due_at, acked_at, handled_at FROM chat_messages WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(receipts, (None, None, None));
+        let reports: Vec<Option<i64>> = conn
+            .prepare("SELECT report_id FROM task_events ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(reports, [None, Some(2)]);
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(set("UPDATE task_events SET report_id = 2 WHERE status = 'in_review'").is_err());
+        assert!(set("UPDATE chat_messages SET acked_at = 1 WHERE author = 'system'").is_err());
+        assert!(set("UPDATE chat_messages SET handled_at = 1 WHERE id = 1").is_err());
+        assert!(set("UPDATE chat_messages SET handled_task_id = 1 WHERE id = 1").is_err());
+        set("UPDATE chat_messages SET acked_at = 50, handled_at = 51, handled_task_id = 1 WHERE id = 1")
+            .unwrap();
+        // Deleting the task keeps the receipt without its link.
+        set("DELETE FROM tasks").unwrap();
+        let kept: (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT handled_at, handled_task_id FROM chat_messages WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (Some(51), None));
     }
 }

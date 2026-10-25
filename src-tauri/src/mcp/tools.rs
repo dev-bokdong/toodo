@@ -172,6 +172,31 @@ pub struct Dependency {
 pub struct ChatReply {
     /// The reply, in GitHub-flavored Markdown.
     pub text: String,
+    /// The people's messages this reply answers, such as `["chat-12"]`: Toodo records
+    /// them as handled by it. Only the Toodo lead passes them.
+    #[serde(default, deserialize_with = "item_ids")]
+    pub handles: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AckChat {
+    /// The people's messages you received and are on, such as `["chat-12", "chat-13"]`.
+    #[serde(deserialize_with = "item_ids")]
+    pub ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct MarkChatHandled {
+    /// The person's message, such as `chat-12`.
+    pub id: String,
+    /// Your reply in the chat that answers it (its `id` from reply_in_chat), posted after
+    /// the message.
+    pub reply_id: Option<i64>,
+    /// The task you created or started for it, with a `request_id` of the message such
+    /// as `chat-12/create-1`.
+    pub task_id: Option<TaskId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
@@ -219,6 +244,10 @@ pub struct Pending {
     /// Items still waiting: call take_pending again.
     #[serde(skip_serializing_if = "is_zero")]
     pub remaining: usize,
+    /// People's messages taken before and not handled yet, however old, for a take
+    /// without IDs: answer them, or mark them handled.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<String>,
 }
 
 fn is_zero(count: &usize) -> bool {
@@ -252,6 +281,10 @@ pub enum PendingContent {
         task_id: TaskId,
         title: String,
         status: TaskStatus,
+        /// The chat message in which Toodo reported this finish, for a done event: it is
+        /// reported, do not repeat it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        report_id: Option<i64>,
     },
 }
 
@@ -720,7 +753,19 @@ pub fn take_pending(storage: &mut Storage, request: TakePending) -> CommandResul
         })
         .transpose()?;
     let taken = storage.take_pending(ids.as_deref())?;
+    let open = if ids.is_none() {
+        storage
+            .open_chat()?
+            .into_iter()
+            .map(ItemId::Chat)
+            .filter(|id| !taken.items.iter().any(|item| item.id == *id))
+            .map(|id| id.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Pending {
+        open,
         items: taken
             .items
             .into_iter()
@@ -734,10 +779,12 @@ pub fn take_pending(storage: &mut Storage, request: TakePending) -> CommandResul
                         task,
                         title,
                         status,
+                        report,
                     } => PendingContent::TaskEvent {
                         task_id: task.into(),
                         title,
                         status: status.into(),
+                        report_id: report.map(|id| id.0),
                     },
                 },
             })
