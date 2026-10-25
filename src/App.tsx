@@ -215,13 +215,7 @@ export default function App() {
           </Button>
           <span className="font-semibold tracking-tight">Toodo</span>
         </header>
-        <main
-          className={cn(
-            "relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6",
-            // Room below the last row for the floating chat button.
-            hasLead && "pb-24 md:pb-24",
-          )}
-        >
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
           {runsOnServer ? <InstallBanner /> : <UpdateBanner />}
           <HerdrBanner />
           {reviewing ? (
