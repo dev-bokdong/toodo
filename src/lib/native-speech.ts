@@ -84,7 +84,7 @@ export function openAppSettings(): Promise<void> {
   return invoke("plugin:speech|openSettings");
 }
 
-async function microphoneAllowed(): Promise<boolean> {
+export async function microphoneAllowed(): Promise<boolean> {
   const { microphone } = await invoke<Permissions>("plugin:speech|checkPermissions");
   if (microphone === "granted") return true;
   // Android asks again until the person denies twice; after that the answer is "denied" at once.

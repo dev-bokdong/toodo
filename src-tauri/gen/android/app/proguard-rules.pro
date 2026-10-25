@@ -23,3 +23,7 @@
 # The app's speech plugin is loaded by name, and its arguments are filled in by reflection.
 -keep class dev.toodo.app.SpeechPlugin { *; }
 -keep class dev.toodo.app.StartArgs { *; }
+-keep class dev.toodo.app.ConfigureWakeArgs { *; }
+-keep class dev.toodo.app.AcknowledgeWakeArgs { *; }
+# sherpa's JNI looks up Kotlin configuration fields and result constructors by name.
+-keep class com.k2fsa.sherpa.onnx.** { *; }

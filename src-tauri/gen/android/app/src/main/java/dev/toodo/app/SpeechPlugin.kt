@@ -9,6 +9,10 @@ import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.webkit.WebView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import app.tauri.PermissionState
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -24,6 +28,18 @@ class StartArgs {
     var partialResults: Boolean = true
 }
 
+@InvokeArg
+class ConfigureWakeArgs {
+    var enabled: Boolean = false
+    var suspended: Boolean = false
+    var scope: String = ""
+}
+
+@InvokeArg
+class AcknowledgeWakeArgs {
+    lateinit var id: String
+}
+
 /**
  * Speech recognition by the phone for dictation in the lead chat (see `src/lib/native-speech.ts`):
  * Android's SpeechRecognizer, one utterance at a time. What is heard, a failure, and the end come
@@ -34,6 +50,54 @@ class StartArgs {
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.RECORD_AUDIO], alias = "microphone")])
 class SpeechPlugin(private val activity: Activity) : Plugin(activity) {
     private var recognizer: SpeechRecognizer? = null
+    private val wake by lazy { WakeSession(activity) { event, value -> trigger(event, value) } }
+
+    override fun load(webView: WebView) {
+        // A plugin registered after Activity.onResume still needs the initial foreground state.
+        activity.runOnUiThread {
+            val lifecycle = (activity as LifecycleOwner).lifecycle
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) wake.resume()
+        }
+    }
+
+    @Command
+    fun configureWake(invoke: Invoke) {
+        val args = invoke.parseArgs(ConfigureWakeArgs::class.java)
+        activity.runOnUiThread {
+            wake.configure(args.enabled, args.suspended, args.scope)
+            invoke.resolve()
+        }
+    }
+
+    @Command
+    fun wakeState(invoke: Invoke) {
+        activity.runOnUiThread { invoke.resolve(wake.state()) }
+    }
+
+    @Command
+    fun pendingWake(invoke: Invoke) {
+        activity.runOnUiThread {
+            val pending = wake.pending()
+            if (pending == null) invoke.resolve() else invoke.resolve(pending)
+        }
+    }
+
+    @Command
+    fun cancelWake(invoke: Invoke) {
+        activity.runOnUiThread {
+            wake.cancel()
+            invoke.resolve()
+        }
+    }
+
+    @Command
+    fun acknowledgeWake(invoke: Invoke) {
+        val args = invoke.parseArgs(AcknowledgeWakeArgs::class.java)
+        activity.runOnUiThread {
+            if (wake.acknowledge(args.id)) invoke.resolve()
+            else invoke.reject("Could not acknowledge wake message")
+        }
+    }
 
     @Command
     fun start(invoke: Invoke) {
@@ -48,18 +112,26 @@ class SpeechPlugin(private val activity: Activity) : Plugin(activity) {
         }
         activity.runOnUiThread {
             abort()
-            val current = SpeechRecognizer.createSpeechRecognizer(activity)
-            current.setRecognitionListener(listener(current))
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                args.lang?.takeIf { it.isNotBlank() }?.let { putExtra(RecognizerIntent.EXTRA_LANGUAGE, it) }
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, args.partialResults)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+            wake.manual(true)
+            try {
+                val current = SpeechRecognizer.createSpeechRecognizer(activity)
+                recognizer = current
+                current.setRecognitionListener(listener(current))
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    args.lang?.takeIf { it.isNotBlank() }?.let { putExtra(RecognizerIntent.EXTRA_LANGUAGE, it) }
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, args.partialResults)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+                }
+                current.startListening(intent)
+                invoke.resolve()
+            } catch (error: RuntimeException) {
+                recognizer?.destroy()
+                recognizer = null
+                wake.manual(false)
+                invoke.reject("audio-capture", error)
             }
-            recognizer = current
-            current.startListening(intent)
-            invoke.resolve()
         }
     }
 
@@ -87,8 +159,22 @@ class SpeechPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve()
     }
 
-    override fun onPause() {
-        activity.runOnUiThread { abort() }
+    override fun onPause(activity: AppCompatActivity) {
+        wake.pause()
+        abort()
+    }
+
+    override fun onStop(activity: AppCompatActivity) {
+        wake.pause()
+    }
+
+    override fun onResume(activity: AppCompatActivity) {
+        wake.resume()
+    }
+
+    override fun onDestroy(activity: AppCompatActivity) {
+        wake.close()
+        abort()
     }
 
     private fun abort() {
@@ -103,6 +189,7 @@ class SpeechPlugin(private val activity: Activity) : Plugin(activity) {
         recognizer = null
         current.destroy()
         trigger("end", JSObject())
+        wake.manual(false)
     }
 
     private fun listener(current: SpeechRecognizer) = object : RecognitionListener {

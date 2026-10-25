@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { NativeRecognition, withNativeFallback } from "@/lib/native-speech";
 import { mobileApp } from "@/lib/platform";
+import { resumeWake, suspendWake } from "@/lib/wake-word";
 
 const READ_ALOUD_KEY = "toodo-read-aloud";
 const LANGUAGE_KEY = "toodo-speech-language";
@@ -140,7 +141,11 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
   const callbacks = useRef({ onTranscript, onDone });
   callbacks.current = { onTranscript, onDone };
 
-  useEffect(() => () => recognition.current?.abort(), []);
+  useEffect(() => () => {
+    cancelled.current = true;
+    recognition.current?.abort();
+    if (mobileApp) resumeWake("dictation");
+  }, []);
 
   const start = useCallback(() => {
     const Constructor = recognitionConstructor();
@@ -171,18 +176,30 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
       clearTimeout(quiet);
       recognition.current = null;
       setListening(false);
+      if (mobileApp) resumeWake("dictation");
       if (!cancelled.current) callbacks.current.onDone(transcript);
     };
     setError(null);
     setBlocked(false);
     recognition.current = current;
     setListening(true);
-    try {
-      current.start();
-    } catch (cause) {
+    const failed = (cause: unknown) => {
       recognition.current = null;
       setListening(false);
+      if (mobileApp) resumeWake("dictation");
       setError(`Speech recognition failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    };
+    if (mobileApp) {
+      void suspendWake("dictation", true).then(() => {
+        if (!cancelled.current) current.start();
+        else current.onend?.();
+      }).catch(failed);
+    } else {
+      try {
+        current.start();
+      } catch (cause) {
+        failed(cause);
+      }
     }
   }, []);
 
@@ -246,6 +263,7 @@ const speakingListeners = new Set<() => void>();
 function setPending(next: number) {
   pending = Math.max(0, next);
   speakingListeners.forEach((listener) => listener());
+  if (mobileApp && pending === 0) resumeWake("speech");
 }
 
 function voiceFor(tag: string): SpeechSynthesisVoice | null {
@@ -265,16 +283,27 @@ export function speak(markdown: string) {
   const tag = getSpeechLanguage();
   const voice = voiceFor(tag);
   const mine = generation;
-  for (const chunk of chunks) {
-    const utterance = new SpeechSynthesisUtterance(chunk);
-    utterance.lang = tag;
-    if (voice) utterance.voice = voice;
-    utterance.onend = utterance.onerror = () => {
-      if (mine === generation) setPending(pending - 1);
-    };
-    window.speechSynthesis.speak(utterance);
-  }
+  const enqueue = () => {
+    if (mine !== generation) return;
+    for (const chunk of chunks) {
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      utterance.lang = tag;
+      if (voice) utterance.voice = voice;
+      utterance.onend = utterance.onerror = () => {
+        if (mine === generation) setPending(pending - 1);
+      };
+      window.speechSynthesis.speak(utterance);
+    }
+  };
   setPending(pending + chunks.length);
+  if (mobileApp) {
+    void suspendWake("speech", true).then(enqueue).catch(() => {
+      // The wake controller reports the native failure; never play into a live detector.
+      if (mine === generation) setPending(pending - chunks.length);
+    });
+  } else {
+    enqueue();
+  }
 }
 
 export function stopSpeaking() {

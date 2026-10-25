@@ -61,6 +61,7 @@ import {
 } from "@/lib/voice";
 import { When } from "@/components/when";
 import { cn } from "@/lib/utils";
+import { WakeWordChat } from "@/components/wake-word";
 
 const Markdown = lazy(() => import("@/components/markdown"));
 
@@ -98,6 +99,7 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
   const panel = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const wasOpen = useRef(false);
+  const focusInput = useRef(true);
   const panelId = useId();
   const messages = useChatMessages(true);
   const readUpTo = useReadUpTo();
@@ -112,6 +114,7 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
     const take = () => {
       const request = takeChatRequest();
       if (request === null) return;
+      focusInput.current = request.focusInput ?? true;
       setOpen(true);
       if (request.voice) setVoiceRequests((count) => count + 1);
     };
@@ -121,7 +124,7 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
 
   useLayoutEffect(() => {
     if (open) {
-      input.current?.focus({ preventScroll: true });
+      if (focusInput.current) input.current?.focus({ preventScroll: true });
     } else if (wasOpen.current) {
       // Only take the focus back when closing the panel lost it, not when it moved on elsewhere.
       const active = document.activeElement;
@@ -140,7 +143,10 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
         aria-expanded={open}
         aria-controls={panelId}
         title={open ? "Close lead chat" : "Open lead chat"}
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          focusInput.current = true;
+          setOpen(!open);
+        }}
         className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-20 size-14 rounded-full bg-card shadow-lg ring-1 ring-border outline-none transition-transform hover:scale-105 focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none motion-reduce:hover:scale-100 md:right-6 md:bottom-6"
       >
         <img src={doriAvatar} alt="" className="size-full rounded-full" />
@@ -369,6 +375,7 @@ export function LeadChat({
           )}
         </div>
       </header>
+      {mobileApp && <WakeWordChat />}
       {messages.error && (
         <p role="alert" className="border-b px-4 py-2 text-sm text-destructive">
           {messages.error.message}

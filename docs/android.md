@@ -64,6 +64,97 @@ hearing anything (`withNativeFallback` in the same file).
   the next tap asks again; denied for good, the chat says so and offers "Open app
   settings", where the microphone is allowed again.
 
+### Foreground Wake Word
+
+Settings > General > Voice in the lead chat > **Listen for Dori (do-ri-ya)** enables
+hands-free Korean messages. It is off by default and asks for microphone permission when
+enabled. Say the wake word followed by a sentence, in one breath if preferred. The chat
+opens with a haptic cue when the wake word is detected; **Cancel voice message** (or Escape)
+discards the current utterance. Android uses haptic feedback rather than the audible cue
+described in part A: a speaker tone could enter the live recognizer or mask the sentence's
+first syllable. The phone's system haptic setting applies. Two seconds without another word finishes the message; a wake word
+without a sentence times out without sending.
+
+The detector and sentence recognizer share one local sherpa-onnx stream, using the Korean
+zipformer and pronunciation rule selected in [wake-word.md](wake-word.md). There is no
+handoff to `SpeechRecognizer` and no microphone audio is uploaded. The app downloads and
+verifies the Korean model from its upstream release on first use; the APK contains the
+runtime, not the model. The manual microphone button still uses the phone's speech service.
+
+Listening is limited to the visible, resumed, unlocked Activity. Leaving the app, locking
+the screen, revoking permission, a call/audio conflict, manual dictation, or reading a reply
+aloud pauses capture. Returning rechecks the setting and permission without opening another
+permission prompt. There is no microphone service, background launch, or battery exemption.
+
+A completed voice message and its client id are saved on the phone before sending. If the
+connection fails, the chat keeps the transcript and offers **Retry voice message**; reconnecting
+or reopening also retries. The same id is used until the server accepts the message, so a
+lost response does not create another chat message. Switching servers never sends the saved
+message to the new server: return to the original server to finish delivery. A pending
+message pauses new wake-word capture rather than overwriting unsent words.
+
+#### Device Acceptance
+
+Automated bridge and JVM tests do not establish microphone accuracy, latency, power use, or
+Samsung lifecycle behavior. Before accepting a build on a real phone, record its APK commit,
+phone model, Android/One UI version, microphone route, and the following evidence:
+
+- With the setting off or microphone denied, no recording indicator and no message.
+- At least 30 fresh real-voice wake utterances, including run-on sentences near the phone
+  and across the room. Miss rate at most 10%, p95 wake-end-to-detection at most one second,
+  zero clipped first syllables and zero duplicated messages; the stored text excludes the
+  wake word. Run one hour of ordinary conversation/video negatives, with at most one false
+  accept. Use the part A [evaluation protocol](wake-word.md#limits-and-next-steps).
+- Home, another Activity, screen off/lock, rapid pause/resume, permission revocation, a phone
+  call, manual dictation, and TTS each stop or suspend recording; returning starts only one
+  detector. Check cancellation and a wake word followed by silence.
+- Disconnect after speaking; reconnect and restart the app. The transcript and client id
+  survive, and the server stores exactly one message. Repeat after switching servers.
+- Against `TOODO_LEAD=external`, verify the message in the server's chat and the external
+  consumer's inbox/feed, without a built-in Lead pane.
+
+#### Matched Power Comparison
+
+Run two 30-minute foreground trials on the same Samsung phone, wake word **off** and **on**.
+Download the model before either trial. Keep brightness (disable automatic brightness),
+screen timeout, Wi-Fi/network traffic, app view, ambient temperature, audio stimulus, and
+starting charge/temperature matched. Use wireless ADB with the USB charger disconnected;
+simulating an unplugged battery while charging does not measure discharge. Let the phone
+cool between trials and repeat in reverse order when practical.
+
+Capture these read-only snapshots before, during, and after each trial:
+
+```sh
+adb shell dumpsys cpuinfo
+adb shell dumpsys meminfo dev.toodo.app
+adb shell dumpsys battery
+adb shell dumpsys thermalservice
+adb shell dumpsys batterystats dev.toodo.app
+```
+
+Keep the CPU sampling interval reported by `cpuinfo` with the app's process row; report
+mean and peak process CPU, not a single instantaneous reading. Report PSS/RSS memory,
+battery level/charge-counter delta, battery temperature and thermal status, plus observed
+surface heat. Temperature from `battery` is not a measurement of skin temperature.
+Retain raw snapshots locally and put only the app's summarized measurements in the result.
+See Android's `dumpsys` documentation for device-dependent output fields.
+
+| Real-phone evidence | Status |
+| --- | --- |
+| Recognition gate and uninterrupted first syllable | Not yet measured |
+| Foreground lifecycle and audio conflicts | Not yet verified on a phone |
+| 30-minute off/on CPU and memory | Not yet measured |
+| 30-minute off/on battery and heat | Not yet measured |
+
+The N150 measurements in part A are not Android power measurements and must not be used to
+fill this table.
+
+Also measure the time from resuming the app, cancelling a capture, finishing TTS, and
+acknowledging a message until **Listening for Dori** appears. This implementation verifies
+the cached files and reloads the recognizer on each capture restart; its startup CPU and
+latency are not represented by a steady-state idle measurement. Include the same number
+of these transitions in both matched trials.
+
 ## Building
 
 CI builds the APK in `.github/workflows/android.yml` on every pull request and push to
@@ -77,6 +168,7 @@ To build it locally (Linux or macOS):
 
 ```sh
 npm ci
+bash scripts/android-wake-prepare.sh           # pinned Android recognition runtime
 npx tauri android build --apk --target aarch64   # a phone
 npx tauri android build --apk --target x86_64    # the emulator
 ```

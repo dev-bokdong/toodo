@@ -12,6 +12,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "vite.config.ts"
+      - "scripts/android-wake-*"
       - ".github/workflows/android.yml"
   pull_request:
     paths:
@@ -21,6 +22,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "vite.config.ts"
+      - "scripts/android-wake-*"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
@@ -60,6 +62,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare pinned wake runtime
+        run: bash scripts/android-wake-prepare.sh
+
       # Every APK is signed with the same key, so a newer one installs over the one on the
       # phone. Without the key (pull requests from forks) the APK is a debug build, signed
       # with the runner's throwaway debug key.
@@ -91,6 +96,9 @@ jobs:
           else
             npx tauri android build --apk --target aarch64 --debug
           fi
+          # The Tauri CLI has now generated the Gradle include files. This JVM suite needs
+          # neither an emulator nor an Android microphone.
+          (cd src-tauri/gen/android && ./gradlew :app:testArm64DebugUnitTest --max-workers=2)
           apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
           version=$(node -p 'require("./package.json").version')
           mkdir -p dist-android

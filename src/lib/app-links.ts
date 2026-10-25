@@ -4,7 +4,7 @@
  * server and carries no token: the app uses the server it is connected to. A request waits
  * until the chat is shown, which is once the server answers and the app is signed in.
  */
-export type ChatRequest = { voice: boolean };
+export type ChatRequest = { voice: boolean; focusInput?: boolean };
 
 let pending: ChatRequest | null = null;
 const listeners = new Set<() => void>();

@@ -15,6 +15,7 @@ import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
 import { builtForWeb, mobileApp, runsOnServer } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { WakeWordSettings } from "@/components/wake-word";
 import {
   setReadAloud,
   setSpeechLanguage,
@@ -105,6 +106,7 @@ function VoiceSettings() {
         Voice input and reading aloud are done by this browser. Voice input is not offered where the browser
         has no speech recognition, such as Firefox.
       </p>
+      {mobileApp && <WakeWordSettings />}
     </fieldset>
   );
 }

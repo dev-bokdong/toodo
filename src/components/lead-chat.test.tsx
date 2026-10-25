@@ -291,6 +291,15 @@ describe("FloatingChat", () => {
     expect(screen.getByRole("textbox", { name: "Message to the lead" })).toHaveValue("Half a thought");
   });
 
+  it("opens hands-free without focusing the keyboard input", () => {
+    renderFloating(running);
+
+    act(() => requestChat({ voice: false, focusInput: false }));
+
+    expect(screen.getByRole("dialog", { name: "Lead chat" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message to the lead" })).not.toHaveFocus();
+  });
+
   it("counts unread replies on the button only while closed, and marks them read when opened", async () => {
     renderFloating(running);
     const button = await screen.findByRole("button", { name: "Lead chat, 1 unread" });
