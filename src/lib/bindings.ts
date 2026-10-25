@@ -276,6 +276,18 @@ export const commands = {
 	 *  address) or, for `None`, the local data. Returns the server as it will be used.
 	 */
 	setConnection: (server: string | null) => typedError<string | null, CommandError>(__TAURI_INVOKE("set_connection", { server })),
+	/**  The Cloudflare Access service token kept for the server at `server`, without its secret. */
+	getAccessToken: (server: string) => typedError<{
+	clientId: string,
+} | null, CommandError>(__TAURI_INVOKE("get_access_token", { server })),
+	/**
+	 *  Keeps `token` as the Cloudflare Access service token of the server at `server`, sent
+	 *  with every request to it from now on, or removes the server's token for `None`.
+	 */
+	setAccessToken: (server: string, token: {
+	clientId: string,
+	clientSecret: string,
+} | null) => typedError<null, CommandError>(__TAURI_INVOKE("set_access_token", { server, token })),
 };
 
 /** Events */
@@ -290,6 +302,17 @@ export const events = {
 };
 
 /* Types */
+/**  The service token kept for a server, without its secret. */
+export type AccessTokenInfo = {
+	clientId: string,
+};
+
+/**  A service token entered by the user. */
+export type AccessTokenInput = {
+	clientId: string,
+	clientSecret: string,
+};
+
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
 export type AgentMerge = 
 /**  Agents stop once the pull request is open; the user merges it. */

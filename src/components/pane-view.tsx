@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import type { Task, TaskPane } from "@/lib/bindings";
 import { useTaskPanes } from "@/lib/queries";
 import { cn } from "@/lib/utils";
-import { openPaneStream, type PaneClientMessage, type PaneServerMessage } from "@/web/pane-stream";
+import { openPaneStream, type PaneClientMessage, type PaneServerMessage, type PaneSocket } from "@/web/pane-stream";
 
 type StreamState =
   | { kind: "connecting" }
@@ -87,7 +87,7 @@ export default function PaneView({ task }: { task: Task }) {
 function PaneTerminal({ taskId, paneId, expanded }: { taskId: number; paneId: string; expanded: boolean }) {
   const container = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
-  const socket = useRef<WebSocket | null>(null);
+  const socket = useRef<PaneSocket | null>(null);
   const size = useRef({ cols: 80, rows: 24 });
   const controlling = useRef(false);
   const [state, setState] = useState<StreamState>({ kind: "connecting" });

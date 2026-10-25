@@ -105,13 +105,23 @@ async function probe(running: "checking" | "retrying") {
   giveUp();
 }
 
+/**
+ * Whether `error` tells that Cloudflare Access in front of the server answered instead of
+ * it (see `src/client/transport.ts`); its message says why and what to do.
+ */
+export function isAccessBlocked(error: unknown): error is Error {
+  return error instanceof Error && error.name === "AccessBlocked";
+}
+
 /** Asks the server for any answer; returns why it did not give one, or null. */
 async function ask(timeoutMs: number): Promise<string | null> {
   try {
     // Any answer will do: without a token the server answers 401.
-    const response = await fetch(activeServer.url("/api"), { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    const response = await activeServer.fetch("/api", { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    void response.body?.cancel();
     return isGatewayFailure(response) ? `A gateway in front of the server answered ${response.status}.` : null;
   } catch (error) {
+    if (isAccessBlocked(error)) return error.message;
     return error instanceof DOMException && error.name === "TimeoutError"
       ? "The server did not answer in time."
       : "No connection to the server.";
@@ -143,14 +153,15 @@ export function retryNow(): void {
 
 /**
  * `fetch` for `path` on the server, which tracks whether it answers. Aborted requests
- * tell nothing.
+ * tell nothing. A request Cloudflare Access blocks counts as not answered, with Access's
+ * reason, so the app keeps its token and tries again once the service token is fixed.
  */
 export async function serverFetch(path: string, init?: RequestInit): Promise<Response> {
   let response: Response;
   try {
-    response = await fetch(activeServer.url(path), init);
+    response = await activeServer.fetch(path, init);
   } catch (error) {
-    if (error instanceof TypeError) {
+    if (error instanceof TypeError || isAccessBlocked(error)) {
       unreachable();
     }
     throw error;

@@ -39,8 +39,24 @@ fn desktop() {
         windows = tauri_build::WindowsAttributes::new_without_app_manifest();
         embed_windows_manifest();
     }
-    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
-        .expect("failed to run tauri-build");
+    // The app's own plugin that sends the window's requests to a server (src/remote/).
+    let remote = tauri_build::InlinedPlugin::new()
+        .commands(&[
+            "fetch",
+            "read",
+            "cancel",
+            "socket_open",
+            "socket_receive",
+            "socket_send",
+            "socket_close",
+        ])
+        .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .windows_attributes(windows)
+            .plugin("remote", remote),
+    )
+    .expect("failed to run tauri-build");
 }
 
 #[cfg(feature = "desktop")]

@@ -10,7 +10,7 @@ import { invoke as invokeOnServer } from "@/web/core";
 export * from "@tauri-apps/api/core";
 
 /** Commands of the desktop app that the server does not have. */
-const APP_COMMANDS = new Set(["set_connection"]);
+const APP_COMMANDS = new Set(["set_connection", "get_access_token", "set_access_token"]);
 
 export function runsInApp(command: string): boolean {
   return connectedServer === null || command.startsWith("plugin:") || APP_COMMANDS.has(command);

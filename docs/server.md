@@ -480,8 +480,9 @@ You need a domain on Cloudflare and a Zero Trust organization (the free plan doe
    `toodo.example.com` (the whole hostname, no path) with an *Allow* policy that includes
    only your own identity, for example your e-mail address with the one-time PIN login. Do
    it before the hostname resolves, so nothing is ever reachable without it. Add no
-   *Bypass* or *Service Auth* policy: the API, the event stream, and `/mcp` all sit behind
-   the same application.
+   *Bypass* policy: the API, the event stream, and `/mcp` all sit behind the same
+   application. The only other policy it takes is a *Service Auth* one for the desktop app
+   (see [Through Cloudflare Access](#through-cloudflare-access)).
 2. **A tunnel of its own.** Create a new, remotely managed tunnel (*Networks > Tunnels*)
    for the server instead of adding a hostname to a tunnel the machine already runs for
    something else: it gets its own token, can be stopped or deleted alone, and a mistake in
@@ -563,16 +564,68 @@ server next to the browsers. Under **General** in Settings, enter the server's a
   notifications. The choice is `connection.json` in the app data directory.
 - The app keeps its token and the lead chat's read mark per server address, so switching
   between servers signs in to each once and keeps them apart.
-- The app's pages are its own, so it calls the server across origins. The server answers
-  CORS requests from the app's origins only (`http://tauri.localhost` and
-  `https://tauri.localhost` on Windows and Android, `tauri://localhost` on macOS and
-  Linux); the token, not a cookie, authorizes each request.
-- The app must reach the server itself: on the same network, through an SSH tunnel
-  (`ssh -L 47616:127.0.0.1:47616 server` and `http://127.0.0.1:47616`), or a VPN. A
-  hostname behind Cloudflare Access does not work yet: Access answers the app's requests
-  with its login page, which only a browser can follow. On macOS, use an `https` address,
-  since its WebView may block plain `http` requests from the app's pages.
+- The app sends its requests to the server from its Rust side, not from its pages: the
+  API calls, the event stream, backup downloads and uploads, and the pane view's
+  WebSocket. So no CORS applies, and the app can add a Cloudflare Access service token
+  (below). It only sends them to the server it uses (or one it keeps a service token
+  for); the token, not a cookie, authorizes each request. The server still answers CORS
+  requests from the app's origins (`http://tauri.localhost` and `https://tauri.localhost`
+  on Windows and Android, `tauri://localhost` on macOS and Linux).
+- The app must reach the server: on the same network, through an SSH tunnel
+  (`ssh -L 47616:127.0.0.1:47616 server` and `http://127.0.0.1:47616`), a VPN, or a
+  hostname behind Cloudflare Access with a service token.
 - Downloads of backups go through the WebView's own download handling.
+
+#### Through Cloudflare Access
+
+Access lets a browser in after its login page, which the app cannot show. Give the app a
+**service token** instead: a client ID and secret it sends as `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` with every request. This assumes the hostname, tunnel, and
+Access application of [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access).
+
+1. **Create the token.** In the Cloudflare dashboard, open **Zero Trust > Access controls >
+   Service credentials > Service Tokens** (older dashboards: **Access > Service Auth**) and
+   choose **Create Service Token**. Name it after the computer, for example `toodo
+   laptop`, and pick a **Service Token Duration**, for example 1 year. Copy the **Client
+   ID** and **Client Secret** now: Cloudflare shows the secret only once.
+2. **Let it in.** Open the Access application of the hostname (**Access controls >
+   Applications**, then *Configure*), and under **Policies** add a policy with the action
+   **Service Auth** that includes **Service Token** is the token you created. Keep the
+   *Allow* policy for your own sign-in next to it, so browsers keep working. Add no
+   *Bypass* policy and leave **Bypass OPTIONS requests to origin** off: the app sends no
+   CORS preflight, so everything stays behind Access.
+3. **Enter it in the app.** Under **General** in Settings, enter the server's address
+   (`https://toodo.example.com`), the client ID, and the client secret, and choose
+   **Connect**. The app restarts, asks for `web-token` and a name once, and keeps a device
+   token, as with any server.
+4. **Check from outside**, with the token (any machine; the answer must come from the
+   server, `401` without a Toodo token, not Access's `302` to its login):
+
+   ```sh
+   curl -s -o /dev/null -w '%{http_code}\n' \
+     -H "CF-Access-Client-Id: <client id>" -H "CF-Access-Client-Secret: <client secret>" \
+     https://toodo.example.com/api
+   ```
+
+Things to know:
+
+- The app keeps the tokens per server address in `access-tokens.json` in its app data
+  directory, readable by your user only. It never hands the secret to its pages, never
+  shows it again, and never writes it to a log; Settings shows the client ID only.
+  **Remove service token** forgets it; to replace it, enter a new client ID and secret and
+  choose **Save service token**, which takes effect at once.
+- When Access turns a request away (no token, a wrong or revoked one, an expired one, or
+  no *Service Auth* policy for it), the app says so in its banner, with the client ID it
+  sent, and keeps retrying; it keeps its Toodo token, so fixing the service token is
+  enough. Access answers such requests with its login redirect or, with strict service
+  token authentication, with `401` or `403`; the app tells both from the server's own
+  answers by Access's `WWW-Authenticate: Cloudflare-Access` challenge.
+- Service tokens expire at the end of their duration. Before that, choose **Refresh** on
+  the token in the dashboard to extend it (the secret stays), or create a new one and
+  enter it in the app.
+- To revoke one computer's access, delete its service token in the dashboard; the app
+  then shows Access's refusal, and other computers with tokens of their own keep
+  working.
 
 ## Development
 
