@@ -4,8 +4,6 @@ mod commands;
 mod connection;
 #[cfg(feature = "desktop")]
 mod desktop;
-#[cfg(feature = "desktop")]
-mod dictation;
 pub mod domain;
 mod mcp;
 #[cfg(feature = "desktop")]

@@ -147,22 +147,6 @@ pub struct PaneAgent {
     pub cwd: Option<String>,
 }
 
-/// The shell of a local herdr pane and the process group in its foreground.
-#[cfg(feature = "server")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PaneProcess {
-    pub shell_pid: u32,
-    pub foreground_pid: u32,
-}
-
-#[cfg(feature = "server")]
-impl PaneProcess {
-    /// Whether a command runs in the foreground, rather than the shell waiting for input.
-    pub fn busy(&self) -> bool {
-        self.foreground_pid != self.shell_pid
-    }
-}
-
 /// A git worktree to create and open as a herdr workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewWorktree<'a> {
@@ -230,26 +214,6 @@ impl Herdr {
             .and_then(Value::as_array)
             .and_then(|rows| rows.iter().map(pane).collect())
             .ok_or_else(|| unexpected(&invocation, &output))
-    }
-
-    /// The shell and foreground process group of a pane of the local herdr server.
-    #[cfg(feature = "server")]
-    pub fn pane_process(&self, pane_id: &str) -> Result<PaneProcess, HerdrError> {
-        let invocation = invocation(None, &["pane", "process-info", "--pane", pane_id]);
-        let output = self.runner.run(&invocation)?;
-        let info = parse(&invocation, &output)?;
-        let pid = |key: &str| {
-            info.pointer(&format!("/result/process_info/{key}"))
-                .and_then(Value::as_u64)
-                .and_then(|pid| u32::try_from(pid).ok())
-        };
-        match (pid("shell_pid"), pid("foreground_process_group_id")) {
-            (Some(shell_pid), Some(foreground_pid)) => Ok(PaneProcess {
-                shell_pid,
-                foreground_pid,
-            }),
-            _ => Err(unexpected(&invocation, &output)),
-        }
     }
 
     /// Types `command` into a pane of the local herdr server and presses Enter, e.g. to run

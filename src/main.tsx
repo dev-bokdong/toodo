@@ -4,7 +4,6 @@ import ReactDOM from "react-dom/client";
 import App from "@/App";
 import "@/index.css";
 import { ServerSetup } from "@/components/server-connection";
-import { followAppLinks } from "@/lib/app-links";
 import { builtForWeb, connectedServer, mobileApp } from "@/lib/platform";
 import { initTheme } from "@/lib/theme";
 import { onReachable, watchConnection } from "@/web/connection";
@@ -29,9 +28,6 @@ if (mobileApp && connectedServer === null) {
   render(<ServerSetup />);
 } else if (builtForWeb || connectedServer !== null) {
   // The web build, and the apps connected to a server, sign in to the server and follow it.
-  if (mobileApp) {
-    followAppLinks().catch((error: unknown) => console.error("Toodo: could not follow app links", error));
-  }
   if (builtForWeb) {
     // The browser may announce that it can install the app before the app has loaded.
     watchInstallOffer();

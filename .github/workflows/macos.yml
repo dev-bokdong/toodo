@@ -61,7 +61,7 @@ jobs:
 
       - run: npm ci
 
-      # The macOS-only code (native dictation, the menu bar icon) is checked here.
+      # The macOS-only code (the menu bar icon) is checked here.
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings
@@ -79,8 +79,6 @@ jobs:
           app=src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Toodo.app
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign --display --entitlements - "$app"
-          plutil -extract NSSpeechRecognitionUsageDescription raw "$app/Contents/Info.plist"
-          plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist"
           lipo -archs "$app/Contents/MacOS/toodo"
 
       # Zipped with ditto, which keeps the bundle's permissions and links.

@@ -5,7 +5,7 @@
 //! frontend sends its commands to the server, and no local data or background work starts.
 //!
 //! The same shell builds the Android app, which is always a client of a server: it has no
-//! tray, updater, or local data, and adds links into the app and native speech recognition.
+//! tray, updater, or local data, and adds links into the app.
 
 use std::sync::{Arc, Mutex};
 
@@ -20,13 +20,13 @@ use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::events::{
-    AgentStatusState, AgentStatusesChanged, ChatChanged, MemoryChanged, Notifier,
-    PullRequestStatusesChanged, TasksChanged, WorkspacesChanged, names,
+    AgentStatusState, AgentStatusesChanged, MemoryChanged, Notifier, PullRequestStatusesChanged,
+    TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
 use crate::domain::model;
-use crate::{adapters, commands, connection, dictation, mcp, remote, storage};
+use crate::{adapters, commands, connection, mcp, remote, storage};
 
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
@@ -95,38 +95,20 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::memory::update_memory,
             commands::memory::supersede_memory,
             commands::backup::restore_backup,
-            commands::lead::get_lead,
-            commands::lead::get_lead_profile,
-            commands::lead::list_chat_messages,
-            commands::lead::send_chat_message,
             connection::get_connection,
             connection::set_connection,
             connection::save_server,
             connection::remove_server,
             remote::access::get_access_token,
             remote::access::set_access_token,
-            dictation::start_dictation,
-            dictation::stop_dictation,
-            dictation::cancel_dictation,
-            dictation::open_privacy_settings,
-            dictation::wake::get_wake_word,
-            dictation::wake::set_wake_word,
-            dictation::wake::cancel_wake_word,
-            dictation::wake::set_wake_word_speaking,
-            dictation::wake::set_wake_word_dictating,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
             commands::events::WorkspacesChanged,
             commands::events::MemoryChanged,
-            commands::events::ChatChanged,
             commands::events::AgentStatusesChanged,
             commands::events::PullRequestStatusesChanged,
             UpdateCheckRequested,
-            VoiceMessageRequested,
-            dictation::DictationChanged,
-            dictation::wake::WakeWordChanged,
-            dictation::wake::WakeWordHeard,
         ])
 }
 
@@ -135,26 +117,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, tauri_specta::Event)]
 pub struct UpdateCheckRequested;
 
-/// Someone asked to speak a message to the lead: the frontend opens the lead chat and
-/// dictates a message, which it sends once the speaker stops.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, tauri_specta::Event)]
-pub struct VoiceMessageRequested;
-
 const MAIN_WINDOW: &str = "main";
 
 #[cfg(desktop)]
 /// Whether the app checks for updates: releases carry updater artifacts for Windows only.
 const UPDATES: bool = cfg!(not(target_os = "macos"));
-
-#[cfg(desktop)]
-/// Shows the window and starts a spoken message to the lead. The tray menu calls it; so can
-/// a native wake-word detector, which keeps running while the window is hidden.
-pub fn request_voice_message(app: &AppHandle) {
-    show_main_window(app);
-    if let Err(error) = VoiceMessageRequested.emit(app) {
-        eprintln!("toodo: failed to request a voice message: {error}");
-    }
-}
 
 #[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
@@ -165,14 +132,10 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// Adds the tray icon that keeps Toodo running after its window is closed. Connected to a
-/// server, an app with native dictation also offers a spoken message to the lead.
+/// Adds the tray icon that keeps Toodo running after its window is closed.
 #[cfg(desktop)]
-fn create_tray(app: &tauri::App, connected: bool) -> tauri::Result<()> {
+fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Toodo", true, None::<&str>)?;
-    let voice = (connected && dictation::SUPPORTED)
-        .then(|| MenuItem::with_id(app, "voice", "Voice Message", true, None::<&str>))
-        .transpose()?;
     let check_updates = UPDATES
         .then(|| {
             MenuItem::with_id(
@@ -186,7 +149,7 @@ fn create_tray(app: &tauri::App, connected: bool) -> tauri::Result<()> {
         .transpose()?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&show];
-    for item in [&voice, &check_updates].into_iter().flatten() {
+    if let Some(item) = &check_updates {
         items.push(item);
     }
     items.push(&quit);
@@ -197,7 +160,6 @@ fn create_tray(app: &tauri::App, connected: bool) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
-            "voice" => request_voice_message(app),
             "check_updates" => {
                 // Shown first so the result of the check is visible.
                 show_main_window(app);
@@ -247,21 +209,8 @@ fn create_main_window(app: &tauri::App, connection: &connection::Connection) -> 
     Ok(())
 }
 
-/// Speech recognition by the phone (`SpeechPlugin.kt` in the Android project), for the
-/// dictation in the lead chat where the WebView has none (see `src/lib/voice.ts`).
-#[cfg(mobile)]
-fn speech_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri::plugin::Builder::new("speech")
-        .setup(|_app, _api| {
-            #[cfg(target_os = "android")]
-            _api.register_android_plugin("dev.toodo.app", "SpeechPlugin")?;
-            Ok(())
-        })
-        .build()
-}
-
-/// Tells the page which system the app runs on, for what differs there: native dictation
-/// on macOS, and no update checks where releases have no updater artifacts.
+/// Tells the page which system the app runs on, for what differs there: no update checks
+/// where releases have no updater artifacts.
 fn platform_script() -> String {
     let platform = serde_json::to_string(std::env::consts::OS).expect("a string serializes");
     format!("window.__TOODO_PLATFORM__ = {platform};")
@@ -272,10 +221,6 @@ fn on_run_event(app: &AppHandle, event: tauri::RunEvent) {
     #[cfg(target_os = "macos")]
     if let tauri::RunEvent::Reopen { .. } = event {
         show_main_window(app);
-    }
-    #[cfg(any(target_os = "macos", windows))]
-    if let tauri::RunEvent::Exit = event {
-        dictation::wake::shut_down();
     }
     shut_down_on_exit(app, event);
 }
@@ -326,9 +271,7 @@ pub fn run() {
             }
         });
     #[cfg(mobile)]
-    let app = app
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(speech_plugin());
+    let app = app.plugin(tauri_plugin_deep_link::init());
     app.invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -336,11 +279,9 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let connection = connection::load(&data_dir);
             #[cfg(desktop)]
-            create_tray(app, connection.server.is_some())?;
+            create_tray(app)?;
             app.manage(remote::access::AccessTokens::load(&data_dir));
             create_main_window(app, &connection)?;
-            #[cfg(any(target_os = "macos", windows))]
-            dictation::wake::start_if_enabled(app.handle(), &data_dir, connection.server.is_some());
             // The phone app keeps no data of its own; until it connects, it asks for a server.
             if cfg!(mobile) || connection.server.is_some() {
                 return Ok(());
@@ -363,8 +304,6 @@ pub fn run() {
             ))));
             app.manage::<commands::events::AgentStatusState>(Mutex::default());
             app.manage::<commands::completion::PullRequestStatusState>(Mutex::default());
-            app.manage::<commands::lead::LeadStatusState>(Mutex::default());
-            app.manage(commands::lead::LeadProfile::default());
             let runtime: Arc<AppHandle> = Arc::new(app.handle().clone());
             commands::events::spawn(runtime.clone())?;
             commands::backup::spawn(runtime.clone())?;
@@ -375,7 +314,7 @@ pub fn run() {
             ));
             match (&mcp.error, server) {
                 (None, Some((listener, token))) => {
-                    let router = mcp::router(runtime.clone(), token, None);
+                    let router = mcp::router(runtime.clone(), token);
                     tauri::async_runtime::spawn(async move {
                         if let Err(error) = mcp::serve(listener, router).await {
                             eprintln!("toodo: MCP server stopped: {error}");
@@ -419,12 +358,6 @@ impl Notifier for AppHandle {
     fn memory_changed(&self) {
         if let Err(error) = MemoryChanged.emit(self) {
             eprintln!("toodo: failed to emit {}: {error}", names::MEMORY_CHANGED);
-        }
-    }
-
-    fn chat_changed(&self) {
-        if let Err(error) = ChatChanged.emit(self) {
-            eprintln!("toodo: failed to emit {}: {error}", names::CHAT_CHANGED);
         }
     }
 
@@ -502,7 +435,6 @@ mod tests {
         assert_eq!(TasksChanged::NAME, names::TASKS_CHANGED);
         assert_eq!(WorkspacesChanged::NAME, names::WORKSPACES_CHANGED);
         assert_eq!(MemoryChanged::NAME, names::MEMORY_CHANGED);
-        assert_eq!(ChatChanged::NAME, names::CHAT_CHANGED);
         assert_eq!(AgentStatusesChanged::NAME, names::AGENT_STATUSES_CHANGED);
         assert_eq!(
             PullRequestStatusesChanged::NAME,

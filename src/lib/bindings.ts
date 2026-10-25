@@ -260,18 +260,6 @@ export const commands = {
 	 *  returned.
 	 */
 	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(__TAURI_INVOKE("restore_backup", { name })),
-	getLead: () => __TAURI_INVOKE<LeadStatus>("get_lead"),
-	getLeadProfile: () => __TAURI_INVOKE<LeadProfile>("get_lead_profile"),
-	/**  The latest messages of the chat with the lead, oldest first. */
-	listChatMessages: () => typedError<ChatMessage[], CommandError>(__TAURI_INVOKE("list_chat_messages")),
-	/**
-	 *  Stores `text` as the user's message in the lead's inbox, then types its ID into the
-	 *  lead's pane if the lead runs. A lead that is starting, restarting, or failing gets it
-	 *  once it runs (see `crate::server::lead`); only a server without a lead rejects it.
-	 *  `client_id`, chosen by the client for each message, makes sending it again harmless: a
-	 *  message already stored under it is returned without storing or typing it again.
-	 */
-	sendChatMessage: (text: string, clientId: string) => typedError<ChatMessage, CommandError>(__TAURI_INVOKE("send_chat_message", { text, clientId })),
 	/**  The server in use and the servers saved in the app. */
 	getConnection: () => typedError<Connection, CommandError>(__TAURI_INVOKE("get_connection")),
 	/**
@@ -300,54 +288,15 @@ export const commands = {
 	clientId: string,
 	clientSecret: string,
 } | null) => typedError<null, CommandError>(__TAURI_INVOKE("set_access_token", { server, token })),
-	/**
-	 *  Starts listening in `language` as session `session`, asking for the speech recognition
-	 *  and microphone permissions first if the user has not answered yet. A session still
-	 *  running ends first.
-	 */
-	startDictation: (session: number, language: string) => typedError<null, CommandError>(__TAURI_INVOKE("start_dictation", { session, language })),
-	/**  Stops listening; the session ends once the last words are recognized. */
-	stopDictation: (session: number) => typedError<null, CommandError>(__TAURI_INVOKE("stop_dictation", { session })),
-	/**  Stops listening and ends the session at once, without its text. */
-	cancelDictation: (session: number) => typedError<null, CommandError>(__TAURI_INVOKE("cancel_dictation", { session })),
-	/**
-	 *  Opens the system's privacy settings at `pane`, where the user can allow what dictation or
-	 *  the wake word was denied.
-	 */
-	openPrivacySettings: (pane: PrivacyPane) => typedError<null, CommandError>(__TAURI_INVOKE("open_privacy_settings", { pane })),
-	getWakeWord: () => typedError<WakeWordChanged, CommandError>(__TAURI_INVOKE("get_wake_word")),
-	/**
-	 *  Turns the wake word on or off and keeps the setting. Turning it on downloads the
-	 *  recognizer the first time and asks for the microphone if the user has not answered yet.
-	 */
-	setWakeWord: (enabled: boolean) => typedError<WakeWordChanged, CommandError>(__TAURI_INVOKE("set_wake_word", { enabled })),
-	/**  Drops the sentence being heard after the wake word, and listens again. */
-	cancelWakeWord: () => typedError<null, CommandError>(__TAURI_INVOKE("cancel_wake_word")),
-	/**
-	 *  Tells the detector whether the app is reading a reply aloud, so its own voice cannot
-	 *  wake it: detection holds while it speaks and for a moment after.
-	 */
-	setWakeWordSpeaking: (speaking: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("set_wake_word_speaking", { speaking })),
-	/**
-	 *  Tells the detector whether a message is dictated in the lead chat by the WebView's speech
-	 *  recognition (the Windows app's), so the dictated words cannot also wake it: detection
-	 *  holds while it listens.
-	 */
-	setWakeWordDictating: (dictating: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("set_wake_word_dictating", { dictating })),
 };
 
 /** Events */
 export const events = {
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
-	chatChanged: makeEvent<ChatChanged>("chat-changed"),
-	dictationChanged: makeEvent<DictationChanged>("dictation-changed"),
 	memoryChanged: makeEvent<MemoryChanged>("memory-changed"),
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	updateCheckRequested: makeEvent<UpdateCheckRequested>("update-check-requested"),
-	voiceMessageRequested: makeEvent<VoiceMessageRequested>("voice-message-requested"),
-	wakeWordChanged: makeEvent<WakeWordChanged>("wake-word-changed"),
-	wakeWordHeard: makeEvent<WakeWordHeard>("wake-word-heard"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
 };
 
@@ -429,47 +378,6 @@ export type BranchList = {
 	names: string[],
 	/**  Why fetching `origin` failed; the names are then the ones known locally. */
 	fetchError: string | null,
-};
-
-export type ChatAuthor = "user" | "lead" | 
-/**  The server, reporting how a task finished. */
-"system";
-
-/**  A message of the chat with the lead was sent or answered. */
-export type ChatChanged = null;
-
-/**  A message of the chat with the lead. */
-export type ChatMessage = {
-	id: number,
-	author: ChatAuthor,
-	/**  Markdown. */
-	body: string,
-	at: Timestamp,
-	/**
-	 *  When the ID of a person's message was typed into the lead's pane, or the lead took
-	 *  it; null for the lead's, and for a person's that waits for the lead to run.
-	 */
-	deliveredAt: Timestamp | null,
-	/**
-	 *  When the lead picked the message up: it started a turn after the message reached
-	 *  its pane, or it replied in the chat. An estimate, never a sign it was handled.
-	 */
-	seenAt: Timestamp | null,
-	/**
-	 *  When a person's message becomes overdue unless the lead handles it; null for the
-	 *  lead's and the system's, and for messages from before receipts were kept.
-	 */
-	dueAt: Timestamp | null,
-	/**  When the lead acknowledged a person's message: it received it and is on it. */
-	ackedAt: Timestamp | null,
-	/**  When the lead handled a person's message, and with what. */
-	handledAt: Timestamp | null,
-	handledBy: HandledBy | null,
-	/**
-	 *  The message was past `dueAt` without being handled when the server listed it, by
-	 *  the server's clock.
-	 */
-	overdue: boolean,
 };
 
 /**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */
@@ -581,30 +489,6 @@ export type CriterionState = "pending" | "met" |
  */
 "failed";
 
-/**
- *  What a dictation session heard so far, or that it ended. Every session ends with one
- *  event where `done` is true; a superseded or cancelled session ends without text.
- */
-export type DictationChanged = {
-	/**  The id the frontend gave the session when starting it. */
-	session: number,
-	/**  Everything heard in the session, not just the newest words. */
-	transcript: string,
-	done: boolean,
-	error: DictationError | null,
-};
-
-export type DictationError = {
-	kind: DictationErrorKind,
-	message: string,
-};
-
-export type DictationErrorKind = 
-/**  Speech recognition is turned off for the app in the system's privacy settings. */
-"speechNotAllowed" | 
-/**  The microphone is turned off for the app in the system's privacy settings. */
-"microphoneNotAllowed" | "noMicrophone" | "languageNotSupported" | "noSpeech" | "failed";
-
 /**  The expected size of a task. */
 export type Estimate = {
 	unit: EstimateUnit,
@@ -620,13 +504,6 @@ export type Estimate = {
  *  progress or in review. A day is 24 hours, a week 7 days, and a month 30 days.
  */
 export type EstimateUnit = "hours" | "days" | "weeks" | "months";
-
-/**  What the lead handled a person's message with. */
-export type HandledBy = 
-/**  Its reply in the chat. */
-{ kind: "reply"; messageId: number } | 
-/**  A task it created or started for the message. */
-{ kind: "task"; taskId: TaskId };
 
 /**  A machine saved in herdr with `herdr machine add`. */
 export type HerdrMachine = {
@@ -645,63 +522,6 @@ export type HerdrStatus = {
 	/**  Whether the herdr server on this machine is running. */
 	running: boolean,
 	version: string | null,
-};
-
-/**
- *  How the chat shows the lead: its name and picture, from the server's configuration
- *  (`TOODO_LEAD_NAME` and `TOODO_LEAD_AVATAR`).
- */
-export type LeadProfile = {
-	name: string,
-	/**  The picture as a `data:` URL; without one the chat shows a generic icon. */
-	avatar: string | null,
-};
-
-/**  What the server is doing with the lead. */
-export type LeadState = 
-/**  No lead: the desktop app, or a server started with `TOODO_LEAD=off`. */
-"disabled" | 
-/**  The agent command was typed into the pane and has not shown up yet. */
-"starting" | "running" | 
-/**  The agent exited; it is started again once its backoff has passed. */
-"restarting" | 
-/**
- *  The lead cannot run: herdr or git failed, or the agent keeps exiting right after
- *  it starts. The server keeps trying.
- */
-"failed" | 
-/**
- *  A server started with `TOODO_LEAD=external`: a lead outside the server, holding the
- *  lead token, reads the chat over MCP and answers there; `connected` tells whether it
- *  is in touch. The server keeps people's messages for it all the same.
- */
-"external";
-
-/**  The lead's workspace, pane, and state, for the chat panel. */
-export type LeadStatus = {
-	state: LeadState,
-	/**  The Toodo workspace the lead works in. */
-	workspaceId: WorkspaceId | null,
-	herdrWorkspaceId: string | null,
-	paneId: string | null,
-	/**  The agent herdr recognized in the pane, e.g. `omo`. */
-	agent: string | null,
-	agentStatus: AgentStatus | null,
-	/**
-	 *  The lead is composing a reply: it has seen the person's newest message, is working,
-	 *  and has not answered it yet.
-	 */
-	typing: boolean,
-	/**  How often the server started the agent again since the server started. */
-	restarts: number,
-	/**  When the running agent was started, or first seen running. */
-	startedAt: Timestamp | null,
-	/**  Why the lead is failing or restarting. */
-	error: string | null,
-	/**  For an outside lead: it keeps an event stream open, or made a request recently. */
-	connected: boolean,
-	/**  For an outside lead: when it last made a request. */
-	lastContactAt: Timestamp | null,
 };
 
 /**  A GitHub issue of the workspace repository linked to a task. */
@@ -841,9 +661,6 @@ export type NoteKind =
 "progress" | 
 /**  Something that stops the work until someone acts on it. */
 "blocker";
-
-/**  A pane of the system's privacy settings, where a denied permission is given back. */
-export type PrivacyPane = "microphone" | "speechRecognition";
 
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
@@ -1066,53 +883,6 @@ export type Timestamp = number;
  *  check, since the updater is driven from there.
  */
 export type UpdateCheckRequested = null;
-
-/**
- *  Someone asked to speak a message to the lead: the frontend opens the lead chat and
- *  dictates a message, which it sends once the speaker stops.
- */
-export type VoiceMessageRequested = null;
-
-/**  Where the wake word stands, sent whenever it changes. */
-export type WakeWordChanged = {
-	/**  The setting: whether the app listens for the wake word while it runs. */
-	enabled: boolean,
-	status: WakeWordStatus,
-};
-
-export type WakeWordError = {
-	kind: WakeWordErrorKind,
-	message: string,
-};
-
-export type WakeWordErrorKind = 
-/**
- *  The microphone is turned off for the app (on Windows, for desktop apps) in the
- *  system's privacy settings; listening starts again by itself once it is allowed.
- */
-"microphoneNotAllowed" | 
-/**  No microphone, or it stopped; the app keeps trying to open the default one. */
-"noMicrophone" | "download" | "failed";
-
-/**
- *  A sentence said after the wake word, for the lead chat. Each is sent once: the frontend
- *  gives it one client ID, kept across retries.
- */
-export type WakeWordHeard = {
-	/**  Counts the sentences heard since the app started. */
-	id: number,
-	message: string,
-};
-
-export type WakeWordStatus = { state: "off" } | 
-/**  The recognizer is being downloaded, the first time the wake word is turned on. */
-{ state: "downloading"; doneBytes: number | null; totalBytes: number | null } | 
-/**  The recognizer loads and the microphone opens. */
-{ state: "starting" } | { state: "listening" } | 
-/**  Not listening while the app reads a reply aloud or a message is dictated. */
-{ state: "held" } | 
-/**  The wake word was heard; the sentence after it so far. */
-{ state: "hearing"; transcript: string } | { state: "failed"; error: WakeWordError };
 
 export type Workspace = {
 	id: WorkspaceId,

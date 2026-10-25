@@ -31,18 +31,6 @@ export const runsOnServer = builtForWeb || connectedServer !== null;
 export const appPlatform: string | null = builtForWeb ? null : (window.__TOODO_PLATFORM__ ?? null);
 
 /**
- * Whether dictation goes through the macOS app rather than the WebView: WKWebView has no
- * working speech recognition, so the app listens itself (`src-tauri/src/dictation/`).
- */
-export const nativeDictation = appPlatform === "macos";
-
-/**
- * Whether the app listens for the wake word itself (`src-tauri/src/dictation/wake/`), also
- * with its window hidden: the macOS and Windows apps.
- */
-export const nativeWakeWord = appPlatform === "macos" || appPlatform === "windows";
-
-/**
  * Whether the app checks for updates: releases carry updater artifacts for Windows only; the
  * Android and macOS apps are updated by installing a newer build.
  */

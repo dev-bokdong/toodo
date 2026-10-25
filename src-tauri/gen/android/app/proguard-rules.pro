@@ -20,6 +20,3 @@
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
 
-# The app's speech plugin is loaded by name, and its arguments are filled in by reflection.
--keep class dev.toodo.app.SpeechPlugin { *; }
--keep class dev.toodo.app.StartArgs { *; }

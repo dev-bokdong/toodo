@@ -49,8 +49,6 @@ desktop = [
   "dep:tokio-tungstenite",
   "dep:base64",
   "dep:webpki-roots",
-  # Checks the wake word model the macOS app downloads (see `src/dictation/wake/`).
-  "dep:sha2",
 ]
 # The headless server (`toodo-server`): the same commands over HTTP for the web build of
 # the frontend. Build it without the default features.
@@ -115,50 +113,11 @@ webpki-roots = { version = "1", optional = true }
 windows-sys = { version = "0.61", features = [
   "Wdk_System_Threading",
   "Win32_Foundation",
-  "Win32_System_Diagnostics_Debug",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_Security",
   "Win32_System_JobObjects",
-  "Win32_System_Registry",
   "Win32_System_Threading",
-  "Win32_UI_WindowsAndMessaging",
 ] }
-# The wake word of the Windows app (src/dictation/wake/): the microphone through WASAPI, and
-# the same recognizer as the macOS app, linked statically from its prebuilt release libraries.
-cpal = "0.18"
-sherpa-onnx = "2.0.0"
-
-# Native dictation in the macOS app (src/dictation/macos.rs).
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-block2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError", "NSLocale", "NSProcessInfo"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSSound"] }
-# The wake word's recognizer (src/dictation/wake/), linked statically from its prebuilt
-# release libraries.
-sherpa-onnx = "2.0.0"
-objc2-speech = { version = "0.3", default-features = false, features = [
-  "std",
-  "block2",
-  "objc2-avf-audio",
-  "SFSpeechRecognizer",
-  "SFSpeechRecognitionRequest",
-  "SFSpeechRecognitionResult",
-  "SFSpeechRecognitionTask",
-  "SFTranscription",
-] }
-objc2-avf-audio = { version = "0.3", default-features = false, features = [
-  "std",
-  "block2",
-  "AVAudioEngine",
-  "AVAudioNode",
-  "AVAudioIONode",
-  "AVAudioFormat",
-  "AVAudioBuffer",
-  "AVAudioTime",
-  "AVAudioTypes",
-] }
-objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

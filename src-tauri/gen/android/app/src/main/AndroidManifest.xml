@@ -1,15 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Dictation in the lead chat (SpeechPlugin.kt). -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-
-    <queries>
-        <!-- Lets SpeechRecognizer find the phone's speech recognition service. -->
-        <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-    </queries>
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

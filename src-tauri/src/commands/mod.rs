@@ -11,7 +11,6 @@ pub mod events;
 pub mod freshness;
 pub mod herdr;
 pub mod issues;
-pub mod lead;
 pub mod machines;
 pub mod mcp;
 pub mod memory;
