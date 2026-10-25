@@ -153,10 +153,24 @@ describe("LeadChat", () => {
     expect(log.lastElementChild).toBe(bubble);
   });
 
-  it("does not send while the lead is not running", async () => {
+  it("sends a message for the lead to take once it runs again while it restarts", async () => {
+    mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: { ...sent(3, "Hi"), deliveredAt: null } });
     renderChat({ ...running, state: "restarting", error: "the agent exited right after it started" });
 
     expect(await screen.findByRole("status", { name: "Lead status" })).toHaveTextContent("Restarting");
+    const input = screen.getByRole("textbox", { name: "Message to the lead" });
+    expect(input).toHaveAttribute("placeholder", "Dori is not running yet; your message waits for it");
+    fireEvent.change(input, { target: { value: "Hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledTimes(1));
+    expect(mocked.sendChatMessage.mock.calls[0][0]).toBe("Hi");
+  });
+
+  it("does not send without a lead", async () => {
+    renderChat({ ...running, state: "disabled" });
+
+    expect(await screen.findByRole("status", { name: "Lead status" })).toHaveTextContent("Off");
     fireEvent.change(screen.getByRole("textbox", { name: "Message to the lead" }), { target: { value: "Hi" } });
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });

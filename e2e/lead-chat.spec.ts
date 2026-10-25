@@ -18,11 +18,13 @@ test("the lead's messages come from Dori and each message shows how far it got, 
   const log = chat.getByRole("log", { name: "Messages" });
   const mine = (text: string) => log.getByRole("listitem", { name: "You" }).filter({ hasText: text });
 
-  // Typed into the lead's pane: delivered.
+  // Its ID typed into the lead's pane, never its text: delivered.
   await input.fill("Plan the release");
   await input.press("Enter");
   await expect(mine("Plan the release").locator("[data-receipt]")).toHaveText("Delivered");
-  expect(readFileSync(path.join(server.herdrDir, "typed.log"), "utf8")).toContain("[Toodo chat] Plan the release");
+  const typed = readFileSync(path.join(server.herdrDir, "typed.log"), "utf8");
+  expect(typed).toMatch(/^\[Toodo inbox\] chat-\d+ - take them with the Toodo MCP tool take_pending$/m);
+  expect(typed).not.toContain("Plan the release");
 
   // Closed, the button shows the lead composing its reply.
   await input.press("Escape");

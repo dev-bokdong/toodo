@@ -258,10 +258,12 @@ The web app talks to the lead in a floating chat: a round Dori button at the bot
 every view opens a chat panel over it, or a full-screen sheet on a phone. While the chat is
 closed, the button shows the count of unread replies, and dots while the lead is typing.
 The panel keeps an unsent message while closed or while moving between views. `send_chat_message { text, clientId }`
-types the message into the lead's pane as one line starting with `[Toodo chat]` (line
-breaks become ` / `) and stores it; it is rejected while the lead is not running, and a
-`clientId` already stored returns that message without typing it again. The lead
-answers with the MCP tool `reply_in_chat`, as its prompt tells it to. Both store the
+stores the message in the lead's inbox first, then, while the lead runs, types only its
+ID into the lead's pane (`[Toodo inbox] chat-12 - take them with the Toodo MCP tool
+take_pending`) and marks it delivered. It is accepted while the lead starts, restarts,
+or fails too, and rejected only without a lead; a `clientId` already stored returns that
+message without storing or typing it again. The lead reads the message with the MCP tool
+`take_pending` and answers with `reply_in_chat`, as its prompt tells it to. Both store the
 message in the database and send the `chat-changed` event, so every open client reloads
 `list_chat_messages` (the latest 500 messages). Each client keeps the ID of the last
 message it showed in the open chat in local storage and counts the lead's later replies as
@@ -270,6 +272,29 @@ unread.
 The chat also takes voice: a microphone button dictates a message and sends it, and the
 lead's new replies can be read aloud (off by default, a per-browser setting). Both run in
 the browser, not on the server; see [`voice.md`](voice.md).
+
+#### Lead inbox
+
+Nothing meant for the lead is lost while it restarts. People's chat messages
+(`chat_messages`) and the status changes of tasks the lead follows, a task reaching
+`in_review` or `done` (`task_events` rows with `for_lead`), wait as pending until the
+lead takes them; their IDs are `chat-<id>` and `event-<id>`.
+
+- **Signal.** Every 5 seconds, while the lead runs, the server types the IDs of new items
+  into its pane as one `[Toodo inbox] ...` line: each message not delivered yet (stored
+  while the lead was not running, or when typing it failed, for example when the server
+  stopped between storing and typing) and each new event. A new agent session gets the
+  IDs of everything still pending once. The pane never gets the text of an item.
+- **Take.** `take_pending { ids? }`, for the lead token only, returns the items (`kind`
+  `chat` with `body`, or `task_event` with `taskId`, `title`, `status`) and marks them
+  taken; a taken message counts as delivered and seen. Without `ids` it returns the oldest
+  pending items, up to 50, with `remaining`; with `ids` it returns those items even if
+  taken before (`takenBefore`), and lists unknown IDs in `missing`. The lead's prompt
+  tells it to take everything at the start of every session.
+- **Request IDs.** `create_task` and `start_task` take `request_id`, which the lead
+  builds from the item it acts on (`chat-12/create-1`). The ID is kept on the task event
+  the call made; calling again with it returns that task and creates, starts, or runs
+  nothing, so an item handled again after a restart does not repeat its effects.
 
 #### Lead tools
 

@@ -20,7 +20,9 @@ use crate::commands::types::{
 use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
 use crate::domain::criteria::{CheckedBy, NewCriterion};
+use crate::domain::inbox::{self, ItemId};
 use crate::domain::model::{self, NoteKind};
+use crate::domain::status::TaskStatus as Status;
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -93,6 +95,11 @@ pub struct CreateTask {
     /// omitted. Set false for work that ships nothing, e.g. research or an errand.
     #[serde(default)]
     pub merge_criterion: Option<bool>,
+    /// Names this creation, e.g. `chat-12/create-1` for the first task the lead creates
+    /// for the inbox item chat-12. Calling again with a request ID that already created a
+    /// task returns that task and creates nothing.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -167,6 +174,63 @@ pub struct ChatReply {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct TakePending {
+    /// The items to take, e.g. `["chat-12", "event-40"]` from a `[Toodo inbox]` line, taken
+    /// before or not. Omit it to take the oldest items not taken yet.
+    #[serde(default)]
+    pub ids: Option<Vec<String>>,
+}
+
+/// What `take_pending` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pending {
+    /// Oldest first.
+    pub items: Vec<PendingItem>,
+    /// Requested IDs that name no item.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    /// Items still waiting: call take_pending again.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub remaining: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingItem {
+    /// `chat-<n>` or `event-<n>`; the base of the request IDs of what you do for it.
+    pub id: String,
+    pub at: types::Timestamp,
+    /// When an earlier take got the item: you may have acted on it already.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taken_before: Option<types::Timestamp>,
+    #[serde(flatten)]
+    pub content: PendingContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum PendingContent {
+    /// A person's message in the chat panel, in Markdown; answer it with reply_in_chat.
+    Chat { body: String },
+    /// A task reached a status you follow: in_review (awaiting completion) or done.
+    TaskEvent {
+        task_id: TaskId,
+        title: String,
+        status: TaskStatus,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AddNote {
@@ -186,6 +250,11 @@ pub struct StartTask {
     /// workspaces on the machine Toodo runs on.
     #[serde(default)]
     pub agent_command: Option<String>,
+    /// Names this start, e.g. `event-40/start-7`. Calling again with a request ID that
+    /// already started the task returns it as it is, without starting it or running
+    /// agent_command again.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 /// A started task with the panes of its herdr workspace.
@@ -484,6 +553,9 @@ fn comparable_path(path: &str) -> String {
 /// before anything is written; a new task has no dependents, so its edges cannot close
 /// a cycle.
 pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> CommandResult<Task> {
+    if let Some(request_id) = &request.request_id {
+        valid_request_id(request_id)?;
+    }
     let merge = if request.merge_criterion.unwrap_or(true) {
         let criteria = request
             .criteria
@@ -524,6 +596,12 @@ fn insert_task(
         new.criteria.insert(0, merge);
     }
     let task = storage.create_task(&new)?;
+    name_request(
+        storage,
+        task.id,
+        Status::Planned,
+        request.request_id.as_deref(),
+    );
     let linked = request
         .depends_on
         .iter()
@@ -548,6 +626,101 @@ fn insert_task(
         return Err(error.into());
     }
     get_task(storage, task.id.into())
+}
+
+/// The task an earlier call named `request_id` already created or started (`status`), if
+/// any; a request ID that named something else is invalid input.
+pub fn repeated(
+    storage: &Storage,
+    request_id: Option<&str>,
+    status: Status,
+) -> CommandResult<Option<Task>> {
+    let Some(request_id) = request_id else {
+        return Ok(None);
+    };
+    let request_id = valid_request_id(request_id)?;
+    let Some((task, named)) = storage.task_of_request(request_id)? else {
+        return Ok(None);
+    };
+    if named != status {
+        return Err(CommandError::invalid_input(format!(
+            "request_id {request_id:?} already named a change of task #{task} to {}; use a \
+             new one",
+            named.as_str()
+        )));
+    }
+    get_task(storage, task.into()).map(Some)
+}
+
+fn valid_request_id(request_id: &str) -> CommandResult<&str> {
+    inbox::request_id(request_id).ok_or_else(|| {
+        CommandError::invalid_input(format!(
+            "request_id must have 1 to {} characters",
+            inbox::MAX_REQUEST_ID_CHARS
+        ))
+    })
+}
+
+/// Names the change of `task` to `status` with `request_id`. It only fails after the change
+/// was made, so a failure is logged.
+fn name_request(
+    storage: &mut Storage,
+    task: model::TaskId,
+    status: Status,
+    request_id: Option<&str>,
+) {
+    let Some(request_id) = request_id.and_then(inbox::request_id) else {
+        return;
+    };
+    if let Err(error) = storage.name_request(task, status, request_id) {
+        eprintln!(
+            "toodo: cannot name the change of task {task} with request {request_id}: {error}"
+        );
+    }
+}
+
+/// Hands the lead the items of its inbox (see [`crate::domain::inbox`]).
+pub fn take_pending(storage: &mut Storage, request: TakePending) -> CommandResult<Pending> {
+    let ids = request
+        .ids
+        .map(|ids| {
+            ids.iter()
+                .map(|id| {
+                    ItemId::parse(id).ok_or_else(|| {
+                        CommandError::invalid_input(format!(
+                            "{id:?} is not an inbox item ID such as chat-12 or event-40"
+                        ))
+                    })
+                })
+                .collect::<CommandResult<Vec<_>>>()
+        })
+        .transpose()?;
+    let taken = storage.take_pending(ids.as_deref())?;
+    Ok(Pending {
+        items: taken
+            .items
+            .into_iter()
+            .map(|item| PendingItem {
+                id: item.id.to_string(),
+                at: types::Timestamp(item.at),
+                taken_before: item.taken_before.map(types::Timestamp),
+                content: match item.content {
+                    storage::InboxContent::Chat { body } => PendingContent::Chat { body },
+                    storage::InboxContent::Event {
+                        task,
+                        title,
+                        status,
+                    } => PendingContent::TaskEvent {
+                        task_id: task.into(),
+                        title,
+                        status: status.into(),
+                    },
+                },
+            })
+            .collect(),
+        missing: taken.missing.iter().map(ToString::to_string).collect(),
+        remaining: taken.remaining,
+    })
 }
 
 pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<Task> {
@@ -646,8 +819,19 @@ pub fn start_task(
             ));
         }
     }
+    if let Some(request_id) = &request.request_id {
+        valid_request_id(request_id)?;
+    }
     let task: Task = match herdr_commands::start(storage, git, herdr, id) {
-        Ok(task) => (&task).into(),
+        Ok(task) => {
+            name_request(
+                &mut lock(storage),
+                id,
+                Status::InProgress,
+                request.request_id.as_deref(),
+            );
+            (&task).into()
+        }
         Err(error) => return Err(with_worktree_root_hint(&lock(storage), id, error)),
     };
     let mut started = TaskStart {
@@ -1008,6 +1192,7 @@ mod tests {
                 due_date: None,
                 criteria: Vec::new(),
                 merge_criterion: None,
+                request_id: None,
             },
             Some(NewCriterion::merge(true)),
         )
@@ -1573,6 +1758,7 @@ mod tests {
             StartTask {
                 id: dependent.id,
                 agent_command: None,
+                request_id: None,
             },
         )
         .unwrap_err();
@@ -1589,6 +1775,7 @@ mod tests {
             StartTask {
                 id: task.id,
                 agent_command: None,
+                request_id: None,
             },
         )
         .unwrap_err();

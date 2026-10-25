@@ -590,7 +590,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Post a message to the people in the Toodo chat panel. Only the Toodo lead uses it: their messages reach the lead's pane as lines starting with [Toodo chat], and they read only the panel, never the pane. Answer each of them here, and post updates they should see. GitHub-flavored Markdown."
+        description = "Post a message to the people in the Toodo chat panel. Only the Toodo lead uses it: it takes their messages with take_pending, and they read only the panel, never the pane. Answer each of them here, and post updates they should see. GitHub-flavored Markdown."
     )]
     fn reply_in_chat(
         &self,
@@ -598,6 +598,29 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = crate::commands::lead::reply(&mut lock(self.backend.storage()), &request.text);
         if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Only the Toodo lead: take the items waiting in its inbox, people's chat messages and the status changes of tasks it follows (in_review, done), oldest first, and mark them taken. Toodo keeps them until taken, while the lead restarts too, and types only their IDs into the lead's pane, as a line starting with [Toodo inbox]. Call it with those ids, and without ids at the start of every session to get what is still waiting. An item with takenBefore was taken by an earlier session, which may have acted on it: name what you do for an item with request_id (create_task, start_task) so doing it again changes nothing."
+    )]
+    fn take_pending(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(request): Parameters<tools::TakePending>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<tools::Pending>(Err(crate::commands::CommandError::rejected(
+                "only the Toodo lead takes the items of its inbox",
+            )));
+        }
+        let result = tools::take_pending(&mut lock(self.backend.storage()), request);
+        if result
+            .as_ref()
+            .is_ok_and(|pending| pending.items.iter().any(|item| item.taken_before.is_none()))
+        {
             self.backend.chat_changed();
         }
         reply(result)
@@ -694,6 +717,16 @@ impl ToodoMcp {
         Extension(parts): Extension<Parts>,
         Parameters(request): Parameters<tools::CreateTask>,
     ) -> Result<CallToolResult, ErrorData> {
+        let repeated = tools::repeated(
+            &lock(self.backend.storage()),
+            request.request_id.as_deref(),
+            crate::domain::status::TaskStatus::Planned,
+        );
+        match repeated {
+            Ok(Some(task)) => return reply(Ok(task)),
+            Ok(None) => {}
+            Err(error) => return reply::<Task>(Err(error)),
+        }
         let related = request.related.clone();
         let result = self
             .blocking(move |backend| tools::create_task(backend.storage(), backend.git(), request))
@@ -763,6 +796,23 @@ impl ToodoMcp {
         Parameters(request): Parameters<tools::StartTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let caller = lead::Caller::of(&parts);
+        let repeated = tools::repeated(
+            &lock(self.backend.storage()),
+            request.request_id.as_deref(),
+            crate::domain::status::TaskStatus::InProgress,
+        );
+        match repeated {
+            Ok(Some(task)) => {
+                return reply(Ok(tools::TaskStart {
+                    task,
+                    panes: Vec::new(),
+                    ran_in: None,
+                    pane_error: None,
+                }));
+            }
+            Ok(None) => {}
+            Err(error) => return reply::<tools::TaskStart>(Err(error)),
+        }
         let command = request.agent_command.clone();
         let result = self
             .blocking(move |backend| {
@@ -1082,6 +1132,7 @@ mod tests {
         let request = tools::StartTask {
             id: id.into(),
             agent_command: None,
+            request_id: None,
         };
         let result = runtime()
             .block_on(server.start_task(by(lead::Caller::Agent), Parameters(request)))
@@ -1190,10 +1241,11 @@ mod tests {
         let request = tools::StartTask {
             id: task.id.into(),
             agent_command: Some(" omo --approve ".to_owned()),
+            request_id: Some("chat-1/start-1".to_owned()),
         };
 
         let result = runtime()
-            .block_on(server.start_task(by(lead::Caller::Lead), Parameters(request)))
+            .block_on(server.start_task(by(lead::Caller::Lead), Parameters(request.clone())))
             .unwrap();
 
         let started = created_workspace(&serde_json::to_value(result).unwrap());
@@ -1210,6 +1262,119 @@ mod tests {
             chat(&backend),
             [format!("Started #{} Add login{ran}", task.id.0)]
         );
+
+        // The same request again, e.g. by a lead that restarted: no git, herdr, or chat.
+        let again = runtime()
+            .block_on(server.start_task(by(lead::Caller::Lead), Parameters(request)))
+            .unwrap();
+        let again = created_workspace(&serde_json::to_value(again).unwrap());
+        assert_eq!(
+            (&again["id"], &again["status"]),
+            (&started["id"], &started["status"])
+        );
+        assert_eq!(again.get("ranIn"), None);
+        assert_eq!(chat(&backend).len(), 1);
+        let create = tools::CreateTask {
+            workspace_id: task.workspace_id.into(),
+            task_type: crate::commands::types::TaskType::Feat,
+            title: "Other".to_owned(),
+            description: String::new(),
+            depends_on: Vec::new(),
+            related: Vec::new(),
+            estimate: None,
+            due_date: None,
+            criteria: Vec::new(),
+            merge_criterion: Some(false),
+            request_id: Some("chat-1/start-1".to_owned()),
+        };
+        let reused = runtime()
+            .block_on(server.create_task(by(lead::Caller::Lead), Parameters(create)))
+            .unwrap();
+        let reused = serde_json::to_value(reused).unwrap();
+        assert!(error_text(&reused).contains("already named"), "{reused}");
+    }
+
+    #[test]
+    fn a_create_named_by_a_request_id_runs_once() {
+        let (storage, first) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let create = |request_id: &str| {
+            let request = serde_json::from_value(serde_json::json!({
+                "workspace_id": first.workspace_id.0,
+                "task_type": "feat",
+                "title": "Add logout",
+                "merge_criterion": false,
+                "request_id": request_id,
+            }))
+            .unwrap();
+            let result = runtime()
+                .block_on(server.create_task(by(lead::Caller::Lead), Parameters(request)))
+                .unwrap();
+            serde_json::to_value(result).unwrap()
+        };
+
+        let created = created_workspace(&create("chat-3/create-1"));
+        let again = created_workspace(&create(" chat-3/create-1 "));
+        let other = created_workspace(&create("chat-3/create-2"));
+
+        assert_eq!(again["id"], created["id"]);
+        assert_ne!(other["id"], created["id"]);
+        assert_eq!(
+            lock(backend.storage())
+                .list_tasks(first.workspace_id)
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(chat(&backend).len(), 2, "one line per created task");
+        assert!(error_text(&create(" ")).starts_with("InvalidInput:"));
+    }
+
+    #[test]
+    fn only_the_lead_takes_its_inbox_and_a_new_session_gets_what_waits() {
+        let (mut storage, _) = storage_with_task(None);
+        let message = storage
+            .add_chat_message(crate::domain::chat::ChatAuthor::User, "Plan it", Some("c1"))
+            .unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let take = |caller, arguments: serde_json::Value| {
+            let request = serde_json::from_value(arguments).unwrap();
+            serde_json::to_value(
+                server
+                    .take_pending(by(caller), Parameters(request))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let chat_id = format!("chat-{}", message.id);
+
+        let refused = take(lead::Caller::Agent, serde_json::json!({}));
+        assert!(error_text(&refused).starts_with("Rejected:"));
+        // A lead session that started after the message was stored takes it.
+        let taken = created_workspace(&take(lead::Caller::Lead, serde_json::json!({})));
+        assert_eq!(
+            taken,
+            serde_json::json!({
+                "items": [{ "id": chat_id, "at": message.at, "kind": "chat", "body": "Plan it" }],
+            })
+        );
+        assert_eq!(
+            *backend.chat_changed.lock().unwrap(),
+            1,
+            "seen in the panel"
+        );
+        let none = created_workspace(&take(lead::Caller::Lead, serde_json::json!({})));
+        assert_eq!(none["items"], serde_json::json!([]));
+        let by_id = created_workspace(&take(
+            lead::Caller::Lead,
+            serde_json::json!({ "ids": [chat_id, "event-77"] }),
+        ));
+        assert!(by_id["items"][0]["takenBefore"].is_number(), "{by_id}");
+        assert_eq!(by_id["missing"], serde_json::json!(["event-77"]));
+        let bad = take(lead::Caller::Lead, serde_json::json!({ "ids": ["task-1"] }));
+        assert!(error_text(&bad).starts_with("InvalidInput:"));
     }
 
     fn conclude(
@@ -2034,6 +2199,7 @@ mod tests {
             "update_memory",
             "supersede_memory",
             "reply_in_chat",
+            "take_pending",
         ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
         }

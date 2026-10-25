@@ -71,9 +71,10 @@ impl Storage {
     }
 
     /// Stores a message; `body` must already be valid (see [`crate::domain::chat::body`]).
-    /// A person's message is stored once it was typed into the lead's pane, so it counts
-    /// as delivered. A user message with the `client_id` of a stored one is not stored
-    /// again: the stored one is returned.
+    /// A person's message is stored before it reaches the lead's pane, so it waits in the
+    /// lead's inbox, undelivered (see [`Storage::mark_chat_delivered`]). A user message
+    /// with the `client_id` of a stored one is not stored again: the stored one is
+    /// returned.
     pub fn add_chat_message(
         &mut self,
         author: ChatAuthor,
@@ -86,18 +87,16 @@ impl Storage {
             return Ok(stored);
         }
         let at = self.now();
-        let delivered_at = (author == ChatAuthor::User).then_some(at);
         self.conn.execute(
-            "INSERT INTO chat_messages (author, body, client_id, at, delivered_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![author.as_str(), body, client_id, at, delivered_at],
+            "INSERT INTO chat_messages (author, body, client_id, at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![author.as_str(), body, client_id, at],
         )?;
         Ok(ChatMessage {
             id: ChatMessageId(self.conn.last_insert_rowid()),
             author,
             body: body.to_owned(),
             at,
-            delivered_at,
+            delivered_at: None,
             seen_at: None,
         })
     }
@@ -138,7 +137,7 @@ mod tests {
             vec![first.clone(), reply]
         );
         assert_eq!(first.at, 7);
-        assert_eq!((first.delivered_at, first.seen_at), (Some(7), None));
+        assert_eq!((first.delivered_at, first.seen_at), (None, None));
         assert_eq!(storage.chat_message_by_client("c1").unwrap(), Some(first));
         assert_eq!(storage.chat_message_by_client("c2").unwrap(), None);
         assert_eq!(storage.list_chat_messages().unwrap()[1].delivered_at, None);
@@ -148,18 +147,22 @@ mod tests {
     fn the_lead_sees_every_delivered_message_once() {
         let mut storage = Storage::open_in_memory().unwrap();
         storage.set_clock(|| 7);
-        storage
+        let hello = storage
             .add_chat_message(ChatAuthor::User, "Hello", Some("c1"))
             .unwrap();
         storage
             .add_chat_message(ChatAuthor::Lead, "Hi", None)
             .unwrap();
+        // Not delivered yet: the lead cannot have seen it.
+        assert_eq!(storage.mark_chat_seen(9).unwrap(), 0);
+        storage.mark_chat_delivered(&[hello.id]).unwrap();
         storage.set_clock(|| 9);
 
         assert_eq!(storage.mark_chat_seen(9).unwrap(), 1);
-        storage
+        let next = storage
             .add_chat_message(ChatAuthor::User, "Next", Some("c2"))
             .unwrap();
+        storage.mark_chat_delivered(&[next.id]).unwrap();
         storage.set_clock(|| 12);
         // Delivered after the lead was seen working: not picked up by that turn.
         assert_eq!(storage.mark_chat_seen(8).unwrap(), 0);

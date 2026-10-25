@@ -2,8 +2,9 @@
 //! workspace and that turns requests into tasks. The desktop app has no lead, so its
 //! status there is always [`LeadState::Disabled`].
 //!
-//! People talk to the lead in the chat panel: their messages are stored and typed into
-//! the lead's pane, and the lead posts its replies back through MCP ([`reply`]).
+//! People talk to the lead in the chat panel: their messages are stored in the lead's
+//! inbox (see [`crate::domain::inbox`]), their IDs are typed into the lead's pane, the
+//! lead takes them over MCP, and posts its replies back through MCP ([`reply`]).
 
 use std::sync::{Mutex, PoisonError};
 
@@ -15,6 +16,7 @@ use super::types::{AgentStatus, Timestamp, WorkspaceId};
 use super::{CommandError, CommandResult, HerdrState, State, StorageState, lock};
 use crate::adapters::herdr::Herdr;
 use crate::domain::chat;
+use crate::domain::inbox::{self, ItemId};
 use crate::storage::Storage;
 
 /// The longest client ID of a chat message.
@@ -86,7 +88,8 @@ pub struct ChatMessage {
     /// Markdown.
     pub body: String,
     pub at: Timestamp,
-    /// When a person's message was typed into the lead's pane; null for the lead's.
+    /// When the ID of a person's message was typed into the lead's pane, or the lead took
+    /// it; null for the lead's, and for a person's that waits for the lead to run.
     pub delivered_at: Option<Timestamp>,
     /// When the lead picked the message up: it started a turn after the message reached
     /// its pane, or it replied in the chat.
@@ -116,9 +119,11 @@ pub fn list_chat_messages(storage: State<'_, StorageState>) -> CommandResult<Vec
     Ok(super::types::map_all(&lock(&storage).list_chat_messages()?))
 }
 
-/// Types `text` into the lead's pane and stores it as the user's message. `client_id`,
-/// chosen by the client for each message, makes sending it again harmless: a message
-/// already stored under it is returned without typing it again.
+/// Stores `text` as the user's message in the lead's inbox, then types its ID into the
+/// lead's pane if the lead runs. A lead that is starting, restarting, or failing gets it
+/// once it runs (see `crate::server::lead`); only a server without a lead rejects it.
+/// `client_id`, chosen by the client for each message, makes sending it again harmless: a
+/// message already stored under it is returned without storing or typing it again.
 #[cfg_attr(feature = "desktop", tauri::command)]
 #[cfg_attr(feature = "desktop", specta::specta)]
 pub fn send_chat_message(
@@ -145,32 +150,61 @@ fn send(
             "clientId must have 1 to {MAX_CLIENT_ID_CHARS} characters"
         )));
     }
+    let pane = running_pane(lead)?;
     if let Some(stored) = lock(storage).chat_message_by_client(client_id)? {
         return Ok((&stored).into());
     }
-    let pane = running_pane(lead)?;
-    herdr.run_in_pane(&pane, &chat::pane_line(&body))?;
     let stored = lock(storage).add_chat_message(chat::ChatAuthor::User, &body, Some(client_id))?;
+    let Some(pane) = pane else {
+        return Ok((&stored).into());
+    };
+    if let Err(error) = signal(storage, herdr, &pane, &[ItemId::Chat(stored.id)]) {
+        eprintln!(
+            "toodo: chat message {} waits for the lead: {error}",
+            stored.id
+        );
+    }
+    let stored = lock(storage)
+        .chat_message_by_client(client_id)?
+        .unwrap_or(stored);
     Ok((&stored).into())
 }
 
-/// The pane of the lead's agent, while it runs.
-fn running_pane(lead: &LeadStatusState) -> CommandResult<String> {
+/// The pane of the lead's agent while it runs, `None` while it does not, and an error
+/// when there is no lead.
+fn running_pane(lead: &LeadStatusState) -> CommandResult<Option<String>> {
     let status = lead.lock().unwrap_or_else(PoisonError::into_inner).clone();
-    let state = match (status.state, status.pane_id) {
-        (LeadState::Running, Some(pane)) => return Ok(pane),
-        (LeadState::Disabled, _) => {
-            return Err(CommandError::rejected(
-                "there is no lead: it runs on toodo-server unless TOODO_LEAD is off",
-            ));
-        }
-        (LeadState::Running | LeadState::Starting, _) => "starting",
-        (LeadState::Restarting, _) => "restarting",
-        (LeadState::Failed, _) => "failing",
-    };
-    Err(CommandError::rejected(format!(
-        "the lead is {state}; send the message again once it runs"
-    )))
+    match (status.state, status.pane_id) {
+        (LeadState::Disabled, _) => Err(CommandError::rejected(
+            "there is no lead: it runs on toodo-server unless TOODO_LEAD is off",
+        )),
+        (LeadState::Running, pane) => Ok(pane),
+        _ => Ok(None),
+    }
+}
+
+/// Types the IDs of `items` into the lead's `pane` and marks the chat messages among them
+/// as delivered. Items that do not get there stay in the inbox all the same.
+pub(crate) fn signal(
+    storage: &StorageState,
+    herdr: &Herdr,
+    pane: &str,
+    items: &[ItemId],
+) -> Result<(), String> {
+    herdr
+        .run_in_pane(pane, &inbox::signal_line(items))
+        .map_err(|error| error.to_string())?;
+    let chat: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            ItemId::Chat(id) => Some(*id),
+            ItemId::Event(_) => None,
+        })
+        .collect();
+    lock(storage)
+        .mark_chat_delivered(&chat)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 /// Stores a reply of the lead. The lead has picked up every message delivered before it.
@@ -202,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn a_message_is_typed_into_the_lead_pane_once_and_stored() {
+    fn a_message_is_stored_and_only_its_id_is_typed_into_the_lead_pane_once() {
         let storage = Mutex::new(Storage::open_in_memory().unwrap());
         let runner = Arc::new(FakeRunner::new(vec![Ok(String::new())]));
         let lead = running();
@@ -212,20 +246,33 @@ mod tests {
 
         assert_eq!(sent.body, "Hi\nthere");
         assert_eq!(sent.author, ChatAuthor::User);
+        assert!(sent.delivered_at.is_some(), "{sent:?}");
         assert_eq!(again, sent);
         let calls = runner.invocations.lock().unwrap().clone();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(
             calls[0].args,
-            ["pane", "run", "wL:p1", "[Toodo chat] Hi / there"]
+            [
+                "pane",
+                "run",
+                "wL:p1",
+                &format!(
+                    "[Toodo inbox] chat-{} - take them with the Toodo MCP tool take_pending",
+                    sent.id
+                )
+            ]
         );
         let stored = lock(&storage).list_chat_messages().unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(ChatMessage::from(&stored[0]), sent);
+        assert_eq!(
+            lock(&storage).pending_items().unwrap(),
+            [ItemId::Chat(stored[0].id)]
+        );
     }
 
     #[test]
-    fn nothing_is_typed_or_stored_for_a_blank_message_or_a_lead_that_does_not_run() {
+    fn nothing_is_stored_for_a_blank_message_or_a_server_without_a_lead() {
         let storage = Mutex::new(Storage::open_in_memory().unwrap());
         let runner = Arc::new(FakeRunner::new(Vec::new()));
         let herdr = herdr(&runner);
@@ -234,14 +281,6 @@ mod tests {
         assert_eq!(blank.kind, CommandErrorKind::InvalidInput);
         let no_id = send(&storage, &herdr, &running(), "Hi", " ").unwrap_err();
         assert_eq!(no_id.kind, CommandErrorKind::InvalidInput);
-        let starting = Mutex::new(LeadStatus {
-            state: LeadState::Starting,
-            pane_id: Some("wL:p1".to_owned()),
-            ..LeadStatus::default()
-        });
-        let error = send(&storage, &herdr, &starting, "Hi", "c2").unwrap_err();
-        assert_eq!(error.kind, CommandErrorKind::Rejected);
-        assert!(error.message.contains("starting"), "{error:?}");
         let disabled = send(&storage, &herdr, &LeadStatusState::default(), "Hi", "c3");
         assert_eq!(disabled.unwrap_err().kind, CommandErrorKind::Rejected);
 
@@ -250,16 +289,43 @@ mod tests {
     }
 
     #[test]
-    fn a_message_herdr_could_not_type_is_not_stored() {
+    fn a_message_to_a_lead_that_does_not_run_waits_in_its_inbox() {
+        let storage = Mutex::new(Storage::open_in_memory().unwrap());
+        let runner = Arc::new(FakeRunner::new(Vec::new()));
+        for (state, client) in [
+            (LeadState::Starting, "c1"),
+            (LeadState::Restarting, "c2"),
+            (LeadState::Failed, "c3"),
+        ] {
+            let lead = Mutex::new(LeadStatus {
+                state,
+                pane_id: Some("wL:p1".to_owned()),
+                ..LeadStatus::default()
+            });
+            let sent = send(&storage, &herdr(&runner), &lead, "Hi", client).unwrap();
+            assert_eq!(sent.delivered_at, None, "{state:?}");
+        }
+
+        assert!(runner.invocations.lock().unwrap().is_empty());
+        let storage = lock(&storage);
+        assert_eq!(storage.pending_items().unwrap().len(), 3);
+        assert_eq!(storage.undelivered_chat().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_message_herdr_could_not_signal_is_kept_undelivered() {
         let storage = Mutex::new(Storage::open_in_memory().unwrap());
         let runner = Arc::new(FakeRunner::new(vec![Err(
             crate::adapters::git::fake::failed(),
         )]));
 
-        let error = send(&storage, &herdr(&runner), &running(), "Hi", "c1").unwrap_err();
+        let sent = send(&storage, &herdr(&runner), &running(), "Hi", "c1").unwrap();
 
-        assert_eq!(error.kind, CommandErrorKind::External);
-        assert!(lock(&storage).list_chat_messages().unwrap().is_empty());
+        assert_eq!(sent.delivered_at, None);
+        assert_eq!(
+            lock(&storage).undelivered_chat().unwrap(),
+            [crate::domain::chat::ChatMessageId(sent.id)]
+        );
     }
 
     #[test]
@@ -267,9 +333,10 @@ mod tests {
         let mut storage = Storage::open_in_memory().unwrap();
         let blank = reply(&mut storage, "  ").unwrap_err();
         assert_eq!(blank.kind, CommandErrorKind::InvalidInput);
-        storage
+        let asked = storage
             .add_chat_message(chat::ChatAuthor::User, "Plan it", Some("c1"))
             .unwrap();
+        storage.mark_chat_delivered(&[asked.id]).unwrap();
         let answer = reply(&mut storage, "Created #4.").unwrap();
         assert_eq!(answer.author, ChatAuthor::Lead);
         let stored = storage.list_chat_messages().unwrap();
