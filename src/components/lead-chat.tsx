@@ -62,8 +62,9 @@ import { cn } from "@/lib/utils";
 const Markdown = lazy(() => import("@/components/markdown"));
 
 /**
- * `ready`: the lead runs. `accepts`: the server takes messages, which wait for a lead that is
- * starting, restarting, or failing until it runs; only a server without a lead refuses them.
+ * `ready`: the lead runs, or a lead outside the server is in touch. `accepts`: the server takes
+ * messages, which wait for a lead that is starting, restarting, failing, or out of touch; only a
+ * server without a lead refuses them.
  */
 function leadState(lead: LeadStatus): { text: string; ready: boolean; accepts: boolean } {
   switch (lead.state) {
@@ -79,6 +80,9 @@ function leadState(lead: LeadStatus): { text: string; ready: boolean; accepts: b
       return { text: "Restarting", ready: false, accepts: true };
     case "failed":
       return { text: "Not running", ready: false, accepts: true };
+    case "external":
+      // A lead outside the server; it reads the stored messages once it is back in touch.
+      return { text: lead.connected ? "Connected" : "Disconnected", ready: lead.connected, accepts: true };
     case "disabled":
       return { text: "Off", ready: false, accepts: false };
   }

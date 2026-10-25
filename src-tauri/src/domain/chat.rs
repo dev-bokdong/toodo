@@ -86,6 +86,61 @@ pub struct ChatMessage {
     pub handled_by: Option<HandledBy>,
     /// Whether the message was past its `due_at`, unhandled, when it was read.
     pub overdue: bool,
+    /// Where an imported message came from; `None` for messages written in Toodo.
+    pub origin: Option<ChatOrigin>,
+}
+
+/// The longest origin label, in characters.
+pub const MAX_ORIGIN_CHARS: usize = 40;
+/// The longest ID of a message in its origin, in characters.
+pub const MAX_ORIGIN_ID_CHARS: usize = 200;
+
+/// Where a message imported from another chat came from: the origin's label, such as
+/// `matrix`, and the message's ID there, which is unique within the origin.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChatOrigin {
+    label: String,
+    id: String,
+}
+
+impl ChatOrigin {
+    /// A label of 1 to [`MAX_ORIGIN_CHARS`] lowercase ASCII letters, digits, `.`, `_`, or
+    /// `-`, and an ID of 1 to [`MAX_ORIGIN_ID_CHARS`] characters without control
+    /// characters, both without surrounding whitespace.
+    pub fn parse(label: &str, id: &str) -> Result<Self, String> {
+        let label = label.trim();
+        let id = id.trim();
+        let label_ok = (1..=MAX_ORIGIN_CHARS).contains(&label.len())
+            && label.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+            });
+        if !label_ok {
+            return Err(format!(
+                "origin must have 1 to {MAX_ORIGIN_CHARS} lowercase letters, digits, '.', '_', \
+                 or '-', not {label:?}"
+            ));
+        }
+        if !(1..=MAX_ORIGIN_ID_CHARS).contains(&id.chars().count())
+            || id.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "origin_id must have 1 to {MAX_ORIGIN_ID_CHARS} characters without control \
+                 characters"
+            ));
+        }
+        Ok(Self {
+            label: label.to_owned(),
+            id: id.to_owned(),
+        })
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 impl ChatMessage {
@@ -162,6 +217,7 @@ mod tests {
             handled_at: None,
             handled_by: None,
             overdue: false,
+            origin: None,
         };
         assert!(!message.is_overdue(100 + HANDLE_WITHIN_SECS - 1));
         assert!(message.is_overdue(100 + HANDLE_WITHIN_SECS));
@@ -174,6 +230,27 @@ mod tests {
             !message.is_overdue(i64::MAX),
             "messages without a due time never are"
         );
+    }
+
+    #[test]
+    fn an_origin_has_a_plain_label_and_an_id_without_control_characters() {
+        let origin = ChatOrigin::parse(" matrix ", " !room:example.org/$event ").unwrap();
+        assert_eq!(
+            (origin.label(), origin.id()),
+            ("matrix", "!room:example.org/$event")
+        );
+        assert!(ChatOrigin::parse("chat.v2_x-1", "1").is_ok());
+        for (label, id) in [
+            ("", "1"),
+            ("Matrix", "1"),
+            ("my chat", "1"),
+            ("x", ""),
+            ("x", "a\nb"),
+        ] {
+            assert!(ChatOrigin::parse(label, id).is_err(), "{label:?} {id:?}");
+        }
+        assert!(ChatOrigin::parse(&"x".repeat(MAX_ORIGIN_CHARS + 1), "1").is_err());
+        assert!(ChatOrigin::parse("x", &"1".repeat(MAX_ORIGIN_ID_CHARS + 1)).is_err());
     }
 
     #[test]

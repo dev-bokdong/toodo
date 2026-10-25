@@ -38,6 +38,10 @@ pub enum LeadState {
     /// The lead cannot run: herdr or git failed, or the agent keeps exiting right after
     /// it starts. The server keeps trying.
     Failed,
+    /// A server started with `TOODO_LEAD=external`: a lead outside the server, holding the
+    /// lead token, reads the chat over MCP and answers there; `connected` tells whether it
+    /// is in touch. The server keeps people's messages for it all the same.
+    External,
 }
 
 /// The lead's workspace, pane, and state, for the chat panel.
@@ -61,6 +65,10 @@ pub struct LeadStatus {
     pub started_at: Option<Timestamp>,
     /// Why the lead is failing or restarting.
     pub error: Option<String>,
+    /// For an outside lead: it keeps an event stream open, or made a request recently.
+    pub connected: bool,
+    /// For an outside lead: when it last made a request.
+    pub last_contact_at: Option<Timestamp>,
 }
 
 pub type LeadStatusState = Mutex<LeadStatus>;
@@ -224,6 +232,8 @@ fn running_pane(lead: &LeadStatusState) -> CommandResult<Option<String>> {
             "there is no lead: it runs on toodo-server unless TOODO_LEAD is off",
         )),
         (LeadState::Running, pane) => Ok(pane),
+        // An outside lead reads the inbox itself; the server has no pane to type into.
+        (LeadState::External, _) => Ok(None),
         _ => Ok(None),
     }
 }
@@ -444,6 +454,29 @@ mod tests {
         let storage = lock(&storage);
         assert_eq!(storage.pending_items().unwrap().len(), 3);
         assert_eq!(storage.undelivered_chat().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn an_outside_lead_gets_messages_stored_without_any_pane() {
+        let storage = Mutex::new(Storage::open_in_memory().unwrap());
+        // Any herdr call would fail the test: the fake has no answers.
+        let runner = Arc::new(FakeRunner::new(Vec::new()));
+        for connected in [false, true] {
+            let lead = Mutex::new(LeadStatus {
+                state: LeadState::External,
+                connected,
+                ..LeadStatus::default()
+            });
+            let client = format!("c-{connected}");
+            let sent = send(&storage, &herdr(&runner), &lead, "Hi", &client).unwrap();
+            assert_eq!(sent.author, ChatAuthor::User);
+            assert_eq!(sent.delivered_at, None);
+        }
+
+        assert!(runner.invocations.lock().unwrap().is_empty());
+        let storage = lock(&storage);
+        assert_eq!(storage.list_chat_messages().unwrap().len(), 2);
+        assert_eq!(storage.peek_pending().unwrap().items.len(), 2);
     }
 
     #[test]

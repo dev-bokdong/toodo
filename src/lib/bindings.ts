@@ -596,7 +596,13 @@ export type LeadState =
  *  The lead cannot run: herdr or git failed, or the agent keeps exiting right after
  *  it starts. The server keeps trying.
  */
-"failed";
+"failed" | 
+/**
+ *  A server started with `TOODO_LEAD=external`: a lead outside the server, holding the
+ *  lead token, reads the chat over MCP and answers there; `connected` tells whether it
+ *  is in touch. The server keeps people's messages for it all the same.
+ */
+"external";
 
 /**  The lead's workspace, pane, and state, for the chat panel. */
 export type LeadStatus = {
@@ -619,6 +625,10 @@ export type LeadStatus = {
 	startedAt: Timestamp | null,
 	/**  Why the lead is failing or restarting. */
 	error: string | null,
+	/**  For an outside lead: it keeps an event stream open, or made a request recently. */
+	connected: boolean,
+	/**  For an outside lead: when it last made a request. */
+	lastContactAt: Timestamp | null,
 };
 
 /**  A GitHub issue of the workspace repository linked to a task. */

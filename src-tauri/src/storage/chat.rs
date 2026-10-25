@@ -3,19 +3,27 @@
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, invalid_data};
-use crate::domain::chat::{self, ChatAuthor, ChatMessage, ChatMessageId, HandledBy};
+use crate::domain::chat::{self, ChatAuthor, ChatMessage, ChatMessageId, ChatOrigin, HandledBy};
 use crate::domain::finish::Finish;
 use crate::domain::model::TaskId;
 
 /// The most messages the chat panel shows: the latest ones, and older ones still open.
 const HISTORY: i64 = 500;
 
-const COLUMNS: &str = "id, author, body, at, delivered_at, seen_at, due_at, acked_at,
-    handled_at, handled_reply_id, handled_task_id";
+/// The most messages one read of the chat after a cursor returns.
+pub const MAX_FEED: usize = 500;
 
-fn message(row: &Row<'_>) -> rusqlite::Result<(ChatMessage, String)> {
+const COLUMNS: &str = "id, author, body, at, delivered_at, seen_at, due_at, acked_at,
+    handled_at, handled_reply_id, handled_task_id, origin, origin_id";
+
+/// A message as read, with its author and origin still as stored.
+type Stored = (ChatMessage, String, Option<(String, String)>);
+
+fn message(row: &Row<'_>) -> rusqlite::Result<Stored> {
     let reply: Option<i64> = row.get(9)?;
     let task: Option<i64> = row.get(10)?;
+    let origin: Option<String> = row.get(11)?;
+    let origin_id: Option<String> = row.get(12)?;
     Ok((
         ChatMessage {
             id: ChatMessageId(row.get(0)?),
@@ -31,15 +39,20 @@ fn message(row: &Row<'_>) -> rusqlite::Result<(ChatMessage, String)> {
                 .map(|id| HandledBy::Reply(ChatMessageId(id)))
                 .or(task.map(|id| HandledBy::Task(TaskId(id)))),
             overdue: false,
+            origin: None,
         },
         row.get(1)?,
+        origin.zip(origin_id),
     ))
 }
 
 impl Storage {
-    fn with_author(&self, (mut message, author): (ChatMessage, String)) -> Result<ChatMessage> {
+    fn with_author(&self, (mut message, author, origin): Stored) -> Result<ChatMessage> {
         message.author = ChatAuthor::parse(&author)
             .ok_or_else(|| invalid_data(format!("unknown chat author {author}")))?;
+        message.origin = origin
+            .map(|(label, id)| ChatOrigin::parse(&label, &id).map_err(invalid_data))
+            .transpose()?;
         message.overdue = message.is_overdue(self.now());
         Ok(message)
     }
@@ -57,6 +70,78 @@ impl Storage {
             .query_map([HISTORY], message)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter().map(|row| self.with_author(row)).collect()
+    }
+
+    /// Every message, of people, the lead, and the system, with an ID above `after`, oldest
+    /// first: at most `limit` (capped at [`MAX_FEED`]), however far back `after` is.
+    pub fn chat_after(&self, after: i64, limit: usize) -> Result<Vec<ChatMessage>> {
+        let limit = i64::try_from(limit.min(MAX_FEED)).unwrap_or(0);
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM chat_messages WHERE id > ?1 ORDER BY id LIMIT ?2"
+        ))?;
+        let rows = statement
+            .query_map([after, limit], message)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().map(|row| self.with_author(row)).collect()
+    }
+
+    /// The message imported from `origin`, if it was.
+    pub fn chat_message_by_origin(&self, origin: &ChatOrigin) -> Result<Option<ChatMessage>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {COLUMNS} FROM chat_messages WHERE origin = ?1 AND origin_id = ?2"
+                ),
+                [origin.label(), origin.id()],
+                message,
+            )
+            .optional()?
+            .map(|row| self.with_author(row))
+            .transpose()
+    }
+
+    /// Stores a message of a person or the lead written in another chat, `origin`, and
+    /// already read by the lead there: a person's message is stored as taken, delivered,
+    /// and seen, so it never enters the lead's inbox, and without a due time, so it is
+    /// never overdue. `body` must already be valid. A message imported from `origin`
+    /// before is not stored again: returns it with `false`.
+    pub fn import_chat_message(
+        &mut self,
+        author: ChatAuthor,
+        body: &str,
+        origin: &ChatOrigin,
+    ) -> Result<(ChatMessage, bool)> {
+        if author == ChatAuthor::System {
+            return Err(invalid_data("the system's reports are never imported"));
+        }
+        if let Some(stored) = self.chat_message_by_origin(origin)? {
+            return Ok((stored, false));
+        }
+        let at = self.now();
+        let read = (author == ChatAuthor::User).then_some(at);
+        self.conn.execute(
+            "INSERT INTO chat_messages (author, body, at, delivered_at, seen_at, taken_at,
+                 origin, origin_id)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?4, ?5, ?6)",
+            params![author.as_str(), body, at, read, origin.label(), origin.id()],
+        )?;
+        Ok((
+            ChatMessage {
+                id: ChatMessageId(self.conn.last_insert_rowid()),
+                author,
+                body: body.to_owned(),
+                at,
+                delivered_at: read,
+                seen_at: read,
+                due_at: None,
+                acked_at: None,
+                handled_at: None,
+                handled_by: None,
+                overdue: false,
+                origin: Some(origin.clone()),
+            },
+            true,
+        ))
     }
 
     /// One message, wherever it is in the history.
@@ -204,6 +289,7 @@ impl Storage {
             handled_at: None,
             handled_by: None,
             overdue: false,
+            origin: None,
         })
     }
 
@@ -326,6 +412,74 @@ mod tests {
             .map(|message| message.seen_at)
             .collect();
         assert_eq!(seen, [Some(9), None, Some(12)]);
+    }
+
+    #[test]
+    fn the_feed_reads_every_message_after_a_cursor_past_the_history() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        let total = HISTORY + 100;
+        for n in 0..total {
+            let author = [ChatAuthor::User, ChatAuthor::Lead, ChatAuthor::System]
+                [usize::try_from(n % 3).unwrap()];
+            storage
+                .add_chat_message(author, &n.to_string(), None)
+                .unwrap();
+        }
+        let mut read = Vec::new();
+        let mut cursor = 0;
+        loop {
+            let page = storage.chat_after(cursor, 120).unwrap();
+            let Some(last) = page.last() else { break };
+            cursor = last.id.0;
+            read.extend(page);
+        }
+        let bodies: Vec<_> = read.iter().map(|message| message.body.clone()).collect();
+        let expected: Vec<_> = (0..total).map(|n| n.to_string()).collect();
+        assert_eq!(bodies, expected, "all of them, once, in order");
+        assert_eq!(read[2].author, ChatAuthor::System);
+        assert_eq!(storage.chat_after(0, 10_000).unwrap().len(), MAX_FEED);
+        assert!(storage.chat_after(cursor, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_imported_message_is_stored_once_and_never_waits_for_the_lead() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        storage.set_clock(|| 7);
+        let origin = ChatOrigin::parse("matrix", "m1").unwrap();
+        let (first, created) = storage
+            .import_chat_message(ChatAuthor::User, "Plan it", &origin)
+            .unwrap();
+        assert!(created);
+        storage.set_clock(|| 9);
+        let (again, created) = storage
+            .import_chat_message(ChatAuthor::User, "Plan it, edited", &origin)
+            .unwrap();
+        assert!(!created);
+        assert_eq!(again, first);
+        assert_eq!(first.origin, Some(origin));
+        // The same ID from another origin is another message.
+        let other = ChatOrigin::parse("irc", "m1").unwrap();
+        let (reply, _) = storage
+            .import_chat_message(ChatAuthor::Lead, "On it", &other)
+            .unwrap();
+        assert!(
+            storage
+                .import_chat_message(
+                    ChatAuthor::System,
+                    "x",
+                    &ChatOrigin::parse("irc", "m2").unwrap()
+                )
+                .is_err()
+        );
+
+        let listed = storage.list_chat_messages().unwrap();
+        assert_eq!(listed, [first.clone(), reply]);
+        assert_eq!((first.due_at, first.overdue), (None, false));
+        assert!(storage.pending_items().unwrap().is_empty());
+        assert!(storage.undelivered_chat().unwrap().is_empty());
+        assert!(storage.open_chat().unwrap().is_empty());
+        assert!(!storage.chat_fell_due(0, i64::MAX).unwrap());
+        assert!(storage.take_pending(None).unwrap().items.is_empty());
     }
 
     #[test]

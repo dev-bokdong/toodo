@@ -15,6 +15,11 @@
 //! running, or while typing failed) and each new task event. The agent takes the items
 //! themselves with the MCP tool `take_pending`.
 //!
+//! With `TOODO_LEAD=external` the server runs no lead of its own: a lead outside it holds
+//! the lead token, reads the chat and the inbox over MCP, and answers there (see
+//! `docs/external-lead.md`). Its requests and open event streams tell whether it is
+//! connected ([`Contact`]), and it reports when it is composing a reply.
+//!
 //! The launcher (`lead-start` in the data directory, readable by the owner only) exports
 //! the server's MCP URL and token, the model, and the system prompt file, then runs the
 //! configured command in the workspace. The workspace gets MCP configurations for omo and
@@ -23,7 +28,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, io, thread};
 
@@ -78,8 +83,51 @@ const STABLE: i64 = 60;
 const TYPING_CAP: i64 = 120;
 /// Failed starts in a row after which the lead is reported as failed.
 const FAILED_AFTER: u32 = 3;
+/// Seconds after its last request that an outside lead without an open event stream
+/// counts as disconnected.
+pub const CONTACT_WINDOW: i64 = 90;
+/// Seconds an outside lead's report that it is composing a reply lasts, unless it reports
+/// again.
+pub const TYPING_TTL: i64 = 30;
 
-/// The lead's configuration, from `TOODO_LEAD*` environment variables.
+/// What the server does about a lead, from `TOODO_LEAD`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeadMode {
+    /// `off`: no lead, and the chat refuses messages.
+    Off,
+    /// `external`: no lead of its own; the chat keeps messages for a lead outside the
+    /// server that holds the lead token.
+    External,
+    /// `on`, the default: the server keeps its lead running in herdr.
+    Builtin(LeadConfig),
+}
+
+impl LeadMode {
+    pub fn from_env(var: impl Fn(&str) -> Option<String>, data_dir: &Path) -> Result<Self, String> {
+        match var("TOODO_LEAD").as_deref().map(str::trim) {
+            None | Some("" | "on") => {}
+            Some("off") => return Ok(Self::Off),
+            Some("external") => return Ok(Self::External),
+            Some(other) => {
+                return Err(format!(
+                    "TOODO_LEAD {other:?} is not one of on, off, and external"
+                ));
+            }
+        }
+        let set = |name: &str| {
+            var(name)
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        Ok(Self::Builtin(LeadConfig {
+            dir: set("TOODO_LEAD_DIR").map_or_else(|| data_dir.join("lead"), PathBuf::from),
+            command: set("TOODO_LEAD_COMMAND").unwrap_or_else(|| DEFAULT_COMMAND.to_owned()),
+            model: set("TOODO_LEAD_MODEL"),
+        }))
+    }
+}
+
+/// The configuration of the server's own lead, from `TOODO_LEAD*` environment variables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeadConfig {
     /// The lead's workspace.
@@ -89,28 +137,166 @@ pub struct LeadConfig {
     pub model: Option<String>,
 }
 
-impl LeadConfig {
-    /// `None` when `TOODO_LEAD` is `off`.
-    pub fn from_env(
-        var: impl Fn(&str) -> Option<String>,
-        data_dir: &Path,
-    ) -> Result<Option<Self>, String> {
-        match var("TOODO_LEAD").as_deref().map(str::trim) {
-            None | Some("" | "on") => {}
-            Some("off") => return Ok(None),
-            Some(other) => return Err(format!("TOODO_LEAD {other:?} is neither on nor off")),
-        }
-        let set = |name: &str| {
-            var(name)
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-        };
-        Ok(Some(Self {
-            dir: set("TOODO_LEAD_DIR").map_or_else(|| data_dir.join("lead"), PathBuf::from),
-            command: set("TOODO_LEAD_COMMAND").unwrap_or_else(|| DEFAULT_COMMAND.to_owned()),
-            model: set("TOODO_LEAD_MODEL"),
-        }))
+/// What the server knows of a lead outside it (`TOODO_LEAD=external`) from its requests
+/// with the lead token. Times are seconds since the Unix epoch.
+#[derive(Debug, Default)]
+pub struct Contact {
+    last_at: Option<i64>,
+    /// The event streams it has open.
+    streams: usize,
+    /// Until when it is composing a reply, as it last reported.
+    typing_until: Option<i64>,
+}
+
+pub type ContactState = Mutex<Contact>;
+
+impl Contact {
+    /// The lead made a request at `now`.
+    pub fn seen(&mut self, now: i64) {
+        self.last_at = Some(now);
     }
+
+    /// The lead reported at `now` that it is composing a reply, or that it stopped.
+    pub fn typing(&mut self, typing: bool, now: i64) {
+        self.last_at = Some(now);
+        self.typing_until = typing.then_some(now + TYPING_TTL);
+    }
+
+    /// The lead's status at `now`: connected while it keeps an event stream open or made a
+    /// request less than [`CONTACT_WINDOW`] seconds ago; typing while it is connected, its
+    /// report has not run out, and the newest message (`newest_by_person`) still waits
+    /// for its answer.
+    fn status(&self, now: i64, newest_by_person: bool) -> LeadStatus {
+        let connected =
+            self.streams > 0 || self.last_at.is_some_and(|at| now - at < CONTACT_WINDOW);
+        LeadStatus {
+            state: LeadState::External,
+            connected,
+            last_contact_at: self.last_at.map(Timestamp),
+            typing: connected
+                && newest_by_person
+                && self.typing_until.is_some_and(|until| now < until),
+            ..LeadStatus::default()
+        }
+    }
+}
+
+/// Seconds since the Unix epoch.
+pub fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            elapsed.as_secs().try_into().unwrap_or(i64::MAX)
+        })
+}
+
+/// Publishes the status of the outside lead at `now`, announcing it as a [`LEAD_CHANGED`]
+/// event when it changed; does nothing unless `TOODO_LEAD` is `external`.
+pub fn publish_external(services: &Services, now: i64) {
+    let Some(contact) = &services.contact else {
+        return;
+    };
+    let newest_by_person = match lock(&services.storage).latest_chat_message() {
+        Ok(message) => message.is_some_and(|message| message.author == ChatAuthor::User),
+        Err(error) => {
+            eprintln!("toodo-server: cannot read the newest chat message: {error}");
+            false
+        }
+    };
+    let status = contact
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .status(now, newest_by_person);
+    if let Some(previous) = publish(&services.lead, &status) {
+        if previous.connected != status.connected || previous.state != status.state {
+            let state = if status.connected {
+                "connected"
+            } else {
+                "disconnected"
+            };
+            println!("toodo-server: the outside lead is {state}");
+        }
+        services.emit(LEAD_CHANGED, &status);
+    }
+}
+
+/// Records a request of the outside lead, publishing its status.
+pub fn note_contact(services: &Services) {
+    let Some(contact) = &services.contact else {
+        return;
+    };
+    let now = now();
+    contact
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .seen(now);
+    publish_external(services, now);
+}
+
+/// An event stream the outside lead keeps open: it counts as connected until the stream
+/// is dropped.
+pub struct LeadStream(Arc<Services>);
+
+impl LeadStream {
+    pub fn open(services: Arc<Services>) -> Self {
+        if let Some(contact) = &services.contact {
+            let now = now();
+            let mut contact = contact.lock().unwrap_or_else(PoisonError::into_inner);
+            contact.streams += 1;
+            contact.seen(now);
+            drop(contact);
+            publish_external(&services, now);
+        }
+        Self(services)
+    }
+}
+
+impl Drop for LeadStream {
+    fn drop(&mut self) {
+        if let Some(contact) = &self.0.contact {
+            let now = now();
+            let mut contact = contact.lock().unwrap_or_else(PoisonError::into_inner);
+            contact.streams = contact.streams.saturating_sub(1);
+            contact.seen(now);
+            drop(contact);
+            publish_external(&self.0, now);
+        }
+    }
+}
+
+/// When the last check looked for chat messages falling due.
+#[derive(Debug, Default)]
+struct DueCheck {
+    checked: i64,
+}
+
+impl DueCheck {
+    /// Whether an unhandled chat message fell due since the last check, by `now` (server
+    /// time), so that clients should list the chat again to show it overdue.
+    fn fell_due(&mut self, storage: &StorageState, now: i64) -> bool {
+        let after = std::mem::replace(&mut self.checked, now);
+        match lock(storage).chat_fell_due(after, now) {
+            Ok(fell_due) => fell_due,
+            Err(error) => {
+                eprintln!("toodo-server: cannot look for overdue chat messages: {error}");
+                false
+            }
+        }
+    }
+}
+
+/// Publishes the status of the outside lead every few seconds on a thread of its own, so
+/// that it turns disconnected and stops typing in time, and announces chat messages that
+/// fall due.
+pub fn spawn_external(services: Arc<Services>) -> io::Result<Checks> {
+    let mut due = DueCheck::default();
+    every(CHECK_PERIOD, move || {
+        let now = now();
+        publish_external(&services, now);
+        if due.fell_due(&services.storage, now) {
+            services.chat_changed();
+        }
+    })
 }
 
 /// What a check found the agent doing, or what it does about it.
@@ -213,8 +399,7 @@ pub struct Supervisor {
     signalled_session: Option<i64>,
     /// The newest task event signalled to that session.
     signalled_event: i64,
-    /// When the last check looked for chat messages falling due.
-    due_checked: i64,
+    due: DueCheck,
 }
 
 impl Supervisor {
@@ -233,21 +418,14 @@ impl Supervisor {
             working: false,
             signalled_session: None,
             signalled_event: 0,
-            due_checked: 0,
+            due: DueCheck::default(),
         }
     }
 
     /// Whether an unhandled chat message fell due since the last check, by `now` (server
     /// time), so that clients should list the chat again to show it overdue.
     fn note_due(&mut self, storage: &StorageState, now: i64) -> bool {
-        let after = std::mem::replace(&mut self.due_checked, now);
-        match lock(storage).chat_fell_due(after, now) {
-            Ok(fell_due) => fell_due,
-            Err(error) => {
-                eprintln!("toodo-server: cannot look for overdue chat messages: {error}");
-                false
-            }
-        }
+        self.due.fell_due(storage, now)
     }
 
     /// Types the IDs of the items waiting for the lead into its pane while it runs:
@@ -490,6 +668,8 @@ impl Supervisor {
             restarts: agent.restarts,
             started_at: agent.running_since.or(agent.launched_at).map(Timestamp),
             error,
+            connected: false,
+            last_contact_at: None,
         }
     }
 }
@@ -498,11 +678,7 @@ impl Supervisor {
 /// `services` and as a [`LEAD_CHANGED`] event whenever it changes.
 pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<Checks> {
     every(CHECK_PERIOD, move || {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                elapsed.as_secs().try_into().unwrap_or(i64::MAX)
-            });
+        let now = now();
         let mut status = supervisor.check(&services.storage, &services.git, &services.herdr, now);
         let delivered = supervisor.signal_inbox(&services.storage, &services.herdr, &status);
         let fell_due = supervisor.note_due(&services.storage, now);
@@ -746,13 +922,52 @@ mod tests {
     }
 
     #[test]
+    fn an_outside_lead_is_connected_while_in_touch_and_types_until_its_report_runs_out() {
+        let mut contact = Contact::default();
+        let never = contact.status(100, true);
+        assert_eq!(never.state, LeadState::External);
+        assert_eq!((never.connected, never.last_contact_at), (false, None));
+
+        contact.seen(100);
+        assert!(contact.status(100 + CONTACT_WINDOW - 1, true).connected);
+        let gone = contact.status(100 + CONTACT_WINDOW, true);
+        assert!(!gone.connected);
+        assert_eq!(gone.last_contact_at, Some(Timestamp(100)));
+        // An open stream keeps it connected however long it is quiet.
+        contact.streams = 1;
+        assert!(contact.status(100 + 10 * CONTACT_WINDOW, true).connected);
+        contact.streams = 0;
+
+        contact.typing(true, 200);
+        assert!(contact.status(200 + TYPING_TTL - 1, true).typing);
+        assert!(!contact.status(200 + TYPING_TTL, true).typing, "ran out");
+        assert!(!contact.status(201, false).typing, "it answered already");
+        contact.typing(false, 210);
+        assert!(!contact.status(211, true).typing);
+        contact.typing(true, 300);
+        contact.last_at = Some(300 - CONTACT_WINDOW);
+        assert!(!contact.status(300, true).typing, "not while disconnected");
+    }
+
+    /// The configuration of the server's own lead, `None` without one.
+    fn config_from(
+        var: impl Fn(&str) -> Option<String>,
+        data_dir: &Path,
+    ) -> Result<Option<LeadConfig>, String> {
+        LeadMode::from_env(var, data_dir).map(|mode| match mode {
+            LeadMode::Builtin(config) => Some(config),
+            LeadMode::Off | LeadMode::External => None,
+        })
+    }
+
+    #[test]
     fn the_lead_runs_omo_in_the_data_directory_unless_configured_otherwise() {
         let data = Path::new("/srv/toodo");
-        let default = LeadConfig::from_env(env(&[]), data).unwrap().unwrap();
+        let default = config_from(env(&[]), data).unwrap().unwrap();
         assert_eq!(default.dir, PathBuf::from("/srv/toodo/lead"));
         assert_eq!(default.command, DEFAULT_COMMAND);
         assert_eq!(default.model, None);
-        let configured = LeadConfig::from_env(
+        let configured = config_from(
             env(&[
                 ("TOODO_LEAD", "on"),
                 ("TOODO_LEAD_DIR", "/home/me/lead"),
@@ -766,11 +981,12 @@ mod tests {
         assert_eq!(configured.dir, PathBuf::from("/home/me/lead"));
         assert_eq!(configured.command, "claude --model \"$TOODO_LEAD_MODEL\"");
         assert_eq!(configured.model.as_deref(), Some("opus"));
+        assert_eq!(config_from(env(&[("TOODO_LEAD", "off")]), data), Ok(None));
         assert_eq!(
-            LeadConfig::from_env(env(&[("TOODO_LEAD", "off")]), data),
-            Ok(None)
+            LeadMode::from_env(env(&[("TOODO_LEAD", " external ")]), data),
+            Ok(LeadMode::External)
         );
-        assert!(LeadConfig::from_env(env(&[("TOODO_LEAD", "maybe")]), data).is_err());
+        assert!(config_from(env(&[("TOODO_LEAD", "maybe")]), data).is_err());
     }
 
     #[test]
@@ -969,7 +1185,7 @@ mod tests {
         ]));
         let herdr = Herdr::new(Box::new(herdr_runner.clone()));
         let storage: StorageState = Mutex::new(Storage::open_in_memory().unwrap());
-        let config = LeadConfig::from_env(env(&[("TOODO_LEAD_MODEL", "opus")]), &data)
+        let config = config_from(env(&[("TOODO_LEAD_MODEL", "opus")]), &data)
             .unwrap()
             .unwrap();
         let mut supervisor = Supervisor::new(
@@ -1040,9 +1256,7 @@ mod tests {
         lock(&storage)
             .add_chat_message(ChatAuthor::User, "Hi", Some("c1"))
             .unwrap();
-        let config = LeadConfig::from_env(env(&[]), Path::new("/srv"))
-            .unwrap()
-            .unwrap();
+        let config = config_from(env(&[]), Path::new("/srv")).unwrap().unwrap();
         let mut supervisor = Supervisor::new(
             config,
             "/srv".into(),
@@ -1073,9 +1287,7 @@ mod tests {
             let messages = lock(&storage).list_chat_messages().unwrap();
             messages.iter().map(|message| message.seen_at).collect()
         };
-        let config = LeadConfig::from_env(env(&[]), Path::new("/srv"))
-            .unwrap()
-            .unwrap();
+        let config = config_from(env(&[]), Path::new("/srv")).unwrap().unwrap();
         let mut supervisor = Supervisor::new(
             config,
             "/srv".into(),
@@ -1168,9 +1380,7 @@ mod tests {
             Ok(String::new()),
         ]));
         let herdr = Herdr::new(Box::new(runner.clone()));
-        let config = LeadConfig::from_env(env(&[]), Path::new("/srv"))
-            .unwrap()
-            .unwrap();
+        let config = config_from(env(&[]), Path::new("/srv")).unwrap().unwrap();
         let mut supervisor = Supervisor::new(
             config,
             "/srv".into(),
@@ -1279,7 +1489,7 @@ mod tests {
         let herdr = Herdr::new(Box::new(Arc::new(FakeRunner::new([Err(
             crate::adapters::git::fake::failed(),
         )]))));
-        let config = LeadConfig::from_env(env(&[]), &data).unwrap().unwrap();
+        let config = config_from(env(&[]), &data).unwrap().unwrap();
         let mut supervisor =
             Supervisor::new(config, data, "http://x/mcp".to_owned(), "t".to_owned());
         let status = supervisor.check(&storage, &git, &herdr, 0);
