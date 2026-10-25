@@ -108,6 +108,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             dictation::stop_dictation,
             dictation::cancel_dictation,
             dictation::open_privacy_settings,
+            dictation::wake::get_wake_word,
+            dictation::wake::set_wake_word,
+            dictation::wake::cancel_wake_word,
+            dictation::wake::set_wake_word_speaking,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
@@ -119,6 +123,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             UpdateCheckRequested,
             VoiceMessageRequested,
             dictation::DictationChanged,
+            dictation::wake::WakeWordChanged,
+            dictation::wake::WakeWordHeard,
         ])
 }
 
@@ -265,6 +271,9 @@ fn on_run_event(app: &AppHandle, event: tauri::RunEvent) {
     if let tauri::RunEvent::Reopen { .. } = event {
         show_main_window(app);
     }
+    if let tauri::RunEvent::Exit = event {
+        dictation::wake::shut_down();
+    }
     shut_down_on_exit(app, event);
 }
 
@@ -332,6 +341,8 @@ pub fn run() {
             create_tray(app, connection.server.is_some())?;
             app.manage(remote::access::AccessTokens::load(&data_dir));
             create_main_window(app, &connection)?;
+            #[cfg(target_os = "macos")]
+            dictation::wake::start_if_enabled(app.handle(), &data_dir, connection.server.is_some());
             // The phone app keeps no data of its own; until it connects, it asks for a server.
             if cfg!(mobile) || connection.server.is_some() {
                 return Ok(());

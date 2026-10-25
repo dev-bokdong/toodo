@@ -21,6 +21,10 @@ const APP_COMMANDS = new Set([
   "stop_dictation",
   "cancel_dictation",
   "open_privacy_settings",
+  "get_wake_word",
+  "set_wake_word",
+  "cancel_wake_word",
+  "set_wake_word_speaking",
 ]);
 
 export function runsInApp(command: string): boolean {

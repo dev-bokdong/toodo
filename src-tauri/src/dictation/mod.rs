@@ -6,9 +6,13 @@
 //! The audio runs in the app, not in the page, so it keeps going while the window is
 //! hidden in the menu bar. Other platforms have no native dictation: the commands reject
 //! and the frontend uses the browser's speech recognition there (see `src/lib/voice.ts`).
+//! The microphone has one owner ([`capture`]), shared with the [`wake`] word.
 
 #[cfg(target_os = "macos")]
+mod capture;
+#[cfg(target_os = "macos")]
 mod macos;
+pub mod wake;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
