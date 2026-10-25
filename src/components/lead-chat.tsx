@@ -169,11 +169,11 @@ export function LeadChat({ lead }: { lead: LeadStatus }) {
 /** Three dots from Dori while the lead composes a reply; still when motion is reduced. */
 function TypingBubble() {
   return (
-    <li data-typing aria-label="Dori is typing" className="flex max-w-[85%] items-start gap-2 self-start">
+    <li data-typing aria-label="Reply is being written" className="flex max-w-[85%] items-start gap-2 self-start">
       <img src={doriAvatar} alt="" className="size-8 shrink-0 rounded-full" />
       <div
         role="status"
-        aria-label="Dori is typing"
+        aria-label="Reply is being written"
         className="flex items-center gap-1 rounded-lg border bg-background px-3 py-3"
       >
         {[0, 150, 300].map((delay) => (

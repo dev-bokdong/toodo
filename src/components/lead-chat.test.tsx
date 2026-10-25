@@ -118,14 +118,14 @@ describe("LeadChat", () => {
     const view = renderChat(running);
     const log = await screen.findByRole("log", { name: "Messages" });
     await within(log).findByText("Plan the release");
-    expect(within(log).queryByRole("listitem", { name: "Dori is typing" })).toBeNull();
+    expect(within(log).queryByRole("listitem", { name: "Reply is being written" })).toBeNull();
 
     view.rerender(
       <QueryClientProvider client={new QueryClient()}>
         <LeadChat lead={{ ...running, agentStatus: "working", typing: true }} />
       </QueryClientProvider>,
     );
-    const bubble = await within(log).findByRole("listitem", { name: "Dori is typing" });
+    const bubble = await within(log).findByRole("listitem", { name: "Reply is being written" });
     expect(bubble.querySelector("img")).toHaveAttribute("src", expect.stringContaining("dori-avatar"));
     const dots = bubble.querySelectorAll("span");
     expect(dots).toHaveLength(3);
