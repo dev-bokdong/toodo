@@ -44,6 +44,19 @@ impl Storage {
         rows.into_iter().map(with_author).collect()
     }
 
+    /// The newest message, if there is any.
+    pub fn latest_chat_message(&self) -> Result<Option<ChatMessage>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM chat_messages ORDER BY id DESC LIMIT 1"),
+                [],
+                message,
+            )
+            .optional()?
+            .map(with_author)
+            .transpose()
+    }
+
     /// The message a client sent under `client_id`, if it was stored.
     pub fn chat_message_by_client(&self, client_id: &str) -> Result<Option<ChatMessage>> {
         self.conn

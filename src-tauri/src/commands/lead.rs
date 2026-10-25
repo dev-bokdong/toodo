@@ -50,6 +50,9 @@ pub struct LeadStatus {
     /// The agent herdr recognized in the pane, e.g. `omo`.
     pub agent: Option<String>,
     pub agent_status: Option<AgentStatus>,
+    /// The lead is composing a reply: it has seen the person's newest message, is working,
+    /// and has not answered it yet.
+    pub typing: bool,
     /// How often the server started the agent again since the server started.
     pub restarts: u32,
     /// When the running agent was started, or first seen running.
