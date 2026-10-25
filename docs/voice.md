@@ -20,6 +20,11 @@ Both are done by the browser:
 
 The server takes no part: no audio reaches `toodo-server`, and it needs no model or key.
 
+The macOS app is the exception for voice input: its WebView has no working speech
+recognition, so the app recognizes speech itself with the Mac's `SFSpeechRecognizer`, still
+on the device and with the same quiet rule, buttons, and speech language. See
+[docs/macos.md](macos.md#voice).
+
 ## How the Options Compared
 
 Measured on the home server that runs `toodo-server` (Intel N150, 4 cores, no GPU) in

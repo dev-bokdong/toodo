@@ -1,7 +1,7 @@
 /**
  * `@tauri-apps/api/event` for the app's own code in the desktop build (see `vite.config.ts`).
  * Connected to a `toodo-server`, the app gets the server's events from its event stream;
- * the events of the app itself (Tauri's own, and the tray's request to check for updates)
+ * the events of the app itself (Tauri's own, the tray's requests, and native dictation)
  * still come from the app.
  */
 import { listen as listenInApp, once as onceInApp, type EventCallback, type EventName, type Options } from "@tauri-apps/api/event";
@@ -11,7 +11,7 @@ import { listen as listenOnServer, once as onceOnServer } from "@/web/event";
 export * from "@tauri-apps/api/event";
 
 /** Events the app emits itself, which the server does not send. */
-const APP_EVENTS = new Set(["update-check-requested"]);
+const APP_EVENTS = new Set(["update-check-requested", "voice-message-requested", "dictation-changed"]);
 
 export function comesFromApp(event: EventName): boolean {
   return connectedServer === null || event.startsWith("tauri://") || APP_EVENTS.has(event);

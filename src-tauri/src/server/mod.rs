@@ -16,7 +16,9 @@
 //! - `/mcp` is the MCP endpoint, as in the desktop app.
 //! - `get_lead` and the `lead-changed` event report the lead, an agent the server keeps
 //!   running in herdr (see [`lead`]); `send_chat_message` types a message into its pane,
-//!   and the `chat-changed` event tells clients to read the chat again.
+//!   and the `chat-changed` event tells clients to read the chat again. With
+//!   `TOODO_LEAD=external` a lead outside the server reads the chat over MCP instead.
+//!   `GET /api/events` also takes the lead's token, so that it can wait for changes.
 //! - Anything else is served from the web build of the frontend, when one is configured.
 //!
 //! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
@@ -107,7 +109,8 @@ Environment:
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
                   (default https://github.com/dev-bokdong/toodo)
-  TOODO_LEAD      off to run no lead agent in herdr (default on)
+  TOODO_LEAD      off to run no lead agent in herdr (default on); external to run none
+                  and keep the chat for a lead outside the server (docs/external-lead.md)
   TOODO_LEAD_COMMAND
                   shell command that starts the lead agent (default: omo)
   TOODO_LEAD_MODEL
@@ -121,8 +124,7 @@ pub struct Config {
     pub web_dir: Option<PathBuf>,
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
-    /// `None` when the lead is turned off.
-    pub lead: Option<lead::LeadConfig>,
+    pub lead: lead::LeadMode,
 }
 
 impl Config {
@@ -154,7 +156,7 @@ impl Config {
             }
             None => push::DEFAULT_SUBJECT.to_owned(),
         };
-        let lead = lead::LeadConfig::from_env(&var, &data_dir)?;
+        let lead = lead::LeadMode::from_env(&var, &data_dir)?;
         Ok(Self {
             listen,
             data_dir,
@@ -191,6 +193,8 @@ pub struct Services {
     panes: panes::Panes,
     push: push::Push,
     lead: LeadStatusState,
+    /// The outside lead's contact, with `TOODO_LEAD=external` only.
+    contact: Option<lead::ContactState>,
 }
 
 impl Services {
@@ -256,6 +260,33 @@ impl Backend for Services {
 
     fn herdr(&self) -> &Herdr {
         &self.herdr
+    }
+
+    fn lead_contact(&self) {
+        lead::note_contact(self);
+    }
+
+    fn set_lead_typing(
+        &self,
+        typing: bool,
+    ) -> crate::commands::CommandResult<crate::commands::lead::LeadStatus> {
+        let Some(contact) = &self.contact else {
+            return Err(crate::commands::CommandError::rejected(
+                "only a lead outside the server reports that it is typing; this server's \
+                 TOODO_LEAD is not external",
+            ));
+        };
+        let now = lead::now();
+        contact
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .typing(typing, now);
+        lead::publish_external(self, now);
+        Ok(self
+            .lead
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone())
     }
 }
 
@@ -348,17 +379,24 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         restore_limit: files::RESTORE_LIMIT,
         push,
         lead: LeadStatusState::default(),
+        contact: (config.lead == lead::LeadMode::External)
+            .then(|| lead::ContactState::new(lead::Contact::default())),
     });
     push::spawn(services.clone())?;
     events::spawn(services.clone())?;
     let lead_checks = match config.lead.clone() {
-        Some(lead) => {
+        lead::LeadMode::Builtin(lead) => {
             let data_dir = std::fs::canonicalize(&config.data_dir)?;
             let supervisor =
                 lead::Supervisor::new(lead, data_dir, services.mcp.url.clone(), lead_token.clone());
             Some(lead::spawn(services.clone(), supervisor)?)
         }
-        None => None,
+        lead::LeadMode::External => {
+            lead::publish_external(&services, lead::now());
+            println!("toodo-server: TOODO_LEAD is external; the chat waits for an outside lead");
+            Some(lead::spawn_external(services.clone())?)
+        }
+        lead::LeadMode::Off => None,
     };
     backup::spawn(services.clone())?;
     completion::spawn(services.clone())?;
@@ -460,6 +498,7 @@ fn router(
             devices::Gate {
                 services: services.clone(),
                 shared_token: Arc::new(web_token),
+                lead_token: Some(Arc::new(lead_token.clone())),
             },
             devices::require_access,
         ))
@@ -499,20 +538,26 @@ fn desktop_cors() -> CorsLayer {
 
 async fn event_stream(
     axum::extract::State(services): axum::extract::State<Arc<Services>>,
+    lead: Option<axum::Extension<devices::LeadCaller>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(sent_events(services.events.subscribe())).keep_alive(KeepAlive::default())
+    let events = services.events.subscribe();
+    // The outside lead counts as connected while its stream is open.
+    let guard = lead.map(|_| lead::LeadStream::open(services));
+    Sse::new(sent_events(events, guard)).keep_alive(KeepAlive::default())
 }
 
 /// The events of `events` as server-sent events. A subscriber that fell behind and missed
 /// some gets its stream ended instead, so the client reconnects and refetches everything.
-fn sent_events(
+/// `guard` is dropped with the stream.
+fn sent_events<G: Send + 'static>(
     events: broadcast::Receiver<ServerEvent>,
+    guard: G,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
-    futures_util::stream::unfold(events, |mut events| async {
+    futures_util::stream::unfold((events, guard), |(mut events, guard)| async {
         match events.recv().await {
             Ok(event) => {
                 let sent = Event::default().event(event.name).data(event.data);
-                Some((Ok(sent), events))
+                Some((Ok(sent), (events, guard)))
             }
             Err(broadcast::error::RecvError::Lagged(missed)) => {
                 eprintln!("toodo-server: an event stream missed {missed} events; ending it");
@@ -612,6 +657,7 @@ mod tests {
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
             lead: LeadStatusState::default(),
+            contact: None,
         })
     }
 
@@ -763,6 +809,146 @@ mod tests {
             .unwrap()[1]
             .id;
         assert_eq!(stored().handled_by, Some(HandledBy::Reply(reply)));
+    }
+
+    /// Services of a server started with `TOODO_LEAD=external`.
+    fn external_services(data_dir: &Path) -> Arc<Services> {
+        let mut services = Arc::into_inner(services(data_dir)).unwrap();
+        services.contact = Some(lead::ContactState::default());
+        let services = Arc::new(services);
+        lead::publish_external(&services, lead::now());
+        services
+    }
+
+    /// The status line and headers of a request for the event stream with `token`.
+    fn open_events(address: SocketAddr, token: &str) -> (std::net::TcpStream, String) {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "GET /api/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+            head.push(byte[0]);
+        }
+        (stream, String::from_utf8(head).unwrap())
+    }
+
+    #[test]
+    fn an_outside_lead_reads_and_answers_the_chat_with_its_token_only() {
+        use crate::commands::lead::LeadState;
+        use crate::domain::chat::ChatAuthor;
+
+        let temp = tempfile::tempdir().unwrap();
+        let services = external_services(temp.path());
+        let address = serve(services.clone(), None);
+        let lead = || services.lead.lock().unwrap().clone();
+        assert_eq!(
+            (lead().state, lead().connected),
+            (LeadState::External, false)
+        );
+
+        // A person's message is stored with no lead pane to type it into.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let sent = runtime.block_on(rpc::dispatch(
+            services.clone(),
+            "send_chat_message",
+            serde_json::json!({ "text": "Plan it", "clientId": "c1" }),
+        ));
+        assert!(matches!(sent, rpc::Reply::Done(_)), "{sent:?}");
+
+        // The agent token opens neither the stream nor the lead's tools.
+        assert!(open_events(address, "agent").1.starts_with("HTTP/1.1 401"));
+        let refused = call_tool(address, "agent", "peek_pending", serde_json::json!({}));
+        assert!(refused.contains("only the Toodo lead"), "{refused}");
+        assert!(!lead().connected);
+        // The lead's token opens the stream, and nothing else under /api.
+        assert!(status(address, "POST", "/api/rpc/list_workspaces", Some("lead")).contains("401"));
+        let (stream, head) = open_events(address, "lead");
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(head.contains("text/event-stream"), "{head}");
+        assert!(lead().connected, "connected while its stream is open");
+        drop(stream);
+
+        let peeked = call_tool(address, "lead", "peek_pending", serde_json::json!({}));
+        assert!(peeked.contains("Plan it"), "{peeked}");
+        let peeked_again = call_tool(address, "lead", "peek_pending", serde_json::json!({}));
+        assert!(peeked_again.contains("Plan it"), "peeking takes nothing");
+
+        let typing = call_tool(
+            address,
+            "lead",
+            "set_typing",
+            serde_json::json!({ "typing": true }),
+        );
+        assert!(typing.contains(r#"\"typing\": true"#), "{typing}");
+        assert!(lead().typing);
+        call_tool(
+            address,
+            "lead",
+            "reply_in_chat",
+            serde_json::json!({ "text": "On it." }),
+        );
+        assert!(!lead().typing, "a reply ends the typing");
+        assert!(lead().connected && lead().last_contact_at.is_some());
+
+        let imported = || {
+            call_tool(
+                address,
+                "lead",
+                "import_chat_message",
+                serde_json::json!({
+                    "author": "user", "text": "From elsewhere",
+                    "origin": "matrix", "origin_id": "m1"
+                }),
+            )
+        };
+        assert!(imported().contains(r#"\"created\": true"#));
+        assert!(imported().contains(r#"\"created\": false"#));
+
+        let feed = call_tool(
+            address,
+            "lead",
+            "list_chat",
+            serde_json::json!({ "after": 0 }),
+        );
+        for text in [
+            "Plan it",
+            "On it.",
+            "From elsewhere",
+            r#"\"originId\": \"m1\""#,
+        ] {
+            assert!(feed.contains(text), "{text} in {feed}");
+        }
+        let storage = crate::commands::lock(&services.storage);
+        let messages = storage.list_chat_messages().unwrap();
+        assert_eq!(messages.len(), 3, "imported once");
+        assert_eq!(messages[2].author, ChatAuthor::User);
+        assert_eq!(
+            storage.pending_items().unwrap().len(),
+            1,
+            "only the typed one"
+        );
+    }
+
+    #[test]
+    fn a_server_without_an_outside_lead_refuses_typing() {
+        let (address, _temp) = serve_router(None);
+        let refused = call_tool(
+            address,
+            "lead",
+            "set_typing",
+            serde_json::json!({ "typing": true }),
+        );
+        assert!(refused.contains("TOODO_LEAD is not external"), "{refused}");
     }
 
     #[test]
@@ -1306,7 +1492,7 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let mut stream = Box::pin(sent_events(receiver));
+        let mut stream = Box::pin(sent_events(receiver, ()));
         assert!(runtime.block_on(stream.next()).is_some());
         for data in ["2", "3", "4"] {
             drop(sender.send(event(data)));

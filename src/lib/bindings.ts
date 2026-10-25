@@ -299,16 +299,33 @@ export const commands = {
 	clientId: string,
 	clientSecret: string,
 } | null) => typedError<null, CommandError>(__TAURI_INVOKE("set_access_token", { server, token })),
+	/**
+	 *  Starts listening in `language` as session `session`, asking for the speech recognition
+	 *  and microphone permissions first if the user has not answered yet. A session still
+	 *  running ends first.
+	 */
+	startDictation: (session: number, language: string) => typedError<null, CommandError>(__TAURI_INVOKE("start_dictation", { session, language })),
+	/**  Stops listening; the session ends once the last words are recognized. */
+	stopDictation: (session: number) => typedError<null, CommandError>(__TAURI_INVOKE("stop_dictation", { session })),
+	/**  Stops listening and ends the session at once, without its text. */
+	cancelDictation: (session: number) => typedError<null, CommandError>(__TAURI_INVOKE("cancel_dictation", { session })),
+	/**
+	 *  Opens the system's privacy settings at `pane`, where the user can allow what dictation
+	 *  was denied.
+	 */
+	openPrivacySettings: (pane: PrivacyPane) => typedError<null, CommandError>(__TAURI_INVOKE("open_privacy_settings", { pane })),
 };
 
 /** Events */
 export const events = {
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
 	chatChanged: makeEvent<ChatChanged>("chat-changed"),
+	dictationChanged: makeEvent<DictationChanged>("dictation-changed"),
 	memoryChanged: makeEvent<MemoryChanged>("memory-changed"),
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	updateCheckRequested: makeEvent<UpdateCheckRequested>("update-check-requested"),
+	voiceMessageRequested: makeEvent<VoiceMessageRequested>("voice-message-requested"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
 };
 
@@ -542,6 +559,30 @@ export type CriterionState = "pending" | "met" |
  */
 "failed";
 
+/**
+ *  What a dictation session heard so far, or that it ended. Every session ends with one
+ *  event where `done` is true; a superseded or cancelled session ends without text.
+ */
+export type DictationChanged = {
+	/**  The id the frontend gave the session when starting it. */
+	session: number,
+	/**  Everything heard in the session, not just the newest words. */
+	transcript: string,
+	done: boolean,
+	error: DictationError | null,
+};
+
+export type DictationError = {
+	kind: DictationErrorKind,
+	message: string,
+};
+
+export type DictationErrorKind = 
+/**  Speech recognition is turned off for the app in the system's privacy settings. */
+"speechNotAllowed" | 
+/**  The microphone is turned off for the app in the system's privacy settings. */
+"microphoneNotAllowed" | "noMicrophone" | "languageNotSupported" | "noSpeech" | "failed";
+
 /**  The expected size of a task. */
 export type Estimate = {
 	unit: EstimateUnit,
@@ -596,7 +637,13 @@ export type LeadState =
  *  The lead cannot run: herdr or git failed, or the agent keeps exiting right after
  *  it starts. The server keeps trying.
  */
-"failed";
+"failed" | 
+/**
+ *  A server started with `TOODO_LEAD=external`: a lead outside the server, holding the
+ *  lead token, reads the chat over MCP and answers there; `connected` tells whether it
+ *  is in touch. The server keeps people's messages for it all the same.
+ */
+"external";
 
 /**  The lead's workspace, pane, and state, for the chat panel. */
 export type LeadStatus = {
@@ -619,6 +666,10 @@ export type LeadStatus = {
 	startedAt: Timestamp | null,
 	/**  Why the lead is failing or restarting. */
 	error: string | null,
+	/**  For an outside lead: it keeps an event stream open, or made a request recently. */
+	connected: boolean,
+	/**  For an outside lead: when it last made a request. */
+	lastContactAt: Timestamp | null,
 };
 
 /**  A GitHub issue of the workspace repository linked to a task. */
@@ -758,6 +809,9 @@ export type NoteKind =
 "progress" | 
 /**  Something that stops the work until someone acts on it. */
 "blocker";
+
+/**  A pane of the system's privacy settings, where a denied permission is given back. */
+export type PrivacyPane = "microphone" | "speechRecognition";
 
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
@@ -980,6 +1034,12 @@ export type Timestamp = number;
  *  check, since the updater is driven from there.
  */
 export type UpdateCheckRequested = null;
+
+/**
+ *  Someone asked to speak a message to the lead: the frontend opens the lead chat and
+ *  dictates a message, which it sends once the speaker stops.
+ */
+export type VoiceMessageRequested = null;
 
 export type Workspace = {
 	id: WorkspaceId,

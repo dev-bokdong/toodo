@@ -4,11 +4,14 @@
  * (read replies aloud, the speech language) are kept per browser in local storage.
  *
  * See docs/voice.md for why the browser does both rather than the server. The Android app,
- * whose WebView has no speech recognition, dictates with the phone's (see docs/android.md).
+ * whose WebView has no speech recognition, dictates with the phone's (see docs/android.md),
+ * and the macOS app with the Mac's (see docs/macos.md).
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { PrivacyPane } from "@/lib/bindings";
+import { MacRecognition, privacyPanes } from "@/lib/mac-dictation";
 import { NativeRecognition, withNativeFallback } from "@/lib/native-speech";
-import { mobileApp } from "@/lib/platform";
+import { mobileApp, nativeDictation } from "@/lib/platform";
 import { resumeWake, suspendWake } from "@/lib/wake-word";
 
 const READ_ALOUD_KEY = "toodo-read-aloud";
@@ -67,8 +70,8 @@ export function useSpeechLanguage(): string {
 // Firefox; its types are not in the DOM library yet.
 type RecognitionResult = { readonly isFinal: boolean; readonly 0: { readonly transcript: string } };
 type RecognitionEvent = { readonly results: ArrayLike<RecognitionResult> };
-type RecognitionErrorEvent = { readonly error: string };
-type Recognition = {
+type RecognitionErrorEvent = { readonly error: string; readonly message?: string };
+export type Recognition = {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
@@ -83,6 +86,7 @@ type Recognition = {
 type RecognitionConstructor = new () => Recognition;
 
 function recognitionConstructor(): RecognitionConstructor | null {
+  if (nativeDictation) return MacRecognition;
   const scope = window as unknown as {
     SpeechRecognition?: RecognitionConstructor;
     webkitSpeechRecognition?: RecognitionConstructor;
@@ -121,6 +125,8 @@ export type Dictation = {
   error: string | null;
   /** Whether the last attempt failed because the microphone is not allowed. */
   blocked: boolean;
+  /** Where in the macOS system settings the user can allow what the error says was denied. */
+  privacyPane: PrivacyPane | null;
   start(): void;
   /** Stops listening and hands over what was heard. */
   stop(): void;
@@ -136,6 +142,7 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
   const [listening, setListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [blocked, setBlocked] = useState(false);
+  const [privacyPane, setPrivacyPane] = useState<PrivacyPane | null>(null);
   const recognition = useRef<Recognition | null>(null);
   const cancelled = useRef(false);
   const callbacks = useRef({ onTranscript, onDone });
@@ -169,8 +176,9 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
         cancelled.current = true;
         return;
       }
-      setError(recognitionErrors[event.error] ?? `Speech recognition failed: ${event.error}`);
+      setError(recognitionErrors[event.error] ?? event.message ?? `Speech recognition failed: ${event.error}`);
       setBlocked(event.error === "not-allowed");
+      setPrivacyPane(privacyPanes[event.error] ?? null);
     };
     current.onend = () => {
       clearTimeout(quiet);
@@ -181,6 +189,7 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
     };
     setError(null);
     setBlocked(false);
+    setPrivacyPane(null);
     recognition.current = current;
     setListening(true);
     const failed = (cause: unknown) => {
@@ -209,7 +218,7 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
     recognition.current?.abort();
   }, []);
 
-  return { supported: recognitionConstructor() !== null, listening, error, blocked, start, stop, cancel };
+  return { supported: recognitionConstructor() !== null, listening, error, blocked, privacyPane, start, stop, cancel };
 }
 
 /** The text of a Markdown reply as it should sound: no markup, code, or addresses. */

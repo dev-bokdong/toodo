@@ -185,6 +185,18 @@ pub trait Backend: Notifier + Send + Sync + 'static {
     fn git(&self) -> &Git;
     fn github(&self) -> &GitHub;
     fn herdr(&self) -> &Herdr;
+
+    /// The lead made a request with its token; a server whose lead is outside it tells
+    /// from these whether the lead is connected.
+    fn lead_contact(&self) {}
+
+    /// A lead outside the server reports that it is composing a reply in the chat, or
+    /// that it stopped; returns its status. Only a server with an outside lead has one.
+    fn set_lead_typing(&self, _typing: bool) -> CommandResult<crate::commands::lead::LeadStatus> {
+        Err(crate::commands::CommandError::rejected(
+            "only a lead outside toodo-server (TOODO_LEAD=external) reports that it is typing",
+        ))
+    }
 }
 
 /// How agents reach the server, shown in the app; `error` tells why it is not running.
@@ -288,10 +300,11 @@ pub(crate) fn make_private(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The tokens `/mcp` accepts.
+/// The tokens `/mcp` accepts, and the backend that hears of the lead's requests.
 struct Tokens {
     agent: String,
     lead: Option<String>,
+    backend: Arc<dyn Backend>,
 }
 
 /// The MCP endpoint at `/mcp`, open only to requests that bear `token`, or `lead_token`,
@@ -301,6 +314,11 @@ pub(crate) fn router(
     token: String,
     lead_token: Option<String>,
 ) -> axum::Router {
+    let tokens = Arc::new(Tokens {
+        agent: token,
+        lead: lead_token,
+        backend: backend.clone(),
+    });
     let service = StreamableHttpService::new(
         move || Ok(ToodoMcp::new(backend.clone())),
         LocalSessionManager::default().into(),
@@ -310,16 +328,12 @@ pub(crate) fn router(
     );
     axum::Router::new()
         .nest_service("/mcp", service)
-        .route_layer(middleware::from_fn_with_state(
-            Arc::new(Tokens {
-                agent: token,
-                lead: lead_token,
-            }),
-            require_caller,
-        ))
+        .route_layer(middleware::from_fn_with_state(tokens, require_caller))
 }
 
-/// Lets requests with one of `tokens` through, marked with their [`lead::Caller`].
+/// Lets requests with one of `tokens` through, marked with their [`lead::Caller`]. A
+/// request of the lead counts as its contact once it is answered, when the tool it called
+/// has changed what it changes.
 async fn require_caller(
     State(tokens): State<Arc<Tokens>>,
     mut request: Request,
@@ -338,7 +352,13 @@ async fn require_caller(
         return unauthorized();
     };
     request.extensions_mut().insert(caller);
-    next.run(request).await
+    let response = next.run(request).await;
+    if caller == lead::Caller::Lead {
+        let backend = tokens.backend.clone();
+        // It may read the database, which a tool of another request may hold.
+        drop(tokio::task::spawn_blocking(move || backend.lead_contact()).await);
+    }
+    response
 }
 
 /// The bearer token of a request's `Authorization` header.
@@ -696,6 +716,73 @@ impl ToodoMcp {
             self.backend.chat_changed();
         }
         reply(result)
+    }
+
+    #[tool(
+        description = "Only the Toodo lead: read the items take_pending without ids would take next (people's chat messages and followed task events, oldest first), without marking them taken. A lead outside Toodo keeps them safe first, then takes them with take_pending and their ids, so that it loses none if it stops in between. open lists people's messages taken before and not handled yet."
+    )]
+    fn peek_pending(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<tools::Pending>(Err(crate::commands::CommandError::rejected(
+                "only the Toodo lead reads the items of its inbox",
+            )));
+        }
+        reply(tools::peek_pending(&lock(self.backend.storage())))
+    }
+
+    #[tool(
+        description = "Only the Toodo lead: read the chat after a cursor: every message (author user, lead, or system, the system's being Toodo's reports of finished tasks) with an id above after, oldest first, at most limit (100 when omitted, at most 500). Pass the id of the last message read as after to read on; more is true while messages remain. Messages imported from another chat carry origin and originId. It never marks anything taken or read."
+    )]
+    fn list_chat(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(request): Parameters<tools::ListChat>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<tools::ChatFeed>(Err(crate::commands::CommandError::rejected(
+                "only the Toodo lead reads the chat feed",
+            )));
+        }
+        reply(tools::list_chat(&lock(self.backend.storage()), &request))
+    }
+
+    #[tool(
+        description = "Only the Toodo lead: store a message written in another chat that the Toodo chat mirrors: author user (a person's) or lead (yours), its text, origin (a label of the other chat such as matrix: lowercase letters, digits, '.', '_', '-') and origin_id (the message's ID there). The lead already has it, so a person's message never enters the inbox and is never overdue, but it counts like any person's message, e.g. as the answer to a confirmation request. Importing the same origin and origin_id again stores nothing and returns the stored message with created false."
+    )]
+    fn import_chat_message(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(request): Parameters<tools::ImportChatMessage>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<tools::ImportedChat>(Err(crate::commands::CommandError::rejected(
+                "only the Toodo lead imports chat messages",
+            )));
+        }
+        let result = tools::import_chat_message(&mut lock(self.backend.storage()), request);
+        if result.as_ref().is_ok_and(|imported| imported.created) {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Only a Toodo lead outside toodo-server (TOODO_LEAD=external): show in the chat that you are composing a reply (typing true), or that you stopped (false). It lasts 30 seconds unless you call it again, and ends once you reply. Returns your status as the chat shows it."
+    )]
+    fn set_typing(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(request): Parameters<tools::SetTyping>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if lead::Caller::of(&parts) != lead::Caller::Lead {
+            return reply::<crate::commands::lead::LeadStatus>(Err(
+                crate::commands::CommandError::rejected("only the Toodo lead reports typing"),
+            ));
+        }
+        reply(self.backend.set_lead_typing(request.typing))
     }
 
     /// Runs a tool that changes project memory and announces the change to the frontend.
@@ -2296,9 +2383,19 @@ mod tests {
             body.len()
         )
         .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
+        // A server that answers without reading the body closes with a reset, which macOS
+        // reports after the answer; the answer read up to then is the response.
+        let mut response = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => response.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(error) => panic!("reading the response failed: {error}"),
+            }
+        }
+        String::from_utf8(response).unwrap()
     }
 
     #[test]

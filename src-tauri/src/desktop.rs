@@ -1,5 +1,6 @@
-//! The Windows desktop app: the Tauri shell that registers the commands, keeps their
-//! state, emits events to the frontend, and owns the tray icon and the MCP server. Connected
+//! The desktop app (Windows, and macOS as a client of a server): the Tauri shell that
+//! registers the commands, keeps their state, emits events to the frontend, and owns the
+//! tray icon (the menu bar icon on macOS) and the MCP server. Connected
 //! to a `toodo-server` (see [`connection`]), it keeps only the window and the tray: the
 //! frontend sends its commands to the server, and no local data or background work starts.
 //!
@@ -9,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 #[cfg(desktop)]
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{IsMenuItem, Menu, MenuItem};
 #[cfg(desktop)]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
@@ -25,7 +26,7 @@ use crate::commands::events::{
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{GitHubState, GitState, HerdrState, Runtime, StorageState};
 use crate::domain::model;
-use crate::{adapters, commands, connection, mcp, remote, storage};
+use crate::{adapters, commands, connection, dictation, mcp, remote, storage};
 
 const DATABASE_FILE: &str = "toodo.sqlite3";
 
@@ -103,6 +104,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             connection::remove_server,
             remote::access::get_access_token,
             remote::access::set_access_token,
+            dictation::start_dictation,
+            dictation::stop_dictation,
+            dictation::cancel_dictation,
+            dictation::open_privacy_settings,
         ])
         .events(collect_events![
             commands::events::TasksChanged,
@@ -112,6 +117,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::events::AgentStatusesChanged,
             commands::events::PullRequestStatusesChanged,
             UpdateCheckRequested,
+            VoiceMessageRequested,
+            dictation::DictationChanged,
         ])
 }
 
@@ -120,7 +127,26 @@ fn specta_builder() -> Builder<tauri::Wry> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, tauri_specta::Event)]
 pub struct UpdateCheckRequested;
 
+/// Someone asked to speak a message to the lead: the frontend opens the lead chat and
+/// dictates a message, which it sends once the speaker stops.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, tauri_specta::Event)]
+pub struct VoiceMessageRequested;
+
 const MAIN_WINDOW: &str = "main";
+
+#[cfg(desktop)]
+/// Whether the app checks for updates: releases carry updater artifacts for Windows only.
+const UPDATES: bool = cfg!(not(target_os = "macos"));
+
+#[cfg(desktop)]
+/// Shows the window and starts a spoken message to the lead. The tray menu calls it; so can
+/// a native wake-word detector, which keeps running while the window is hidden.
+pub fn request_voice_message(app: &AppHandle) {
+    show_main_window(app);
+    if let Err(error) = VoiceMessageRequested.emit(app) {
+        eprintln!("toodo: failed to request a voice message: {error}");
+    }
+}
 
 #[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
@@ -131,25 +157,39 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// Adds the tray icon that keeps Toodo running after its window is closed.
+/// Adds the tray icon that keeps Toodo running after its window is closed. Connected to a
+/// server, an app with native dictation also offers a spoken message to the lead.
 #[cfg(desktop)]
-fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+fn create_tray(app: &tauri::App, connected: bool) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Toodo", true, None::<&str>)?;
-    let check_updates = MenuItem::with_id(
-        app,
-        "check_updates",
-        "Check for Updates",
-        true,
-        None::<&str>,
-    )?;
+    let voice = (connected && dictation::SUPPORTED)
+        .then(|| MenuItem::with_id(app, "voice", "Voice Message", true, None::<&str>))
+        .transpose()?;
+    let check_updates = UPDATES
+        .then(|| {
+            MenuItem::with_id(
+                app,
+                "check_updates",
+                "Check for Updates",
+                true,
+                None::<&str>,
+            )
+        })
+        .transpose()?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &check_updates, &quit])?;
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&show];
+    for item in [&voice, &check_updates].into_iter().flatten() {
+        items.push(item);
+    }
+    items.push(&quit);
+    let menu = Menu::with_items(app, &items)?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Toodo")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
+            "voice" => request_voice_message(app),
             "check_updates" => {
                 // Shown first so the result of the check is visible.
                 show_main_window(app);
@@ -170,7 +210,12 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 show_main_window(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
+    if cfg!(target_os = "macos") {
+        // A template image: macOS tints it to match the menu bar.
+        tray = tray
+            .icon(tauri::include_image!("icons/tray-template.png"))
+            .icon_as_template(true);
+    } else if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }
     tray.build(app)?;
@@ -189,6 +234,7 @@ fn create_main_window(app: &tauri::App, connection: &connection::Connection) -> 
         .expect("tauri.conf.json defines the main window");
     tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
         .initialization_script(connection::init_script(connection))
+        .initialization_script(platform_script())
         .build()?;
     Ok(())
 }
@@ -204,6 +250,38 @@ fn speech_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             Ok(())
         })
         .build()
+}
+
+/// Tells the page which system the app runs on, for what differs there: native dictation
+/// on macOS, and no update checks where releases have no updater artifacts.
+fn platform_script() -> String {
+    let platform = serde_json::to_string(std::env::consts::OS).expect("a string serializes");
+    format!("window.__TOODO_PLATFORM__ = {platform};")
+}
+
+#[cfg(target_os = "macos")]
+fn on_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    // Clicking the Dock icon while the window is hidden brings it back.
+    if let tauri::RunEvent::Reopen { .. } = event {
+        show_main_window(app);
+    }
+    shut_down_on_exit(app, event);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn on_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    shut_down_on_exit(app, event);
+}
+
+fn shut_down_on_exit(app: &AppHandle, event: tauri::RunEvent) {
+    if let tauri::RunEvent::Exit = event
+        && let Some(tunnels) = app.try_state::<mcp::tunnels::TunnelsState>()
+    {
+        tunnels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shut_down();
+    }
 }
 
 #[cfg(desktop)]
@@ -247,11 +325,11 @@ pub fn run() {
     app.invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
-            #[cfg(desktop)]
-            create_tray(app)?;
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let connection = connection::load(&data_dir);
+            #[cfg(desktop)]
+            create_tray(app, connection.server.is_some())?;
             app.manage(remote::access::AccessTokens::load(&data_dir));
             create_main_window(app, &connection)?;
             // The phone app keeps no data of its own; until it connects, it asks for a server.
@@ -306,16 +384,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event
-                && let Some(tunnels) = app.try_state::<mcp::tunnels::TunnelsState>()
-            {
-                tunnels
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .shut_down();
-            }
-        });
+        .run(on_run_event);
 }
 
 impl Notifier for AppHandle {

@@ -38,7 +38,18 @@ pub enum Caller {
 pub struct Gate {
     pub services: Arc<Services>,
     pub shared_token: Arc<String>,
+    /// The lead's token, which opens the event stream only (see [`LeadCaller`]).
+    pub lead_token: Option<Arc<String>>,
 }
+
+/// Marks a request for the event stream that bears the lead's token: a lead outside the
+/// server waits for changes on it (see `docs/external-lead.md`). It is no [`Caller`]: the
+/// lead's token opens nothing else under `/api`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeadCaller;
+
+/// The one path under `/api` the lead's token opens.
+const LEAD_PATH: &str = "/api/events";
 
 /// The hash a device's token is stored as. Tokens are 32 random bytes, so a fast hash
 /// without salt is enough: there is nothing to guess from a leaked hash.
@@ -59,6 +70,8 @@ pub(super) async fn blocking<T: Send + 'static>(
 
 /// Lets a request through when it bears the shared token or an active device's token,
 /// with its [`Caller`] as a request extension; a device's last-seen time moves with it.
+/// A request for the event stream may bear the lead's token instead, marked with
+/// [`LeadCaller`].
 pub async fn require_access(
     State(gate): State<Gate>,
     mut request: Request,
@@ -67,6 +80,15 @@ pub async fn require_access(
     let Some(presented) = mcp::bearer(request.headers()) else {
         return mcp::unauthorized();
     };
+    if request.uri().path() == LEAD_PATH
+        && gate
+            .lead_token
+            .as_deref()
+            .is_some_and(|lead| mcp::same_secret(presented, lead))
+    {
+        request.extensions_mut().insert(LeadCaller);
+        return next.run(request).await;
+    }
     let caller = if mcp::same_secret(presented, &gate.shared_token) {
         Caller::Shared
     } else {

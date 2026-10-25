@@ -102,6 +102,32 @@ impl Storage {
         Ok(marked)
     }
 
+    /// The oldest pending items, up to the limit of a take, as [`Storage::take_pending`]
+    /// without IDs would take them, without marking anything: a caller can keep them
+    /// safe first, then take them by ID, so that it loses none if it stops in between.
+    pub fn peek_pending(&self) -> Result<Taken> {
+        let (wanted, remaining) = Storage::oldest_pending(&self.conn)?;
+        let mut peeked = Taken {
+            items: Vec::new(),
+            missing: Vec::new(),
+            remaining,
+        };
+        for id in wanted {
+            peeked.items.extend(item(&self.conn, id)?);
+        }
+        peeked.items.sort_by_key(|item| (item.at, item.id));
+        Ok(peeked)
+    }
+
+    /// The IDs of the oldest pending items, up to [`TAKE_LIMIT`], and how many more wait.
+    fn oldest_pending(conn: &rusqlite::Connection) -> Result<(Vec<ItemId>, usize)> {
+        let mut pending = Storage::pending_in(conn)?;
+        pending.sort_by_key(|(at, id)| (*at, *id));
+        let remaining = pending.len().saturating_sub(TAKE_LIMIT);
+        pending.truncate(TAKE_LIMIT);
+        Ok((pending.into_iter().map(|(_, id)| id).collect(), remaining))
+    }
+
     /// Hands items to the lead and marks them taken. Without `ids`, the oldest pending
     /// items, up to a limit; with them, those items, taken before or not. A chat message
     /// taken counts as delivered and seen.
@@ -110,13 +136,7 @@ impl Storage {
         let tx = self.conn.transaction()?;
         let (wanted, remaining) = match ids {
             Some(ids) => (ids.to_vec(), 0),
-            None => {
-                let mut pending = Storage::pending_in(&tx)?;
-                pending.sort_by_key(|(at, id)| (*at, *id));
-                let remaining = pending.len().saturating_sub(TAKE_LIMIT);
-                pending.truncate(TAKE_LIMIT);
-                (pending.into_iter().map(|(_, id)| id).collect(), remaining)
-            }
+            None => Storage::oldest_pending(&tx)?,
         };
         let mut taken = Taken {
             items: Vec::new(),
@@ -376,6 +396,11 @@ mod tests {
         }
         let report = storage.list_chat_messages().unwrap().pop().unwrap();
         assert_eq!(report.author, ChatAuthor::System);
+        // The report is in the chat feed an outside lead reads, too.
+        assert_eq!(
+            storage.chat_after(0, 10).unwrap(),
+            std::slice::from_ref(&report)
+        );
 
         let taken = storage.take_pending(None).unwrap();
         let reports: Vec<_> = taken
@@ -414,6 +439,45 @@ mod tests {
                 body: TAKE_LIMIT.to_string()
             }
         );
+    }
+
+    #[test]
+    fn a_caller_that_stops_between_peeking_and_taking_loses_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("toodo.sqlite3");
+        let peeked = {
+            let mut storage = Storage::open(&path).unwrap();
+            storage.set_clock(|| 10);
+            let task = task(&mut storage);
+            storage
+                .add_chat_message(ChatAuthor::User, "Plan it", Some("c1"))
+                .unwrap();
+            storage.record_event_for_tests(task, TaskStatus::InReview, 11);
+            let peeked = storage.peek_pending().unwrap();
+            assert_eq!(peeked.items.len(), 2);
+            assert!(peeked.items.iter().all(|item| item.taken_before.is_none()));
+            assert_eq!(
+                storage.peek_pending().unwrap(),
+                peeked,
+                "peeking marks nothing"
+            );
+            peeked
+            // The caller stops here, before it takes them.
+        };
+        let mut storage = Storage::open(&path).unwrap();
+        storage.set_clock(|| 20);
+        assert_eq!(storage.peek_pending().unwrap(), peeked);
+        let ids: Vec<_> = peeked.items.iter().map(|item| item.id).collect();
+        assert_eq!(storage.pending_items().unwrap(), ids);
+
+        let taken = storage.take_pending(Some(&ids)).unwrap();
+        assert_eq!(taken.items, peeked.items);
+        assert!(storage.peek_pending().unwrap().items.is_empty());
+        // Taking the same IDs again hands them over again, marked as taken before.
+        storage.set_clock(|| 30);
+        let again = storage.take_pending(Some(&ids)).unwrap();
+        assert_eq!(again.items.len(), 2);
+        assert!(again.items.iter().all(|item| item.taken_before == Some(20)));
     }
 
     #[test]

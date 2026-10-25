@@ -47,8 +47,9 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 
 ## Platform and Stack
 
-- **Target**: Windows desktop app (Windows 10/11). Other platforms are not a goal for now,
-  but avoid needless Windows-only APIs outside platform adapters.
+- **Target**: Windows desktop app (Windows 10/11). The same app also builds for Apple
+  Silicon Macs as a client of `toodo-server` (unsigned, CI artifact only; see
+  `docs/macos.md`). Avoid needless Windows-only APIs outside platform adapters.
 - **Prerequisite**: herdr is installed and running on the user's machine. Toodo is a
   companion app that controls herdr; it never installs, updates, or bundles herdr.
   Git, Windows OpenSSH (`ssh.exe`), and `gh` are also expected on `PATH`.
@@ -83,6 +84,8 @@ Layout:
     `server` (`toodo-server`, built with `--no-default-features --features server`); a
     build has exactly one of them.
   - `src-tauri/src/desktop.rs`: Tauri builder, tauri-specta command registration, tray.
+  - `src-tauri/src/dictation/`: native dictation of the macOS app (`AVAudioEngine` and
+    `SFSpeechRecognizer`); its commands reject on other platforms.
   - `src-tauri/src/connection.rs`: whether the desktop app uses its own data or one of the
     `toodo-server`s saved in it (`connection.json`); connected, it starts no local data or
     background work. Switching between servers is in `src/lib/servers.ts`.
@@ -114,6 +117,8 @@ Run from the repository root unless noted. Package manager is npm.
 - Dev (full app): `npm run tauri dev`
 - Dev (frontend only, browser): `npm run dev`
 - Build installers (MSI/NSIS, on Windows): `npm run tauri build`
+- Build the macOS app (.app/.dmg, on an Apple Silicon Mac or the `macOS` workflow):
+  `npx tauri build --target aarch64-apple-darwin`
 - Release (signed auto-update): `npm run bump <major|minor|patch|X.Y.Z>` on `dev`, commit
   `Release X.Y.Z`, merge `dev` into `main`; see the "Releases and Updates" section of
   `README.md`. `npm run check-version` checks that the version files agree. A release

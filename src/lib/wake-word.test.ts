@@ -11,7 +11,7 @@ const bridge = vi.hoisted(() => ({
   reachable: () => {},
 }));
 
-vi.mock("@/lib/platform", () => ({ mobileApp: true }));
+vi.mock("@/lib/platform", () => ({ mobileApp: true, nativeDictation: false }));
 vi.mock("@/web/server", () => ({
   activeServer: { id: "https://one.example", key: (name: string) => `${name}@https://one.example` },
 }));

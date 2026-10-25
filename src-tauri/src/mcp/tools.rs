@@ -208,6 +208,92 @@ pub struct TakePending {
     pub ids: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ListChat {
+    /// Read messages with an ID above this one: the ID of the last message you read, or
+    /// 0 (the default) to read from the start.
+    #[serde(default)]
+    pub after: Option<i64>,
+    /// At most this many messages: 100 when omitted, at most 500.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// What `list_chat` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatFeed {
+    /// Oldest first.
+    pub messages: Vec<FeedMessage>,
+    /// More messages follow the last one: read again with its ID as `after`.
+    pub more: bool,
+}
+
+/// A chat message with where it came from, for an imported one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedMessage {
+    #[serde(flatten)]
+    pub message: crate::commands::lead::ChatMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_id: Option<String>,
+}
+
+impl From<&crate::domain::chat::ChatMessage> for FeedMessage {
+    fn from(message: &crate::domain::chat::ChatMessage) -> Self {
+        Self {
+            message: message.into(),
+            origin: message
+                .origin
+                .as_ref()
+                .map(|origin| origin.label().to_owned()),
+            origin_id: message.origin.as_ref().map(|origin| origin.id().to_owned()),
+        }
+    }
+}
+
+/// Who wrote an imported message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportedAuthor {
+    /// A person.
+    User,
+    /// The lead.
+    Lead,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ImportChatMessage {
+    pub author: ImportedAuthor,
+    /// The message, in GitHub-flavored Markdown.
+    pub text: String,
+    /// A label of the chat it was written in, such as `matrix`: lowercase letters,
+    /// digits, `.`, `_`, and `-`.
+    pub origin: String,
+    /// The message's ID in that chat, unique there.
+    pub origin_id: String,
+}
+
+/// What `import_chat_message` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedChat {
+    pub message: FeedMessage,
+    /// False when the message was imported before: nothing was stored.
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SetTyping {
+    /// True while you compose a reply, false once you stopped.
+    pub typing: bool,
+}
+
 /// The `ids` of [`TakePending`]: an array, or, as agents also send them, one string with
 /// the IDs separated by spaces or commas, or with the array encoded as JSON. An empty
 /// string counts as omitted.
@@ -754,17 +840,72 @@ pub fn take_pending(storage: &mut Storage, request: TakePending) -> CommandResul
         .transpose()?;
     let taken = storage.take_pending(ids.as_deref())?;
     let open = if ids.is_none() {
-        storage
-            .open_chat()?
-            .into_iter()
-            .map(ItemId::Chat)
-            .filter(|id| !taken.items.iter().any(|item| item.id == *id))
-            .map(|id| id.to_string())
-            .collect()
+        open_besides(storage, &taken)?
     } else {
         Vec::new()
     };
-    Ok(Pending {
+    Ok(pending(taken, open))
+}
+
+/// The items `take_pending` without IDs would take next, without taking them.
+pub fn peek_pending(storage: &Storage) -> CommandResult<Pending> {
+    let peeked = storage.peek_pending()?;
+    let open = open_besides(storage, &peeked)?;
+    Ok(pending(peeked, open))
+}
+
+/// People's messages taken before and not handled yet, other than those of `taken`.
+fn open_besides(storage: &Storage, taken: &storage::Taken) -> CommandResult<Vec<String>> {
+    Ok(storage
+        .open_chat()?
+        .into_iter()
+        .map(ItemId::Chat)
+        .filter(|id| !taken.items.iter().any(|item| item.id == *id))
+        .map(|id| id.to_string())
+        .collect())
+}
+
+/// The chat after a cursor (see [`ListChat`]).
+pub fn list_chat(storage: &Storage, request: &ListChat) -> CommandResult<ChatFeed> {
+    const DEFAULT_LIMIT: usize = 100;
+    let limit = request
+        .limit
+        .map_or(DEFAULT_LIMIT, |limit| {
+            usize::try_from(limit).unwrap_or(usize::MAX)
+        })
+        .clamp(1, storage::MAX_FEED);
+    let mut messages = storage.chat_after(request.after.unwrap_or(0), limit + 1)?;
+    let more = messages.len() > limit;
+    messages.truncate(limit);
+    Ok(ChatFeed {
+        messages: messages.iter().map(Into::into).collect(),
+        more,
+    })
+}
+
+/// Stores a message of another chat (see [`ImportChatMessage`]).
+pub fn import_chat_message(
+    storage: &mut Storage,
+    request: ImportChatMessage,
+) -> CommandResult<ImportedChat> {
+    use crate::domain::chat::{self, ChatAuthor, ChatOrigin};
+    let body = chat::body(&request.text)
+        .map_err(|error| CommandError::invalid_input(error.to_string()))?;
+    let origin = ChatOrigin::parse(&request.origin, &request.origin_id)
+        .map_err(CommandError::invalid_input)?;
+    let author = match request.author {
+        ImportedAuthor::User => ChatAuthor::User,
+        ImportedAuthor::Lead => ChatAuthor::Lead,
+    };
+    let (message, created) = storage.import_chat_message(author, &body, &origin)?;
+    Ok(ImportedChat {
+        message: (&message).into(),
+        created,
+    })
+}
+
+fn pending(taken: storage::Taken, open: Vec<String>) -> Pending {
+    Pending {
         open,
         items: taken
             .items
@@ -791,7 +932,7 @@ pub fn take_pending(storage: &mut Storage, request: TakePending) -> CommandResul
             .collect(),
         missing: taken.missing.iter().map(ToString::to_string).collect(),
         remaining: taken.remaining,
-    })
+    }
 }
 
 pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<Task> {
