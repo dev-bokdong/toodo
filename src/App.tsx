@@ -1,50 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, X } from "lucide-react";
-import { AgentAccessPanel } from "@/components/agent-access-panel";
-import { BackupPanel } from "@/components/backup-panel";
-import { DevicesPanel } from "@/components/devices-panel";
+import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, Settings, X } from "lucide-react";
+import { AgentAccessStatus } from "@/components/agent-access-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
 import { FloatingChat } from "@/components/lead-chat";
 import { MemoryPanel, type MemoryDraft } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
-import { NotificationsPanel } from "@/components/notifications-panel";
 import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
-import { UpdateBanner, UpdateCheck } from "@/components/update-banner";
+import { UpdateBanner } from "@/components/update-banner";
 import { WorkspaceList } from "@/components/workspace-list";
-import { commands, type TaskId, type WorkspaceId } from "@/lib/bindings";
+import type { TaskId, WorkspaceId } from "@/lib/bindings";
+import { keepFocusIn } from "@/lib/focus-trap";
 import { runsOnServer } from "@/lib/platform";
 import { useHerdrEvents, useLead, useWorkspaces } from "@/lib/queries";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
 import { listenForOpenTask } from "@/web/push";
 
-/** Wraps Tab and Shift+Tab around the ends of a modal, so focus cannot leave it. */
-function keepFocusIn(container: HTMLElement | null, event: KeyboardEvent) {
-  if (container === null) return;
-  const focusable = [
-    ...container.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, summary, [tabindex]"),
-  ].filter((element) => !element.matches(":disabled, [tabindex='-1']") && element.getClientRects().length > 0);
-  if (focusable.length === 0) return;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  const active = document.activeElement;
-  const inside = active instanceof Node && container.contains(active);
-  if (event.shiftKey ? !inside || active === first : !inside || active === last) {
-    event.preventDefault();
-    (event.shiftKey ? last : first).focus();
-  }
-}
-
 export default function App() {
-  const appInfo = useQuery({
-    queryKey: ["app-info"],
-    queryFn: () => commands.appInfo(),
-  });
   const workspaces = useWorkspaces();
   useHerdrEvents();
   const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
@@ -65,9 +41,21 @@ export default function App() {
   const closeMenuButton = useRef<HTMLButtonElement>(null);
   const menuWasOpen = useRef(false);
   const drawer = useRef<HTMLElement>(null);
+  // Settings take over the screen and the focus, also when opened from the drawer.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
+  const settingsButton = useRef<HTMLButtonElement>(null);
+  // Opened from the drawer, which closes, they give the focus back to the menu button.
+  const settingsFromDrawer = useRef(false);
+  const showSettings = (section: SettingsSection | null) => {
+    if (!settingsOpen) settingsFromDrawer.current = menuOpen;
+    setSettingsSection(section);
+    setSettingsOpen(true);
+    setMenuOpen(false);
+  };
   useEffect(() => {
     if (menuOpen) closeMenuButton.current?.focus();
-    else if (menuWasOpen.current) openMenuButton.current?.focus();
+    else if (menuWasOpen.current && !settingsOpen) openMenuButton.current?.focus();
     menuWasOpen.current = menuOpen;
     if (!menuOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -115,6 +103,7 @@ export default function App() {
       )}
       <aside
         ref={drawer}
+        inert={settingsOpen}
         role={menuOpen ? "dialog" : undefined}
         aria-modal={menuOpen || undefined}
         aria-label={menuOpen ? "Menu" : undefined}
@@ -186,23 +175,22 @@ export default function App() {
             openPage(null);
           }}
         />
-        <div className="mt-auto flex flex-col gap-2">
-          <AgentAccessPanel />
-          {runsOnServer && <DevicesPanel />}
-          {runsOnServer && <NotificationsPanel />}
-          <BackupPanel />
-        </div>
-        <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1">
-          <p className="text-xs text-muted-foreground">
-            {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
-          </p>
-          {!runsOnServer && <UpdateCheck />}
-          <div className="ml-auto">
-            <ThemeToggle />
-          </div>
-        </div>
+        <Button
+          variant="ghost"
+          className="mt-auto shrink-0 justify-start"
+          aria-haspopup="dialog"
+          aria-expanded={settingsOpen}
+          ref={settingsButton}
+          onClick={() => showSettings(null)}
+        >
+          <Settings />
+          Settings
+          <span className="ml-auto text-xs font-normal">
+            <AgentAccessStatus />
+          </span>
+        </Button>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col" inert={menuOpen}>
+      <div className="flex min-w-0 flex-1 flex-col" inert={menuOpen || settingsOpen}>
         <header className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden">
           <Button
             variant="ghost"
@@ -282,6 +270,13 @@ export default function App() {
         </main>
         {hasLead && lead.data && <FloatingChat lead={lead.data} />}
       </div>
+      <SettingsDialog
+        open={settingsOpen}
+        section={settingsSection}
+        onShow={showSettings}
+        onClose={() => setSettingsOpen(false)}
+        returnFocus={() => (settingsFromDrawer.current ? openMenuButton.current : settingsButton.current)}
+      />
     </div>
   );
 }

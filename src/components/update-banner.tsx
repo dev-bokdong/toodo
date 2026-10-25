@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -85,18 +85,24 @@ export function UpdateBanner() {
 /**
  * Checks for an app update on demand, from this button or the tray menu, and says what it
  * found; unlike the background check, a failure is shown since the user asked for it.
- * An available update is stored where `UpdateBanner` shows it.
+ * An available update is stored where `UpdateBanner` shows it. `onRequested` runs when the
+ * tray menu asks, so the result can be brought into view.
  */
-export function UpdateCheck() {
+export function UpdateCheck({ onRequested }: { onRequested?: () => void }) {
   const queryClient = useQueryClient();
   const manual = useMutation({
     mutationFn: () => check(),
     onSuccess: (found) => queryClient.setQueryData(UPDATE_QUERY_KEY, found),
   });
   const run = manual.mutate;
+  const requested = useRef(onRequested);
+  requested.current = onRequested;
 
   useEffect(() => {
-    const subscription = events.updateCheckRequested.listen(() => run());
+    const subscription = events.updateCheckRequested.listen(() => {
+      requested.current?.();
+      run();
+    });
     return () => {
       void subscription.then((unlisten) => unlisten());
     };

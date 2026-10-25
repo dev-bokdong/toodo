@@ -111,34 +111,34 @@ function DeviceRow({ device }: { device: Device }) {
   );
 }
 
+/** How many devices are signed in, shown next to the Devices settings once known. */
+export function DevicesStatus() {
+  const devices = useQuery({ queryKey: devicesKey, queryFn: listDevices });
+  if (!devices.data) return null;
+  return <>{devices.data.filter((device) => device.revokedAt === null).length} signed in</>;
+}
+
 export function DevicesPanel() {
   const devices = useQuery({ queryKey: devicesKey, queryFn: listDevices });
-  const active = (devices.data ?? []).filter((device) => device.revokedAt === null).length;
 
   return (
-    <details className="group rounded-lg border p-2">
-      <summary className="cursor-pointer text-xs font-medium uppercase text-muted-foreground">
-        Devices
-        {devices.data && <span className="ml-1.5 normal-case">{active} signed in</span>}
-      </summary>
-      <section aria-label="Devices" className="mt-2 flex flex-col gap-2 text-xs">
-        <p className="text-muted-foreground">
-          Each browser signs in with the shared token once and then keeps its own token. Revoke a lost device here.
+    <section aria-label="Devices" className="flex flex-col gap-2 text-sm">
+      <p className="text-muted-foreground">
+        Each browser signs in with the shared token once and then keeps its own token. Revoke a lost device here.
+      </p>
+      {devices.error && (
+        <p role="alert" className="break-words text-destructive">
+          {devices.error.message}
         </p>
-        {devices.error && (
-          <p role="alert" className="break-words text-destructive">
-            {devices.error.message}
-          </p>
-        )}
-        {devices.data && <ThisBrowser devices={devices.data} />}
-        {devices.data && (
-          <ul aria-label="Signed-in devices" className="flex flex-col gap-2">
-            {devices.data.map((device) => (
-              <DeviceRow key={device.id} device={device} />
-            ))}
-          </ul>
-        )}
-      </section>
-    </details>
+      )}
+      {devices.data && <ThisBrowser devices={devices.data} />}
+      {devices.data && (
+        <ul aria-label="Signed-in devices" className="flex flex-col gap-2">
+          {devices.data.map((device) => (
+            <DeviceRow key={device.id} device={device} />
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

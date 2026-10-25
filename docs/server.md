@@ -139,7 +139,7 @@ with the shared token. Only the shared token registers devices, so a device toke
 mint more tokens. A device keeps its id after it is revoked, so data kept per device can
 refer to it.
 
-The web app lists the devices under **Devices** in the sidebar, marks the current one,
+The web app lists the devices under **Devices** in Settings, marks the current one,
 and revokes them. Devices live in the database, so restoring a backup also restores the
 devices of that backup: devices registered after it sign in again.
 
@@ -160,7 +160,7 @@ a plain tab). Web Push needs HTTPS, so phones reach the server through an
 authenticating HTTPS front (see [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access));
 on the server itself, `http://127.0.0.1` counts as secure.
 
-Under **Notifications** in the sidebar, a device turns notifications on, picks which
+Under **Notifications** in Settings, a device turns notifications on, picks which
 ones it gets, and sends itself a test notification:
 
 | Setting | Notifications |
@@ -457,7 +457,7 @@ Things to know:
   timeout.
 - Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels);
   do not point remote agents at the public hostname, where Access stops them.
-- If a phone is lost, revoke it under **Devices** from another device; the shared
+- If a phone is lost, revoke it under **Devices** in Settings from another device; the shared
   `web-token` and the other devices keep working.
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
