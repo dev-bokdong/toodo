@@ -6,7 +6,21 @@ import { requestChat } from "@/lib/app-links";
 import { commands, type ChatMessage, type LeadStatus } from "@/lib/bindings";
 import { QUIET_MS, stopSpeaking } from "@/lib/voice";
 
-vi.mock("@/lib/bindings", () => ({ commands: { listChatMessages: vi.fn(), sendChatMessage: vi.fn() } }));
+const appEvents = vi.hoisted(() => ({ voiceMessage: null as (() => void) | null }));
+
+vi.mock("@/lib/bindings", () => ({
+  commands: { listChatMessages: vi.fn(), sendChatMessage: vi.fn() },
+  events: {
+    voiceMessageRequested: {
+      listen: async (handler: () => void) => {
+        appEvents.voiceMessage = handler;
+        return () => {
+          if (appEvents.voiceMessage === handler) appEvents.voiceMessage = null;
+        };
+      },
+    },
+  },
+}));
 
 const mocked = vi.mocked(commands);
 
@@ -531,6 +545,26 @@ describe("LeadChat voice", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop reading aloud" }));
     expect(synthesis.cancel).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Stop reading aloud" })).toBeNull();
+  });
+
+  it("opens the chat and dictates a message when the app asks for a spoken one", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    appEvents.voiceMessage = null;
+    renderFloating(running);
+    await waitFor(() => expect(appEvents.voiceMessage).not.toBeNull());
+    const chatButton = screen.getByRole("button", { name: /^Lead chat/ });
+    expect(chatButton).toHaveAttribute("aria-expanded", "false");
+
+    act(() => appEvents.voiceMessage!());
+    expect(chatButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("dialog", { name: "Lead chat" })).toBeVisible();
+    const recognition = FakeRecognition.last!;
+    expect(recognition.start).toHaveBeenCalledTimes(1);
+
+    act(() => recognition.hear("plan the", " release"));
+    fireEvent.click(screen.getByRole("button", { name: "Stop voice input and send" }));
+    await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledTimes(1));
+    expect(mocked.sendChatMessage.mock.calls[0][0]).toBe("plan the release");
   });
 
   it("offers a stop button over the closed chat while a reply is read aloud", async () => {

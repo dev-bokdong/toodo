@@ -2296,9 +2296,19 @@ mod tests {
             body.len()
         )
         .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
+        // A server that answers without reading the body closes with a reset, which macOS
+        // reports after the answer; the answer read up to then is the response.
+        let mut response = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => response.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(error) => panic!("reading the response failed: {error}"),
+            }
+        }
+        String::from_utf8(response).unwrap()
     }
 
     #[test]

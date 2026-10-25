@@ -34,7 +34,7 @@ import {
 import doriAvatar from "@/assets/dori-avatar.webp";
 import { Button } from "@/components/ui/button";
 import { onChatRequest, takeChatRequest } from "@/lib/app-links";
-import type { ChatMessage, LeadStatus } from "@/lib/bindings";
+import { events, type ChatMessage, type LeadStatus } from "@/lib/bindings";
 import {
   handledByText,
   markRead,
@@ -45,8 +45,9 @@ import {
   useReadUpTo,
   type Receipt,
 } from "@/lib/chat";
+import { openPrivacySettings } from "@/lib/mac-dictation";
 import { openAppSettings } from "@/lib/native-speech";
-import { mobileApp } from "@/lib/platform";
+import { builtForWeb, mobileApp } from "@/lib/platform";
 import { useChatMessages, useSendChatMessage } from "@/lib/queries";
 import { useSwipeClose } from "@/lib/swipe-close";
 import { formatFull } from "@/lib/timeline";
@@ -105,7 +106,8 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
   const close = () => setOpen(false);
   const drag = useSwipeClose(close);
   const speaking = useSpeaking();
-  // Voice input asked for by a link into the app, counted so that each starts dictation once.
+  // Voice input asked for by a link into the app or by the app itself (its tray, or a wake
+  // word), counted so that each starts dictation once.
   const [voiceRequests, setVoiceRequests] = useState(0);
 
   useEffect(() => {
@@ -117,6 +119,15 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
     };
     take();
     return onChatRequest(take);
+  }, []);
+
+  useEffect(() => {
+    if (builtForWeb) return;
+    const subscription = events.voiceMessageRequested.listen(() => {
+      setOpen(true);
+      setVoiceRequests((count) => count + 1);
+    });
+    return () => void subscription.then((unlisten) => unlisten());
   }, []);
 
   useLayoutEffect(() => {
@@ -485,6 +496,17 @@ export function LeadChat({
           {mobileApp && dictation.blocked && (
             <Button type="button" size="sm" variant="outline" onClick={() => void openAppSettings()}>
               Open app settings
+            </Button>
+          )}
+          {dictation.privacyPane && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              changesData={false}
+              onClick={() => void openPrivacySettings(dictation.privacyPane!).catch(console.error)}
+            >
+              Open System Settings
             </Button>
           )}
         </div>
