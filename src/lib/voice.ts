@@ -3,9 +3,12 @@
  * API's speech recognition, and replies read aloud through speech synthesis. The settings
  * (read replies aloud, the speech language) are kept per browser in local storage.
  *
- * See docs/voice.md for why the browser does both rather than the server.
+ * See docs/voice.md for why the browser does both rather than the server. The Android app,
+ * whose WebView has no speech recognition, dictates with the phone's (see docs/android.md).
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { NativeRecognition, withNativeFallback } from "@/lib/native-speech";
+import { mobileApp } from "@/lib/platform";
 
 const READ_ALOUD_KEY = "toodo-read-aloud";
 const LANGUAGE_KEY = "toodo-speech-language";
@@ -83,7 +86,9 @@ function recognitionConstructor(): RecognitionConstructor | null {
     SpeechRecognition?: RecognitionConstructor;
     webkitSpeechRecognition?: RecognitionConstructor;
   };
-  return scope.SpeechRecognition ?? scope.webkitSpeechRecognition ?? null;
+  const web = scope.SpeechRecognition ?? scope.webkitSpeechRecognition ?? null;
+  if (!mobileApp) return web;
+  return web === null ? NativeRecognition : withNativeFallback(web);
 }
 
 export function dictationSupported(): boolean {
@@ -91,7 +96,9 @@ export function dictationSupported(): boolean {
 }
 
 const recognitionErrors: Record<string, string> = {
-  "not-allowed": "Microphone access is blocked. Allow it in the browser's site settings.",
+  "not-allowed": mobileApp
+    ? "Microphone access is blocked. Allow it for Toodo in Android's app settings."
+    : "Microphone access is blocked. Allow it in the browser's site settings.",
   "service-not-allowed": "This browser does not allow speech recognition here.",
   "audio-capture": "No microphone was found.",
   "no-speech": "No speech was heard. Try again.",
@@ -111,6 +118,8 @@ export type Dictation = {
   supported: boolean;
   listening: boolean;
   error: string | null;
+  /** Whether the last attempt failed because the microphone is not allowed. */
+  blocked: boolean;
   start(): void;
   /** Stops listening and hands over what was heard. */
   stop(): void;
@@ -125,6 +134,7 @@ export type Dictation = {
 export function useDictation(onTranscript: (text: string) => void, onDone: (text: string) => void): Dictation {
   const [listening, setListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [blocked, setBlocked] = useState(false);
   const recognition = useRef<Recognition | null>(null);
   const cancelled = useRef(false);
   const callbacks = useRef({ onTranscript, onDone });
@@ -155,6 +165,7 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
         return;
       }
       setError(recognitionErrors[event.error] ?? `Speech recognition failed: ${event.error}`);
+      setBlocked(event.error === "not-allowed");
     };
     current.onend = () => {
       clearTimeout(quiet);
@@ -163,6 +174,7 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
       if (!cancelled.current) callbacks.current.onDone(transcript);
     };
     setError(null);
+    setBlocked(false);
     recognition.current = current;
     setListening(true);
     try {
@@ -180,7 +192,7 @@ export function useDictation(onTranscript: (text: string) => void, onDone: (text
     recognition.current?.abort();
   }, []);
 
-  return { supported: recognitionConstructor() !== null, listening, error, start, stop, cancel };
+  return { supported: recognitionConstructor() !== null, listening, error, blocked, start, stop, cancel };
 }
 
 /** The text of a Markdown reply as it should sound: no markup, code, or addresses. */

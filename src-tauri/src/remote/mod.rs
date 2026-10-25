@@ -152,7 +152,18 @@ impl Remote {
     fn new() -> reqwest::Result<Self> {
         // reqwest is built without a default crypto provider; take ring, as the server does.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder();
+        // The platform verifier needs the Android app's JVM context set up through JNI; the
+        // Mozilla roots serve the public certificates of servers behind Cloudflare.
+        #[cfg(target_os = "android")]
+        let builder = builder.tls_backend_preconfigured(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::from_iter(
+                    webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+                ))
+                .with_no_client_auth(),
+        );
+        let client = builder
             // A redirect may be Access's login page, which must reach `fetch` as is.
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)

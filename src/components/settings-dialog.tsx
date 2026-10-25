@@ -13,7 +13,7 @@ import { compactSelectClass } from "@/components/workspace-list";
 import { commands } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
-import { builtForWeb, runsOnServer } from "@/lib/platform";
+import { builtForWeb, mobileApp, runsOnServer } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import {
   setReadAloud,
@@ -61,7 +61,7 @@ function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: (
         <span className="ml-auto text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </span>
-        {!builtForWeb && <UpdateCheck onRequested={onUpdateCheckRequested} />}
+        {!builtForWeb && !mobileApp && <UpdateCheck onRequested={onUpdateCheckRequested} />}
       </div>
       {!builtForWeb && <ServerConnection />}
       {runsOnServer && <VoiceSettings />}

@@ -3,7 +3,9 @@ import React, { type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "@/App";
 import "@/index.css";
-import { builtForWeb, connectedServer } from "@/lib/platform";
+import { ServerSetup } from "@/components/server-connection";
+import { followAppLinks } from "@/lib/app-links";
+import { builtForWeb, connectedServer, mobileApp } from "@/lib/platform";
 import { initTheme } from "@/lib/theme";
 import { onReachable, watchConnection } from "@/web/connection";
 import { watchInstallOffer } from "@/web/install";
@@ -22,8 +24,14 @@ function render(app: ReactNode) {
   );
 }
 
-// The web build, and the desktop app connected to a server, sign in to the server and follow it.
-if (builtForWeb || connectedServer !== null) {
+if (mobileApp && connectedServer === null) {
+  // The Android app has no data of its own: it asks for a server first.
+  render(<ServerSetup />);
+} else if (builtForWeb || connectedServer !== null) {
+  // The web build, and the apps connected to a server, sign in to the server and follow it.
+  if (mobileApp) {
+    followAppLinks().catch((error: unknown) => console.error("Toodo: could not follow app links", error));
+  }
   if (builtForWeb) {
     // The browser may announce that it can install the app before the app has loaded.
     watchInstallOffer();

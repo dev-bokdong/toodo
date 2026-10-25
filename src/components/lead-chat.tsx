@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import doriAvatar from "@/assets/dori-avatar.webp";
 import { Button } from "@/components/ui/button";
+import { onChatRequest, takeChatRequest } from "@/lib/app-links";
 import type { ChatMessage, LeadStatus } from "@/lib/bindings";
 import {
   handledByText,
@@ -44,6 +45,8 @@ import {
   useReadUpTo,
   type Receipt,
 } from "@/lib/chat";
+import { openAppSettings } from "@/lib/native-speech";
+import { mobileApp } from "@/lib/platform";
 import { useChatMessages, useSendChatMessage } from "@/lib/queries";
 import { useSwipeClose } from "@/lib/swipe-close";
 import { formatFull } from "@/lib/timeline";
@@ -102,6 +105,19 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
   const close = () => setOpen(false);
   const drag = useSwipeClose(close);
   const speaking = useSpeaking();
+  // Voice input asked for by a link into the app, counted so that each starts dictation once.
+  const [voiceRequests, setVoiceRequests] = useState(0);
+
+  useEffect(() => {
+    const take = () => {
+      const request = takeChatRequest();
+      if (request === null) return;
+      setOpen(true);
+      if (request.voice) setVoiceRequests((count) => count + 1);
+    };
+    take();
+    return onChatRequest(take);
+  }, []);
 
   useLayoutEffect(() => {
     if (open) {
@@ -179,7 +195,7 @@ export function FloatingChat({ lead }: { lead: LeadStatus }) {
         <div className="flex shrink-0 touch-none justify-center pt-2 pb-1 md:hidden" {...drag.handlers}>
           <span data-grabber aria-hidden className="h-1 w-9 rounded-full bg-muted-foreground/40" />
         </div>
-        <LeadChat lead={lead} open={open} onClose={close} inputRef={input} />
+        <LeadChat lead={lead} open={open} onClose={close} inputRef={input} voiceRequests={voiceRequests} />
       </div>
     </>
   );
@@ -206,11 +222,14 @@ export function LeadChat({
   open = true,
   onClose,
   inputRef,
+  voiceRequests = 0,
 }: {
   lead: LeadStatus;
   open?: boolean;
   onClose?: () => void;
   inputRef?: Ref<HTMLTextAreaElement>;
+  /** How many times voice input was asked for from outside; each new one starts dictation. */
+  voiceRequests?: number;
 }) {
   const messages = useChatMessages(true);
   const send = useSendChatMessage();
@@ -257,6 +276,15 @@ export function LeadChat({
     setClientId(newClientId());
     dictation.start();
   }
+
+  // A request waits until the lead takes messages and nothing is being sent or heard.
+  const voiceStarted = useRef(0);
+  useEffect(() => {
+    if (voiceRequests <= voiceStarted.current) return;
+    if (!dictation.supported || !state.accepts || send.isPending || dictation.listening) return;
+    voiceStarted.current = voiceRequests;
+    startDictation();
+  });
 
   function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -452,9 +480,14 @@ export function LeadChat({
         </p>
       )}
       {dictation.error && (
-        <p role="alert" className="shrink-0 px-3 pb-3 text-sm text-destructive">
-          {dictation.error}
-        </p>
+        <div role="alert" className="flex shrink-0 flex-wrap items-center gap-2 px-3 pb-3 text-sm text-destructive">
+          <p>{dictation.error}</p>
+          {mobileApp && dictation.blocked && (
+            <Button type="button" size="sm" variant="outline" onClick={() => void openAppSettings()}>
+              Open app settings
+            </Button>
+          )}
+        </div>
       )}
       {send.error && (
         <p role="alert" className="shrink-0 px-3 pb-3 text-sm text-destructive">
