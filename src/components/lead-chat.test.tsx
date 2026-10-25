@@ -15,6 +15,7 @@ const running: LeadStatus = {
   paneId: "wL:p1",
   agent: "omo",
   agentStatus: "idle",
+  typing: false,
   restarts: 0,
   startedAt: 1,
   error: null,
@@ -111,6 +112,28 @@ describe("LeadChat", () => {
     expect(await within(log).findByText("Delivered")).toHaveAttribute("data-receipt", "delivered");
     expect(within(log).queryByText("Sent")).toBeNull();
     expect(within(log).getAllByRole("listitem", { name: "You" })).toHaveLength(2);
+  });
+
+  it("shows Dori's typing bubble only while the lead is typing, still when motion is reduced", async () => {
+    const view = renderChat(running);
+    const log = await screen.findByRole("log", { name: "Messages" });
+    await within(log).findByText("Plan the release");
+    expect(within(log).queryByRole("listitem", { name: "Reply is being written" })).toBeNull();
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <LeadChat lead={{ ...running, agentStatus: "working", typing: true }} />
+      </QueryClientProvider>,
+    );
+    const bubble = await within(log).findByRole("listitem", { name: "Reply is being written" });
+    expect(bubble.querySelector("img")).toHaveAttribute("src", expect.stringContaining("dori-avatar"));
+    const dots = bubble.querySelectorAll("span");
+    expect(dots).toHaveLength(3);
+    for (const dot of dots) {
+      expect(dot).toHaveClass("animate-bounce", "motion-reduce:animate-none");
+    }
+    // The bubble comes last, after the newest message.
+    expect(log.lastElementChild).toBe(bubble);
   });
 
   it("does not send while the lead is not running", async () => {

@@ -60,7 +60,7 @@ export function LeadChat({ lead }: { lead: LeadStatus }) {
   useEffect(() => {
     if (lastId !== undefined) markRead(lastId);
     if (log.current) log.current.scrollTop = log.current.scrollHeight;
-  }, [lastId]);
+  }, [lastId, lead.typing]);
 
   function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -137,6 +137,7 @@ export function LeadChat({ lead }: { lead: LeadStatus }) {
             }}
           />
         )}
+        {lead.typing && <TypingBubble />}
       </ol>
       <form onSubmit={submit} aria-label="Message the lead" className="flex items-end gap-2">
         <textarea
@@ -162,6 +163,29 @@ export function LeadChat({ lead }: { lead: LeadStatus }) {
         </p>
       )}
     </section>
+  );
+}
+
+/** Three dots from Dori while the lead composes a reply; still when motion is reduced. */
+function TypingBubble() {
+  return (
+    <li data-typing aria-label="Reply is being written" className="flex max-w-[85%] items-start gap-2 self-start">
+      <img src={doriAvatar} alt="" className="size-8 shrink-0 rounded-full" />
+      <div
+        role="status"
+        aria-label="Reply is being written"
+        className="flex items-center gap-1 rounded-lg border bg-background px-3 py-3"
+      >
+        {[0, 150, 300].map((delay) => (
+          <span
+            key={delay}
+            aria-hidden
+            style={{ animationDelay: `${delay}ms` }}
+            className="size-1.5 animate-bounce rounded-full bg-muted-foreground motion-reduce:animate-none"
+          />
+        ))}
+      </div>
+    </li>
   );
 }
 

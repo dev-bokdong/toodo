@@ -533,6 +533,11 @@ export type LeadStatus = {
 	/**  The agent herdr recognized in the pane, e.g. `omo`. */
 	agent: string | null,
 	agentStatus: AgentStatus | null,
+	/**
+	 *  The lead is composing a reply: it has seen the person's newest message, is working,
+	 *  and has not answered it yet.
+	 */
+	typing: boolean,
 	/**  How often the server started the agent again since the server started. */
 	restarts: number,
 	/**  When the running agent was started, or first seen running. */

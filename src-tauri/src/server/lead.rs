@@ -30,6 +30,7 @@ use crate::commands::events::Notifier;
 use crate::commands::lead::{LeadState, LeadStatus, LeadStatusState};
 use crate::commands::types::{AgentStatus, Timestamp, WorkspaceSetup, WorkspaceSource};
 use crate::commands::{StorageState, lock, workspaces};
+use crate::domain::chat::ChatAuthor;
 use crate::domain::model::{self, HostPath, Machine, WorkspaceLocation};
 use crate::domain::path::PosixPath;
 
@@ -57,6 +58,8 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const START_GRACE: i64 = 20;
 /// Seconds after which a running agent no longer counts as a failed start.
 const STABLE: i64 = 60;
+/// Seconds after the lead saw a message that it stops counting as composing a reply.
+const TYPING_CAP: i64 = 120;
 /// Failed starts in a row after which the lead is reported as failed.
 const FAILED_AFTER: u32 = 3;
 
@@ -229,6 +232,30 @@ impl Supervisor {
         }
     }
 
+    /// Whether the lead is composing a reply at `now`: it is working, the newest chat
+    /// message is a person's that it saw less than [`TYPING_CAP`] seconds ago. A stored
+    /// reply, an idle agent, or the cap ends it.
+    fn typing(storage: &StorageState, status: &LeadStatus, now: i64) -> bool {
+        let working =
+            status.state == LeadState::Running && status.agent_status == Some(AgentStatus::Working);
+        if !working {
+            return false;
+        }
+        match lock(storage).latest_chat_message() {
+            Ok(Some(message)) => {
+                message.author == ChatAuthor::User
+                    && message
+                        .seen_at
+                        .is_some_and(|seen| (0..TYPING_CAP).contains(&(now - seen)))
+            }
+            Ok(None) => false,
+            Err(error) => {
+                eprintln!("toodo-server: cannot read the newest chat message: {error}");
+                false
+            }
+        }
+    }
+
     /// Checks the lead once, starting its agent when it is due.
     fn check(&mut self, storage: &StorageState, git: &Git, herdr: &Herdr, now: i64) -> LeadStatus {
         match self.try_check(storage, git, herdr, now) {
@@ -377,6 +404,7 @@ impl Supervisor {
             pane_id: self.pane.clone(),
             agent: pane.and_then(|pane| pane.agent.clone()),
             agent_status: pane.and_then(|pane| AgentStatus::from_herdr(pane.status)),
+            typing: false,
             restarts: agent.restarts,
             started_at: agent.running_since.or(agent.launched_at).map(Timestamp),
             error,
@@ -393,10 +421,11 @@ pub fn spawn(services: Arc<Services>, mut supervisor: Supervisor) -> io::Result<
             .map_or(0, |elapsed| {
                 elapsed.as_secs().try_into().unwrap_or(i64::MAX)
             });
-        let status = supervisor.check(&services.storage, &services.git, &services.herdr, now);
+        let mut status = supervisor.check(&services.storage, &services.git, &services.herdr, now);
         if supervisor.note_turn(&services.storage, &status, now) {
             services.chat_changed();
         }
+        status.typing = Supervisor::typing(&services.storage, &status, now);
         if let Some(previous) = publish(&services.lead, &status) {
             if (previous.state, &previous.error) != (status.state, &status.error) {
                 let reason = status.error.as_deref().unwrap_or("");
@@ -961,6 +990,45 @@ mod tests {
         assert!(!supervisor.note_turn(&storage, &restarting, 122));
         assert!(supervisor.note_turn(&storage, &status(AgentStatus::Working), 125));
         assert_eq!(seen(), [Some(100), Some(112)]);
+    }
+
+    #[test]
+    fn the_lead_types_from_seeing_a_message_until_it_replies_goes_idle_or_hits_the_cap() {
+        use crate::domain::chat::ChatAuthor;
+
+        let storage: StorageState = Mutex::new(Storage::open_in_memory().unwrap());
+        let add = |at: i64, author: ChatAuthor| {
+            let mut storage = lock(&storage);
+            storage.set_clock(move || at);
+            storage.add_chat_message(author, "Hi", None).unwrap();
+        };
+        let status = |state, agent_status| LeadStatus {
+            state,
+            agent_status: Some(agent_status),
+            ..LeadStatus::default()
+        };
+        let working = status(LeadState::Running, AgentStatus::Working);
+        let typing = |status: &LeadStatus, now| Supervisor::typing(&storage, status, now);
+
+        assert!(!typing(&working, 100), "no messages yet");
+        add(100, ChatAuthor::User);
+        assert!(!typing(&working, 101), "delivered but not seen");
+        {
+            let mut storage = lock(&storage);
+            storage.set_clock(|| 102);
+            storage.mark_chat_seen(100).unwrap();
+        }
+        assert!(typing(&working, 103));
+        assert!(!typing(&status(LeadState::Running, AgentStatus::Idle), 103));
+        assert!(!typing(
+            &status(LeadState::Restarting, AgentStatus::Working),
+            103
+        ));
+        assert!(typing(&working, 102 + TYPING_CAP - 1));
+        assert!(!typing(&working, 102 + TYPING_CAP));
+
+        add(110, ChatAuthor::Lead);
+        assert!(!typing(&working, 111), "the reply ends it");
     }
 
     #[test]
