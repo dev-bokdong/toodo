@@ -349,6 +349,10 @@ mod tests {
         "set_connection",
         "get_access_token",
         "set_access_token",
+        "start_dictation",
+        "stop_dictation",
+        "cancel_dictation",
+        "open_privacy_settings",
     ];
 
     /// Every command the frontend's bindings invoke, from `src/lib/bindings.ts`.

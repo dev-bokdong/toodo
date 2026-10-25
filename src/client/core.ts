@@ -17,6 +17,10 @@ const APP_COMMANDS = new Set([
   "remove_server",
   "get_access_token",
   "set_access_token",
+  "start_dictation",
+  "stop_dictation",
+  "cancel_dictation",
+  "open_privacy_settings",
 ]);
 
 export function runsInApp(command: string): boolean {

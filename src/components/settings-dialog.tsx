@@ -13,7 +13,7 @@ import { compactSelectClass } from "@/components/workspace-list";
 import { commands } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
-import { builtForWeb, mobileApp, runsOnServer } from "@/lib/platform";
+import { builtForWeb, checksForUpdates, nativeDictation, runsOnServer } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import {
   setReadAloud,
@@ -61,7 +61,7 @@ function GeneralSettings({ onUpdateCheckRequested }: { onUpdateCheckRequested: (
         <span className="ml-auto text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </span>
-        {!builtForWeb && !mobileApp && <UpdateCheck onRequested={onUpdateCheckRequested} />}
+        {checksForUpdates && <UpdateCheck onRequested={onUpdateCheckRequested} />}
       </div>
       {!builtForWeb && <ServerConnection />}
       {runsOnServer && <VoiceSettings />}
@@ -102,8 +102,9 @@ function VoiceSettings() {
         <p className="text-muted-foreground">This browser cannot read replies aloud.</p>
       )}
       <p className="text-xs text-muted-foreground">
-        Voice input and reading aloud are done by this browser. Voice input is not offered where the browser
-        has no speech recognition, such as Firefox.
+        {nativeDictation
+          ? "Voice input uses this Mac's speech recognition, which asks for the microphone and speech recognition the first time; reading aloud uses its voices."
+          : "Voice input and reading aloud are done by this browser. Voice input is not offered where the browser has no speech recognition, such as Firefox."}
       </p>
     </fieldset>
   );
