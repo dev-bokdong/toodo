@@ -1087,8 +1087,8 @@ export type WakeWordError = {
 
 export type WakeWordErrorKind = 
 /**
- *  The microphone is turned off for the app in the system's privacy settings; listening
- *  starts again by itself once it is allowed.
+ *  The microphone is turned off for the app (on Windows, for desktop apps) in the
+ *  system's privacy settings; listening starts again by itself once it is allowed.
  */
 "microphoneNotAllowed" | 
 /**  No microphone, or it stopped; the app keeps trying to open the default one. */
