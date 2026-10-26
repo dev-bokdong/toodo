@@ -31,6 +31,7 @@ import {
   compactSelectClass,
   inputClass,
   describeLocation,
+  PathProblemNote,
   escapeCloses,
   shortLocation,
 } from "@/components/workspace-list";
@@ -2147,6 +2148,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
         <PathLabel label="workspace path" full={location} short={shortLocation(workspace.location)} />
         <span className="shrink-0">&middot; base</span>
         <code className="text-foreground">{workspace.defaultBaseBranch}</code>
+        {workspace.pathProblem && <PathProblemNote problem={workspace.pathProblem} className="max-md:basis-full" />}
         <Button
           size="xs"
           variant="ghost"

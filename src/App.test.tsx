@@ -97,6 +97,7 @@ const toodo: Workspace = {
   location: { kind: "local", path: "C:\\dev\\toodo" },
   defaultBaseBranch: "main",
   agentMerge: "never",
+  pathProblem: null,
 };
 
 const herdr: Workspace = {
@@ -105,6 +106,7 @@ const herdr: Workspace = {
   location: { kind: "ssh", machine: "devbox", path: "/srv/herdr" },
   defaultBaseBranch: "develop",
   agentMerge: "never",
+  pathProblem: null,
 };
 
 function task(id: number, workspaceId: number, title: string, overrides: Partial<Task> = {}): Task {
@@ -261,6 +263,15 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Toodo" })).toBeInTheDocument();
     expect(await screen.findByText("v1.2.3")).toBeInTheDocument();
     expect(await screen.findByText("No workspaces yet.")).toBeInTheDocument();
+  });
+
+  it("flags a workspace whose path the server cannot use in the sidebar and its header", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [{ ...toodo, pathProblem: "foreign" }, herdr] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    expect(await screen.findAllByText("Windows path, not on this server")).toHaveLength(2);
+    expect(screen.queryByText("Folder not found on the server")).not.toBeInTheDocument();
   });
 
   it("lists workspaces and the tasks of the selected one", async () => {

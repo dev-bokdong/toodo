@@ -58,7 +58,9 @@ pub(crate) fn create(
 
 /// The merge criterion a new task of `workspace` gets in front of `criteria`, unless they
 /// already have one: its pull request is merged, or, in a repository without an `origin`
-/// remote, its branch is merged locally. Git runs without the database lock.
+/// remote, its branch is merged locally. Git runs without the database lock. A local
+/// repository the server cannot reach (see [`types::PathProblem`]) is not asked and gets
+/// the pull request criterion, so its tasks can still be planned.
 pub(crate) fn merge_criterion(
     storage: &StorageState,
     git: &Git,
@@ -77,9 +79,11 @@ pub(crate) fn merge_criterion(
     let workspace = lock(storage)
         .get_workspace(workspace)?
         .ok_or(StorageError::WorkspaceNotFound(workspace))?;
-    Ok(Some(NewCriterion::merge(
-        git.has_origin(&workspace.location)?,
-    )))
+    let has_origin = match types::PathProblem::of(&workspace.location) {
+        Some(_) => true,
+        None => git.has_origin(&workspace.location)?,
+    };
+    Ok(Some(NewCriterion::merge(has_origin)))
 }
 
 #[specta::specta]
@@ -293,7 +297,10 @@ mod tests {
     use super::*;
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{self, WorkspaceLocation};
-    use crate::domain::path::WindowsPath;
+    use std::sync::Arc;
+
+    use crate::adapters::git::fake::FakeRunner;
+    use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::{NewTask, NewWorkspace};
 
     fn storage_with_task() -> (Storage, model::Task) {
@@ -321,6 +328,69 @@ mod tests {
         task.branch = Some("feat/add-commands-1".to_owned());
         storage.update_task(&task).unwrap();
         (storage, task)
+    }
+
+    fn new_task(workspace_id: model::WorkspaceId) -> types::NewTask {
+        types::NewTask {
+            workspace_id: workspace_id.into(),
+            task_type: types::TaskType::Feat,
+            title: "Add login".to_owned(),
+            description: String::new(),
+            estimate: None,
+            due_date: None,
+            criteria: Vec::new(),
+            merge_criterion: true,
+        }
+    }
+
+    fn git(results: Vec<Result<String, crate::adapters::git::GitError>>) -> (Git, Arc<FakeRunner>) {
+        let runner = Arc::new(FakeRunner::new(results));
+        (Git::new(Box::new(runner.clone())), runner)
+    }
+
+    fn storage_with_workspace(location: WorkspaceLocation) -> (StorageState, model::WorkspaceId) {
+        let mut storage = Storage::open_in_memory().unwrap();
+        let workspace = storage
+            .create_workspace(&NewWorkspace {
+                name: "quest".to_owned(),
+                location,
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        (StorageState::new(storage), workspace.id)
+    }
+
+    #[test]
+    fn a_task_of_a_workspace_the_server_cannot_reach_is_created_without_git() {
+        let missing = tempfile::tempdir().unwrap().path().join("gone");
+        for location in [
+            WorkspaceLocation::Local {
+                path: WindowsPath::parse(r"D:\dev\quest").unwrap().into(),
+            },
+            WorkspaceLocation::Local {
+                path: PosixPath::parse(missing.to_str().unwrap()).unwrap().into(),
+            },
+        ] {
+            let (storage, workspace) = storage_with_workspace(location);
+            let (git, runner) = git(Vec::new());
+            let task = create(&storage, &git, new_task(workspace)).unwrap();
+            assert_eq!(task.criteria[0].kind, CheckKind::PullRequestMerged);
+            assert!(runner.invocations.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_task_of_a_reachable_repository_takes_its_merge_criterion_from_git() {
+        let repo = tempfile::tempdir().unwrap();
+        let (storage, workspace) = storage_with_workspace(WorkspaceLocation::Local {
+            path: PosixPath::parse(repo.path().to_str().unwrap())
+                .unwrap()
+                .into(),
+        });
+        let (git, runner) = git(vec![Ok("upstream\n".to_owned())]);
+        let task = create(&storage, &git, new_task(workspace)).unwrap();
+        assert_eq!(task.criteria[0].kind, CheckKind::BranchMergedLocally);
+        assert_eq!(runner.invocations.lock().unwrap().len(), 1);
     }
 
     #[test]

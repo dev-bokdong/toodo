@@ -1,8 +1,15 @@
 import { useId, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { Laptop, Plus, Server, X } from "lucide-react";
+import { Laptop, Plus, Server, TriangleAlert, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
-import type { HerdrMachine, Workspace, WorkspaceId, WorkspaceLocation, WorkspaceSource } from "@/lib/bindings";
+import type {
+  HerdrMachine,
+  PathProblem,
+  Workspace,
+  WorkspaceId,
+  WorkspaceLocation,
+  WorkspaceSource,
+} from "@/lib/bindings";
 import { normalizePath, shortPath } from "@/lib/paths";
 import {
   useCreateWorkspace,
@@ -30,6 +37,27 @@ export function describeLocation(location: WorkspaceLocation): string {
 export function shortLocation(location: WorkspaceLocation): string {
   const path = shortPath(location.path);
   return location.kind === "local" ? path : `${location.machine}:${path}`;
+}
+
+const pathProblems: Record<PathProblem, string> = {
+  foreign: "Windows path, not on this server",
+  missing: "Folder not found on the server",
+};
+
+/**
+ * Why the server cannot use the repository path of the workspace, e.g. a Windows path kept
+ * from the desktop app; git features of the workspace fail until the path is corrected.
+ */
+export function PathProblemNote({ problem, className }: { problem: PathProblem; className?: string }) {
+  return (
+    <span
+      className={cn("flex min-w-0 items-start gap-1 text-xs text-destructive", className)}
+      title="Toodo cannot run git in this repository until its path is corrected"
+    >
+      <TriangleAlert aria-hidden="true" className="mt-0.5 size-3 shrink-0" />
+      <span>{pathProblems[problem]}</span>
+    </span>
+  );
 }
 
 /** SSH host of a herdr machine, or `null` for this computer. */
@@ -255,6 +283,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           <span className="truncate text-xs text-muted-foreground" title={describeLocation(workspace.location)}>
             {shortPath(workspace.location.path)}
           </span>
+          {workspace.pathProblem && <PathProblemNote problem={workspace.pathProblem} />}
         </button>
         {!confirming && (
           <Button
