@@ -202,6 +202,9 @@ pub struct Workspace {
     pub default_base_branch: String,
     /// Whether agents merge their own task pull request into the base branch.
     pub agent_merge: AgentMerge,
+    /// Why the server cannot use the repository path, so it can be corrected; `null`
+    /// when it can. Ignored when the workspace is saved.
+    pub path_problem: Option<PathProblem>,
 }
 
 impl From<&model::Workspace> for Workspace {
@@ -212,6 +215,32 @@ impl From<&model::Workspace> for Workspace {
             location: (&workspace.location).into(),
             default_base_branch: workspace.default_base_branch.clone(),
             agent_merge: workspace.agent_merge.into(),
+            path_problem: PathProblem::of(&workspace.location),
+        }
+    }
+}
+
+/// Why the server cannot run git in the repository of a local workspace. Paths on SSH
+/// machines are not checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PathProblem {
+    /// A Windows path, e.g. one kept from the desktop app: it never exists on the server.
+    Foreign,
+    /// A server path that is not a directory, e.g. a repository that was moved.
+    Missing,
+}
+
+impl PathProblem {
+    pub fn of(location: &model::WorkspaceLocation) -> Option<Self> {
+        match location {
+            model::WorkspaceLocation::Local {
+                path: model::HostPath::Windows(_),
+            } => Some(Self::Foreign),
+            model::WorkspaceLocation::Local {
+                path: model::HostPath::Posix(path),
+            } => (!std::path::Path::new(path.as_str()).is_dir()).then_some(Self::Missing),
+            model::WorkspaceLocation::Ssh { .. } => None,
         }
     }
 }
