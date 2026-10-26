@@ -12,6 +12,11 @@
 //! events. When the subscription ends, e.g. herdr stopped or reported `events_lost`, it
 //! subscribes again after a growing delay and reconciles with a fresh pane list. herdr
 //! IDs are scoped to one server, so events of one machine never touch tasks of another.
+//!
+//! herdr on a Windows host serves its API on a named pipe, which `ssh -W` cannot reach, so
+//! a Windows machine (one whose workspaces have Windows paths) is not subscribed to: its
+//! agent statuses are read from `herdr --machine <id> pane list` every [`POLL`], and
+//! worktrees removed or opened again in herdr there are not noticed.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -25,7 +30,7 @@ use crate::adapters::herdr::{self, Herdr, HerdrError};
 use crate::adapters::herdr_events::{
     Connector, EventStreamError, Flow, HerdrEvent, LocalSocket, Message, SshSocket, subscribe,
 };
-use crate::domain::model::{self, HostPath, Machine};
+use crate::domain::model::{self, HostPath, Machine, WorkspaceLocation};
 use crate::domain::path::{PosixPath, WindowsPath};
 use crate::storage::{Storage, StorageError};
 use serde::{Deserialize, Serialize};
@@ -191,6 +196,26 @@ impl EventSync<'_> {
         SessionEnd { started, error }
     }
 
+    /// Follows the herdr server without an event subscription: reads the panes every
+    /// `interval` for as long as `keep` says so, or until reading them fails.
+    pub fn poll(&self, interval: Duration, mut keep: impl FnMut() -> bool) -> SessionEnd {
+        let mut started = false;
+        while keep() {
+            if let Err(error) = self.refresh_agents() {
+                return SessionEnd {
+                    started,
+                    error: Some(error),
+                };
+            }
+            started = true;
+            thread::sleep(interval);
+        }
+        SessionEnd {
+            started,
+            error: None,
+        }
+    }
+
     /// Forgets all agent statuses, e.g. after herdr stopped.
     pub fn clear_agents(&self) {
         self.publish(Vec::new());
@@ -298,6 +323,22 @@ const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(30);
 /// How often the workspaces are checked for machines to start watching.
 const MACHINE_SCAN: Duration = Duration::from_secs(5);
+/// How often the panes of a machine without event subscriptions are read.
+const POLL: Duration = Duration::from_secs(5);
+
+/// Whether `machine` is a Windows host: one of its workspaces has a Windows path.
+pub(crate) fn windows_host(storage: &Storage, machine: &Machine) -> Result<bool, StorageError> {
+    Ok(storage.list_workspaces()?.into_iter().any(|workspace| {
+        workspace.location.machine() == *machine
+            && matches!(
+                workspace.location,
+                WorkspaceLocation::Ssh {
+                    path: HostPath::Windows(_),
+                    ..
+                }
+            )
+    }))
+}
 
 /// Starts the background threads that keep the subscriptions to the local herdr server
 /// and to the herdr server of every machine with an SSH workspace.
@@ -356,19 +397,33 @@ fn watch_machines(app: &Arc<dyn Runtime>) {
     }
 }
 
-/// The event socket of the herdr server of `machine`, or `None` while it is not running.
-fn connector(herdr: &Herdr, machine: &Machine) -> Result<Option<Box<dyn Connector>>, HerdrError> {
+/// How the herdr server of a machine is followed.
+enum Source {
+    /// Its event socket.
+    Socket(Box<dyn Connector>),
+    /// Its pane list, read every [`POLL`].
+    Poll,
+}
+
+/// How to follow the herdr server of `machine`, or `None` while it is not running.
+fn source(herdr: &Herdr, machine: &Machine, windows: bool) -> Result<Option<Source>, HerdrError> {
     let status = match machine {
         Machine::Local => herdr.server_status()?,
+        Machine::Ssh(host) if windows => {
+            return Ok(herdr
+                .windows_server_status(host)?
+                .running
+                .then_some(Source::Poll));
+        }
         Machine::Ssh(host) => herdr.remote_server_status(host)?,
     };
     let (true, Some(socket)) = (status.running, status.socket) else {
         return Ok(None);
     };
-    Ok(Some(match machine {
+    Ok(Some(Source::Socket(match machine {
         Machine::Local => Box::new(LocalSocket::new(&socket)),
         Machine::Ssh(host) => Box::new(SshSocket::new(host.clone(), socket)),
-    }))
+    })))
 }
 
 /// Keeps the subscription to the herdr server of `machine`. Returns once an SSH machine
@@ -398,8 +453,17 @@ fn watch(app: &dyn Runtime, machine: &Machine) {
                 }
             }
         }
-        let end = match connector(herdr, machine) {
-            Ok(Some(connector)) => sync.run_once(connector.as_ref()),
+        let windows = *machine != Machine::Local
+            && windows_host(&lock(storage), machine).unwrap_or_else(|error| {
+                eprintln!("toodo: failed to check the workspaces of {machine}: {error}");
+                false
+            });
+        let end = match source(herdr, machine, windows) {
+            Ok(Some(Source::Socket(connector))) => sync.run_once(connector.as_ref()),
+            // Polled until the machine has no Windows workspace left.
+            Ok(Some(Source::Poll)) => sync.poll(POLL, || {
+                windows_host(&lock(storage), machine).unwrap_or(true)
+            }),
             Ok(None) => SessionEnd {
                 started: false,
                 error: Some(SyncError::NotRunning),
@@ -675,6 +739,66 @@ mod tests {
         Herdr::new(Box::new(Arc::new(FakeRunner::new(
             results.collect::<Vec<Result<String, GitError>>>(),
         ))))
+    }
+
+    #[test]
+    fn polling_reads_the_panes_until_told_to_stop() {
+        let fixture = fixture();
+        let herdr = devbox_herdr(&[
+            &pane("w1:p1", "w1", "working"),
+            &pane("w1:p1", "w1", "idle"),
+        ]);
+        let mut rounds = 0;
+        let end = sync_on(devbox(), &fixture, &herdr).poll(Duration::ZERO, || {
+            rounds += 1;
+            rounds <= 2
+        });
+        assert!(end.started);
+        assert!(end.error.is_none());
+        let id = fixture.remote.id;
+        assert_eq!(
+            *fixture.recorder.statuses.lock().unwrap(),
+            [
+                statuses(&[(id, AgentStatus::Working)]),
+                statuses(&[(id, AgentStatus::Idle)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn polling_ends_when_the_pane_list_fails() {
+        let fixture = fixture();
+        let machines = r#"[{"id":"m2","label":"devbox","target":"devbox","session":"default","enabled":true}]"#;
+        let herdr = Herdr::new(Box::new(Arc::new(FakeRunner::new(vec![
+            Ok(machines.to_owned()),
+            Err(GitError::Failed {
+                command: "herdr --machine m2 pane list".to_owned(),
+                stderr: "remote SSH connection failed".to_owned(),
+            }),
+        ]))));
+        let end = sync_on(devbox(), &fixture, &herdr).poll(Duration::ZERO, || true);
+        assert!(!end.started);
+        assert!(matches!(end.error, Some(SyncError::Herdr(_))));
+    }
+
+    #[test]
+    fn windows_hosts_are_told_by_the_paths_of_their_workspaces() {
+        let fixture = fixture();
+        let winpc = MachineLabel::parse("winpc").unwrap();
+        let mut storage = lock(&fixture.storage);
+        storage
+            .create_workspace(&NewWorkspace {
+                name: "toodo".to_owned(),
+                location: WorkspaceLocation::Ssh {
+                    machine: winpc.clone(),
+                    path: WindowsPath::parse(r"D:\dev\toodo").unwrap().into(),
+                },
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        assert!(windows_host(&storage, &Machine::Ssh(winpc)).unwrap());
+        assert!(!windows_host(&storage, &devbox()).unwrap());
+        assert!(!windows_host(&storage, &Machine::Local).unwrap());
     }
 
     #[test]

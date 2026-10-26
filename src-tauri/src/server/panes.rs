@@ -42,6 +42,7 @@ use super::rpc::Reply;
 use crate::adapters::herdr::Herdr;
 use crate::adapters::herdr_events::{Connector, LocalSocket, SshSocket};
 use crate::adapters::herdr_panes::{self, PANE_NOT_FOUND, PaneError, Screen};
+use crate::commands::events::windows_host;
 use crate::commands::types::{TaskId, Timestamp};
 use crate::commands::{CommandError, HerdrState, herdr};
 use crate::domain::model::{self, Machine};
@@ -315,8 +316,17 @@ pub async fn issue_ticket(State(services): State<Arc<Services>>, body: Bytes) ->
     };
     let services_ = services.clone();
     let found = tokio::task::spawn_blocking(move || {
-        herdr::task_panes(&services_.storage, &services_.herdr, request.task_id.into())
-            .map(|found| (found, request))
+        let found =
+            herdr::task_panes(&services_.storage, &services_.herdr, request.task_id.into())?;
+        // herdr on Windows serves its API on a named pipe, which `ssh -W` cannot reach.
+        if windows_host(&crate::commands::lock(&services_.storage), &found.machine)? {
+            return Err(CommandError::rejected(format!(
+                "the pane view is not available for the Windows machine {}: herdr there \
+                 serves its API on a named pipe, which SSH cannot forward",
+                found.machine
+            )));
+        }
+        Ok((found, request))
     })
     .await;
     let (found, request) = match found {
@@ -580,7 +590,7 @@ mod tests {
     use crate::adapters::git::fake::FakeRunner;
     use crate::adapters::herdr_panes::fake::FakeHerdr;
     use crate::domain::model::{TaskType, WorkspaceLocation};
-    use crate::domain::path::PosixPath;
+    use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::{NewTask, NewWorkspace};
 
     struct FakeAccess(FakeHerdr);
@@ -712,6 +722,57 @@ mod tests {
         assert!(status.contains(" 200 "), "{status}");
         assert_eq!(body["ticket"].as_str().unwrap().len(), 64);
         assert!(body["expiresAt"].as_i64().unwrap() > 0);
+    }
+
+    #[test]
+    fn windows_machines_get_no_tickets() {
+        let temp = tempfile::tempdir().unwrap();
+        let machines =
+            r#"[{"id":"m3","label":"winpc","target":"winpc","session":"default","enabled":true}]"#;
+        let runner = Arc::new(FakeRunner::new(vec![
+            Ok(machines.to_owned()),
+            Ok(PANE_LIST.to_owned()),
+        ]));
+        let services = services_with(
+            temp.path(),
+            Arc::new(Herdr::new(Box::new(runner))),
+            Arc::new(FakeAccess(FakeHerdr::with_pane("w27:p1", "hello"))),
+        );
+        {
+            let mut storage = crate::commands::lock(&services.storage);
+            let workspace = storage
+                .create_workspace(&NewWorkspace {
+                    name: "toodo".to_owned(),
+                    location: WorkspaceLocation::Ssh {
+                        machine: model::MachineLabel::parse("winpc").unwrap(),
+                        path: WindowsPath::parse(r"D:\dev\toodo").unwrap().into(),
+                    },
+                    default_base_branch: "main".to_owned(),
+                })
+                .unwrap();
+            let task = storage
+                .create_task(&NewTask {
+                    workspace_id: workspace.id,
+                    task_type: TaskType::Feat,
+                    title: "Add login".to_owned(),
+                    description: String::new(),
+                    estimate: None,
+                    due_date: None,
+                    criteria: Vec::new(),
+                })
+                .unwrap();
+            storage.set_task_herdr_workspace(task.id, "w27").unwrap();
+        }
+        let address = serve(services, None);
+        let (status, body) = request_ticket(address, "web", "w27:p1");
+        assert!(status.contains(" 409 "), "{status}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("not available for the Windows machine winpc"),
+            "{body}"
+        );
     }
 
     #[test]

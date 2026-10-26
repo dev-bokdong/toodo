@@ -13,7 +13,10 @@ use std::fmt;
 
 use serde_json::Value;
 
-use super::git::{GitError, Invocation, Runner, describe, shell_quote, ssh_invocation};
+use super::git::{
+    GitError, Invocation, Runner, describe, shell_quote, ssh_invocation, windows_quote,
+    windows_start,
+};
 use crate::domain::model::{Machine, MachineLabel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +182,31 @@ impl Herdr {
             shell_quote(&saved.session)
         );
         let invocation = ssh_invocation(host, format!("sh -c {}", shell_quote(&script)));
+        let output = self.runner.run(&invocation)?;
+        server_status(&invocation, &output)
+    }
+
+    /// Like [`Self::remote_server_status`], for a Windows host: a PowerShell script looks
+    /// for `herdr.exe` on `PATH`, then where herdr's Windows installer puts it. herdr on
+    /// Windows serves its API on a named pipe, so the reported socket is a pipe name.
+    pub fn windows_server_status(&self, host: &MachineLabel) -> Result<ServerStatus, HerdrError> {
+        let saved = self.saved_machine(host)?;
+        let find = "$herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) { \
+             Join-Path $env:USERPROFILE '.herdr' } else { $env:HERDR_HOME }
+$herdr = @(
+    (Get-Command -Name 'herdr.exe' -CommandType Application -TotalCount 1 \
+             -ErrorAction SilentlyContinue).Path
+    (Join-Path $herdrHome 'packages\\standalone\\current\\herdr.exe')
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+if (-not $herdr) {
+    [Console]::Error.WriteLine('herdr is not installed on this machine')
+    exit 127
+}
+";
+        let arguments = ["--session", saved.session.as_str(), "status", "--json"]
+            .map(windows_quote)
+            .join(" ");
+        let invocation = ssh_invocation(host, windows_start(find, "$herdr", &arguments, None));
         let output = self.runner.run(&invocation)?;
         server_status(&invocation, &output)
     }
@@ -505,7 +533,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::adapters::git::fake::FakeRunner;
+    use crate::adapters::git::fake::{FakeRunner, decode_powershell};
     use crate::domain::model::MachineLabel;
 
     fn herdr(results: Vec<Result<String, GitError>>) -> (Herdr, Arc<FakeRunner>) {
@@ -962,6 +990,40 @@ mod tests {
         );
         assert!(invocation.args[4].starts_with("sh -c '"));
         assert!(invocation.args[4].contains(r#"--session '\''agents'\'' status --json"#));
+    }
+
+    #[test]
+    fn windows_server_status_runs_herdr_exe_through_powershell() {
+        let (herdr, runner) = herdr(vec![
+            machine_list(&[saved("m3", "winpc", "my agents", true)]),
+            Ok(
+                r#"{"server":{"running":true,"version":"0.9.5","socket":"herdr-my agents"}}"#
+                    .to_owned(),
+            ),
+        ]);
+        let host = MachineLabel::parse("winpc").unwrap();
+        assert_eq!(
+            herdr.windows_server_status(&host).unwrap(),
+            ServerStatus {
+                running: true,
+                version: Some("0.9.5".to_owned()),
+                socket: Some("herdr-my agents".to_owned()),
+            }
+        );
+        let invocation = runner.invocations.lock().unwrap()[1].clone();
+        assert_eq!(invocation.program, "ssh");
+        assert_eq!(
+            invocation.args[..4],
+            ["-o", "BatchMode=yes", "--", "winpc"].map(str::to_owned)
+        );
+        assert!(invocation.args[4].starts_with("powershell "));
+        let script = decode_powershell(&invocation.args[4]);
+        assert!(script.contains("Join-Path $herdrHome 'packages\\standalone\\current\\herdr.exe'"));
+        assert!(script.contains("$info.FileName = $herdr\n"));
+        assert!(
+            script.contains("$info.Arguments = '--session \"my agents\" status --json'\n"),
+            "{script}"
+        );
     }
 
     #[test]
