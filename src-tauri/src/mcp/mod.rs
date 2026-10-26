@@ -1265,7 +1265,7 @@ mod tests {
                 name: "site".to_owned(),
                 location: WorkspaceLocation::Ssh {
                     machine: MachineLabel::parse("devbox").unwrap(),
-                    path: PosixPath::parse("/srv/site").unwrap(),
+                    path: PosixPath::parse("/srv/site").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
             })
@@ -1386,7 +1386,7 @@ mod tests {
         for arguments in [
             serde_json::json!({"worktree_root": "worktrees"}),
             serde_json::json!({"worktree_root": ""}),
-            serde_json::json!({"ssh_host": "devbox", "worktree_root": r"D:\wt"}),
+            serde_json::json!({"ssh_host": "devbox", "worktree_root": r"D:wt"}),
             serde_json::json!({"ssh_host": "devbox", "worktree_root": "srv/wt"}),
             serde_json::json!({"ssh_host": " ", "worktree_root": "/wt"}),
         ] {

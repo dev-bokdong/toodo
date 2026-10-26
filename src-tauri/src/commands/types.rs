@@ -153,13 +153,20 @@ fn posix_path(raw: &str) -> CommandResult<path::PosixPath> {
     path::PosixPath::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
 }
 
+/// A path on an SSH machine: a POSIX path, or a Windows drive or UNC path on a Windows
+/// host.
+fn remote_path(raw: &str) -> CommandResult<model::HostPath> {
+    model::HostPath::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WorkspaceLocation {
     /// Path of a repository on the machine Toodo runs on: a Windows path in the desktop
     /// app, a POSIX path on the server.
     Local { path: String },
-    /// POSIX path of a repository on a saved herdr SSH machine.
+    /// Path of a repository on a saved herdr SSH machine: a POSIX path, or a Windows
+    /// drive or UNC path when the machine is a Windows host.
     Ssh { machine: String, path: String },
 }
 
@@ -187,7 +194,7 @@ impl TryFrom<WorkspaceLocation> for model::WorkspaceLocation {
             },
             WorkspaceLocation::Ssh { machine, path } => Self::Ssh {
                 machine: machine_label(&machine)?,
-                path: posix_path(&path)?,
+                path: remote_path(&path)?,
             },
         })
     }
@@ -274,16 +281,19 @@ impl From<AgentMerge> for model::AgentMerge {
     }
 }
 
-impl TryFrom<Workspace> for model::Workspace {
-    type Error = CommandError;
-
-    fn try_from(workspace: Workspace) -> CommandResult<Self> {
-        Ok(Self {
-            id: workspace.id.into(),
-            name: required("workspace name", workspace.name)?,
-            location: workspace.location.try_into()?,
-            default_base_branch: required("default base branch", workspace.default_base_branch)?,
-            agent_merge: workspace.agent_merge.into(),
+impl Workspace {
+    /// The workspace with its settings from this one and the given `location`; the
+    /// location of a saved workspace only changes by moving it.
+    pub(crate) fn into_model(
+        self,
+        location: model::WorkspaceLocation,
+    ) -> CommandResult<model::Workspace> {
+        Ok(model::Workspace {
+            id: self.id.into(),
+            name: required("workspace name", self.name)?,
+            location,
+            default_base_branch: required("default base branch", self.default_base_branch)?,
+            agent_merge: self.agent_merge.into(),
         })
     }
 }
@@ -400,7 +410,7 @@ impl TryFrom<MachineSettings> for model::MachineSettings {
             },
             model::Machine::Ssh(machine) => Self::Ssh {
                 machine,
-                worktree_root: root.map(posix_path).transpose()?,
+                worktree_root: root.map(remote_path).transpose()?,
             },
         })
     }
@@ -1471,7 +1481,11 @@ mod tests {
             },
             WorkspaceLocation::Ssh {
                 machine: "devbox".to_owned(),
-                path: r"C:\dev\toodo".to_owned(),
+                path: r"dev\toodo".to_owned(),
+            },
+            WorkspaceLocation::Ssh {
+                machine: "devbox".to_owned(),
+                path: "~/toodo".to_owned(),
             },
             WorkspaceLocation::Ssh {
                 machine: " ".to_owned(),
@@ -1482,6 +1496,40 @@ mod tests {
             let error = model::WorkspaceLocation::try_from(location).unwrap_err();
             assert_eq!(error.kind, CommandErrorKind::InvalidInput);
         }
+    }
+
+    #[test]
+    fn ssh_locations_take_windows_paths_of_windows_hosts() {
+        for (raw, normalized) in [
+            (r" D:/dev/toodo/ ", r"D:\dev\toodo"),
+            (r"\\nas\src\toodo", r"\\nas\src\toodo"),
+            ("/home/me/toodo/", "/home/me/toodo"),
+        ] {
+            let location = model::WorkspaceLocation::try_from(WorkspaceLocation::Ssh {
+                machine: "winpc".to_owned(),
+                path: raw.to_owned(),
+            })
+            .unwrap();
+            assert_eq!(
+                WorkspaceLocation::from(&location),
+                WorkspaceLocation::Ssh {
+                    machine: "winpc".to_owned(),
+                    path: normalized.to_owned(),
+                }
+            );
+            assert_eq!(PathProblem::of(&location), None);
+        }
+        let settings = model::MachineSettings::try_from(MachineSettings {
+            machine: Machine::Ssh {
+                label: "winpc".to_owned(),
+            },
+            worktree_root: Some(r"D:\wt\".to_owned()),
+        })
+        .unwrap();
+        assert_eq!(
+            MachineSettings::from(&settings).worktree_root.as_deref(),
+            Some(r"D:\wt")
+        );
     }
 
     #[test]

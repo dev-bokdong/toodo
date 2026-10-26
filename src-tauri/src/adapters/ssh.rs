@@ -6,9 +6,11 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use super::git::{GitError, Runner, shell_quote, ssh_invocation};
-use crate::domain::model::MachineLabel;
-use crate::domain::path::PosixPath;
+use super::git::{
+    GitError, Runner, powershell_command, powershell_quote, shell_quote, ssh_invocation,
+};
+use crate::domain::model::{HostPath, MachineLabel};
+use crate::domain::path::{PosixPath, WindowsPath};
 use crate::domain::ssh_config::{self, SshHost, SshHostError};
 
 #[derive(Debug)]
@@ -88,8 +90,9 @@ impl SshConfigFile {
 /// Subdirectories of one directory on a remote machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteDirectory {
-    /// Absolute path of the listed directory as resolved by the remote shell.
-    pub path: PosixPath,
+    /// Absolute path of the listed directory as resolved by the remote shell; a Windows
+    /// path on a Windows host.
+    pub path: HostPath,
     /// Names of subdirectories, hidden ones included, sorted case-insensitively.
     pub directories: Vec<String>,
 }
@@ -105,8 +108,26 @@ impl Ssh {
 
     /// Lists the subdirectories of `path` on `machine`, or of the login directory when
     /// `path` is `None`. Runs a POSIX `sh` script so that it works whatever the login
-    /// shell of the remote user is.
+    /// shell of the remote user is, and a PowerShell script for a Windows path or, without
+    /// a path, when the `sh` script fails, as it does on a Windows host.
     pub fn list_directories(
+        &self,
+        machine: &MachineLabel,
+        path: Option<&HostPath>,
+    ) -> Result<RemoteDirectory, GitError> {
+        match path {
+            Some(HostPath::Windows(path)) => self.list_windows_directories(machine, Some(path)),
+            Some(HostPath::Posix(path)) => self.list_posix_directories(machine, Some(path)),
+            None => match self.list_posix_directories(machine, None) {
+                Err(posix @ GitError::Failed { .. }) => self
+                    .list_windows_directories(machine, None)
+                    .map_err(|_| posix),
+                listing => listing,
+            },
+        }
+    }
+
+    fn list_posix_directories(
         &self,
         machine: &MachineLabel,
         path: Option<&PosixPath>,
@@ -119,24 +140,68 @@ impl Ssh {
         );
         let invocation = ssh_invocation(machine, format!("sh -c {}", shell_quote(&script)));
         let output = self.runner.run(&invocation)?;
-        let mut lines = output.lines();
-        let unexpected = || GitError::UnexpectedOutput {
-            command: format!("ssh {machine} ls"),
-            output: output.clone(),
-        };
-        let path = lines
-            .next()
-            .and_then(|line| PosixPath::parse(line.trim_end_matches('\r')).ok())
-            .ok_or_else(unexpected)?;
-        let mut directories: Vec<String> = lines
-            .map(|line| line.trim_end_matches('\r'))
-            .filter(|name| !matches!(*name, "" | "." | ".."))
-            .map(str::to_owned)
-            .collect();
-        directories.sort_by_key(|name| name.to_lowercase());
-        directories.dedup();
-        Ok(RemoteDirectory { path, directories })
+        listing(machine, &output, |line| {
+            PosixPath::parse(line).ok().map(HostPath::Posix)
+        })
     }
+
+    /// Lists directories on a Windows host with a PowerShell script that prints the
+    /// directory and then the names of its subdirectories as UTF-8 lines.
+    fn list_windows_directories(
+        &self,
+        machine: &MachineLabel,
+        path: Option<&WindowsPath>,
+    ) -> Result<RemoteDirectory, GitError> {
+        let cd = path
+            .map(|path| {
+                format!(
+                    "Set-Location -LiteralPath {}\n",
+                    powershell_quote(path.as_str())
+                )
+            })
+            .unwrap_or_default();
+        let script = format!(
+            "$ErrorActionPreference = 'Stop'
+{cd}$lines = @((Get-Location).ProviderPath) + @(Get-ChildItem -LiteralPath . -Directory -Force | ForEach-Object {{ $_.Name }})
+$bytes = [System.Text.Encoding]::UTF8.GetBytes(($lines -join \"`n\") + \"`n\")
+$stdout = [Console]::OpenStandardOutput()
+$stdout.Write($bytes, 0, $bytes.Length)
+$stdout.Flush()
+"
+        );
+        let output = self
+            .runner
+            .run(&ssh_invocation(machine, powershell_command(&script)))?;
+        listing(machine, &output, |line| {
+            WindowsPath::parse(line).ok().map(HostPath::Windows)
+        })
+    }
+}
+
+/// A listing printed as the listed directory, parsed by `parse_path`, followed by the
+/// names of its subdirectories, one per line.
+fn listing(
+    machine: &MachineLabel,
+    output: &str,
+    parse_path: impl Fn(&str) -> Option<HostPath>,
+) -> Result<RemoteDirectory, GitError> {
+    let mut lines = output.lines();
+    let unexpected = || GitError::UnexpectedOutput {
+        command: format!("ssh {machine} ls"),
+        output: output.to_owned(),
+    };
+    let path = lines
+        .next()
+        .and_then(|line| parse_path(line.trim_end_matches('\r')))
+        .ok_or_else(unexpected)?;
+    let mut directories: Vec<String> = lines
+        .map(|line| line.trim_end_matches('\r'))
+        .filter(|name| !matches!(*name, "" | "." | ".."))
+        .map(str::to_owned)
+        .collect();
+    directories.sort_by_key(|name| name.to_lowercase());
+    directories.dedup();
+    Ok(RemoteDirectory { path, directories })
 }
 
 #[cfg(test)]
@@ -144,7 +209,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::adapters::git::fake::{FakeRunner, failed};
+    use crate::adapters::git::fake::{FakeRunner, decode_powershell, failed};
 
     fn devbox() -> MachineLabel {
         MachineLabel::parse("devbox").unwrap()
@@ -170,7 +235,7 @@ mod tests {
         assert_eq!(
             listing.unwrap(),
             RemoteDirectory {
-                path: PosixPath::parse("/home/me/it's").unwrap(),
+                path: HostPath::Posix(PosixPath::parse("/home/me/it's").unwrap()),
                 directories: [".config", "app", "Docs", "src"]
                     .map(str::to_owned)
                     .to_vec(),
@@ -190,7 +255,7 @@ mod tests {
         fs::write(root.join("file.txt"), "").unwrap();
         let runner = Arc::new(FakeRunner::new([Ok("/\n".to_owned())]));
         let ssh = Ssh::new(Box::new(runner.clone()));
-        let path = PosixPath::parse(root.to_str().unwrap()).unwrap();
+        let path = HostPath::Posix(PosixPath::parse(root.to_str().unwrap()).unwrap());
         ssh.list_directories(&devbox(), Some(&path)).unwrap();
         let remote = runner.invocations.lock().unwrap()[0].args[4].clone();
         let output = std::process::Command::new("sh")
@@ -208,7 +273,7 @@ mod tests {
         );
         assert_eq!(listing.directories, [".hidden", "a", "b dir"]);
 
-        let missing = PosixPath::parse("/no/such/dir-for-toodo").unwrap();
+        let missing = HostPath::Posix(PosixPath::parse("/no/such/dir-for-toodo").unwrap());
         let runner = Arc::new(FakeRunner::new([Ok(String::new())]));
         Ssh::new(Box::new(runner.clone()))
             .list_directories(&devbox(), Some(&missing))
@@ -224,8 +289,14 @@ mod tests {
 
     #[test]
     fn list_directories_reports_failures_and_garbage() {
+        // Without a path, a failing `sh` script is retried as PowerShell; when that fails
+        // too, the first failure is reported.
         let runner = Arc::new(FakeRunner::new([
             Err(failed()),
+            Err(GitError::Failed {
+                command: "powershell".to_owned(),
+                stderr: "not found".to_owned(),
+            }),
             Ok("relative\n".to_owned()),
         ]));
         let ssh = Ssh::new(Box::new(runner.clone()));
@@ -234,6 +305,42 @@ mod tests {
             ssh.list_directories(&devbox(), None),
             Err(GitError::UnexpectedOutput { .. })
         ));
+    }
+
+    #[test]
+    fn windows_hosts_are_listed_with_powershell() {
+        let runner = Arc::new(FakeRunner::new([
+            Err(failed()),
+            Ok("C:\\Users\\me\r\nsrc\r\n.git\r\n".to_owned()),
+            Ok("D:\\dev\\it's\nrepo\n".to_owned()),
+        ]));
+        let ssh = Ssh::new(Box::new(runner.clone()));
+        assert_eq!(
+            ssh.list_directories(&devbox(), None).unwrap(),
+            RemoteDirectory {
+                path: HostPath::parse(r"C:\Users\me").unwrap(),
+                directories: [".git", "src"].map(str::to_owned).to_vec(),
+            }
+        );
+        let path = HostPath::parse(r"D:\dev\it's").unwrap();
+        assert_eq!(
+            ssh.list_directories(&devbox(), Some(&path)).unwrap(),
+            RemoteDirectory {
+                path: path.clone(),
+                directories: vec!["repo".to_owned()],
+            }
+        );
+
+        let invocations = runner.invocations.lock().unwrap();
+        assert!(invocations[0].args[4].starts_with("sh -c "));
+        let login = decode_powershell(&invocations[1].args[4]);
+        assert!(!login.contains("Set-Location"), "{login}");
+        assert!(login.contains("Get-ChildItem -LiteralPath . -Directory -Force"));
+        let given = decode_powershell(&invocations[2].args[4]);
+        assert!(
+            given.contains(r"Set-Location -LiteralPath 'D:\dev\it''s'"),
+            "{given}"
+        );
     }
 
     #[test]

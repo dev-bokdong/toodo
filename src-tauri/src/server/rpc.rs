@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     BackupSettings, CriterionId, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost,
-    NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId,
+    NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
@@ -173,6 +173,9 @@ commands!(s => {
     );
     "update_workspace"(workspace: Workspace) => sync Reply::result(
         workspaces::update_workspace(State(&s.storage), workspace)
+    );
+    "move_workspace"(id: WorkspaceId, location: WorkspaceLocation) => async Reply::result(
+        workspaces::move_workspace(State(&s.storage), State(&s.git), State(&s.herdr), id, location).await
     );
     "list_workspace_branches"(id: WorkspaceId) => sync Reply::result(
         workspaces::list_workspace_branches(State(&s.storage), State(&s.git), id)

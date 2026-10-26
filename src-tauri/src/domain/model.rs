@@ -73,8 +73,9 @@ impl fmt::Display for Machine {
 }
 
 /// Where a workspace repository lives. Local workspaces use the paths of the machine
-/// Toodo runs on (Windows paths for the desktop app, POSIX paths for the server), SSH
-/// workspaces use POSIX paths on the remote machine.
+/// Toodo runs on (POSIX paths on the server; Windows paths kept from the desktop app
+/// cannot be used there), SSH workspaces use the paths of the remote machine: POSIX paths,
+/// or Windows paths when the machine is a Windows host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceLocation {
     Local {
@@ -82,7 +83,7 @@ pub enum WorkspaceLocation {
     },
     Ssh {
         machine: MachineLabel,
-        path: PosixPath,
+        path: HostPath,
     },
 }
 
@@ -125,7 +126,8 @@ pub enum MachineSettings {
     },
     Ssh {
         machine: MachineLabel,
-        worktree_root: Option<PosixPath>,
+        /// A POSIX path, or a Windows path on a Windows host.
+        worktree_root: Option<HostPath>,
     },
 }
 
@@ -145,6 +147,12 @@ pub enum HostPath {
 }
 
 impl HostPath {
+    /// Parses a path entered for a machine whose kind is not known: a POSIX path when it
+    /// starts with `/`, else a Windows drive or UNC path.
+    pub fn parse(raw: &str) -> Result<Self, PathError> {
+        Self::parse_stored(raw.trim())
+    }
+
     /// Reads a path stored by Toodo, which kept its kind: only POSIX paths start with `/`.
     pub fn parse_stored(raw: &str) -> Result<Self, PathError> {
         if raw.starts_with('/') {
@@ -176,6 +184,10 @@ impl HostPath {
             Self::Windows(path) => path.as_str(),
             Self::Posix(path) => path.as_str(),
         }
+    }
+
+    pub fn is_windows(&self) -> bool {
+        matches!(self, Self::Windows(_))
     }
 }
 

@@ -1,6 +1,6 @@
 import { useId, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Laptop, Plus, Server, TriangleAlert, X } from "lucide-react";
-import { RemoteFolderBrowser, joinPosix } from "@/components/remote-folder-browser";
+import { RemoteFolderBrowser, joinPath } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type {
   HerdrMachine,
@@ -16,6 +16,7 @@ import {
   useDeleteWorkspace,
   useHerdrMachines,
   useHomeDirectory,
+  useMoveWorkspace,
   useWorkspaces,
 } from "@/lib/queries";
 import { cn } from "@/lib/utils";
@@ -93,7 +94,7 @@ function herdrProblem(host: string, machines: HerdrMachine[]): string | null {
 
 /** `path` ending in a separator, ready for a folder name to be typed after it. */
 function withSeparator(path: string): string {
-  return path.endsWith("/") ? path : `${path}/`;
+  return /[\\/]$/.test(path) ? path : joinPath(path, "");
 }
 
 /** A field with a visible label above it and optional help text below. */
@@ -353,6 +354,109 @@ export function escapeCloses(close: () => void, busy = false) {
   };
 }
 
+/**
+ * Moves a workspace to the same repository at another location, such as the Windows host a
+ * repository kept from the desktop app lives on. The tasks stay with the workspace.
+ */
+export function MoveWorkspaceForm({ workspace, onClose }: { workspace: Workspace; onClose: () => void }) {
+  const moveWorkspace = useMoveWorkspace();
+  const herdrMachines = useHerdrMachines();
+  const workspaces = useWorkspaces();
+  const [machine, setMachine] = useState<MachineKey>(machineKeyOf(workspace.location));
+  const [folder, setFolder] = useState(workspace.location.path);
+  const [browsing, setBrowsing] = useState(false);
+  const remotes = [
+    ...new Set([
+      ...(herdrMachines.data ?? []).map((saved) => saved.target),
+      ...(workspaces.data ?? []).flatMap((w) => (w.location.kind === "ssh" ? [w.location.machine] : [])),
+    ]),
+  ];
+  const path = folder.trim();
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const location: WorkspaceLocation = machine === null ? { kind: "local", path } : { kind: "ssh", machine, path };
+    moveWorkspace.mutate({ id: workspace.id, location }, { onSuccess: onClose });
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      aria-label={`Move ${workspace.name}`}
+      className="flex flex-col gap-2 rounded-lg border p-2"
+      onKeyDown={escapeCloses(onClose, moveWorkspace.isPending)}
+    >
+      <p className="text-xs text-muted-foreground">
+        Point the workspace at the same repository on another machine or in another folder. Its tasks stay. A
+        repository on a Windows host takes a Windows path such as D:\dev\repo.
+      </p>
+      <Field label="Machine">
+        {({ id }) => (
+          <select
+            id={id}
+            className={inputClass}
+            value={machine ?? ""}
+            onChange={(e) => {
+              setMachine(e.target.value === "" ? null : e.target.value);
+              setBrowsing(false);
+            }}
+            autoFocus
+          >
+            <option value="">Local (this server)</option>
+            {remotes.map((remote) => (
+              <option key={remote} value={remote}>
+                {remote}
+              </option>
+            ))}
+          </select>
+        )}
+      </Field>
+      <Field label="Folder" help="The repository's own folder on that machine.">
+        {({ id, describedBy }) => (
+          <div className="flex gap-1">
+            <input
+              id={id}
+              className={inputClass}
+              aria-describedby={describedBy}
+              value={folder}
+              onChange={(e) => setFolder(e.target.value)}
+              required
+            />
+            <Button type="button" size="sm" variant="outline" onClick={() => setBrowsing((open) => !open)} aria-expanded={browsing}>
+              Browse...
+            </Button>
+          </div>
+        )}
+      </Field>
+      {browsing && (
+        <RemoteFolderBrowser
+          key={machine ?? ""}
+          machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
+          initialPath=""
+          onSelect={(picked) => {
+            setFolder(picked);
+            setBrowsing(false);
+          }}
+          onCancel={() => setBrowsing(false)}
+        />
+      )}
+      {moveWorkspace.isError && (
+        <p role="alert" className="text-xs break-words text-destructive">
+          {moveWorkspace.error.message}
+        </p>
+      )}
+      <div className="flex gap-1">
+        <Button type="submit" size="sm" disabled={moveWorkspace.isPending || path === ""}>
+          {moveWorkspace.isPending ? "Moving..." : "Move workspace"}
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={moveWorkspace.isPending} onClick={onClose}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 const ADD_MACHINE_COMMAND = "herdr machine add <host>";
 
 /** The server cannot open a terminal for `herdr machine add`, so the user runs it on the server. */
@@ -421,7 +525,7 @@ function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFo
   const effectiveName = name ?? (cloning ? repositoryName(url) : folderUntouched ? "" : baseName(folder));
   const folderLabel = cloning ? "Parent folder" : "Folder";
   const path =
-    cloning && folder.trim() && effectiveName.trim() ? joinPosix(folder.trim(), effectiveName.trim()) : folder.trim();
+    cloning && folder.trim() && effectiveName.trim() ? joinPath(folder.trim(), effectiveName.trim()) : folder.trim();
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

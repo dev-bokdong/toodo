@@ -7,7 +7,6 @@ use crate::domain::model::{
     AgentMerge, HostPath, Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId,
     WorkspaceLocation,
 };
-use crate::domain::path::PosixPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewWorkspace {
@@ -72,7 +71,7 @@ impl WorkspaceRow {
             },
             ("ssh", Some(machine)) => WorkspaceLocation::Ssh {
                 machine: MachineLabel::parse(&machine).map_err(invalid_data)?,
-                path: PosixPath::parse(&self.path).map_err(invalid_data)?,
+                path: HostPath::parse_stored(&self.path).map_err(invalid_data)?,
             },
             (kind, _) => {
                 return Err(StorageError::InvalidData(format!(
@@ -141,7 +140,10 @@ impl Storage {
     }
 
     /// Saves the workspace. Its base branch cannot change while one of its tasks is in
-    /// review: the open pull request targets the current branch.
+    /// review: the open pull request targets the current branch. A new location keeps the
+    /// tasks; it is rejected while a task has a worktree path of another kind (Windows or
+    /// POSIX) than the new repository path, and on another machine the tasks forget their
+    /// herdr workspaces, which belong to the old machine.
     pub fn update_workspace(&mut self, workspace: &Workspace) -> Result<()> {
         let (kind, path, herdr_machine) = location_columns(&workspace.location);
         let tx = self.conn.transaction()?;
@@ -163,6 +165,33 @@ impl Storage {
                 task: TaskId(task),
             });
         }
+        let path_style = if path.starts_with('/') {
+            "posix"
+        } else {
+            "windows"
+        };
+        let other_style: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM tasks
+                 WHERE workspace_id = ?1 AND worktree_path IS NOT NULL
+                   AND CASE WHEN substr(worktree_path, 1, 1) = '/' THEN 'posix' ELSE 'windows' END
+                       <> ?2
+                 ORDER BY id
+                 LIMIT 1",
+                params![workspace.id.0, path_style],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(task) = other_style {
+            return Err(StorageError::WorktreePathMismatch(TaskId(task)));
+        }
+        tx.execute(
+            "UPDATE tasks SET herdr_workspace_id = NULL
+             WHERE workspace_id = ?1 AND herdr_workspace_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM workspaces w
+                           WHERE w.id = ?1 AND (w.kind <> ?2 OR w.herdr_machine IS NOT ?3))",
+            params![workspace.id.0, kind, herdr_machine],
+        )?;
         let changed = tx.execute(
             "UPDATE workspaces
              SET name = ?2, kind = ?3, path = ?4, herdr_machine = ?5, default_base_branch = ?6,
@@ -242,7 +271,7 @@ impl Storage {
             Machine::Ssh(label) => MachineSettings::Ssh {
                 machine: label.clone(),
                 worktree_root: worktree_root
-                    .map(|root| PosixPath::parse(&root))
+                    .map(|root| HostPath::parse_stored(&root))
                     .transpose()
                     .map_err(invalid_data)?,
             },

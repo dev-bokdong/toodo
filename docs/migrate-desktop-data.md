@@ -47,9 +47,10 @@ the file it reads, and the server's existing data stays.
 
 ## What Changes for Imported Data
 
-- **Local workspaces keep their Windows paths** and stay as history: the server can't reach
-  the PC's folders. To keep working on such a repository, clone it on the server (or on a
-  saved herdr SSH machine) as a new workspace.
+- **Local workspaces keep their Windows paths**: the server can't reach the PC's folders.
+  To keep working on such a repository with its tasks, save the PC as a herdr SSH machine
+  and move the workspace there with **Move** in the workspace header (see "Windows Hosts"
+  in [server.md](server.md)), or clone it on the server as a new workspace.
 - **Tasks lose their herdr workspace link**, since herdr IDs of the PC mean nothing on the
   server.
 - **Worktree roots aren't imported.** Set them again per machine in the web app.

@@ -25,7 +25,7 @@ cloning a repository into a path or by opening a repository already cloned at a 
 | `id` | Stable identifier. |
 | `name` | Display name. |
 | `kind` | `local` or `ssh`. |
-| `path` | Absolute path to the repository root: a POSIX path on the server's machine for `local`, a POSIX path on the SSH machine for `ssh`. Paths stored by older Toodo versions may be Windows paths (see [migrate-desktop-data.md](migrate-desktop-data.md)); they stay as history. |
+| `path` | Absolute path to the repository root: a POSIX path on the server's machine for `local`, a POSIX path on the SSH machine for `ssh`, or a Windows drive or UNC path when that machine is a Windows host (see "Windows Hosts" in [server.md](server.md)). Local paths stored by older Toodo versions may be Windows paths (see [migrate-desktop-data.md](migrate-desktop-data.md)); such a workspace can be moved to the PC it lives on. |
 | `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh` host. |
 | `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). Detected or entered at registration and editable afterwards from the workspace header, except while a task of the workspace is `in_review` (its open PR targets the current branch). |
 | `agentMerge` | Whether agents merge their own task PR: `never` (default; they stop once the PR is open) or `afterChecks` (they merge it into `defaultBaseBranch` once every check on it passed, never into another branch). Editable from the workspace header; agents read it from the MCP `current_task` tool. Toodo itself never merges. |
@@ -38,7 +38,7 @@ saved herdr SSH machine that hosts a workspace.
 | Field | Description |
 | --- | --- |
 | `machine` | `local` or the SSH target of the saved herdr machine. |
-| `worktreeRoot` | Absolute directory under which task worktrees are created on that machine (a POSIX path). Required before a task on that machine can be started. |
+| `worktreeRoot` | Absolute directory under which task worktrees are created on that machine: a POSIX path, or a Windows path on a Windows host, of the same kind as the workspace paths there. Required before a task on that machine can be started. |
 
 ### Task Types
 
