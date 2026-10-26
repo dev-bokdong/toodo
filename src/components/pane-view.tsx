@@ -7,8 +7,8 @@ import { Expand, Keyboard, RotateCw, Shrink } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
-import type { Task, TaskPane } from "@/lib/bindings";
-import { useTaskPanes } from "@/lib/queries";
+import type { Task, TaskPane, Workspace } from "@/lib/bindings";
+import { useTaskPanes, useWorkspaces } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { openPaneStream, type PaneClientMessage, type PaneServerMessage, type PaneSocket } from "@/web/pane-stream";
 
@@ -30,8 +30,19 @@ function defaultPane(panes: TaskPane[]): string | null {
   return (panes.find((pane) => pane.agent !== null) ?? panes[0])?.paneId ?? null;
 }
 
+/**
+ * The Windows machine the task's workspace is on, if it is on one: herdr there serves its
+ * API on a named pipe that the server cannot reach over SSH, so it has no pane view.
+ */
+function windowsMachine(workspace: Workspace | undefined): string | null {
+  const location = workspace?.location;
+  return location?.kind === "ssh" && !location.path.startsWith("/") ? location.machine : null;
+}
+
 export default function PaneView({ task }: { task: Task }) {
   const panes = useTaskPanes(task.id);
+  const workspaces = useWorkspaces();
+  const windows = windowsMachine(workspaces.data?.find((workspace) => workspace.id === task.workspaceId));
   const [chosen, setChosen] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const list = panes.data ?? [];
@@ -79,7 +90,14 @@ export default function PaneView({ task }: { task: Task }) {
           ))}
         </div>
       )}
-      {paneId !== null && <PaneTerminal key={paneId} taskId={task.id} paneId={paneId} expanded={expanded} />}
+      {windows !== null ? (
+        <p role="note" className="text-xs text-muted-foreground">
+          The pane view is not available for the Windows machine {windows} yet. Open the pane in herdr there.
+        </p>
+      ) : (
+        paneId !== null &&
+        !workspaces.isPending && <PaneTerminal key={paneId} taskId={task.id} paneId={paneId} expanded={expanded} />
+      )}
     </section>
   );
 }

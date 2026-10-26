@@ -143,7 +143,8 @@ test in `server/rpc.rs` checks that the server serves every command in the bindi
     `herdr workspace focus`, `herdr agent prompt|wait`). CLI output is the JSON
     `{"id", "result"}` envelope of the socket API; parse it as JSON, never scrape text.
   - Events come from the socket API (`events.subscribe`) over herdr's Unix socket, and
-    from saved SSH machines over `ssh -W <remote socket path>`:
+    from saved SSH machines over `ssh -W <remote socket path>` (a Windows host's herdr
+    listens on a named pipe `ssh -W` cannot reach, so its pane list is polled instead):
     `worktree.created`, `worktree.removed`, `pane.agent_status_changed`.
   - Remote workspaces map to saved herdr SSH machines (`herdr machine ...`), found by
     their SSH target. The user adds one with `herdr machine add <host>` in a terminal on

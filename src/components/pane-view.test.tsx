@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import PaneView from "@/components/pane-view";
-import { commands, type Task, type TaskPane } from "@/lib/bindings";
+import { commands, type Task, type TaskPane, type Workspace } from "@/lib/bindings";
 import { openPaneStream } from "@/web/pane-stream";
 
 const { FakeTerminal, terminals } = vi.hoisted(() => {
@@ -41,7 +41,7 @@ const { FakeTerminal, terminals } = vi.hoisted(() => {
 vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("@/web/pane-stream", () => ({ openPaneStream: vi.fn() }));
-vi.mock("@/lib/bindings", () => ({ commands: { ensureTaskWorkspace: vi.fn() } }));
+vi.mock("@/lib/bindings", () => ({ commands: { ensureTaskWorkspace: vi.fn(), listWorkspaces: vi.fn() } }));
 
 class FakeSocket {
   readyState = WebSocket.OPEN;
@@ -69,7 +69,11 @@ const panes: TaskPane[] = [
   { paneId: "w27:p2", agent: "claude", agentStatus: "working", title: "Add login" },
 ];
 
-const task = { id: 7, status: "in_progress", herdrWorkspaceId: "w27" } as Task;
+const task = { id: 7, workspaceId: 3, status: "in_progress", herdrWorkspaceId: "w27" } as Task;
+
+function workspaceAt(location: Workspace["location"]): Workspace {
+  return { id: 3, name: "toodo", location } as Workspace;
+}
 
 function renderView() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -96,6 +100,24 @@ describe("PaneView", () => {
     vi.resetAllMocks();
     terminals.length = 0;
     vi.mocked(commands.ensureTaskWorkspace).mockResolvedValue({ status: "ok", data: panes });
+    vi.mocked(commands.listWorkspaces).mockResolvedValue({
+      status: "ok",
+      data: [workspaceAt({ kind: "ssh", machine: "devbox", path: "/srv/toodo" })],
+    });
+  });
+
+  it("has no pane view for a workspace on a Windows machine", async () => {
+    vi.mocked(commands.listWorkspaces).mockResolvedValue({
+      status: "ok",
+      data: [workspaceAt({ kind: "ssh", machine: "winpc", path: "D:\\dev\\toodo" })],
+    });
+    renderView();
+    expect(await screen.findByRole("note")).toHaveTextContent(
+      "The pane view is not available for the Windows machine winpc yet.",
+    );
+    expect(screen.getByRole("button", { name: "Add login" })).toBeInTheDocument();
+    expect(openPaneStream).not.toHaveBeenCalled();
+    expect(terminals).toHaveLength(0);
   });
 
   it("shows the agent's pane first and draws each frame", async () => {

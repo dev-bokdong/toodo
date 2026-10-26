@@ -129,6 +129,21 @@ pub(crate) fn powershell_quote(text: &str) -> String {
 /// directly with the exact command line (no shell parses the arguments again), copies its
 /// output bytes unchanged, and exits with its exit code.
 pub(crate) fn windows_remote(program: &str, arguments: &str, dir: Option<&str>) -> String {
+    let program = format!(
+        "(Get-Command -Name {} -CommandType Application -TotalCount 1).Path",
+        powershell_quote(program)
+    );
+    windows_start("", &program, arguments, dir)
+}
+
+/// Like [`windows_remote`], for a program whose path the PowerShell expression `program`
+/// gives after the script lines `find` ran.
+pub(crate) fn windows_start(
+    find: &str,
+    program: &str,
+    arguments: &str,
+    dir: Option<&str>,
+) -> String {
     let working_directory = dir
         .map(|dir| format!("$info.WorkingDirectory = {}\n", powershell_quote(dir)))
         .unwrap_or_default();
@@ -136,8 +151,8 @@ pub(crate) fn windows_remote(program: &str, arguments: &str, dir: Option<&str>) 
         "$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $env:GIT_TERMINAL_PROMPT = '0'
-$info = New-Object System.Diagnostics.ProcessStartInfo
-$info.FileName = (Get-Command -Name {program} -CommandType Application -TotalCount 1).Path
+{find}$info = New-Object System.Diagnostics.ProcessStartInfo
+$info.FileName = {program}
 $info.Arguments = {arguments}
 {working_directory}$info.UseShellExecute = $false
 $info.RedirectStandardInput = $true
@@ -152,7 +167,6 @@ $out.Wait()
 $err.Wait()
 exit $process.ExitCode
 ",
-        program = powershell_quote(program),
         arguments = powershell_quote(arguments),
     );
     powershell_command(&script)
