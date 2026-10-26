@@ -12,7 +12,6 @@ use crate::domain::model::{
     TaskNote, TaskResolution, TaskType, WorkspaceId,
 };
 use crate::domain::naming::TaskCheckout;
-use crate::domain::path::PosixPath;
 use crate::domain::plan::{DueDate, Estimate, EstimateUnit};
 use crate::domain::status::TaskStatus;
 use crate::domain::timeline::TaskEvent;
@@ -110,7 +109,7 @@ fn parse_note_kind(raw: &str) -> Result<NoteKind> {
 
 const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status,
         t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url,
-        t.pull_request_merged_at, w.kind, t.completion_note, s.number, s.title, s.additions,
+        t.pull_request_merged_at, t.completion_note, s.number, s.title, s.additions,
         s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
         s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url, t.estimate_unit,
         t.estimate_amount, t.due_date, t.merged_with_pull_request_url, t.merged_with_task_id
@@ -129,7 +128,6 @@ struct TaskRow {
     herdr_workspace_id: Option<String>,
     pull_request_url: Option<String>,
     pull_request_merged_at: Option<i64>,
-    workspace_kind: String,
     completion_note: Option<String>,
     pull_request: Option<PullRequestSnapshot>,
     resolution: Option<String>,
@@ -154,37 +152,36 @@ impl TaskRow {
             herdr_workspace_id: row.get(8)?,
             pull_request_url: row.get(9)?,
             pull_request_merged_at: row.get(10)?,
-            workspace_kind: row.get(11)?,
-            completion_note: row.get(12)?,
-            pull_request: match row.get::<_, Option<i64>>(13)? {
+            completion_note: row.get(11)?,
+            pull_request: match row.get::<_, Option<i64>>(12)? {
                 None => None,
                 Some(number) => Some(PullRequestSnapshot {
                     number,
-                    title: row.get(14)?,
-                    additions: row.get(15)?,
-                    deletions: row.get(16)?,
-                    changed_files: row.get(17)?,
-                    merge_commit_sha: row.get(18)?,
-                    review_count: row.get(19)?,
-                    reviewer_count: row.get(20)?,
-                    first_reviewed_at: row.get(21)?,
+                    title: row.get(13)?,
+                    additions: row.get(14)?,
+                    deletions: row.get(15)?,
+                    changed_files: row.get(16)?,
+                    merge_commit_sha: row.get(17)?,
+                    review_count: row.get(18)?,
+                    reviewer_count: row.get(19)?,
+                    first_reviewed_at: row.get(20)?,
                 }),
             },
-            resolution: row.get(22)?,
-            issue: match row.get::<_, Option<i64>>(23)? {
+            resolution: row.get(21)?,
+            issue: match row.get::<_, Option<i64>>(22)? {
                 None => None,
                 Some(number) => Some(LinkedIssue {
                     number,
-                    url: row.get(24)?,
+                    url: row.get(23)?,
                 }),
             },
-            estimate_unit: row.get(25)?,
-            estimate_amount: row.get(26)?,
-            due_date: row.get(27)?,
-            merged_with: match row.get::<_, Option<String>>(28)? {
+            estimate_unit: row.get(24)?,
+            estimate_amount: row.get(25)?,
+            due_date: row.get(26)?,
+            merged_with: match row.get::<_, Option<String>>(27)? {
                 None => None,
                 Some(pull_request_url) => Some(MergedWith {
-                    task_id: row.get::<_, Option<i64>>(29)?.map(TaskId),
+                    task_id: row.get::<_, Option<i64>>(28)?.map(TaskId),
                     pull_request_url,
                 }),
             },
@@ -198,13 +195,11 @@ impl TaskRow {
         notes: Vec<TaskNote>,
         criteria: Vec<crate::domain::criteria::Criterion>,
     ) -> Result<Task> {
-        let worktree_path = match (self.worktree_path, self.workspace_kind.as_str()) {
-            (None, _) => None,
-            (Some(raw), "local") => Some(HostPath::parse_stored(&raw).map_err(invalid_data)?),
-            (Some(raw), _) => Some(HostPath::Posix(
-                PosixPath::parse(&raw).map_err(invalid_data)?,
-            )),
-        };
+        let worktree_path = self
+            .worktree_path
+            .map(|raw| HostPath::parse_stored(&raw))
+            .transpose()
+            .map_err(invalid_data)?;
         Ok(Task {
             id: TaskId(self.id),
             workspace_id: WorkspaceId(self.workspace_id),
@@ -355,10 +350,11 @@ fn task_workspace(conn: &Connection, id: TaskId) -> Result<Option<WorkspaceId>> 
         .optional()?)
 }
 
-/// The kind of paths on the machine of workspace `w`: `posix` for SSH workspaces and
-/// local ones on the server, `windows` for local ones in the desktop app.
+/// The kind of paths on the machine of workspace `w`, told by its repository path: only
+/// POSIX paths start with `/`. `windows` for SSH workspaces on Windows hosts and for local
+/// ones kept from the desktop app.
 const WORKSPACE_PATH_STYLE: &str =
-    "CASE WHEN w.kind = 'ssh' OR substr(w.path, 1, 1) = '/' THEN 'posix' ELSE 'windows' END";
+    "CASE WHEN substr(w.path, 1, 1) = '/' THEN 'posix' ELSE 'windows' END";
 
 /// The stored form of a worktree path, which must be of the path kind of the machine of
 /// the task's workspace (see [`WORKSPACE_PATH_STYLE`]).

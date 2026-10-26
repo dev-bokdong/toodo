@@ -1445,7 +1445,7 @@ mod tests {
         let fixture = fixture(
             WorkspaceLocation::Ssh {
                 machine: devbox,
-                path: PosixPath::parse("/srv/toodo").unwrap(),
+                path: PosixPath::parse("/srv/toodo").unwrap().into(),
             },
             HostPath::Posix(PosixPath::parse("/wt/toodo/feat-add-login-1").unwrap()),
         );

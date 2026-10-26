@@ -511,7 +511,7 @@ mod tests {
         let remote = started(
             WorkspaceLocation::Ssh {
                 machine: MachineLabel::parse("devbox").unwrap(),
-                path: PosixPath::parse("/srv/toodo").unwrap(),
+                path: PosixPath::parse("/srv/toodo").unwrap().into(),
             },
             HostPath::Posix(PosixPath::parse("/wt/toodo/feat-add-login-2").unwrap()),
         );

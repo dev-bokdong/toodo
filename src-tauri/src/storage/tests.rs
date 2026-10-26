@@ -17,7 +17,7 @@ fn local_location(path: &str) -> WorkspaceLocation {
 fn ssh_location(machine: &str, path: &str) -> WorkspaceLocation {
     WorkspaceLocation::Ssh {
         machine: MachineLabel::parse(machine).unwrap(),
-        path: PosixPath::parse(path).unwrap(),
+        path: HostPath::parse(path).unwrap(),
     }
 }
 
@@ -89,7 +89,7 @@ fn entities_survive_reopening_the_database_file() {
     };
     let ssh_settings = MachineSettings::Ssh {
         machine: MachineLabel::parse("devbox").unwrap(),
-        worktree_root: Some(PosixPath::parse("/srv/wt").unwrap()),
+        worktree_root: Some(PosixPath::parse("/srv/wt").unwrap().into()),
     };
     storage.save_machine_settings(&local_settings).unwrap();
     storage.save_machine_settings(&ssh_settings).unwrap();
@@ -182,7 +182,7 @@ fn machines_without_saved_settings_have_no_worktree_root() {
     storage
         .save_machine_settings(&MachineSettings::Ssh {
             machine: label.clone(),
-            worktree_root: Some(PosixPath::parse("/wt").unwrap()),
+            worktree_root: Some(PosixPath::parse("/wt").unwrap().into()),
         })
         .unwrap();
     storage.save_machine_settings(&cleared).unwrap();
@@ -584,6 +584,94 @@ fn worktree_path_must_match_the_workspace_machine() {
         storage.update_task(&task),
         Err(StorageError::TaskNotFound(_))
     ));
+}
+
+#[test]
+fn windows_paths_on_ssh_machines_are_stored() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let windows = add_workspace(
+        &mut storage,
+        "Quest",
+        ssh_location("winpc", r"D:\dev\quest"),
+    );
+    let settings = MachineSettings::Ssh {
+        machine: MachineLabel::parse("winpc").unwrap(),
+        worktree_root: Some(HostPath::parse(r"\\nas\wt").unwrap()),
+    };
+    storage.save_machine_settings(&settings).unwrap();
+    let mut task = add_task(&mut storage, &windows, "Remote");
+    task.worktree_path = Some(HostPath::parse(r"\\nas\wt\quest\feat-remote-1").unwrap());
+    storage.update_task(&task).unwrap();
+
+    assert_eq!(storage.get_workspace(windows.id).unwrap(), Some(windows));
+    assert_eq!(
+        storage
+            .get_machine_settings(&Machine::Ssh(MachineLabel::parse("winpc").unwrap()))
+            .unwrap(),
+        settings
+    );
+    assert_eq!(storage.get_task(task.id).unwrap(), Some(task.clone()));
+    task.worktree_path = Some(HostPath::parse("/wt/quest/feat-remote-1").unwrap());
+    assert!(matches!(
+        storage.update_task(&task),
+        Err(StorageError::WorktreePathMismatch(id)) if id == task.id
+    ));
+}
+
+#[test]
+fn moving_a_workspace_keeps_its_tasks() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let mut workspace = add_workspace(&mut storage, "Quest", local_location(r"D:\dev\quest"));
+    let planned = add_task(&mut storage, &workspace, "Planned");
+    let mut started = add_task(&mut storage, &workspace, "Started");
+    storage.set_task_status(started.id, InProgress).unwrap();
+    started.worktree_path = Some(HostPath::parse(r"D:\wt\quest\feat-started-2").unwrap());
+    started.herdr_workspace_id = Some("w1".to_owned());
+    storage.update_task(&started).unwrap();
+
+    // Same machine: the herdr workspace of the task stays.
+    workspace.location = local_location(r"D:\src\quest");
+    storage.update_workspace(&workspace).unwrap();
+    let kept = storage.get_task(started.id).unwrap().unwrap();
+    assert_eq!(kept.herdr_workspace_id.as_deref(), Some("w1"));
+
+    // To the Windows host the repository lives on: tasks and worktree paths are kept, the
+    // herdr workspace of the old machine is forgotten.
+    workspace.location = ssh_location("winpc", r"D:\dev\quest");
+    storage.update_workspace(&workspace).unwrap();
+    assert_eq!(
+        storage.get_workspace(workspace.id).unwrap(),
+        Some(workspace.clone())
+    );
+    let moved = storage.get_task(started.id).unwrap().unwrap();
+    assert_eq!(moved.worktree_path, started.worktree_path);
+    assert_eq!(moved.status, InProgress);
+    assert_eq!(moved.herdr_workspace_id, None);
+    assert_eq!(
+        storage
+            .list_tasks(workspace.id)
+            .unwrap()
+            .iter()
+            .map(|task| task.id)
+            .collect::<Vec<_>>(),
+        [planned.id, started.id]
+    );
+
+    // A POSIX repository path would not match the Windows worktree path of the task.
+    let windows = workspace.location.clone();
+    workspace.location = ssh_location("winpc", "/srv/quest");
+    assert!(matches!(
+        storage.update_workspace(&workspace),
+        Err(StorageError::WorktreePathMismatch(id)) if id == started.id
+    ));
+    assert_eq!(
+        storage
+            .get_workspace(workspace.id)
+            .unwrap()
+            .unwrap()
+            .location,
+        windows
+    );
 }
 
 #[test]

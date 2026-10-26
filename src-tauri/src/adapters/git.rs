@@ -1,12 +1,14 @@
-//! Runs git for a workspace: `git.exe` for local workspaces and `ssh.exe <machine> git ...`
-//! for workspaces on a saved herdr SSH machine.
+//! Runs git for a workspace: `git` for local workspaces and `ssh <machine> git ...` for
+//! workspaces on a saved herdr SSH machine. On a Windows host git runs through PowerShell
+//! (see [`windows_remote`]).
 
 use std::collections::BTreeSet;
 use std::fmt;
 use std::process::{Command, Stdio};
 
+use base64::Engine;
+
 use crate::domain::model::{HostPath, MachineLabel, WorkspaceLocation};
-use crate::domain::path::PosixPath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
@@ -79,7 +81,94 @@ pub(crate) fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
-/// `ssh.exe` running `remote` on `machine` without prompting for passwords or host keys.
+/// Quotes one argument for a Windows command line the way `CommandLineToArgvW` and the C
+/// runtime of programs such as git split it again.
+pub(crate) fn windows_quote(word: &str) -> String {
+    if !word.is_empty() && !word.contains([' ', '\t', '\n', '\u{b}', '"']) {
+        return word.to_owned();
+    }
+    let mut quoted = String::from('"');
+    let mut backslashes = 0;
+    for c in word.chars() {
+        match c {
+            '\\' => {
+                backslashes += 1;
+                continue;
+            }
+            // Backslashes before a quote escape themselves and the quote.
+            '"' => quoted.push_str(&"\\".repeat(backslashes * 2 + 1)),
+            _ => quoted.push_str(&"\\".repeat(backslashes)),
+        }
+        quoted.push(c);
+        backslashes = 0;
+    }
+    // Backslashes before the closing quote escape themselves.
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    quoted
+}
+
+/// Quotes text as a single-quoted PowerShell string. PowerShell also takes the typographic
+/// single quotes as quote characters, so they are doubled like `'`.
+pub(crate) fn powershell_quote(text: &str) -> String {
+    let mut quoted = String::from('\'');
+    for c in text.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
+}
+
+/// The remote command that runs `program` with the Windows command line `arguments` on a
+/// Windows host, in `dir` when given. The SSH server there hands remote commands to
+/// `cmd.exe` or PowerShell, which quote differently, so the command is a PowerShell script
+/// encoded in base64, which both pass on untouched. The script starts the program
+/// directly with the exact command line (no shell parses the arguments again), copies its
+/// output bytes unchanged, and exits with its exit code.
+pub(crate) fn windows_remote(program: &str, arguments: &str, dir: Option<&str>) -> String {
+    let working_directory = dir
+        .map(|dir| format!("$info.WorkingDirectory = {}\n", powershell_quote(dir)))
+        .unwrap_or_default();
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$env:GIT_TERMINAL_PROMPT = '0'
+$info = New-Object System.Diagnostics.ProcessStartInfo
+$info.FileName = (Get-Command -Name {program} -CommandType Application -TotalCount 1).Path
+$info.Arguments = {arguments}
+{working_directory}$info.UseShellExecute = $false
+$info.RedirectStandardInput = $true
+$info.RedirectStandardOutput = $true
+$info.RedirectStandardError = $true
+$process = [System.Diagnostics.Process]::Start($info)
+$process.StandardInput.Close()
+$out = $process.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
+$err = $process.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
+$process.WaitForExit()
+$out.Wait()
+$err.Wait()
+exit $process.ExitCode
+",
+        program = powershell_quote(program),
+        arguments = powershell_quote(arguments),
+    );
+    powershell_command(&script)
+}
+
+/// A command line that runs the PowerShell `script`, passed as base64 of its UTF-16 text so
+/// that no shell on the way changes it.
+pub(crate) fn powershell_command(script: &str) -> String {
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    format!(
+        "powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}",
+        base64::engine::general_purpose::STANDARD.encode(utf16)
+    )
+}
+
+/// `ssh` running `remote` on `machine` without prompting for passwords or host keys.
 pub(super) fn ssh_invocation(machine: &MachineLabel, remote: String) -> Invocation {
     Invocation {
         program: "ssh",
@@ -143,9 +232,9 @@ impl Git {
             WorkspaceLocation::Local { path } => WorkspaceLocation::Local {
                 path: path.parse_like(root).map_err(|_| unexpected())?,
             },
-            WorkspaceLocation::Ssh { machine, .. } => WorkspaceLocation::Ssh {
+            WorkspaceLocation::Ssh { machine, path } => WorkspaceLocation::Ssh {
                 machine: machine.clone(),
-                path: PosixPath::parse(root).map_err(|_| unexpected())?,
+                path: path.parse_like(root).map_err(|_| unexpected())?,
             },
         })
     }
@@ -615,7 +704,8 @@ impl Git {
     }
 
     /// Runs `command` with the shell of the machine that hosts `location` in the directory
-    /// `dir` there: `cmd.exe` for Windows paths, `sh` otherwise. Returns its standard
+    /// `dir` there: `cmd.exe` for Windows paths (on Windows hosts started through
+    /// [`windows_remote`]), `sh` otherwise. Returns its standard
     /// output; a non-zero exit status is a [`GitError::Failed`] with its standard error.
     pub fn run_command(
         &self,
@@ -644,9 +734,17 @@ impl Git {
                     format!("cd {} && {command}", shell_quote(dir)),
                 ],
             },
-            WorkspaceLocation::Ssh { machine, .. } => {
-                ssh_invocation(machine, format!("cd {} && {command}", shell_quote(dir)))
-            }
+            WorkspaceLocation::Ssh {
+                machine,
+                path: HostPath::Windows(_),
+            } => ssh_invocation(
+                machine,
+                windows_remote("cmd", &format!("/D /S /C \"{command}\""), Some(dir)),
+            ),
+            WorkspaceLocation::Ssh {
+                machine,
+                path: HostPath::Posix(_),
+            } => ssh_invocation(machine, format!("cd {} && {command}", shell_quote(dir))),
         };
         self.runner.run(&invocation)
     }
@@ -698,7 +796,21 @@ impl Git {
                 program: "git",
                 args: git_args.iter().map(|arg| (*arg).to_owned()).collect(),
             },
-            WorkspaceLocation::Ssh { machine, .. } => {
+            WorkspaceLocation::Ssh {
+                machine,
+                path: HostPath::Windows(_),
+            } => {
+                let arguments = git_args
+                    .iter()
+                    .map(|arg| windows_quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ssh_invocation(machine, windows_remote("git", &arguments, None))
+            }
+            WorkspaceLocation::Ssh {
+                machine,
+                path: HostPath::Posix(_),
+            } => {
                 let remote = std::iter::once("git".to_owned())
                     .chain(git_args.iter().map(|arg| shell_quote(arg)))
                     .collect::<Vec<_>>()
@@ -845,6 +957,24 @@ pub mod fake {
             stderr: "fatal".to_owned(),
         }
     }
+
+    /// The script of a command made by [`powershell_command`].
+    pub fn decode_powershell(command: &str) -> String {
+        let encoded = command
+            .strip_prefix(
+                "powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+                 -EncodedCommand ",
+            )
+            .expect("a PowerShell command");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16(&units).unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -869,8 +999,107 @@ mod tests {
     fn remote(path: &str) -> WorkspaceLocation {
         WorkspaceLocation::Ssh {
             machine: MachineLabel::parse("devbox").unwrap(),
-            path: PosixPath::parse(path).unwrap(),
+            path: HostPath::parse(path).unwrap(),
         }
+    }
+
+    /// The PowerShell script the only invocation ran over `ssh devbox`.
+    fn remote_script(runner: &FakeRunner) -> String {
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].program, "ssh");
+        assert_eq!(
+            invocations[0].args[..4],
+            ["-o", "BatchMode=yes", "--", "devbox"]
+        );
+        fake::decode_powershell(&invocations[0].args[4])
+    }
+
+    #[test]
+    fn windows_quote_follows_the_command_line_rules_of_windows_programs() {
+        for (word, quoted) in [
+            ("plain", "plain"),
+            (r"C:\dev\a", r"C:\dev\a"),
+            ("", r#""""#),
+            ("two words", r#""two words""#),
+            (r#"say "hi""#, r#""say \"hi\"""#),
+            (r#"a\"b"#, r#""a\\\"b""#),
+            (r"C:\a b\", r#""C:\a b\\""#),
+            (r"C:\a\", r"C:\a\"),
+            ("line\nbreak", "\"line\nbreak\""),
+            ("%H%x1f%an <%ae>", "\"%H%x1f%an <%ae>\""),
+        ] {
+            assert_eq!(windows_quote(word), quoted, "{word:?}");
+        }
+    }
+
+    #[test]
+    fn powershell_quote_doubles_every_single_quote_powershell_knows() {
+        assert_eq!(powershell_quote("it's"), "'it''s'");
+        assert_eq!(
+            powershell_quote("\u{2018}a\u{2019} \u{201a}b\u{201b} \"$x\""),
+            "'\u{2018}\u{2018}a\u{2019}\u{2019} \u{201a}\u{201a}b\u{201b}\u{201b} \"$x\"'"
+        );
+    }
+
+    #[test]
+    fn git_on_a_windows_host_runs_through_encoded_powershell() {
+        let (git, runner) = git(vec![Ok(String::new())]);
+        git.clone_repository("git@host:o/a.git", &remote(r"D:\dev\it's here"))
+            .unwrap();
+        let invocation = runner.invocations.lock().unwrap()[0].args[4].clone();
+        // Nothing a cmd.exe or PowerShell login shell would interpret.
+        assert!(
+            invocation
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || " -+/=".contains(c)),
+            "{invocation}"
+        );
+        let script = remote_script(&runner);
+        assert!(
+            script.contains(
+                "$info.FileName = (Get-Command -Name 'git' -CommandType Application -TotalCount 1).Path\n"
+            ),
+            "{script}"
+        );
+        assert!(
+            script.contains(
+                "$info.Arguments = 'clone -- git@host:o/a.git \"D:\\dev\\it''s here\"'\n"
+            ),
+            "{script}"
+        );
+        assert!(!script.contains("WorkingDirectory"), "{script}");
+        assert!(script.ends_with("exit $process.ExitCode\n"), "{script}");
+    }
+
+    #[test]
+    fn repository_root_on_a_windows_host_is_a_windows_path() {
+        let (git, runner) = git(vec![Ok("D:/dev/a\r\n".to_owned())]);
+        assert_eq!(
+            git.repository_root(&remote(r"D:\dev\a\src")).unwrap(),
+            remote(r"D:\dev\a")
+        );
+        assert!(
+            remote_script(&runner)
+                .contains(r"$info.Arguments = '-C D:\dev\a\src rev-parse --show-toplevel'")
+        );
+    }
+
+    #[test]
+    fn commands_on_a_windows_host_run_in_cmd_in_the_directory() {
+        let (git, runner) = git(vec![Ok("ok\n".to_owned())]);
+        git.run_command(&remote(r"\\nas\src\a"), r"\\nas\wt\it's", "npm test")
+            .unwrap();
+        let script = remote_script(&runner);
+        assert!(script.contains("-Name 'cmd' "), "{script}");
+        assert!(
+            script.contains("$info.Arguments = '/D /S /C \"npm test\"'\n"),
+            "{script}"
+        );
+        assert!(
+            script.contains(r"$info.WorkingDirectory = '\\nas\wt\it''s'"),
+            "{script}"
+        );
     }
 
     fn args(words: &[&str]) -> Vec<String> {

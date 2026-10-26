@@ -286,9 +286,9 @@ pub struct SetWorktreeRoot {
     /// workspace's `location.machine`; omit it for the machine Toodo runs on.
     pub ssh_host: Option<String>,
     /// Absolute directory on that machine that holds the task worktrees, e.g.
-    /// `/home/me/worktrees`: a Windows path such as `D:\worktrees` for the machine of the
-    /// desktop app, a POSIX path on toodo-server and on SSH machines. Null or omitted
-    /// clears it, so tasks on the machine cannot start until it is set again.
+    /// `/home/me/worktrees`: a POSIX path, or on an SSH machine that is a Windows host a
+    /// Windows path such as `D:\worktrees`, the same kind as its workspace paths. Null or
+    /// omitted clears it, so tasks on the machine cannot start until it is set again.
     pub worktree_root: Option<String>,
 }
 
@@ -1452,7 +1452,7 @@ mod tests {
                 name: "server".to_owned(),
                 location: WorkspaceLocation::Ssh {
                     machine: model::MachineLabel::parse("devbox").unwrap(),
-                    path: PosixPath::parse("/srv/app").unwrap(),
+                    path: PosixPath::parse("/srv/app").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
             })

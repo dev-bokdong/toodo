@@ -238,6 +238,22 @@ export function useUpdateWorkspace() {
 }
 
 /**
+ * Moves a workspace to the repository at another location, e.g. to the Windows host it lives on;
+ * its tasks stay. Everything is refetched since the tasks may have forgotten their herdr workspaces.
+ */
+export function useMoveWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, location }: { id: WorkspaceId; location: WorkspaceLocation }) =>
+      unwrap(commands.moveWorkspace(id, location)),
+    // Not awaited: refetching everything (some queries run over SSH) would keep the move pending.
+    onSuccess: () => {
+      void queryClient.invalidateQueries();
+    },
+  });
+}
+
+/**
  * Branches of the workspace repository, fetched from `origin` each time the base branch
  * picker opens so the list matches the remote.
  */

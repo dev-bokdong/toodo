@@ -944,11 +944,11 @@ mod tests {
         let fixture = fixture(
             WorkspaceLocation::Ssh {
                 machine: devbox.clone(),
-                path: PosixPath::parse("/srv/toodo").unwrap(),
+                path: PosixPath::parse("/srv/toodo").unwrap().into(),
             },
             Some(MachineSettings::Ssh {
                 machine: devbox,
-                worktree_root: Some(PosixPath::parse("/wt").unwrap()),
+                worktree_root: Some(PosixPath::parse("/wt").unwrap().into()),
             }),
         );
         let (herdr, runner) = herdr(vec![

@@ -34,6 +34,7 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         workspaces::get_workspace,
         workspaces::create_workspace,
         workspaces::update_workspace,
+        workspaces::move_workspace,
         workspaces::list_workspace_branches,
         workspaces::create_workspace_base_branch,
         workspaces::delete_workspace,

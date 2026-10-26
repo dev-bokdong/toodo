@@ -4,12 +4,25 @@ import type { Machine } from "@/lib/bindings";
 import { useDirectories } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
-export function joinPosix(base: string, name: string): string {
-  return base.endsWith("/") ? `${base}${name}` : `${base}/${name}`;
+/** Whether `path` is a Windows drive or UNC path, as listed on a Windows host. */
+function isWindowsPath(path: string): boolean {
+  return /^[a-zA-Z]:/.test(path) || path.startsWith("\\\\");
 }
 
-function parentOf(path: string): string {
-  return path.replace(/\/[^/]+\/?$/, "") || "/";
+/** `name` inside the folder `base`, with the separator of the path's kind. */
+export function joinPath(base: string, name: string): string {
+  const separator = isWindowsPath(base) ? "\\" : "/";
+  return /[\\/]$/.test(base) ? `${base}${name}` : `${base}${separator}${name}`;
+}
+
+/** The folder that holds `path`; a root (`/`, `C:\`, `\\server\share`) has none. */
+function parentOf(path: string): string | null {
+  if (!isWindowsPath(path)) return path === "/" ? null : path.replace(/\/[^/]+\/?$/, "") || "/";
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const root = /^([a-zA-Z]:|[\\/]{2}[^\\/]+[\\/]+[^\\/]+)$/.exec(trimmed);
+  if (root) return null;
+  const parent = trimmed.replace(/[\\/][^\\/]+$/, "");
+  return /^[a-zA-Z]:$/.test(parent) ? `${parent}\\` : parent;
 }
 
 type RemoteFolderBrowserProps = {
@@ -67,14 +80,17 @@ export function RemoteFolderBrowser({ machine, initialPath, onSelect, onCancel }
       )}
       {listing.data && current && (
         <ul aria-label={`Folders in ${current}`} className="flex max-h-48 flex-col overflow-y-auto font-mono text-xs">
-          {current !== "/" && (
+          {parentOf(current) !== null && (
             <li>
               <FolderButton label=".." onClick={() => setPath(parentOf(current))} />
             </li>
           )}
           {listing.data.directories.map((name) => (
             <li key={name}>
-              <FolderButton label={`${name}/`} onClick={() => setPath(joinPosix(current, name))} />
+              <FolderButton
+                label={`${name}${isWindowsPath(current) ? "\\" : "/"}`}
+                onClick={() => setPath(joinPath(current, name))}
+              />
             </li>
           ))}
           {listing.data.directories.length === 0 && (

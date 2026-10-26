@@ -14,8 +14,18 @@ export const commands = {
 	 *  minutes.
 	 */
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(invoke("create_workspace", { workspace })),
-	/**  Saves the name, location, and default base branch of an existing workspace. */
+	/**
+	 *  Saves the name, default base branch, and agent merge policy of an existing workspace.
+	 *  Its location is kept; [`move_workspace`] changes it.
+	 */
 	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(invoke("update_workspace", { workspace })),
+	/**
+	 *  Moves a workspace to the repository at `location`, e.g. one kept with a Windows path
+	 *  from the desktop app to the Windows host it lives on, keeping its tasks. The location
+	 *  must hold a git repository that no other workspace uses; it is opened in herdr like a
+	 *  new workspace. Git and herdr may run over `ssh`, so they run on a blocking thread.
+	 */
+	moveWorkspace: (id: WorkspaceId, location: WorkspaceLocation) => typedError<Workspace, CommandError>(invoke("move_workspace", { id, location })),
 	/**
 	 *  Branches of the workspace repository to pick a base branch from: local and `origin`
 	 *  branches after fetching `origin`. Git may run over `ssh`, so this runs off the main
@@ -39,7 +49,8 @@ export const commands = {
 	addSshHost: (host: NewSshHost) => typedError<string[], CommandError>(invoke("add_ssh_host", { host })),
 	/**
 	 *  Subdirectories of `path` on `machine`, or of the login directory when `path` is
-	 *  absent. ssh runs on a blocking thread because connecting can take seconds.
+	 *  absent; `path` is a POSIX path, or a Windows path on a Windows host. ssh runs on a
+	 *  blocking thread because connecting can take seconds.
 	 */
 	listRemoteDirectories: (machine: string, path: string | null) => typedError<RemoteDirectory, CommandError>(invoke("list_remote_directories", { machine, path })),
 	/**
@@ -832,7 +843,10 @@ export type WorkspaceLocation =
  *  app, a POSIX path on the server.
  */
 { kind: "local"; path: string } | 
-/**  POSIX path of a repository on a saved herdr SSH machine. */
+/**
+ *  Path of a repository on a saved herdr SSH machine: a POSIX path, or a Windows
+ *  drive or UNC path when the machine is a Windows host.
+ */
 { kind: "ssh"; machine: string; path: string };
 
 /**  How the repository of a new workspace gets to its location. */
