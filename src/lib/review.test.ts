@@ -95,6 +95,7 @@ const toodo: Workspace = {
   location: { kind: "local", path: "C:\\dev\\toodo" },
   defaultBaseBranch: "main",
   agentMerge: "never",
+  pathProblem: null,
 };
 const herdr: Workspace = { ...toodo, id: 2, name: "herdr" };
 

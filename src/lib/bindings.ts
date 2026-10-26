@@ -591,6 +591,16 @@ export type NoteKind =
 /**  Something that stops the work until someone acts on it. */
 "blocker";
 
+/**
+ *  Why the server cannot run git in the repository of a local workspace. Paths on SSH
+ *  machines are not checked.
+ */
+export type PathProblem = 
+/**  A Windows path, e.g. one kept from the desktop app: it never exists on the server. */
+"foreign" | 
+/**  A server path that is not a directory, e.g. a repository that was moved. */
+"missing";
+
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
 	number: number,
@@ -807,6 +817,11 @@ export type Workspace = {
 	defaultBaseBranch: string,
 	/**  Whether agents merge their own task pull request into the base branch. */
 	agentMerge: AgentMerge,
+	/**
+	 *  Why the server cannot use the repository path, so it can be corrected; `null`
+	 *  when it can. Ignored when the workspace is saved.
+	 */
+	pathProblem: PathProblem | null,
 };
 
 export type WorkspaceId = number;
