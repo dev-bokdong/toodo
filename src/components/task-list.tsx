@@ -31,6 +31,7 @@ import {
   compactSelectClass,
   inputClass,
   describeLocation,
+  MoveWorkspaceForm,
   PathProblemNote,
   escapeCloses,
   shortLocation,
@@ -2110,6 +2111,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   const inReview = tasks.data?.filter((task) => task.workspaceId === workspace.id && task.status === "in_review");
   const locked = inReview === undefined || inReview.length > 0;
   const [draft, setDraft] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
   const [newName, setNewName] = useState("");
   const [newFrom, setNewFrom] = useState(workspace.defaultBaseBranch);
   const branches = useWorkspaceBranches(workspace.id, draft !== null);
@@ -2142,10 +2144,23 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
     }
   }
 
+  if (moving) {
+    return <MoveWorkspaceForm workspace={workspace} onClose={() => setMoving(false)} />;
+  }
+
   if (draft === null) {
     return (
       <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground max-md:flex-wrap">
         <PathLabel label="workspace path" full={location} short={shortLocation(workspace.location)} />
+        <Button
+          size="xs"
+          variant="ghost"
+          aria-label="Move workspace"
+          title="Point the workspace at its repository on another machine or in another folder"
+          onClick={() => setMoving(true)}
+        >
+          Move
+        </Button>
         <span className="shrink-0">&middot; base</span>
         <code className="text-foreground">{workspace.defaultBaseBranch}</code>
         {workspace.pathProblem && <PathProblemNote problem={workspace.pathProblem} className="max-md:basis-full" />}
@@ -2328,7 +2343,7 @@ function WorktreeRootForm({ workspace }: { workspace: Workspace }) {
         <input
           id="worktree-root"
           className={cn(inputClass, "font-mono max-md:min-w-0 max-md:flex-1")}
-          placeholder="/srv/worktrees"
+          placeholder={/^([a-zA-Z]:|\\\\)/.test(workspace.location.path) ? "D:\\worktrees" : "/srv/worktrees"}
           value={draft ?? saved}
           onChange={(e) => setDraft(e.target.value)}
           disabled={!settings.isSuccess}

@@ -22,6 +22,23 @@ paths on it, and the local herdr is the herdr server running there. Workspaces c
 live on saved herdr SSH machines. `herdr machine add <host>` asks questions in a terminal,
 so run it on the server yourself.
 
+### Windows Hosts
+
+An SSH machine can be a Windows PC running the OpenSSH server, with Git for Windows on
+`PATH` and herdr. Toodo tells a Windows host by its paths: a workspace path or worktree
+root on it is a drive path (`D:\dev\repo`) or a UNC path (`\\nas\share\repo`), and the
+workspace and the worktree root of one machine must be the same kind of path. Commands go
+to such a host as `powershell -EncodedCommand <script>`, which works whether its SSH
+server hands commands to `cmd.exe` or to PowerShell: the script starts git (or `cmd.exe`
+for a `command` criterion) with a Windows command line built by Toodo, so no shell parses
+the arguments, and passes its output and exit code back unchanged.
+
+A workspace kept with a Windows path from the desktop app (`pathProblem: "foreign"`) can
+be moved to the PC it lives on: save the PC as a herdr machine, then use **Move** in the
+workspace header, pick the machine, and enter the same repository path. Toodo checks that
+the path holds a git repository and opens it in herdr; the tasks stay with the workspace.
+A move cannot change the kind of path while a task has a worktree of the other kind.
+
 ## Versions and Releases
 
 Every GitHub release `vX.Y.Z` carries

@@ -126,7 +126,8 @@ GitHub repository to open it on.
 ### 1. Register a workspace
 
 The user picks a directory on the server's machine ("Local"), or a remote directory on a saved herdr SSH
-machine (its SSH target plus POSIX path), and one of two sources:
+machine (its SSH target plus a POSIX path, or a Windows path on a Windows host), and one of
+these sources:
 
 - **Clone**: Toodo runs `git clone <url> <path>`. The path must not exist or must be an
   empty directory.
@@ -141,7 +142,8 @@ machine (its SSH target plus POSIX path), and one of two sources:
 A remote machine is saved once in herdr: run `herdr machine add <host>` in a terminal on
 the server and answer herdr's setup prompts. Toodo lists the saved machines in the sidebar.
 
-Git runs locally as `git` and remotely as `ssh <machine> git ...`. The default
+Git runs locally as `git` and remotely as `ssh <machine> git ...` (on a Windows host through
+an encoded PowerShell script; see "Windows Hosts" in [server.md](server.md)). The default
 base branch is the one the user enters, or else the branch `origin/HEAD` points to, or
 else the checked-out branch. It can be changed later by picking one of the repository's
 branches (local and `origin` branches, listed after `git fetch --prune origin`) or by

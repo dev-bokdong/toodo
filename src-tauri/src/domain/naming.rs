@@ -21,6 +21,9 @@ pub enum NamingError {
         workspace: Machine,
         settings: Machine,
     },
+    /// The worktree root and the workspace path of an SSH machine are not the same kind
+    /// of path, e.g. a POSIX root for a repository on a Windows host.
+    PathKindMismatch(Machine),
 }
 
 impl fmt::Display for NamingError {
@@ -36,6 +39,11 @@ impl fmt::Display for NamingError {
             } => write!(
                 f,
                 "workspace is on machine {workspace} but the settings are for machine {settings}"
+            ),
+            Self::PathKindMismatch(machine) => write!(
+                f,
+                "the worktree root of machine {machine} and the workspace path are not both \
+                 Windows paths or both POSIX paths"
             ),
         }
     }
@@ -64,7 +72,7 @@ pub fn task_checkout(
             root.join(&workspace_dir).join(&task_dir)
         }
         (
-            WorkspaceLocation::Ssh { machine, .. },
+            WorkspaceLocation::Ssh { machine, path },
             MachineSettings::Ssh {
                 machine: settings_machine,
                 worktree_root,
@@ -73,7 +81,10 @@ pub fn task_checkout(
             let root = worktree_root
                 .as_ref()
                 .ok_or_else(|| NamingError::WorktreeRootNotSet(Machine::Ssh(machine.clone())))?;
-            HostPath::Posix(root.join(&workspace_dir).join(&task_dir))
+            if root.is_windows() != path.is_windows() {
+                return Err(NamingError::PathKindMismatch(Machine::Ssh(machine.clone())));
+            }
+            root.join(&workspace_dir).join(&task_dir)
         }
         _ => {
             return Err(NamingError::MachineMismatch {
@@ -91,7 +102,7 @@ mod tests {
 
     use super::*;
     use crate::domain::model::{AgentMerge, MachineLabel, TaskId, TaskType, WorkspaceId};
-    use crate::domain::path::{PosixPath, WindowsPath};
+    use crate::domain::path::WindowsPath;
     use crate::domain::status::TaskStatus;
 
     fn task(task_type: TaskType, title: &str) -> Task {
@@ -134,12 +145,16 @@ mod tests {
     }
 
     fn ssh_workspace(machine: &str) -> Workspace {
+        ssh_workspace_at(machine, "/home/me/toodo")
+    }
+
+    fn ssh_workspace_at(machine: &str, path: &str) -> Workspace {
         Workspace {
             id: WorkspaceId(1),
             name: "Toodo".to_owned(),
             location: WorkspaceLocation::Ssh {
                 machine: MachineLabel::parse(machine).unwrap(),
-                path: PosixPath::parse("/home/me/toodo").unwrap(),
+                path: HostPath::parse(path).unwrap(),
             },
             default_base_branch: "main".to_owned(),
             agent_merge: AgentMerge::Never,
@@ -155,7 +170,7 @@ mod tests {
     fn ssh_settings(machine: &str, root: Option<&str>) -> MachineSettings {
         MachineSettings::Ssh {
             machine: MachineLabel::parse(machine).unwrap(),
-            worktree_root: root.map(|r| PosixPath::parse(r).unwrap()),
+            worktree_root: root.map(|r| HostPath::parse(r).unwrap()),
         }
     }
 
@@ -187,6 +202,44 @@ mod tests {
             "/srv/wt/toodo/fix-crash-on-empty-dag-42"
         );
         assert_eq!(checkout.branch, "fix/crash-on-empty-dag-42");
+    }
+
+    #[test]
+    fn ssh_task_checkout_on_a_windows_host_uses_windows_separators() {
+        let checkout = task_checkout(
+            &ssh_workspace_at("winpc", r"D:\dev\toodo"),
+            &ssh_settings("winpc", Some(r"\\nas\wt")),
+            &task(TaskType::Fix, "Crash on empty DAG"),
+        )
+        .unwrap();
+        assert_eq!(
+            checkout.path,
+            HostPath::Windows(
+                WindowsPath::parse(r"\\nas\wt\toodo\fix-crash-on-empty-dag-42").unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn ssh_worktree_root_of_another_path_kind_is_rejected() {
+        let feat = task(TaskType::Feat, "x");
+        let winpc = Machine::Ssh(MachineLabel::parse("winpc").unwrap());
+        assert_eq!(
+            task_checkout(
+                &ssh_workspace_at("winpc", r"D:\dev\toodo"),
+                &ssh_settings("winpc", Some("/wt")),
+                &feat
+            ),
+            Err(NamingError::PathKindMismatch(winpc.clone()))
+        );
+        assert_eq!(
+            task_checkout(
+                &ssh_workspace_at("winpc", "/srv/toodo"),
+                &ssh_settings("winpc", Some(r"D:\wt")),
+                &feat
+            ),
+            Err(NamingError::PathKindMismatch(winpc))
+        );
     }
 
     #[test]

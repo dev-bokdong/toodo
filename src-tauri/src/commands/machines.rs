@@ -9,7 +9,7 @@ use std::path::Path;
 use super::types::{self, HerdrMachine, Machine, NewSshHost, RemoteDirectory};
 use super::{CommandError, CommandResult, HerdrState, SshConfigState, SshState};
 use crate::adapters::ssh::SshConfigFile;
-use crate::domain::model::MachineLabel;
+use crate::domain::model::{HostPath, MachineLabel};
 use crate::domain::path::PosixPath;
 use crate::domain::ssh_config::SshHost;
 
@@ -48,7 +48,8 @@ pub fn add_ssh_host(
 }
 
 /// Subdirectories of `path` on `machine`, or of the login directory when `path` is
-/// absent. ssh runs on a blocking thread because connecting can take seconds.
+/// absent; `path` is a POSIX path, or a Windows path on a Windows host. ssh runs on a
+/// blocking thread because connecting can take seconds.
 #[specta::specta]
 pub async fn list_remote_directories(
     ssh: State<'_, SshState>,
@@ -59,7 +60,7 @@ pub async fn list_remote_directories(
         .map_err(|error| CommandError::invalid_input(error.to_string()))?;
     let path = path
         .filter(|path| !path.trim().is_empty())
-        .map(|path| PosixPath::parse(path.trim()))
+        .map(|path| HostPath::parse(&path))
         .transpose()
         .map_err(|error| CommandError::invalid_input(error.to_string()))?;
     let ssh = SshState::clone(&ssh);

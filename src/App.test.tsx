@@ -29,6 +29,7 @@ vi.mock("@/lib/bindings", () => ({
     listWorkspaces: vi.fn(),
     createWorkspace: vi.fn(),
     updateWorkspace: vi.fn(),
+    moveWorkspace: vi.fn(),
     listWorkspaceBranches: vi.fn(),
     createWorkspaceBaseBranch: vi.fn(),
     deleteWorkspace: vi.fn(),
@@ -1599,6 +1600,39 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.getByText("dev")).toBeInTheDocument();
     expect(mocked.updateWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("moves a workspace with a Windows path to the Windows host it lives on, keeping its tasks", async () => {
+    let saved: Workspace = { ...toodo, pathProblem: "foreign" };
+    mocked.listWorkspaces.mockImplementation(async () => ({ status: "ok", data: [saved] }));
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(7, 1, "Kept task")] });
+    mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [savedMachine("winpc")] });
+    mocked.moveWorkspace
+      .mockResolvedValueOnce({ status: "error", error: { kind: "external", message: "not a git repository" } })
+      .mockImplementation(async (_id, location) => {
+        saved = { ...toodo, location, pathProblem: null };
+        return { status: "ok", data: saved };
+      });
+    await renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Move workspace" }));
+    const form = screen.getByRole("form", { name: "Move toodo" });
+    // The form starts at the current location.
+    expect(within(form).getByLabelText("Folder")).toHaveValue("C:\\dev\\toodo");
+    fireEvent.change(within(form).getByLabelText("Machine"), { target: { value: "winpc" } });
+    fireEvent.change(within(form).getByLabelText("Folder"), { target: { value: "D:\\dev\\toodo" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Move workspace" }));
+    expect(await within(form).findByRole("alert")).toHaveTextContent("not a git repository");
+
+    fireEvent.click(within(form).getByRole("button", { name: "Move workspace" }));
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Move toodo" })).not.toBeInTheDocument());
+    expect(mocked.moveWorkspace).toHaveBeenLastCalledWith(1, {
+      kind: "ssh",
+      machine: "winpc",
+      path: "D:\\dev\\toodo",
+    });
+    expect(await screen.findByRole("region", { name: "Machine winpc" })).toBeInTheDocument();
+    expect(screen.queryByText("Windows path, not on this server")).not.toBeInTheDocument();
   });
 
   it("lets agents of the workspace merge their pull requests after checks pass", async () => {

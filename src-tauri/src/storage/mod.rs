@@ -148,8 +148,8 @@ pub enum StorageError {
         task: TaskId,
         workspace: WorkspaceId,
     },
-    /// The worktree path is a Windows path for an SSH workspace or a POSIX path for a
-    /// local one.
+    /// The worktree path is not the kind of path (Windows or POSIX) of the repository path
+    /// of the task's workspace.
     WorktreePathMismatch(TaskId),
     CommitTaskMismatch {
         expected: TaskId,

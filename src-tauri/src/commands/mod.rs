@@ -183,7 +183,9 @@ impl From<SshConfigError> for CommandError {
 impl From<NamingError> for CommandError {
     fn from(error: NamingError) -> Self {
         let kind = match &error {
-            NamingError::WorktreeRootNotSet(_) => CommandErrorKind::InvalidInput,
+            NamingError::WorktreeRootNotSet(_) | NamingError::PathKindMismatch(_) => {
+                CommandErrorKind::InvalidInput
+            }
             NamingError::TaskNotInWorkspace | NamingError::MachineMismatch { .. } => {
                 CommandErrorKind::Internal
             }

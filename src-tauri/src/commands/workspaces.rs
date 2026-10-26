@@ -103,16 +103,27 @@ fn location_path(location: &model::WorkspaceLocation) -> &str {
 /// Whether two locations name the same directory; Windows paths are case-insensitive.
 fn same_location(a: &model::WorkspaceLocation, b: &model::WorkspaceLocation) -> bool {
     use model::{HostPath, WorkspaceLocation};
-    match (a, b) {
-        (WorkspaceLocation::Local { path: a }, WorkspaceLocation::Local { path: b }) => {
-            match (a, b) {
-                (HostPath::Windows(a), HostPath::Windows(b)) => {
-                    a.as_str().to_lowercase() == b.as_str().to_lowercase()
-                }
-                _ => a == b,
-            }
+    let same_path = |a: &HostPath, b: &HostPath| match (a, b) {
+        (HostPath::Windows(a), HostPath::Windows(b)) => {
+            a.as_str().to_lowercase() == b.as_str().to_lowercase()
         }
         _ => a == b,
+    };
+    match (a, b) {
+        (WorkspaceLocation::Local { path: a }, WorkspaceLocation::Local { path: b }) => {
+            same_path(a, b)
+        }
+        (
+            WorkspaceLocation::Ssh {
+                machine: a_machine,
+                path: a,
+            },
+            WorkspaceLocation::Ssh {
+                machine: b_machine,
+                path: b,
+            },
+        ) => a_machine == b_machine && same_path(a, b),
+        _ => false,
     }
 }
 
@@ -156,15 +167,77 @@ fn prepare_workspace(
     })
 }
 
-/// Saves the name, location, and default base branch of an existing workspace.
+/// Saves the name, default base branch, and agent merge policy of an existing workspace.
+/// Its location is kept; [`move_workspace`] changes it.
 #[specta::specta]
 pub fn update_workspace(
     storage: State<'_, StorageState>,
     workspace: Workspace,
 ) -> CommandResult<Workspace> {
-    let workspace: model::Workspace = workspace.try_into()?;
-    lock(&storage).update_workspace(&workspace)?;
+    let mut storage = lock(&storage);
+    let id = workspace.id.into();
+    let location = storage
+        .get_workspace(id)?
+        .ok_or(StorageError::WorkspaceNotFound(id))?
+        .location;
+    let workspace = workspace.into_model(location)?;
+    storage.update_workspace(&workspace)?;
     Ok((&workspace).into())
+}
+
+/// Moves a workspace to the repository at `location`, e.g. one kept with a Windows path
+/// from the desktop app to the Windows host it lives on, keeping its tasks. The location
+/// must hold a git repository that no other workspace uses; it is opened in herdr like a
+/// new workspace. Git and herdr may run over `ssh`, so they run on a blocking thread.
+#[specta::specta]
+pub async fn move_workspace(
+    storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
+    herdr: State<'_, HerdrState>,
+    id: WorkspaceId,
+    location: types::WorkspaceLocation,
+) -> CommandResult<Workspace> {
+    let id = id.into();
+    let target: model::WorkspaceLocation = location.try_into()?;
+    let (workspace, others) = {
+        let storage = lock(&storage);
+        let workspace = storage
+            .get_workspace(id)?
+            .ok_or(StorageError::WorkspaceNotFound(id))?;
+        let others: Vec<_> = storage
+            .list_workspaces()?
+            .into_iter()
+            .filter(|other| other.id != id)
+            .collect();
+        (workspace, others)
+    };
+    ensure_unused(&others, &target)?;
+    let git = GitState::clone(&git);
+    let herdr = HerdrState::clone(&herdr);
+    let name = workspace.name.clone();
+    let location = tokio::task::spawn_blocking(move || -> CommandResult<_> {
+        let root = git.repository_root(&target)?;
+        ensure_unused(&others, &root)?;
+        herdr.open_workspace(&root.machine(), location_path(&root), &name)?;
+        Ok(root)
+    })
+    .await
+    .map_err(|error| CommandError::internal(format!("workspace move panicked: {error}")))??;
+    let moved = model::Workspace {
+        location,
+        ..workspace
+    };
+    let mut storage = lock(&storage);
+    ensure_unused(
+        &storage
+            .list_workspaces()?
+            .into_iter()
+            .filter(|other| other.id != id)
+            .collect::<Vec<_>>(),
+        &moved.location,
+    )?;
+    storage.update_workspace(&moved)?;
+    Ok((&moved).into())
 }
 
 /// Branches of the workspace repository to pick a base branch from: local and `origin`
@@ -588,6 +661,141 @@ mod tests {
         assert_eq!(
             prepared.result.unwrap_err().kind,
             CommandErrorKind::External
+        );
+    }
+
+    #[test]
+    fn update_keeps_the_stored_location_even_a_windows_one() {
+        let (storage, id) = storage_with_workspace();
+        let mut workspace = Workspace::from(&lock(&storage).get_workspace(id).unwrap().unwrap());
+        workspace.default_base_branch = "dev".to_owned();
+        workspace.location = types::WorkspaceLocation::Local {
+            path: "/elsewhere".to_owned(),
+        };
+        let updated = update_workspace(State(&storage), workspace).unwrap();
+        assert_eq!(updated.default_base_branch, "dev");
+        let stored = lock(&storage).get_workspace(id).unwrap().unwrap();
+        assert_eq!(stored.location, local(r"C:\dev\toodo"));
+        assert_eq!(stored.default_base_branch, "dev");
+    }
+
+    fn move_to(
+        storage: &StorageState,
+        id: model::WorkspaceId,
+        location: types::WorkspaceLocation,
+        results: Vec<Result<String, GitError>>,
+        herdr_results: Vec<Result<String, GitError>>,
+    ) -> (CommandResult<Workspace>, Vec<Invocation>, Vec<Invocation>) {
+        let runner = Arc::new(FakeRunner::new(results));
+        let herdr_runner = Arc::new(FakeRunner::new(herdr_results));
+        let git: GitState = Arc::new(Git::new(Box::new(runner.clone())));
+        let herdr: HerdrState = Arc::new(Herdr::new(Box::new(herdr_runner.clone())));
+        let result = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(move_workspace(
+                State(storage),
+                State(&git),
+                State(&herdr),
+                id.into(),
+                location,
+            ));
+        let invocations = runner.invocations.lock().unwrap().clone();
+        let herdr_invocations = herdr_runner.invocations.lock().unwrap().clone();
+        (result, invocations, herdr_invocations)
+    }
+
+    fn winpc(path: &str) -> types::WorkspaceLocation {
+        types::WorkspaceLocation::Ssh {
+            machine: "winpc".to_owned(),
+            path: path.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_workspace_moves_to_its_repository_on_a_windows_host_with_its_tasks() {
+        let (storage, id) = storage_with_workspace();
+        let task = lock(&storage)
+            .create_task(&storage::NewTask {
+                workspace_id: id,
+                task_type: model::TaskType::Feat,
+                title: "Login".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria: Vec::new(),
+            })
+            .unwrap();
+        let machine_list = r#"[{"id":"m1","label":"winpc","target":"winpc","session":"default",
+            "enabled":true,"selected":false}]"#;
+        let (result, invocations, herdr_invocations) = move_to(
+            &storage,
+            id,
+            winpc(r"C:/dev/toodo/"),
+            vec![Ok("C:/dev/toodo\r\n".to_owned())],
+            std::iter::once(Ok(machine_list.to_owned()))
+                .chain(herdr_opens_a_new_workspace())
+                .collect(),
+        );
+        let moved = result.unwrap();
+        assert_eq!(moved.location, winpc(r"C:\dev\toodo"));
+        assert_eq!(moved.path_problem, None);
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].args[3], "winpc");
+        assert!(invocations[0].args[4].starts_with("powershell "));
+        assert_eq!(
+            herdr_invocations[2].args[..5],
+            ["--machine", "m1", "workspace", "create", "--cwd"].map(str::to_owned)
+        );
+        assert_eq!(herdr_invocations[2].args[5], r"C:\dev\toodo");
+        let storage = lock(&storage);
+        assert_eq!(
+            storage.get_workspace(id).unwrap().unwrap().location,
+            moved.location.try_into().unwrap()
+        );
+        assert_eq!(storage.list_tasks(id).unwrap(), [task]);
+    }
+
+    #[test]
+    fn a_move_needs_a_repository_and_a_location_no_other_workspace_uses() {
+        let (storage, id) = storage_with_workspace();
+        lock(&storage)
+            .create_workspace(&storage::NewWorkspace {
+                name: "other".to_owned(),
+                location: winpc(r"D:\other").try_into().unwrap(),
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+
+        let (result, invocations, _) =
+            move_to(&storage, id, winpc(r"d:\OTHER"), Vec::new(), Vec::new());
+        assert_eq!(result.unwrap_err().kind, CommandErrorKind::Rejected);
+        assert!(invocations.is_empty());
+
+        let (result, _, herdr_invocations) = move_to(
+            &storage,
+            id,
+            winpc(r"D:\none"),
+            vec![Err(failed())],
+            Vec::new(),
+        );
+        assert_eq!(result.unwrap_err().kind, CommandErrorKind::External);
+        assert!(herdr_invocations.is_empty());
+
+        let (result, invocations, _) = move_to(
+            &storage,
+            id,
+            types::WorkspaceLocation::Local {
+                path: r"D:\dev\toodo".to_owned(),
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(result.unwrap_err().kind, CommandErrorKind::InvalidInput);
+        assert!(invocations.is_empty());
+        assert_eq!(
+            lock(&storage).get_workspace(id).unwrap().unwrap().location,
+            local(r"C:\dev\toodo")
         );
     }
 
