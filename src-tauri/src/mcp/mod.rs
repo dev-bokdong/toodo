@@ -105,7 +105,9 @@ and why, e.g. a library or approach over its alternatives) or finish a meaningfu
 and report_blocker when something stops you that needs the user or someone else (missing \
 access, an unclear requirement, a failing dependency), saying what you need. Write one \
 or two Markdown sentences per note; skip routine steps such as running tests or small \
-edits. Neither tool changes the task's status.
+edits. Neither tool changes the task's status. To stop work on a task for another \
+reason than a prerequisite (rule 3), call pause_task with the reason, which pauses it as \
+the app's Pause does, and resume_task to continue a paused task once the reason is gone.
 6. A tool error says what was rejected; change the arguments instead of retrying them \
 unchanged.
 7. start_task, complete_task, and conclude_task act on other tasks, the way the user \
@@ -596,6 +598,31 @@ impl ToodoMcp {
         Parameters(request): Parameters<tools::AddNote>,
     ) -> Result<CallToolResult, ErrorData> {
         self.change(|storage| tools::add_note(storage, model::NoteKind::Blocker, request))
+    }
+
+    #[tool(
+        description = "Pause an in_progress or in_review task, as Pause in the Toodo app does, with a required non-empty reason, e.g. {\"id\": 5, \"reason\": \"Waiting for the API design\"}. The task moves back to planned and shows as paused; it keeps its branch, worktree, herdr workspace, commits, and pull request, and the reason is recorded as a progress note. Your own task may be paused; stop working on it afterwards. To wait for other tasks, use add_dependency instead, which pauses the task until they are done. Returns the task with its notes."
+    )]
+    fn pause_task(
+        &self,
+        Parameters(request): Parameters<tools::PauseTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::pause_task(storage, request))
+    }
+
+    #[tool(
+        description = "Resume a paused task (planned after it was started) whose prerequisites are all done, as Resume in the Toodo app does: reopen its worktree and herdr workspace and move it back to in_progress. An optional note is recorded as a progress note. Rejected for a task that was never started (call start_task) or is not paused. Returns the task with its notes."
+    )]
+    async fn resume_task(
+        &self,
+        Parameters(request): Parameters<tools::ResumeTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::resume_task(backend.storage(), backend.git(), backend.herdr(), request)
+            })
+            .await?;
+        self.announce(result)
     }
 
     #[tool(
@@ -1493,6 +1520,8 @@ mod tests {
         let server = ToodoMcp::new(Arc::new(TestBackend::new(storage)));
         assert!(server.tool_router.has_route("read_toodo_skill"));
         for tool in [
+            "pause_task",
+            "resume_task",
             "start_task",
             "complete_task",
             "conclude_task",

@@ -44,8 +44,10 @@ herdr fails to close the workspace, the task stays paused and the error says so.
 
 Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
 keeps its branch, worktree, herdr workspace, commit records, and pull request, so
-resuming it continues the same work (see step 3). `done` is a final state. A task that
-is abandoned is deleted (step 8); a paused one stays in the reports.
+resuming it continues the same work (see step 3). Agents do the same through MCP:
+`pause_task` pauses a task with a required reason, recorded as a progress note, and
+`resume_task` resumes a paused task as "Resume" does, with an optional note. `done` is a
+final state. A task that is abandoned is deleted (step 8); a paused one stays in the reports.
 
 Agents can start, complete, and conclude tasks through Toodo's MCP server too
 (`start_task`, `complete_task`, `conclude_task`), with the same steps and checks as the

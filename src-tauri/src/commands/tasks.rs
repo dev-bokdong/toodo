@@ -247,7 +247,7 @@ pub fn pause_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult
     pause(&mut lock(&storage), id)
 }
 
-fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
+pub(crate) fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
     let task = storage
         .get_task(id.into())?
         .ok_or(StorageError::TaskNotFound(id.into()))?;

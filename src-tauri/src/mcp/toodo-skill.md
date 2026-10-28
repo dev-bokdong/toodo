@@ -98,6 +98,11 @@ user's standing preferences and cross-project rules).
 - Change only this worktree, on the task's branch.
 - Call `add_progress_note` when you take a decision worth remembering (the choice and why)
   or finish a meaningful step.
+- When the work has to stop for a reason other than a prerequisite task (the user asks
+  you to hold, or you wait on something outside Toodo), call `pause_task` with the
+  reason and end your turn. It pauses the task as the app's Pause does and records the
+  reason as a progress note. `resume_task`, with an optional note, continues a paused
+  task once the reason is gone; for a prerequisite task use section 3 instead.
 
 ## 3. A prerequisite is needed: plan it and stop
 

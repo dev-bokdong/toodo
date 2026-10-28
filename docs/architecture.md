@@ -429,7 +429,9 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     prerequisites create nothing), `update_task`, `add_dependency` (several
     prerequisites in one call; it pauses an `in_progress` task they block but leaves its
     herdr workspace open, and the app asks the user whether to close it),
-    `remove_dependency`, and `add_progress_note` / `report_blocker`, which append a
+    `remove_dependency`, `pause_task` / `resume_task` (the app's Pause and Resume; the
+    pause reason and an optional resume note become progress notes), and
+    `add_progress_note` / `report_blocker`, which append a
     timestamped Markdown note (`progress` or `blocker`, table `task_notes`) to a task
     without changing its status. They reuse the storage rules, so cycles are rejected. The
     server instructions tell agents that work their task needs before it can finish is a
