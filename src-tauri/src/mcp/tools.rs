@@ -205,6 +205,25 @@ pub struct AddNote {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub struct PauseTask {
+    /// The task, e.g. your current task.
+    pub id: TaskId,
+    /// Why the work stops, in GitHub-flavored Markdown; recorded as a progress note.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct ResumeTask {
+    /// The paused task.
+    pub id: TaskId,
+    /// Why the work continues, in GitHub-flavored Markdown; recorded as a progress note.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct StartTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -638,6 +657,81 @@ pub fn add_note(storage: &mut Storage, kind: NoteKind, request: AddNote) -> Comm
         return Err(CommandError::invalid_input("note must not be empty"));
     }
     let task = storage.add_task_note(request.task_id.into(), kind, note)?;
+    Ok((&task).into())
+}
+
+/// Pauses an `in_progress` or `in_review` task as the app's Pause does and records the
+/// reason as a progress note. The task keeps its branch, worktree, herdr workspace, commit
+/// records, and pull request.
+pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Task> {
+    let reason = request.reason.trim();
+    if reason.is_empty() {
+        return Err(CommandError::invalid_input(
+            "reason must say why the work stops, e.g. {\"id\": 5, \"reason\": \"Waiting for the API design\"}",
+        ));
+    }
+    let task = get_task(storage, request.id)?;
+    match task.status {
+        TaskStatus::InProgress | TaskStatus::InReview => {}
+        TaskStatus::Planned => {
+            return Err(CommandError::rejected(format!(
+                "task {} is planned, so nobody works on it; call resume_task for a paused task or start_task to start it",
+                task.id.0
+            )));
+        }
+        TaskStatus::Done => {
+            return Err(CommandError::rejected(format!(
+                "task {} is done; create a follow-up task with create_task for more work",
+                task.id.0
+            )));
+        }
+    }
+    task_commands::pause(storage, request.id)?;
+    let task = storage.add_task_note(
+        request.id.into(),
+        NoteKind::Progress,
+        &format!("Paused: {reason}"),
+    )?;
+    Ok((&task).into())
+}
+
+/// Resumes a paused task (`planned` with a branch) as the app's Resume does: reopens its
+/// worktree and herdr workspace and moves it to `in_progress`. A given note is recorded as
+/// a progress note.
+pub fn resume_task(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: ResumeTask,
+) -> CommandResult<Task> {
+    let note = request
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|note| !note.is_empty());
+    let task = get_task(&lock(storage), request.id)?;
+    if task.status != TaskStatus::Planned || task.branch.is_none() {
+        let next = match task.status {
+            TaskStatus::Planned => "it was never started; call start_task to start it",
+            TaskStatus::InProgress | TaskStatus::InReview => {
+                "it is being worked on, not paused; keep working on it, or call pause_task to pause it"
+            }
+            TaskStatus::Done => "it is done; create a follow-up task with create_task",
+        };
+        return Err(CommandError::rejected(format!(
+            "task {} cannot be resumed: {next}",
+            task.id.0
+        )));
+    }
+    let id = request.id.into();
+    let resumed = match herdr_commands::start(storage, git, herdr, id) {
+        Ok(task) => task,
+        Err(error) => return Err(with_worktree_root_hint(&lock(storage), id, error)),
+    };
+    let Some(note) = note else {
+        return Ok((&resumed).into());
+    };
+    let task = lock(storage).add_task_note(id, NoteKind::Progress, &format!("Resumed: {note}"))?;
     Ok((&task).into())
 }
 
@@ -1873,6 +1967,68 @@ mod tests {
 
         assert!(git_runner.invocations.lock().unwrap().is_empty());
         assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, dependent.id), dependent);
+    }
+
+    #[test]
+    fn pause_keeps_the_work_and_records_the_reason() {
+        let (storage, task, _) = started(false);
+        let pause = |id, reason: &str| {
+            pause_task(
+                &mut crate::commands::lock(&storage),
+                PauseTask {
+                    id,
+                    reason: reason.to_owned(),
+                },
+            )
+        };
+
+        let error = pause(task.id, "  ").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert_eq!(stored(&storage, task.id), task);
+
+        let paused = pause(task.id, " Waiting for the API design ").unwrap();
+        assert_eq!(paused.status, TaskStatus::Planned);
+        assert_eq!(paused.branch.as_deref(), Some("feat/add-login-1"));
+        assert_eq!(paused.herdr_workspace_id.as_deref(), Some("w27"));
+        assert!(paused.milestones.paused_at.is_some());
+        let note = paused.notes.last().unwrap();
+        assert_eq!(note.kind, types::NoteKind::Progress);
+        assert_eq!(note.body, "Paused: Waiting for the API design");
+
+        let error = pause(task.id, "Again").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("resume_task"), "{}", error.message);
+    }
+
+    #[test]
+    fn resume_is_rejected_for_a_task_that_is_not_paused() {
+        let (storage, task, dependent) = started(false);
+        let (git, git_runner) = fake(Git::new, vec![]);
+        let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
+        let resume = |id| {
+            resume_task(
+                &storage,
+                &git,
+                &herdr,
+                ResumeTask {
+                    id,
+                    note: Some("Continue".to_owned()),
+                },
+            )
+            .unwrap_err()
+        };
+
+        let error = resume(dependent.id);
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("start_task"), "{}", error.message);
+        let error = resume(task.id);
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("pause_task"), "{}", error.message);
+
+        assert!(git_runner.invocations.lock().unwrap().is_empty());
+        assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, task.id), task);
         assert_eq!(stored(&storage, dependent.id), dependent);
     }
 
