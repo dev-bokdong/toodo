@@ -40,8 +40,13 @@ Deleting tasks happens in the Toodo app only.
 1. Call `current_task` with your absolute working directory. Note the task's `id`,
    `workspaceId`, `branch`, `baseBranch`, and `agentMerge` (whether you merge your pull
    request, see step 4 of "Otherwise: finish with a pull request").
-2. If no task matches, you are not in a Toodo task worktree: tell the user and ask which
-   task you are working on instead of guessing.
+2. If no task matches and you were asked to work on a Toodo task, you are not in its
+   worktree: tell the user and ask for its id instead of guessing, then read it with
+   `get_task`. To plan new work outside a task, pick the workspace with
+   `list_workspaces`. If the same path may exist on several machines, call
+   `current_task` with `machine` (`local` or your SSH host). If the task's
+   `worktreeMissing` is true, call `restore_worktree` with its id and work in the new
+   `worktreePath`.
 3. Read the description and the task's `criteria`: the criteria are your finish line;
    `## Purpose` decides questions they leave open. Tasks created before criteria
    existed keep their old `## Done when` list as manual criteria. If the description is unclear or contradicts the

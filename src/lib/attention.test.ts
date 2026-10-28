@@ -96,7 +96,7 @@ describe("openBlocker", () => {
     const paused = (dependsOn: number[]): Task => ({
       ...task(1, "planned", ["blocker"]),
       dependsOn,
-      milestones: { plannedAt: -20, startedAt: -10, reviewAt: null, completedAt: null, pausedAt: 0, reopenedAt: null },
+      milestones: { plannedAt: -20, startedAt: -10, reviewAt: null, completedAt: null, pausedAt: 0, reopenedAt: null, lastReviewAt: null, activeSeconds: 10, pauseCount: 1 },
     });
     const prerequisite = task(2, "planned");
     const byId = new Map([[2, prerequisite]]);

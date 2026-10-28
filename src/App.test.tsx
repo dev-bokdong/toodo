@@ -145,6 +145,9 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
       completedAt: null,
       reopenedAt: null,
       pausedAt: null,
+      lastReviewAt: null,
+      activeSeconds: 0,
+      pauseCount: 0,
     },
     ...overrides,
   };
@@ -1589,12 +1592,16 @@ describe("App", () => {
     await renderWorkspace();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("herdr is not available");
-    expect(await screen.findByRole("button", { name: "Start #1" })).toBeDisabled();
+    const start = await screen.findByRole("button", { name: "Start #1" });
+    expect(start).toBeDisabled();
+    expect(start).toHaveAttribute("title", expect.stringContaining("herdr is not running"));
+    expect(screen.getByRole("note", { name: "herdr unavailable for #1" })).toHaveTextContent("start it there");
 
     mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: true, version: "0.9.3" } });
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Start #1" })).toBeEnabled();
+    expect(screen.queryByRole("note", { name: "herdr unavailable for #1" })).not.toBeInTheDocument();
   });
 
   it("saves the worktree root for the machine of the workspace", async () => {
@@ -2233,7 +2240,7 @@ describe("App", () => {
       status: "done",
       resolution: "merged",
       branch: "feat/add-login-1",
-      milestones: { plannedAt: 100, startedAt: 200, reviewAt: null, completedAt: 300, reopenedAt: null, pausedAt: null },
+      milestones: { plannedAt: 100, startedAt: 200, reviewAt: null, completedAt: 300, reopenedAt: null, pausedAt: null, lastReviewAt: null, activeSeconds: 100, pauseCount: 0 },
     });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });

@@ -136,6 +136,9 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   | `completedAt` | The latest move to `done`, cleared when the task is reopened after it. |
   | `reopenedAt` | The latest move out of `done`, which only reopening makes (see [workflow.md](workflow.md#7d-reopen-a-done-task-or-correct-its-outcome)); each such event is marked `reopened`. |
   | `pausedAt` | The latest move back to `planned` after `startedAt`, cleared when the task is started again. |
+  | `lastReviewAt` | The latest move to `in_review`; later than `reviewAt` when the task went back to review. |
+  | `activeSeconds` | Seconds spent `in_progress` or `in_review` up to the latest status change, pauses left out. |
+  | `pauseCount` | How often the task moved back to `planned` after `startedAt`. |
 
   When a task became ready to start is not recorded: it is the `completedAt` of its last
   dependency to be done.
@@ -426,7 +429,10 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     hex encoded, created once in `mcp-token` in the server's data directory. rmcp also
     rejects non-loopback `Host` headers against DNS rebinding.
   - Tools: `list_workspaces`, `list_tasks`, `current_task` (the task whose worktree
-    contains a given directory), `create_task` (with optional `depends_on`; unknown
+    contains a given directory, after resolving `.` and `..`; an optional `machine`
+    scopes it to one machine, and a path inside worktrees on several machines is
+    rejected without it), `restore_worktree` (the app's Restore worktree for an active
+    task whose worktree directory is gone), `create_task` (with optional `depends_on`; unknown
     prerequisites create nothing), `update_task`, `add_dependency` (several
     prerequisites in one call; it pauses an `in_progress` task they block but leaves its
     herdr workspace open, and the app asks the user whether to close it),
@@ -439,7 +445,8 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     prerequisite of their task, added last, and to note decisions and blockers as they
     work; Toodo never prompts agents itself. Notes show in the task list (latest) and the
     task details (all), and period reviews list the notes left during the period. Tool
-    failures come back as tool errors whose text the agent sees.
+    failures come back as tool errors whose text the agent sees; arguments a tool does
+    not know are rejected, naming the ones it accepts.
   - `search_tasks` finds earlier tasks of all workspaces (or one, or one status) by words
     in their title, description, completion note and notes, branch, and pull request
     title and URL; every word must appear, and results come best match first with

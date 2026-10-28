@@ -1150,6 +1150,9 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
             completed_at: Some(400),
             reopened_at: None,
             paused_at: None,
+            last_review_at: Some(300),
+            active_seconds: 200,
+            pause_count: 0,
         }
     );
 }

@@ -7,7 +7,8 @@
 //! and read their history, create and edit tasks, connect dependencies and related
 //! links, leave progress and blocker notes in a task's history, read and keep project
 //! memory (decisions, rules, notes, and summaries of a workspace or shared by all), and
-//! start, complete, or conclude tasks through the app's own commands; deleting tasks stays
+//! start, complete, or conclude tasks and restore a lost worktree through the app's own
+//! commands; deleting tasks stays
 //! in the app. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
 //! as a resource, since not every client can read resources. Agents on SSH machines reach
@@ -60,7 +61,10 @@ and the format of task descriptions.
 How to use these tools:
 1. Call current_task with your absolute working directory first. Use its workspaceId \
 for new tasks in the same repository and its baseBranch as the base of your pull \
-request. If it finds no task, use list_workspaces to pick the workspace. Add a \
+request. If it finds no task and you were asked to work on a Toodo task, tell the \
+user and ask for its id, then read it with get_task; to plan new work outside a task, \
+pick the workspace with list_workspaces. If its worktree directory is gone \
+(worktreeMissing true), call restore_worktree with the task id. Add a \
 workspace with create_workspace only when the user asks for a repository that \
 list_workspaces does not have yet.
 2. Before you plan work or call create_task, call search_tasks with a few distinctive \
@@ -111,7 +115,7 @@ edits. Neither tool changes the task's status. To stop work on a task for anothe
 reason than a prerequisite (rule 3), call pause_task with the reason, which pauses it as \
 the app's Pause does, and resume_task to continue a paused task once the reason is gone.
 6. A tool error says what was rejected; change the arguments instead of retrying them \
-unchanged.
+unchanged. Arguments a tool does not know are rejected with the ones it accepts.
 7. start_task, complete_task, and conclude_task act on other tasks, the way the user \
 would in the Toodo app: start a ready task (or resume a paused one) for another agent \
 session, complete a task whose completion criteria are met (which confirms one that \
@@ -719,7 +723,9 @@ impl ToodoMcp {
         self.change_memory(|storage| memory::supersede_memory(storage, request))
     }
 
-    #[tool(description = "Find the Toodo task whose worktree contains the given directory.")]
+    #[tool(
+        description = "Find the Toodo task whose worktree contains the given directory, with its workspace's baseBranch, agentMerge, and machine. Paths are compared after resolving . and .. by their text. Pass machine (local, or the SSH host of a remote machine) when the same path may exist on several machines; without it, a directory inside worktrees on several machines is rejected, naming them."
+    )]
     fn current_task(
         &self,
         Parameters(request): Parameters<tools::CurrentTask>,
@@ -929,6 +935,21 @@ impl ToodoMcp {
     }
 
     #[tool(
+        description = "Restore the worktree of an in_progress or in_review task whose worktree directory is gone (worktreeMissing true, or no worktreePath), as Restore worktree in the Toodo app does: check out the task's branch, taken from origin when the repository no longer has it, into a new worktree and open it in herdr. Your own task may be restored too. Rejected with the reason when the worktree still exists, the task is not active, or its branch is gone everywhere. Returns the task with its new worktreePath."
+    )]
+    async fn restore_worktree(
+        &self,
+        Parameters(request): Parameters<tools::RestoreWorktree>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::restore_worktree(backend.storage(), backend.git(), backend.herdr(), request)
+            })
+            .await?;
+        self.announce(result)
+    }
+
+    #[tool(
         description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume."
     )]
     fn remove_dependency(
@@ -1127,6 +1148,7 @@ mod tests {
         let request = tools::StartTask {
             id: id.into(),
             agent_command: None,
+            request_id: None,
         };
         let result = runtime()
             .block_on(server.start_task(Parameters(request)))
