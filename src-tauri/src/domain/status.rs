@@ -62,6 +62,20 @@ impl TaskStatus {
         self.conclude()
     }
 
+    /// Reopens a `done` task, e.g. one completed or concluded by mistake: it becomes
+    /// `planned` again, paused if it was started, so starting it resumes the work. This is
+    /// not one of the transitions of [`Self::can_transition_to`], so pausing never reopens
+    /// a task.
+    pub fn reopen(self) -> Result<Self, TransitionError> {
+        match self {
+            Self::Done => Ok(Self::Planned),
+            from => Err(TransitionError {
+                from,
+                to: Self::Planned,
+            }),
+        }
+    }
+
     pub fn transition_to(self, next: Self) -> Result<Self, TransitionError> {
         if self.can_transition_to(next) {
             Ok(next)
@@ -128,6 +142,14 @@ mod tests {
             Planned.conclude().unwrap_err().to_string(),
             "a planned task cannot become done"
         );
+    }
+
+    #[test]
+    fn only_a_done_task_can_be_reopened() {
+        for from in ALL {
+            let expected = (from == Done).then_some(Planned);
+            assert_eq!(from.reopen().ok(), expected, "{from}");
+        }
     }
 
     #[test]

@@ -95,6 +95,23 @@ export const commands = {
 	 */
 	setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(invoke("set_completion_note", { id, note })),
 	/**
+	 *  Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
+	 *  again, paused if it was started, so Start (or Resume) continues the work on its branch.
+	 *  Its resolution, completion note, and `merged_with` are cleared; `reason`, required, is
+	 *  kept as a progress note with the earlier outcome, and the timeline records the
+	 *  reopening. Rejected while a task that depends on it has started: it built on the
+	 *  outcome, which Set outcome corrects instead.
+	 */
+	reopenTask: (id: TaskId, reason: string) => typedError<Task, CommandError>(invoke("reopen_task", { id, reason })),
+	/**
+	 *  Corrects how a `done` task ended without reopening it: `resolution` replaces its
+	 *  resolution and `note`, required, its completion note; the earlier outcome is kept as
+	 *  a progress note. Merged needs a recorded merge, its own pull request's or the one it
+	 *  shipped with; for work another task or pull request shipped, use
+	 *  `complete_task_merged_with`. Not adopted keeps its dependents waiting.
+	 */
+	setTaskOutcome: (id: TaskId, resolution: TaskResolution, note: string) => typedError<Task, CommandError>(invoke("set_task_outcome", { id, resolution, note })),
+	/**
 	 *  Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
 	 *  with what shows it; blank evidence is none. A task in progress whose criteria are then
 	 *  all met awaits completion until it is completed.
@@ -180,6 +197,14 @@ export const commands = {
 	 *  and its dependents keep waiting.
 	 */
 	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(invoke("conclude_task", { id, note })),
+	/**
+	 *  Completes a task whose work shipped through another task, `merged_with_task`, or a
+	 *  merged pull request into the base branch, `pull_request_url`; exactly one of the two.
+	 *  An `in_progress` or `in_review` task, or one done as `not_adopted`, becomes done as
+	 *  merged (completed when the other task was completed without a pull request), and its
+	 *  dependents can start. See `complete_merged_with` for the checks.
+	 */
+	completeTaskMergedWith: (id: TaskId, mergedWithTask: number | null, pullRequestUrl: string | null) => typedError<Task, CommandError>(invoke("complete_task_merged_with", { id, mergedWithTask, pullRequestUrl })),
 	/**
 	 *  Counts the commits of the base branch (fetched from `origin` first) that the task's
 	 *  branch lacks, and asks GitHub whether its pull request, if any, merges without
@@ -586,14 +611,21 @@ export type MemoryKind =
  */
 export type MergeState = "mergeable" | "conflicting" | "unknown";
 
-/**  The merged pull request of another task that shipped the work of a task. */
+/**
+ *  The merged pull request or the other task that shipped the work of a task; at least
+ *  one of the two is set.
+ */
 export type MergedWith = {
 	/**
-	 *  The task whose pull request it is; `null` once that task is deleted or for a pull
+	 *  The task that shipped the work; `null` once that task is deleted or for a pull
 	 *  request no task records.
 	 */
 	taskId: TaskId | null,
-	pullRequestUrl: string,
+	/**
+	 *  The merged pull request; `null` when the task that shipped the work has no
+	 *  recorded pull request.
+	 */
+	pullRequestUrl: string | null,
 };
 
 /**  A remote machine to append to the user's SSH config. */
@@ -787,6 +819,8 @@ export type TaskEdit = {
 export type TaskEvent = {
 	status: TaskStatus,
 	at: Timestamp,
+	/**  The change reopened the task: it follows a move to `done`. */
+	reopened: boolean,
 };
 
 export type TaskId = number;
@@ -799,7 +833,10 @@ export type TaskMilestones = {
 	plannedAt: Timestamp | null,
 	startedAt: Timestamp | null,
 	reviewAt: Timestamp | null,
+	/**  The latest completion, unless the task was reopened after it. */
 	completedAt: Timestamp | null,
+	/**  The latest reopening of the task after it was done. */
+	reopenedAt: Timestamp | null,
 	/**  The latest pause, unless the task was started again after it. */
 	pausedAt: Timestamp | null,
 };

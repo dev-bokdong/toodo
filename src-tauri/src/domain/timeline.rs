@@ -21,7 +21,10 @@ pub struct Milestones {
     pub started_at: Option<i64>,
     /// The first move to `in_review`, when the pull request was opened.
     pub review_at: Option<i64>,
+    /// The latest move to `done`, unless the task was reopened after it.
     pub completed_at: Option<i64>,
+    /// The latest reopening: a move out of `done`, which only reopening makes.
+    pub reopened_at: Option<i64>,
     /// The latest pause, a move back to `planned` after work started, unless the task
     /// was started again after it.
     pub paused_at: Option<i64>,
@@ -34,6 +37,10 @@ pub fn milestones(timeline: &[TaskEvent]) -> Milestones {
         ..Milestones::default()
     };
     for event in timeline {
+        if event.status != TaskStatus::Done && milestones.completed_at.is_some() {
+            milestones.completed_at = None;
+            milestones.reopened_at = Some(event.at);
+        }
         match event.status {
             TaskStatus::Planned => {
                 if milestones.started_at.is_some() {
@@ -79,9 +86,26 @@ mod tests {
                 started_at: Some(30),
                 review_at: Some(40),
                 completed_at: Some(50),
+                reopened_at: None,
                 paused_at: None,
             }
         );
+    }
+
+    #[test]
+    fn a_reopened_task_is_no_longer_completed_until_it_is_done_again() {
+        let mut timeline = events(&[(Planned, 10), (InProgress, 20), (Done, 30), (Planned, 40)]);
+        let reopened = milestones(&timeline);
+        assert_eq!(reopened.completed_at, None);
+        assert_eq!(reopened.reopened_at, Some(40));
+        assert_eq!(reopened.paused_at, Some(40));
+        assert_eq!(reopened.started_at, Some(20));
+
+        timeline.extend(events(&[(InProgress, 50), (Done, 60)]));
+        let done = milestones(&timeline);
+        assert_eq!(done.completed_at, Some(60));
+        assert_eq!(done.reopened_at, Some(40));
+        assert_eq!(done.paused_at, None);
     }
 
     #[test]
@@ -94,6 +118,7 @@ mod tests {
                 started_at: Some(20),
                 review_at: None,
                 completed_at: None,
+                reopened_at: None,
                 paused_at: Some(30),
             }
         );

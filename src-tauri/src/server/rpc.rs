@@ -14,7 +14,8 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     BackupSettings, CriterionId, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost,
-    NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    NewTask, NewWorkspace, TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId,
+    WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
@@ -223,6 +224,12 @@ commands!(s => {
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
         tasks::set_completion_note(State(&s.storage), id, note)
     );
+    "reopen_task"(id: TaskId, reason: String) => sync Reply::result(
+        tasks::reopen_task(State(&s.storage), id, reason)
+    );
+    "set_task_outcome"(id: TaskId, resolution: TaskResolution, note: String) => sync Reply::result(
+        tasks::set_task_outcome(State(&s.storage), id, resolution, note)
+    );
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
         tasks::delete_task(State(&s.storage), State(&s.herdr), id, force)
     );
@@ -265,6 +272,9 @@ commands!(s => {
     );
     "conclude_task"(id: TaskId, note: String) => sync Reply::result(
         completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)
+    );
+    "complete_task_merged_with"(id: TaskId, merged_with_task: Option<TaskId>, pull_request_url: Option<String>) => sync Reply::result(
+        completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url)
     );
     "list_pull_request_statuses"() => sync Reply::value(
         completion::list_pull_request_statuses(State(&s.pull_request_statuses))

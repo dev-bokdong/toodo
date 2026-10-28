@@ -118,8 +118,8 @@ pub struct UpdateTask {
     /// omitted. Criteria whose `id` is left out are deleted with their evidence. Keep an
     /// existing criterion by passing `{"id": N}`; given fields change it, omitted ones
     /// keep their stored values, and it keeps its state unless its kind or target
-    /// changes. New criteria (no `id`) need `text` and `kind`. Criteria of a done task
-    /// cannot change.
+    /// changes. New criteria (no `id`) need `text` and `kind`. A done task cannot change
+    /// at all through MCP.
     pub criteria: Option<Vec<types::CriterionInput>>,
     /// True to let `criteria` leave out the merge criterion (`pr_merged` or
     /// `branch_merged_locally`) and so remove it, e.g. for work that ships no code;
@@ -622,6 +622,13 @@ pub fn update_task(
     origin: Option<bool>,
 ) -> CommandResult<Task> {
     let current = get_task(storage, request.id)?;
+    // A done task is part of the record reviews are built on; agents add to it instead.
+    if current.status == types::TaskStatus::Done {
+        return Err(CommandError::rejected(format!(
+            "task {} is done, so update_task leaves its record as it was finished; record a correction with add_progress_note task_id {}, or ask the user to reopen it in the Toodo app",
+            request.id.0, request.id.0
+        )));
+    }
     edit_task(
         storage,
         TaskEdit {
@@ -1427,6 +1434,31 @@ mod tests {
         assert_eq!(updated.title, "Schema");
         assert_eq!(updated.task_type, TaskType::Feat);
         assert_eq!(updated.description, "Add tables");
+    }
+
+    #[test]
+    fn update_leaves_a_done_task_as_it_was_finished() {
+        use crate::domain::status::TaskStatus::{Done, InProgress, InReview};
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        for status in [InProgress, InReview, Done] {
+            storage.set_task_status(task.id.into(), status).unwrap();
+        }
+        let done = get_task(&storage, task.id).unwrap();
+
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "title": "Renamed", "description": "Other" }),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("add_progress_note"),
+            "{}",
+            error.message
+        );
+        assert_eq!(get_task(&storage, task.id).unwrap(), done);
     }
 
     fn update(storage: &mut Storage, request: serde_json::Value) -> CommandResult<Task> {
@@ -2404,7 +2436,7 @@ mod tests {
             done.merged_with,
             Some(types::MergedWith {
                 task_id: Some(task.id),
-                pull_request_url: PR.to_owned(),
+                pull_request_url: Some(PR.to_owned()),
             })
         );
         assert_eq!(done.pull_request_merged_at, task.pull_request_merged_at);
@@ -2418,6 +2450,67 @@ mod tests {
             herdr_runner.invocations.lock().unwrap()[0].args,
             ["workspace", "close", "w28"]
         );
+    }
+
+    #[test]
+    fn complete_with_merged_with_ships_through_a_task_done_without_a_pull_request() {
+        for (resolution, expected) in [
+            (
+                model::TaskResolution::Completed,
+                types::TaskResolution::Completed,
+            ),
+            (model::TaskResolution::Merged, types::TaskResolution::Merged),
+        ] {
+            let (storage, _, extra) = shipped();
+            let target = {
+                let mut storage = crate::commands::lock(&storage);
+                let target =
+                    create(&mut storage, extra.workspace_id, "Deploy config", vec![]).unwrap();
+                let id = target.id.into();
+                storage
+                    .set_task_status(id, crate::domain::status::TaskStatus::InProgress)
+                    .unwrap();
+                match resolution {
+                    model::TaskResolution::Completed => {
+                        storage
+                            .complete_task_without_pull_request(id, "Deployed", &[])
+                            .unwrap();
+                    }
+                    _ => {
+                        // A recorded merge without a pull request URL.
+                        storage.complete_task(id, Some(1_000), None, &[]).unwrap();
+                    }
+                }
+                target.id
+            };
+            assert_eq!(
+                stored(&storage, target).resolution,
+                Some(expected),
+                "target done as {expected:?}"
+            );
+            let (git, _) = fake(Git::new, github_checkout());
+            let (github, _) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+            let (herdr, _) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
+
+            let done = complete_task(
+                &storage,
+                &git,
+                &github,
+                &herdr,
+                merged_with(extra.id, MergedWithRef::Task(target.0)),
+            )
+            .unwrap();
+
+            assert_eq!(done.resolution, Some(expected));
+            assert_eq!(
+                done.merged_with,
+                Some(types::MergedWith {
+                    task_id: Some(target),
+                    pull_request_url: None,
+                })
+            );
+            assert_eq!(stored(&storage, extra.id), done);
+        }
     }
 
     #[test]
@@ -2451,7 +2544,7 @@ mod tests {
             done.merged_with,
             Some(types::MergedWith {
                 task_id: Some(task.id),
-                pull_request_url: PR.to_owned(),
+                pull_request_url: Some(PR.to_owned()),
             })
         );
         assert_eq!(done.timeline, concluded.timeline);
