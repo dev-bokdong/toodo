@@ -2310,7 +2310,46 @@ describe("App", () => {
       estimate: null,
       dueDate: "2026-12-01",
       criteria: null,
+      mergeCriterion: false,
     });
+  });
+
+  it("puts the merge criterion back on a task without one and removes it again", async () => {
+    const bare = task(1, 1, "Add search", { criteria: [criterion(4, "Docs reviewed")] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [bare] });
+    mocked.updateTask.mockResolvedValue({ status: "ok", data: bare });
+    await renderWorkspace();
+
+    await chooseAction(1, "Edit #1");
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    const merge = within(form).getByLabelText("Done when merged, #1");
+    expect(merge).not.toBeChecked();
+    fireEvent.click(merge);
+    const merged = task(1, 1, "Add search", {
+      criteria: [criterion(3, "Pull request merged into the base branch", { kind: "pr_merged" }), criterion(4, "Docs reviewed")],
+    });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [merged] });
+    mocked.updateTask.mockResolvedValue({ status: "ok", data: merged });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument());
+    expect(mocked.updateTask).toHaveBeenCalledWith(expect.objectContaining({ criteria: null, mergeCriterion: true }));
+
+    mocked.updateTask.mockClear();
+    await chooseAction(1, "Edit #1");
+    const again = screen.getByRole("form", { name: "Edit task #1" });
+    const checked = within(again).getByLabelText("Done when merged, #1");
+    expect(checked).toBeChecked();
+    fireEvent.click(checked);
+    fireEvent.click(within(again).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocked.updateTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          criteria: [{ id: 4, text: "Docs reviewed", kind: "manual", target: null }],
+          mergeCriterion: false,
+        }),
+      ),
+    );
   });
 
   it("edits the criteria of a task and keeps the existing ones by ID", async () => {

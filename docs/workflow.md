@@ -75,31 +75,40 @@ it when (`user`, `agent`, or `toodo`):
 | `pr_merged` | Toodo | the task's pull request is merged into the base branch |
 | `pr_open_ci_green` | Toodo | the task's pull request is open and all its checks passed (or it is merged) |
 | `branch_merged_locally` | Toodo | the task branch has commits since it started and the local base branch contains it |
-| `url` | Toodo | `curl --fail --location` of its target, an http(s) URL, succeeds |
+| `url` | Toodo | a GET of its target, an http(s) URL, following redirects, answers 2xx or 3xx (evidence `GET <url> -> <status>`) |
 | `command` | Toodo | its target, a shell command, exits with status 0 in the task worktree (`sh`, over `ssh` for SSH workspaces) |
 
 Criteria are set when the task is created, in the app or through MCP (`create_task`), and
-can be edited later (`update_task`) until the task is done: a kept criterion keeps its
-state unless its kind or target changes. Unless its author opts out, a new task gets the
-merge criterion first: `pr_merged` when the repository has an `origin` remote,
-`branch_merged_locally` otherwise. `branch_merged_locally` keeps the commit the branch
-started from (read when Toodo creates the branch, or the fork point once the branch is
+can be edited later (`update_task`, or one at a time through MCP with `add_criterion` and
+`remove_criterion`) until the task is done: a kept criterion keeps its state unless its
+kind or target changes. Unless its author opts out, a new task gets the merge criterion
+first: `pr_merged` when the repository has an `origin` remote, `branch_merged_locally`
+otherwise; "Done when merged" in the edit form puts it back on a task without one. A task
+has at most one merge criterion, and criteria its repository could never meet are
+rejected when they are added or their kind changes: `pr_merged` and `pr_open_ci_green`
+without an `origin` remote, `branch_merged_locally` with one. `branch_merged_locally`
+keeps the commit the branch started from (read when Toodo creates the branch, or the fork point once the branch is
 ahead of its base), so a branch nobody committed to does not count as merged.
 
 Toodo checks the automatic criteria of every `in_progress` and `in_review` task in the
 background check (step 7), once a minute, and when a task is completed. A met automatic
-criterion stays met. A `command` criterion runs only once every other criterion is met, or
-when the task is completed, so a slow command does not run every minute while the work
-goes on. A failed check marks its criterion `failed` with the reason as evidence and is
-retried; a pull request that cannot be read changes nothing, as before.
+criterion stays met, except that met `url` and `command` criteria run once more right
+before the task is completed, and one that fails then keeps it open. A `command`
+criterion runs only once every other criterion but the merge criterion is met, so it
+checks the work before the merge without running every minute while the work goes on;
+until then its evidence names the criteria it waits for. A failed check marks its
+criterion `failed` with the reason as evidence and is retried, a failed command in the
+background check only once the merge criterion is met too or when the task is completed;
+a pull request that cannot be read changes nothing, as before.
 
 The transition rule:
 
 - Every criterion met and all of them automatic: the task is `done` right away (step 7).
 - Every criterion met and one of them manual: an `in_progress` task moves to
   `in_review` and awaits completion until someone confirms it ("Confirm completion" in
-  the app, or `complete_task`). Unchecking a criterion afterwards keeps it there;
-  confirming needs every criterion met.
+  the app, or `complete_task`). Unchecking a criterion afterwards (`check_criterion`
+  with `met: false`) makes it pending without evidence or checker and keeps the task
+  there; confirming needs every criterion met.
 - A task without criteria is completed only by confirming it.
 
 Completing a task ("Complete"/"Confirm completion", `complete_task`) re-checks its

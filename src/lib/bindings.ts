@@ -76,6 +76,11 @@ export const commands = {
 	 *  check over `ssh`, so this runs off the main thread.
 	 */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(invoke("create_task", { task })),
+	/**
+	 *  The user edits the criteria list row by row in the app, so removing the merge
+	 *  criterion there is deliberate. With `mergeCriterion`, a task without a merge
+	 *  criterion gets the one of its repository back in front of its criteria.
+	 */
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(invoke("update_task", { task })),
 	/**
 	 *  Pauses an `in_progress` or `in_review` task: it becomes `planned` again and keeps
@@ -772,6 +777,11 @@ export type TaskEdit = {
 	 *  keeps them. The criteria of a done task cannot change.
 	 */
 	criteria: CriterionInput[] | null,
+	/**
+	 *  Whether to put the merge criterion of the task's repository first when the task
+	 *  is left without one (see [`NewTask::merge_criterion`]); false changes nothing.
+	 */
+	mergeCriterion?: boolean,
 };
 
 export type TaskEvent = {

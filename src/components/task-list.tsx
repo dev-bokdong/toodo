@@ -1334,6 +1334,9 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const [plan, setPlan] = useState<PlanDraft>(initialPlan);
   const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
   const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
+  // Checking "Done when merged" without a merge criterion asks the backend for the one of the repository.
+  const [addMerge, setAddMerge] = useState(false);
+  const hasMerge = criteria.some((draft) => isMergeKind(draft.kind));
   const estimate = planEstimate(plan);
   // Unchanged criteria are not sent, so a save never touches the ones checked so far.
   const criteriaChanged =
@@ -1347,7 +1350,8 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
     plan.estimate !== initialPlan.estimate ||
     plan.estimateUnit !== initialPlan.estimateUnit ||
     plan.dueDate !== initialPlan.dueDate ||
-    criteriaChanged;
+    criteriaChanged ||
+    addMerge;
   const guard = useDiscardGuard(dirty, onDone, updateTask.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -1363,6 +1367,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         dueDate: plan.dueDate || null,
         // The criteria of a done task cannot change.
         criteria: criteriaChanged && task.status !== "done" ? criterionInputs(criteria) : null,
+        mergeCriterion: addMerge && !hasMerge && task.status !== "done",
       },
       { onSuccess: onDone },
     );
@@ -1407,7 +1412,24 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
       <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} />
       {task.status !== "done" && (
         <div className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-muted-foreground">Completion criteria</span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="font-medium text-muted-foreground">Completion criteria</span>
+            <label
+              className="flex items-center gap-1.5 max-md:min-h-11"
+              title="Keep or add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
+            >
+              <input
+                type="checkbox"
+                aria-label={`Done when merged, #${task.id}`}
+                checked={hasMerge || addMerge}
+                onChange={(e) => {
+                  setAddMerge(e.target.checked && !hasMerge);
+                  if (!e.target.checked) setCriteria(criteria.filter((draft) => !isMergeKind(draft.kind)));
+                }}
+              />
+              Done when merged
+            </label>
+          </div>
           <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
         </div>
       )}
@@ -2455,9 +2477,14 @@ const criterionKindLabels: Record<CheckKind, string> = {
 /**
  * Kinds the criteria editor offers. The merge criterion (`pr_merged`, or
  * `branch_merged_locally` in a repository without `origin`) comes from "Done when merged"
- * when the task is created and keeps its kind when the task is edited.
+ * in the new and edit forms and keeps its kind when the task is edited.
  */
 const editableCriterionKinds: CheckKind[] = ["manual", "url", "command", "pr_open_ci_green"];
+
+/** Kinds of the merge criterion, of which a task has at most one. */
+function isMergeKind(kind: CheckKind): boolean {
+  return kind === "pr_merged" || kind === "branch_merged_locally";
+}
 
 /** Kinds checked against a target their author gives: the URL to fetch or the command to run. */
 function takesTarget(kind: CheckKind): boolean {

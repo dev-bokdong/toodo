@@ -216,7 +216,9 @@ commands!(s => {
     "check_criterion"(task_id: TaskId, criterion_id: CriterionId, met: bool, evidence: Option<String>) => sync Reply::result(
         tasks::check_criterion(State(&s.storage), task_id, criterion_id, met, evidence)
     );
-    "update_task"(task: TaskEdit) => sync Reply::result(tasks::update_task(State(&s.storage), task));
+    "update_task"(task: TaskEdit) => sync Reply::result(
+        tasks::update_task(State(&s.storage), State(&s.git), task)
+    );
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
         tasks::set_completion_note(State(&s.storage), id, note)
