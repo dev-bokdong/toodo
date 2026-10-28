@@ -811,6 +811,8 @@ export type TaskRelation = {
 export type TaskResolution = 
 /**  Its pull request was merged. */
 "merged" | 
+/**  Its criteria were met without a pull request or a merge. */
+"completed" | 
 /**
  *  Concluded without merging; the completion note says why. Dependents stay
  *  waiting.

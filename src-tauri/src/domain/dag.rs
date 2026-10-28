@@ -117,7 +117,7 @@ fn blocking(
         let dependency = by_id
             .get(dependency)
             .ok_or(DependencyError::UnknownTask(*dependency))?;
-        // Work that was not adopted is not there to build on.
+        // Merged and completed work can be built on; work not adopted cannot.
         if dependency.status != TaskStatus::Done
             || dependency.resolution == Some(TaskResolution::NotAdopted)
         {
@@ -302,19 +302,23 @@ mod tests {
     }
 
     #[test]
-    fn blocking_dependencies_skip_merged_and_list_the_rest() {
+    fn blocking_dependencies_skip_merged_and_completed_and_list_the_rest() {
         let mut merged = task(1, Done, &[]);
         merged.resolution = Some(TaskResolution::Merged);
         let mut legacy = task(2, Done, &[]);
         legacy.resolution = None;
         let mut not_adopted = task(3, Done, &[]);
         not_adopted.resolution = Some(TaskResolution::NotAdopted);
+        let mut completed = task(6, Done, &[]);
+        completed.resolution = Some(TaskResolution::Completed);
         let tasks = [
             merged,
             legacy,
             not_adopted,
             task(4, Planned, &[]),
-            task(5, Planned, &[1, 2, 3, 4]),
+            task(5, Planned, &[1, 2, 3, 4, 6]),
+            completed,
+            task(7, Planned, &[1, 6]),
         ];
         assert_eq!(
             blocking_dependencies(&tasks, TaskId(5)),
@@ -332,6 +336,7 @@ mod tests {
             ])
         );
         assert_eq!(blocking_dependencies(&tasks, TaskId(4)), Ok(Vec::new()));
+        assert!(is_ready(&tasks, TaskId(7)).unwrap());
     }
 
     #[test]

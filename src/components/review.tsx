@@ -348,6 +348,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     {task.resolution === "not_adopted" && (
                       <span className={notAdoptedChip}>Not adopted</span>
                     )}
+                    {task.resolution === "completed" && (
+                      <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", toneChip.success)}>Completed</span>
+                    )}
                     {task.pullRequestUrl && (
                       <PullRequestLink url={task.pullRequestUrl} stats={task.pullRequest} />
                     )}

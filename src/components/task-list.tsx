@@ -150,6 +150,7 @@ const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "tes
  * concluded without merging "Not adopted".
  */
 function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
+  if (task.status === "done" && task.resolution === "completed") return "Completed";
   return statusNames[shownStatus(task, byId)];
 }
 

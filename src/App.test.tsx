@@ -2072,6 +2072,21 @@ describe("App", () => {
     expect(mocked.setCompletionNote).toHaveBeenCalledWith(1, "Cut sign-in time in half");
   });
 
+  it("shows work completed without a pull request and its ready dependent", async () => {
+    const shipped = task(1, 1, "Deploy configuration", {
+      status: "done", resolution: "completed", completionNote: "Deployed directly",
+    });
+    const dependent = task(2, 1, "Verify configuration", { dependsOn: [1] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [shipped, dependent] });
+    await renderWorkspace();
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+
+    expect(within(row("Deploy configuration")).getByText("Completed")).toBeInTheDocument();
+    expect(within(row("Verify configuration")).getByText("Ready")).toBeInTheDocument();
+  });
+
   it("shows pull request snapshots and research conclusions in the year in review", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 9, 14, 10));

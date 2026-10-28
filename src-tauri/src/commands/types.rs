@@ -592,6 +592,8 @@ impl From<TaskType> for model::TaskType {
 pub enum TaskResolution {
     /// Its pull request was merged.
     Merged,
+    /// Its criteria were met without a pull request or a merge.
+    Completed,
     /// Concluded without merging; the completion note says why. Dependents stay
     /// waiting.
     NotAdopted,
@@ -601,6 +603,7 @@ impl From<model::TaskResolution> for TaskResolution {
     fn from(resolution: model::TaskResolution) -> Self {
         match resolution {
             model::TaskResolution::Merged => Self::Merged,
+            model::TaskResolution::Completed => Self::Completed,
             model::TaskResolution::NotAdopted => Self::NotAdopted,
         }
     }

@@ -23,6 +23,16 @@ When your pull request also fixed other tasks, never conclude them: once it is m
 your task is done, complete each of them with `complete_task` and `merged_with` set to
 your task ID (or the pull request URL). A task already concluded as `not_adopted` that way
 can be completed with `merged_with` too.
+For work that shipped without any pull request, call `complete_task` with
+`without_pull_request: true` and a non-empty `note` explaining what shipped, not
+`conclude_task`: concluding means the work was not shipped. This requires no branch
+pull request at all, even closed or unrecorded. A merged PR needs `complete_task`
+without optional arguments; an open or closed one needs a merge, or conclusion if
+the work is abandoned (the user concludes an open PR in the app).
+The no-PR path marks `pr_merged` met with the note as evidence; every other criterion
+must still hold. It records branch commits and the completion note, ends as
+`completed` rather than `merged`, and unblocks dependents. Do not combine
+`without_pull_request` with `merged_with`.
 Deleting tasks happens in the Toodo app only.
 
 ## 1. Start

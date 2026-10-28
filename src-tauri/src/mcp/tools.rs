@@ -241,6 +241,12 @@ pub struct CompleteTask {
     /// which must be done as merged, or the pull request URL. Omit it to complete the
     /// task with its own pull request.
     pub merged_with: Option<MergedWithRef>,
+    /// Complete work that shipped without any pull request. Requires a non-empty note;
+    /// cannot be combined with merged_with.
+    #[serde(default)]
+    pub without_pull_request: bool,
+    /// What shipped without a pull request, required with without_pull_request.
+    pub note: Option<String>,
 }
 
 /// A task ID or a pull request URL.
@@ -742,6 +748,27 @@ pub fn complete_task(
     request: CompleteTask,
 ) -> CommandResult<Task> {
     let id = request.id.into();
+    if request.without_pull_request {
+        if request.merged_with.is_some() {
+            return Err(CommandError::invalid_input(
+                "without_pull_request cannot be combined with merged_with; call complete_task with merged_with only for a merged PR, or with without_pull_request: true and note when no PR exists",
+            ));
+        }
+        return Ok((&completion::complete_without_pull_request(
+            storage,
+            git,
+            github,
+            herdr,
+            id,
+            request.note.as_deref().unwrap_or(""),
+        )?)
+            .into());
+    }
+    if request.note.is_some() {
+        return Err(CommandError::invalid_input(
+            "note requires without_pull_request: true; call complete_task with both arguments for work shipped without a pull request",
+        ));
+    }
     let task = match request.merged_with {
         None => completion::complete(storage, git, github, herdr, id)?,
         Some(merged_with) => completion::complete_merged_with(
@@ -1905,6 +1932,50 @@ mod tests {
         CompleteTask {
             id,
             merged_with: None,
+            without_pull_request: false,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn complete_accepts_without_pull_request_and_a_note() {
+        let (storage, task, dependent) = started(false);
+        let (git, _) = fake(Git::new, vec![Ok(String::new()), Ok(String::new())]);
+        let (github, _) = fake(GitHub::new, vec![]);
+        let (herdr, _) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
+        let request = serde_json::from_value(serde_json::json!({
+            "id": task.id, "without_pull_request": true, "note": "Deployed directly"
+        }))
+        .unwrap();
+
+        let done = complete_task(&storage, &git, &github, &herdr, request).unwrap();
+
+        assert_eq!(done.resolution, Some(types::TaskResolution::Completed));
+        assert_eq!(done.completion_note.as_deref(), Some("Deployed directly"));
+        assert_eq!(done.criteria[0].evidence, done.completion_note);
+        crate::commands::lock(&storage)
+            .ensure_ready(dependent.id.into())
+            .unwrap();
+    }
+
+    #[test]
+    fn complete_rejects_missing_notes_and_conflicting_modes_before_external_calls() {
+        let (storage, task, _) = started(false);
+        let (git, _) = fake(Git::new, vec![]);
+        let (github, _) = fake(GitHub::new, vec![]);
+        let (herdr, _) = fake(Herdr::new, vec![]);
+        for arguments in [
+            serde_json::json!({"id": task.id, "without_pull_request": true}),
+            serde_json::json!({"id": task.id, "without_pull_request": true, "note": "  "}),
+            serde_json::json!({"id": task.id, "without_pull_request": true, "note": "Shipped", "merged_with": 2}),
+            serde_json::json!({"id": task.id, "note": "Shipped"}),
+        ] {
+            let request = serde_json::from_value(arguments).unwrap();
+
+            let error = complete_task(&storage, &git, &github, &herdr, request).unwrap_err();
+
+            assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+            assert_eq!(stored(&storage, task.id), task);
         }
     }
 
@@ -1912,6 +1983,8 @@ mod tests {
         CompleteTask {
             id,
             merged_with: Some(target),
+            without_pull_request: false,
+            note: None,
         }
     }
 

@@ -62,10 +62,14 @@ fn parse_task_type(raw: &str) -> Result<TaskType> {
 }
 
 fn parse_task_resolution(raw: &str) -> Result<TaskResolution> {
-    [TaskResolution::Merged, TaskResolution::NotAdopted]
-        .into_iter()
-        .find(|resolution| resolution.as_str() == raw)
-        .ok_or_else(|| StorageError::InvalidData(format!("unknown task resolution {raw:?}")))
+    [
+        TaskResolution::Merged,
+        TaskResolution::Completed,
+        TaskResolution::NotAdopted,
+    ]
+    .into_iter()
+    .find(|resolution| resolution.as_str() == raw)
+    .ok_or_else(|| StorageError::InvalidData(format!("unknown task resolution {raw:?}")))
 }
 
 pub(super) fn parse_task_status(raw: &str) -> Result<TaskStatus> {
@@ -517,8 +521,8 @@ impl Storage {
     }
 
     /// Moves an `in_progress` or `in_review` task whose criteria are met to `done` as
-    /// merged (see [`TaskStatus::complete`]), stores the merge time and the snapshot of its
-    /// pull request, and forgets its herdr workspace, which was closed, in one
+    /// merged, or completed when nothing merged (see [`TaskStatus::complete`]), stores
+    /// the merge time and PR snapshot, and forgets its closed herdr workspace in one
     /// transaction. Non-empty `commits` (those of the merged pull request) replace its
     /// commit records. The worktree path stays: the checkout is kept on disk until its
     /// worktree is removed. Dependents whose other dependencies are done can then start.
@@ -529,21 +533,60 @@ impl Storage {
         pull_request: Option<&PullRequestSnapshot>,
         commits: &[CommitRecord],
     ) -> Result<Task> {
+        self.finish_task(id, merged_at, pull_request, commits, None)
+    }
+
+    /// Completes shipped work without a pull request, keeping its explanation and commits.
+    /// The command layer first verifies PR absence and all completion criteria.
+    pub fn complete_task_without_pull_request(
+        &mut self,
+        id: TaskId,
+        note: &str,
+        commits: &[CommitRecord],
+    ) -> Result<Task> {
+        self.finish_task(id, None, None, commits, Some(note))
+    }
+
+    fn finish_task(
+        &mut self,
+        id: TaskId,
+        merged_at: Option<i64>,
+        pull_request: Option<&PullRequestSnapshot>,
+        commits: &[CommitRecord],
+        note: Option<&str>,
+    ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         let status = task.status.complete()?;
+        let merged = task.pull_request_url.is_some()
+            || task.merged_with.is_some()
+            || merged_at.is_some()
+            || pull_request.is_some()
+            || task.criteria.iter().any(|criterion| {
+                criterion.kind == crate::domain::criteria::CheckKind::BranchMergedLocally
+                    && criterion.is_met()
+            });
+        let resolution = if note.is_none() && merged {
+            TaskResolution::Merged
+        } else {
+            TaskResolution::Completed
+        };
+        if let Some(note) = note {
+            tx.execute(
+                "UPDATE task_criteria
+                 SET state = 'met', evidence = ?2, checked_by = 'toodo', checked_at = ?3
+                 WHERE task_id = ?1 AND kind = 'pr_merged'",
+                params![id.0, note, at],
+            )?;
+        }
         tx.execute(
             "UPDATE tasks
              SET status = ?2, resolution = ?3, herdr_workspace_id = NULL,
-                 pull_request_merged_at = coalesce(?4, pull_request_merged_at)
+                 pull_request_merged_at = coalesce(?4, pull_request_merged_at),
+                 completion_note = coalesce(?5, completion_note)
              WHERE id = ?1",
-            params![
-                id.0,
-                status.as_str(),
-                TaskResolution::Merged.as_str(),
-                merged_at
-            ],
+            params![id.0, status.as_str(), resolution.as_str(), merged_at, note],
         )?;
         if let Some(snapshot) = pull_request {
             tx.execute(
