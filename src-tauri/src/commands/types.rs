@@ -837,6 +837,16 @@ pub struct CriterionInput {
 }
 
 impl CriterionInput {
+    /// Keeps the existing criterion `id` as it is.
+    pub fn keep(id: CriterionId) -> Self {
+        Self {
+            id: Some(id),
+            text: None,
+            kind: None,
+            target: None,
+        }
+    }
+
     /// A new criterion, which needs its text and kind.
     pub fn parse(&self) -> CommandResult<criteria::NewCriterion> {
         let (Some(text), Some(kind)) = (&self.text, self.kind) else {
@@ -1148,6 +1158,10 @@ pub struct TaskEdit {
     /// The new completion criteria in order, which replace the current ones; `null`
     /// keeps them. The criteria of a done task cannot change.
     pub criteria: Option<Vec<CriterionInput>>,
+    /// Whether to put the merge criterion of the task's repository first when the task
+    /// is left without one (see [`NewTask::merge_criterion`]); false changes nothing.
+    #[serde(default)]
+    pub merge_criterion: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]

@@ -146,6 +146,31 @@ pub struct CheckCriterion {
     pub evidence: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AddCriterion {
+    /// The task that gets the criterion; it must not be done.
+    pub task_id: TaskId,
+    /// What has to hold, in words, e.g. `The server answers /health`.
+    pub text: String,
+    pub kind: types::CheckKind,
+    /// The http(s) URL of a `url` criterion or the shell command of a `command`
+    /// criterion; omit it for other kinds.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RemoveCriterion {
+    /// The task of the criterion; found from the criterion when omitted.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+    /// The criterion to delete with its evidence. `id` is accepted too.
+    #[serde(alias = "id")]
+    pub criterion_id: types::CriterionId,
+}
+
 /// Tells a field given as `null` (`Some(None)`) from an omitted one (`None`, the default).
 pub(super) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
@@ -521,16 +546,18 @@ fn comparable_path(path: &str) -> String {
 /// before anything is written; a new task has no dependents, so its edges cannot close
 /// a cycle.
 pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> CommandResult<Task> {
-    let merge = if request.merge_criterion.unwrap_or(true) {
-        let criteria = request
-            .criteria
-            .iter()
-            .map(types::CriterionInput::parse)
-            .collect::<CommandResult<Vec<_>>>()?;
-        task_commands::merge_criterion(storage, git, request.workspace_id.into(), &criteria)?
-    } else {
-        None
-    };
+    let criteria = request
+        .criteria
+        .iter()
+        .map(types::CriterionInput::parse)
+        .collect::<CommandResult<Vec<_>>>()?;
+    let merge = task_commands::merge_criterion(
+        storage,
+        git,
+        request.workspace_id.into(),
+        &criteria,
+        request.merge_criterion.unwrap_or(true),
+    )?;
     insert_task(&mut lock(storage), request, merge)
 }
 
@@ -587,7 +614,13 @@ fn insert_task(
     get_task(storage, task.id.into())
 }
 
-pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<Task> {
+/// Edits a task as `update_task` does; `origin` says whether its repository has an
+/// `origin` remote (see [`task_commands::edit_origin`]).
+pub fn update_task(
+    storage: &mut Storage,
+    request: UpdateTask,
+    origin: Option<bool>,
+) -> CommandResult<Task> {
     let current = get_task(storage, request.id)?;
     edit_task(
         storage,
@@ -599,8 +632,82 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
             estimate: request.estimate.unwrap_or(current.estimate),
             due_date: request.due_date.unwrap_or(current.due_date),
             criteria: request.criteria,
+            merge_criterion: false,
         },
         request.remove_merge_criterion,
+        origin,
+    )
+}
+
+/// The criterion `request` adds to the end of its task's criteria, as an edit input.
+pub fn new_criterion(request: &AddCriterion) -> types::CriterionInput {
+    types::CriterionInput {
+        id: None,
+        text: Some(request.text.clone()),
+        kind: Some(request.kind),
+        target: request.target.clone(),
+    }
+}
+
+/// Adds one criterion, pending, after the task's criteria, which stay as they are;
+/// `origin` as for [`update_task`].
+pub fn add_criterion(
+    storage: &mut Storage,
+    request: AddCriterion,
+    origin: Option<bool>,
+) -> CommandResult<Task> {
+    let current = get_task(storage, request.task_id)?;
+    let mut criteria: Vec<types::CriterionInput> = current
+        .criteria
+        .iter()
+        .map(|criterion| types::CriterionInput::keep(criterion.id))
+        .collect();
+    criteria.push(new_criterion(&request));
+    update_task(
+        storage,
+        UpdateTask {
+            id: request.task_id,
+            task_type: None,
+            title: None,
+            description: None,
+            estimate: None,
+            due_date: None,
+            criteria: Some(criteria),
+            remove_merge_criterion: false,
+        },
+        origin,
+    )
+}
+
+/// Deletes one criterion of a task that is not done with its evidence, the merge
+/// criterion too; the others stay as they are.
+pub fn remove_criterion(storage: &mut Storage, request: RemoveCriterion) -> CommandResult<Task> {
+    let owner = task_commands::criterion_owner(
+        storage,
+        request.task_id,
+        request.criterion_id,
+        "remove_criterion",
+    )?;
+    let current = get_task(storage, owner.into())?;
+    let criteria = current
+        .criteria
+        .iter()
+        .filter(|criterion| criterion.id != request.criterion_id)
+        .map(|criterion| types::CriterionInput::keep(criterion.id))
+        .collect();
+    update_task(
+        storage,
+        UpdateTask {
+            id: owner.into(),
+            task_type: None,
+            title: None,
+            description: None,
+            estimate: None,
+            due_date: None,
+            criteria: Some(criteria),
+            remove_merge_criterion: true,
+        },
+        None,
     )
 }
 
@@ -1314,6 +1421,7 @@ mod tests {
                 criteria: None,
                 remove_merge_criterion: false,
             },
+            None,
         )
         .unwrap();
         assert_eq!(updated.title, "Schema");
@@ -1322,7 +1430,70 @@ mod tests {
     }
 
     fn update(storage: &mut Storage, request: serde_json::Value) -> CommandResult<Task> {
-        update_task(storage, serde_json::from_value(request).unwrap())
+        update_task(storage, serde_json::from_value(request).unwrap(), None)
+    }
+
+    #[test]
+    fn add_criterion_appends_one_and_keeps_the_others_with_their_evidence() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let add = |storage: &mut Storage, request: serde_json::Value| {
+            add_criterion(storage, serde_json::from_value(request).unwrap(), None)
+        };
+        let added = add(
+            &mut storage,
+            serde_json::json!({ "task_id": task.id, "text": "Tests pass", "kind": "command", "target": "npm test" }),
+        )
+        .unwrap();
+        assert_eq!(added.criteria.len(), 3);
+        assert_eq!(added.criteria[..2], task.criteria[..]);
+        assert_eq!(added.criteria[2].text, "Tests pass");
+        assert_eq!(added.criteria[2].target.as_deref(), Some("npm test"));
+        assert_eq!(added.criteria[2].state, types::CriterionState::Pending);
+
+        let error = add(
+            &mut storage,
+            serde_json::json!({ "task_id": task.id, "text": "Merged", "kind": "branch_merged_locally" }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(
+            error.message.contains("one merge criterion"),
+            "{}",
+            error.message
+        );
+        assert_eq!(get_task(&storage, task.id).unwrap().criteria.len(), 3);
+    }
+
+    #[test]
+    fn remove_criterion_deletes_only_that_one() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let other = create(&mut storage, workspace, "Other", vec![]).unwrap();
+        let remove = |storage: &mut Storage, request: serde_json::Value| {
+            remove_criterion(storage, serde_json::from_value(request).unwrap())
+        };
+        let manual = task.criteria[1].id.0;
+        let error = remove(
+            &mut storage,
+            serde_json::json!({ "task_id": other.id, "criterion_id": manual }),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("belongs to task"),
+            "{}",
+            error.message
+        );
+        let error = remove(&mut storage, serde_json::json!({ "criterion_id": 999 })).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+
+        let removed = remove(&mut storage, serde_json::json!({ "id": manual })).unwrap();
+        assert_eq!(removed.criteria, task.criteria[..1]);
+        // Naming the merge criterion removes it deliberately.
+        let merge = task.criteria[0].id.0;
+        let removed = remove(&mut storage, serde_json::json!({ "criterion_id": merge })).unwrap();
+        assert!(removed.criteria.is_empty());
+        assert_eq!(get_task(&storage, other.id).unwrap().criteria.len(), 1);
     }
 
     fn check(storage: &mut Storage, request: serde_json::Value) -> CommandResult<Task> {
@@ -1558,7 +1729,7 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .extend(fields.as_object().unwrap().clone());
-            update_task(storage, serde_json::from_value(request).unwrap())
+            update_task(storage, serde_json::from_value(request).unwrap(), None)
         };
         let kept = update(&mut storage, serde_json::json!({ "title": "Tables" })).unwrap();
         assert_eq!(

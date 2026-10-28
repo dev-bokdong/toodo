@@ -786,13 +786,12 @@ impl Git {
         self.runner.run(&invocation)
     }
 
-    /// Fetches `url` with `curl` on this machine, following redirects; fails unless the
-    /// final response has a 2xx or 3xx status.
-    pub fn fetch_url(&self, url: &str) -> Result<(), GitError> {
-        self.runner.run(&Invocation {
+    /// Fetches `url` with `curl` on this machine, following redirects, and returns the
+    /// HTTP status of the final response; fails when no response arrives.
+    pub fn fetch_url(&self, url: &str) -> Result<u16, GitError> {
+        let output = self.runner.run(&Invocation {
             program: "curl",
             args: [
-                "--fail",
                 "--silent",
                 "--show-error",
                 "--location",
@@ -800,12 +799,20 @@ impl Git {
                 "30",
                 "--output",
                 "/dev/null",
+                "--write-out",
+                "%{http_code}",
                 url,
             ]
             .map(str::to_owned)
             .to_vec(),
         })?;
-        Ok(())
+        output
+            .trim()
+            .parse()
+            .map_err(|_| GitError::UnexpectedOutput {
+                command: format!("curl {url}"),
+                output,
+            })
     }
 
     /// Whether the repository of the workspace at `repo` has an `origin` remote.

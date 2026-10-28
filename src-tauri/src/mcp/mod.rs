@@ -40,6 +40,7 @@ use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::events::Notifier;
+use crate::commands::tasks as task_commands;
 use crate::commands::types::Task;
 use crate::commands::{CommandResult, StorageState, lock};
 use crate::domain::model;
@@ -149,12 +150,13 @@ manual itself, about once a minute: pr_merged and pr_open_ci_green from the task
 request, branch_merged_locally from the repository (for workspaces without an origin \
 remote, where the task branch is merged into baseBranch locally and nothing is pushed), \
 url by fetching its target, and command by running its target in the task worktree once \
-every other criterion is met. Check a manual criterion of your task with \
+every criterion but the merge criterion is met, so it can check the work before the \
+merge. Check a manual criterion of your task with \
 check_criterion once it holds, with evidence (a link, a command and its output, or what \
 you verified). Once every criterion is met, a task whose criteria are all automatic is \
 done at once; one with a manual criterion awaits completion (in_review) until the user \
-confirms it, so stop there. Change the criteria with update_task when the plan \
-changes, never to make a task pass.
+confirms it, so stop there. Add or delete one criterion with add_criterion or \
+remove_criterion when the plan changes, never to make a task pass.
 
 Deleting tasks happens in the Toodo app only, not through these tools. A pull request \
 from the task branch into baseBranch moves the task to in_review, and its merge \
@@ -740,13 +742,58 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged. criteria replaces the whole list: criteria whose id is left out are deleted with their evidence. Send {\"id\": N} to keep criterion N as it is (add text, kind, or target to change it), and text and kind without id for a new one, e.g. [{\"id\": 1}, {\"text\": \"Docs updated\", \"kind\": \"manual\"}]. Each id appears once and must belong to the task. A list without the merge criterion (pr_merged or branch_merged_locally) is rejected unless remove_merge_criterion is true."
+        description = "Add one completion criterion after the criteria of a task that is not done, which stay as they are, e.g. {\"task_id\": 5, \"text\": \"Tests pass\", \"kind\": \"command\", \"target\": \"npm test\"}. target is the URL of a url criterion or the shell command of a command criterion. Rejects a second merge criterion, pr_merged or pr_open_ci_green in a repository without an origin remote, and branch_merged_locally in one with an origin remote. Returns the task with its criteria."
     )]
-    fn update_task(
+    async fn add_criterion(
+        &self,
+        Parameters(request): Parameters<tools::AddCriterion>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                let input = tools::new_criterion(&request);
+                let origin = task_commands::edit_origin(
+                    backend.storage(),
+                    backend.git(),
+                    request.task_id,
+                    Some(std::slice::from_ref(&input)),
+                    false,
+                )?;
+                tools::add_criterion(&mut lock(backend.storage()), request, origin)
+            })
+            .await?;
+        self.announce(result)
+    }
+
+    #[tool(
+        description = "Delete one completion criterion of a task that is not done with its evidence, e.g. {\"criterion_id\": 7}; the other criteria stay as they are. criterion_id (or id) alone finds its task; task_id is optional and must be that task when given. Naming the merge criterion removes it, e.g. for work that ships no code. Returns the task with its criteria."
+    )]
+    fn remove_criterion(
+        &self,
+        Parameters(request): Parameters<tools::RemoveCriterion>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::remove_criterion(storage, request))
+    }
+
+    #[tool(
+        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged. To add or delete one criterion, use add_criterion or remove_criterion instead. criteria replaces the whole list: criteria whose id is left out are deleted with their evidence. Send {\"id\": N} to keep criterion N as it is (add text, kind, or target to change it), and text and kind without id for a new one, e.g. [{\"id\": 1}, {\"text\": \"Docs updated\", \"kind\": \"manual\"}]. Each id appears once and must belong to the task. A list without the merge criterion (pr_merged or branch_merged_locally) is rejected unless remove_merge_criterion is true."
+    )]
+    async fn update_task(
         &self,
         Parameters(request): Parameters<tools::UpdateTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::update_task(storage, request))
+        let result = self
+            .blocking(move |backend| {
+                let origin = task_commands::edit_origin(
+                    backend.storage(),
+                    backend.git(),
+                    request.id,
+                    request.criteria.as_deref(),
+                    false,
+                )?;
+                tools::update_task(&mut lock(backend.storage()), request, origin)
+            })
+            .await?;
+        self.announce(result)
     }
 
     #[tool(

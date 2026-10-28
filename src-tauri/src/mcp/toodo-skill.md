@@ -8,7 +8,7 @@ description: Work on a Toodo task from its description to a pull request into th
 Toodo tracks your task by its completion criteria, the `criteria` of the task: it is
 done once every criterion is met. Toodo checks every kind but `manual` itself about once
 a minute (`pr_merged`, `pr_open_ci_green`, `branch_merged_locally`, `url`, and `command`,
-which runs once every other criterion is met); you check `manual` ones with
+which runs once every other criterion but the merge criterion is met); you check `manual` ones with
 `check_criterion` and evidence. A pull request from the task branch into the base branch
 moves the task to `in_review`. Once every criterion is met, a task whose criteria are all
 automatic is `done` at once; one with a manual criterion awaits completion (`in_review`)
@@ -201,6 +201,33 @@ tasks and what they decided, links, and constraints the implementer has to respe
   rnd) and write a short imperative title.
 
 # Criteria
+
+| Kind | Checked by | When | `target` | Needs |
+| --- | --- | --- | --- | --- |
+| `manual` | you (`check_criterion`) or the user | once it holds | none | evidence |
+| `pr_merged` | Toodo | every minute | none | an `origin` remote; the branch pull request into `baseBranch` merged |
+| `branch_merged_locally` | Toodo | every minute | the start commit Toodo finds | no `origin` remote; the task branch merged into `baseBranch` locally |
+| `pr_open_ci_green` | Toodo | every minute | none | an `origin` remote; the branch pull request open with passing checks |
+| `url` | Toodo | every minute | http(s) URL | a GET answering 2xx or 3xx (`GET <url> -> <status>`) |
+| `command` | Toodo | once every criterion but the merge criterion is met | shell command | the task worktree; exit status 0 there |
+
+A task has one merge criterion (`pr_merged` or `branch_merged_locally`), the one its
+repository uses; Toodo rejects the other, a second one, and `pr_open_ci_green` without
+`origin`. A waiting `command` criterion says what it waits for in its evidence. A met
+criterion stays met, but Toodo runs met `url` and `command` criteria again right before
+it completes the task.
+
+Add one criterion with `add_criterion` and delete one with `remove_criterion`; the
+others keep their state and evidence:
+
+```json
+{ "task_id": 12, "text": "Tests pass", "kind": "command", "target": "npm test" }
+{ "criterion_id": 33 }
+```
+
+Uncheck a manual criterion that no longer holds with
+`check_criterion {"criterion_id": 32, "met": false}`; it is pending again without
+evidence.
 
 `update_task` with `criteria` replaces the whole list: a criterion whose `id` is left
 out is deleted with its evidence. Keep one by sending `{"id": N}` alone (add `text`,
