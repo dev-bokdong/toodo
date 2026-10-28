@@ -4,8 +4,9 @@ use super::State;
 use serde::Serialize;
 use specta::Type;
 
-use crate::mcp::ServerStatus;
+use crate::commands::types::Timestamp;
 use crate::mcp::tunnels::{TunnelState, TunnelStatus, TunnelsState};
+use crate::mcp::{Rejection, ServerStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +16,34 @@ pub struct McpServerInfo {
     pub token: Option<String>,
     /// Why the server is not running, e.g. its port is taken.
     pub error: Option<String>,
+    /// Tells this server apart from other Toodo servers; `401` answers from `/mcp` and
+    /// the MCP `serverInfo` name it too.
+    pub instance: String,
+    /// The last request `/mcp` turned away, from agents here or on SSH machines.
+    pub last_rejection: Option<McpRejection>,
+}
+
+/// Why `/mcp` turned a request away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum McpRejectionReason {
+    /// No `Authorization` header.
+    NoHeader,
+    /// The header is not `Bearer <token>`.
+    NotBearer,
+    /// A token this server does not accept, e.g. an old or another server's one.
+    WrongToken,
+    /// The web sign-in token instead of the MCP token.
+    WebToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpRejection {
+    pub reason: McpRejectionReason,
+    pub at: Timestamp,
+    /// How many requests `/mcp` turned away since the server started.
+    pub count: u32,
 }
 
 impl From<&ServerStatus> for McpServerInfo {
@@ -23,6 +52,17 @@ impl From<&ServerStatus> for McpServerInfo {
             url: status.url.clone(),
             token: status.token.clone(),
             error: status.error.clone(),
+            instance: status.instance.clone(),
+            last_rejection: status.rejections.last().map(|last| McpRejection {
+                reason: match last.reason {
+                    Rejection::NoHeader => McpRejectionReason::NoHeader,
+                    Rejection::NotBearer => McpRejectionReason::NotBearer,
+                    Rejection::WrongToken => McpRejectionReason::WrongToken,
+                    Rejection::OtherSurfaceToken => McpRejectionReason::WebToken,
+                },
+                at: Timestamp(last.at),
+                count: u32::try_from(last.count).unwrap_or(u32::MAX),
+            }),
         }
     }
 }

@@ -53,6 +53,15 @@ Deleting tasks happens in the Toodo app only.
    below): earlier tasks may already have decided an approach, rejected one, or left
    work you build on.
 
+If a Toodo tool call fails with HTTP `401`, read the reply body: it says why (no
+`Authorization` header, not `Bearer <token>`, a token this server does not accept, or
+the web sign-in token instead of the MCP token) and names the Toodo server instance.
+Retrying with the same config fails again. In a pane Toodo started for you,
+`TOODO_MCP_URL` and `TOODO_MCP_TOKEN` hold the current URL and token. Otherwise tell the
+user that the Toodo MCP token in your config is stale or wrong and that they can copy the
+config again from Settings > Agent access (checking that it shows the same instance), and
+continue the work that needs no Toodo tool.
+
 ## Project memory
 
 Project memory is what a restarted agent needs to continue from Toodo alone: entries of

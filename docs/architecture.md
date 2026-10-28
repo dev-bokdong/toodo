@@ -480,7 +480,11 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     `current_task` finds for them, since its pull request's merge completes it.
   - Deleting tasks is not exposed: it cannot be undone and stays in the app.
   - Agent access in Settings copies an MCP client config with the URL and token
-    (`mcp_server_info`).
+    (`mcp_server_info`), tests that the server accepts that token, and shows the server
+    instance and the last request `/mcp` turned away with its reason. `401` bodies at
+    `/mcp` and `/api` say why a request was turned away and name the next step.
+  - `start_task` exports `TOODO_MCP_URL` and `TOODO_MCP_TOKEN` (read from `mcp-token`
+    when the line runs) before the `agent_command` it runs in the task's pane.
   - Agents on SSH machines reach the server through reverse tunnels
     (`src-tauri/src/mcp/tunnels.rs`): while the server runs, Toodo keeps one
     `ssh -v -N -R 127.0.0.1:<port>:127.0.0.1:<port> -- <host>` (the server's own port) per machine with an SSH

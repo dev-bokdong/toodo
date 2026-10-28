@@ -20,8 +20,9 @@ pub mod tunnels;
 use std::fs;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -179,14 +180,78 @@ pub trait Backend: Notifier + Send + Sync + 'static {
     fn git(&self) -> &Git;
     fn github(&self) -> &GitHub;
     fn herdr(&self) -> &Herdr;
+    /// How agents reach this server.
+    fn server(&self) -> &ServerStatus;
 }
 
 /// How agents reach the server, shown in the app; `error` tells why it is not running.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ServerStatus {
     pub url: String,
     pub token: Option<String>,
+    /// The file that keeps `token`; `start_task` reads it into the agent command's
+    /// environment.
+    pub token_file: Option<PathBuf>,
+    /// Tells this server apart from other Toodo servers, e.g. the one a tunnel or an old
+    /// config reached instead; new on every start.
+    pub instance: String,
     pub error: Option<String>,
+    /// The last request `/mcp` turned away.
+    pub rejections: Rejections,
+}
+
+/// Why a request was turned away with `401`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rejection {
+    /// The request has no `Authorization` header.
+    NoHeader,
+    /// The header is not `Bearer <token>`.
+    NotBearer,
+    /// The token is not one this surface accepts.
+    WrongToken,
+    /// The token is the one of the other surface: the web token at `/mcp`, or the MCP
+    /// token at `/api`.
+    OtherSurfaceToken,
+}
+
+/// Where a request was turned away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Surface {
+    Mcp,
+    Api,
+}
+
+/// The last request `/mcp` turned away, and how many it turned away since the start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastRejection {
+    pub reason: Rejection,
+    /// Unix seconds.
+    pub at: i64,
+    pub count: u64,
+}
+
+/// Requests `/mcp` turned away, shared between the guard and the app's status.
+#[derive(Debug, Clone, Default)]
+pub struct Rejections(Arc<Mutex<Option<LastRejection>>>);
+
+impl Rejections {
+    fn record(&self, reason: Rejection) {
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as i64);
+        let mut last = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = last.map_or(0, |last| last.count) + 1;
+        *last = Some(LastRejection { reason, at, count });
+    }
+
+    pub fn last(&self) -> Option<LastRejection> {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A new [`ServerStatus::instance`].
+pub(crate) fn new_instance() -> io::Result<String> {
+    Ok(random_token()?[..12].to_owned())
 }
 
 /// The URL agents on this machine reach the server at when it listens on `port`.
@@ -205,17 +270,31 @@ pub(crate) async fn serve(listener: TcpListener, app: axum::Router) -> io::Resul
 }
 
 /// The token in `path`, created with 32 random bytes on first use. On Unix only the owner
-/// may read it: a new file is created that way and an existing one is tightened.
+/// may read it: a new file is created that way and an existing one is tightened. Creating
+/// one is logged, since clients that kept an earlier token are turned away from then on.
 pub(crate) fn load_token(path: &Path) -> io::Result<String> {
-    match fs::read_to_string(path) {
+    let replaced = match fs::read_to_string(path) {
         Ok(token) if !token.trim().is_empty() => {
             make_private(path)?;
             return Ok(token.trim().to_owned());
         }
-        Ok(_) => fs::remove_file(path)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            fs::remove_file(path)?;
+            true
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(error) => return Err(error),
-    }
+    };
+    println!(
+        "toodo-server: created a new access token in {}{}; clients that use an earlier \
+         token get 401 until they are given this one",
+        path.display(),
+        if replaced {
+            " (the file was empty)"
+        } else {
+            ""
+        }
+    );
     let token = random_token()?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -243,8 +322,18 @@ pub(crate) fn make_private(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The MCP endpoint at `/mcp`, open only to requests that bear `token`.
-pub(crate) fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
+/// The MCP endpoint at `/mcp`, open only to requests that bear `token`. A request that
+/// bears `web_token` instead is told it sent the web token.
+pub(crate) fn router(
+    backend: Arc<dyn Backend>,
+    token: String,
+    web_token: Option<String>,
+) -> axum::Router {
+    let guard = Arc::new(Guard {
+        token,
+        web_token,
+        backend: backend.clone(),
+    });
     let service = StreamableHttpService::new(
         move || Ok(ToodoMcp::new(backend.clone())),
         LocalSessionManager::default().into(),
@@ -254,36 +343,126 @@ pub(crate) fn router(backend: Arc<dyn Backend>, token: String) -> axum::Router {
     );
     axum::Router::new()
         .nest_service("/mcp", service)
-        .route_layer(middleware::from_fn_with_state(
-            Arc::new(token),
-            require_token,
-        ))
+        .route_layer(middleware::from_fn_with_state(guard, require_token))
 }
 
-/// Lets requests through that bear `token`.
-async fn require_token(State(token): State<Arc<String>>, request: Request, next: Next) -> Response {
-    if same_secret(bearer(request.headers()).unwrap_or(""), &token) {
-        next.run(request).await
-    } else {
-        unauthorized()
+struct Guard {
+    token: String,
+    web_token: Option<String>,
+    backend: Arc<dyn Backend>,
+}
+
+/// Lets requests through that bear the MCP token; the others get `401` with the reason,
+/// which is also kept for the app to show.
+async fn require_token(State(guard): State<Arc<Guard>>, request: Request, next: Next) -> Response {
+    let rejection = match bearer(request.headers()) {
+        Ok(presented) if same_secret(presented, &guard.token) => return next.run(request).await,
+        Ok(presented)
+            if guard
+                .web_token
+                .as_deref()
+                .is_some_and(|web| same_secret(presented, web)) =>
+        {
+            Rejection::OtherSurfaceToken
+        }
+        Ok(_) => Rejection::WrongToken,
+        Err(rejection) => rejection,
+    };
+    let server = guard.backend.server();
+    server.rejections.record(rejection);
+    unauthorized(Surface::Mcp, rejection, Some(&server.instance))
+}
+
+/// The bearer token of a request's `Authorization` header; the scheme is matched without
+/// regard to case, as HTTP defines it.
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Result<&str, Rejection> {
+    let value = headers
+        .get(header::AUTHORIZATION)
+        .ok_or(Rejection::NoHeader)?
+        .to_str()
+        .map_err(|_| Rejection::NotBearer)?;
+    match value.trim().split_once(' ') {
+        Some((scheme, token)) if scheme.eq_ignore_ascii_case("bearer") => {
+            let token = token.trim();
+            if token.is_empty() {
+                Err(Rejection::NotBearer)
+            } else {
+                Ok(token)
+            }
+        }
+        _ => Err(Rejection::NotBearer),
     }
 }
 
-/// The bearer token of a request's `Authorization` header.
-pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-}
-
-pub(crate) fn unauthorized() -> Response {
+/// `401` with the reason and how to get through, never the token itself; at `/mcp`,
+/// with the server's `instance`.
+pub(crate) fn unauthorized(
+    surface: Surface,
+    rejection: Rejection,
+    instance: Option<&str>,
+) -> Response {
+    let mut body = rejection_message(surface, rejection).to_owned();
+    if let Some(instance) = instance {
+        body.push_str(&format!("\nThis is Toodo server instance {instance}."));
+    }
+    body.push('\n');
     (
         StatusCode::UNAUTHORIZED,
         [(header::WWW_AUTHENTICATE, "Bearer")],
-        "missing or wrong Toodo access token",
+        body,
     )
         .into_response()
+}
+
+fn rejection_message(surface: Surface, rejection: Rejection) -> &'static str {
+    match (surface, rejection) {
+        (Surface::Mcp, Rejection::NoHeader) => {
+            "Toodo MCP: the request has no Authorization header. Send \
+             `Authorization: Bearer <MCP token>`: copy the MCP config from Settings > Agent \
+             access in the Toodo app, or use the token in `mcp-token` in the server's data \
+             directory (panes Toodo starts agents in have it as TOODO_MCP_TOKEN)."
+        }
+        (Surface::Mcp, Rejection::NotBearer) => {
+            "Toodo MCP: the Authorization header is not `Bearer <token>`. Send \
+             `Authorization: Bearer <MCP token>` with the token alone, without quotes: copy \
+             the MCP config from Settings > Agent access in the Toodo app, or use the token \
+             in `mcp-token` in the server's data directory."
+        }
+        (Surface::Mcp, Rejection::WrongToken) => {
+            "Toodo MCP: this server does not accept the token. It is mistyped, from before \
+             the token was replaced, or from another Toodo server, so retrying with it fails \
+             again. Copy the MCP config again from Settings > Agent access of the Toodo app \
+             that shows the instance below, or use the token in `mcp-token` in this \
+             server's data directory, then restart the agent session with it."
+        }
+        (Surface::Mcp, Rejection::OtherSurfaceToken) => {
+            "Toodo MCP: this is the web sign-in token (`web-token`), which only the web app \
+             uses. Agents send the MCP token: copy the MCP config from Settings > Agent \
+             access in the Toodo app, or use the token in `mcp-token` in the server's data \
+             directory."
+        }
+        (Surface::Api, Rejection::NoHeader) => {
+            "Toodo API: the request has no Authorization header. Send \
+             `Authorization: Bearer <token>` with the web sign-in token (`web-token` in the \
+             server's data directory) or a device token; the web app asks for `web-token` \
+             when it signs in."
+        }
+        (Surface::Api, Rejection::NotBearer) => {
+            "Toodo API: the Authorization header is not `Bearer <token>`. Send \
+             `Authorization: Bearer <token>` with the web sign-in token (`web-token` in the \
+             server's data directory) or a device token, alone and without quotes."
+        }
+        (Surface::Api, Rejection::WrongToken) => {
+            "Toodo API: the token is neither the web sign-in token nor the token of an \
+             active device; the device may be revoked or the token replaced. Sign in to the \
+             web app again with the token in `web-token` in the server's data directory."
+        }
+        (Surface::Api, Rejection::OtherSurfaceToken) => {
+            "Toodo API: this is the MCP token for agents, which only `/mcp` accepts. Send \
+             the web sign-in token (`web-token` in the server's data directory) or a device \
+             token here, and use the MCP token only in an agent's MCP config."
+        }
+    }
 }
 
 /// Compares without stopping at the first difference, so timing does not leak the token.
@@ -626,7 +805,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. With agent_command, Toodo then runs that command (e.g. the coding agent) in the first pane of the task's herdr workspace. Returns the task with the panes of its herdr workspace, ranIn (the pane agent_command ran in), and paneError when the panes could not be listed or the command did not run. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
+        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. With agent_command, Toodo then runs that command (e.g. the coding agent) in the first pane of the task's herdr workspace, with TOODO_MCP_URL and TOODO_MCP_TOKEN exported so the agent can reach Toodo. Returns the task with the panes of its herdr workspace, ranIn (the pane agent_command ran in), and paneError when the panes could not be listed or the command did not run. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
     )]
     async fn start_task(
         &self,
@@ -634,7 +813,13 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| {
-                tools::start_task(backend.storage(), backend.git(), backend.herdr(), request)
+                tools::start_task(
+                    backend.storage(),
+                    backend.git(),
+                    backend.herdr(),
+                    backend.server(),
+                    request,
+                )
             })
             .await?;
         if let Ok(started) = &result {
@@ -701,10 +886,11 @@ impl ToodoMcp {
 impl ServerHandler for ToodoMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION"),
-            ))
+            .with_server_info(
+                Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).with_title(
+                    format!("Toodo (server instance {})", self.backend.server().instance),
+                ),
+            )
             .with_instructions(INSTRUCTIONS)
     }
 }
@@ -768,6 +954,7 @@ mod tests {
         git: Git,
         github: GitHub,
         herdr: Herdr,
+        server: ServerStatus,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
         memory_changed: std::sync::Mutex<usize>,
@@ -789,6 +976,14 @@ mod tests {
                 git: Git::new(runner(git)),
                 github: GitHub::new(runner(Vec::new())),
                 herdr: Herdr::new(runner(herdr)),
+                server: ServerStatus {
+                    url: url(47617),
+                    token: Some("secret".to_owned()),
+                    token_file: Some(PathBuf::from("/data/toodo/mcp-token")),
+                    instance: "0123456789ab".to_owned(),
+                    error: None,
+                    rejections: Rejections::default(),
+                },
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
                 memory_changed: std::sync::Mutex::default(),
@@ -829,6 +1024,10 @@ mod tests {
 
         fn herdr(&self) -> &Herdr {
             &self.herdr
+        }
+
+        fn server(&self) -> &ServerStatus {
+            &self.server
         }
     }
 
@@ -1503,15 +1702,47 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let storage = crate::storage::Storage::open_in_memory().unwrap();
         let backend = Arc::new(TestBackend::new(storage));
-        let app = router(backend, "secret".to_owned());
+        let app = router(backend.clone(), "secret".to_owned(), Some("web".to_owned()));
         std::thread::spawn(move || runtime().block_on(serve(listener, app)));
 
-        assert!(post_initialize(address, "").starts_with("HTTP/1.1 401"));
-        let wrong = post_initialize(address, "Authorization: Bearer secreT\r\n");
-        assert!(wrong.starts_with("HTTP/1.1 401"), "{wrong}");
+        let rejected = |authorization: &str, reason: &str| {
+            let response = post_initialize(address, authorization);
+            assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+            assert!(
+                response
+                    .to_ascii_lowercase()
+                    .contains("www-authenticate: bearer"),
+                "{response}"
+            );
+            assert!(response.contains(reason), "{response}");
+            assert!(
+                response.contains("This is Toodo server instance 0123456789ab."),
+                "{response}"
+            );
+            assert!(!response.contains("secret"), "{response}");
+        };
+        rejected("", "has no Authorization header");
+        rejected("Authorization: secret\r\n", "is not `Bearer <token>`");
+        rejected("Authorization: Bearer \r\n", "is not `Bearer <token>`");
+        rejected(
+            "Authorization: Bearer secreT\r\n",
+            "this server does not accept the token",
+        );
+        rejected("Authorization: Bearer web\r\n", "the web sign-in token");
+        let last = backend.server.rejections.last().unwrap();
+        assert_eq!((last.reason, last.count), (Rejection::OtherSurfaceToken, 5));
+
         let accepted = post_initialize(address, "Authorization: Bearer secret\r\n");
         assert!(accepted.starts_with("HTTP/1.1 200"), "{accepted}");
         assert!(accepted.contains(r#""name":"toodo""#), "{accepted}");
+        assert!(
+            accepted.contains(r#""title":"Toodo (server instance 0123456789ab)""#),
+            "{accepted}"
+        );
+        // The scheme is case-insensitive.
+        let lowercase = post_initialize(address, "Authorization: bearer secret\r\n");
+        assert!(lowercase.starts_with("HTTP/1.1 200"), "{lowercase}");
+        assert_eq!(backend.server.rejections.last().unwrap().count, 5);
     }
 
     #[test]
