@@ -23,6 +23,16 @@ When your pull request also fixed other tasks, never conclude them: once it is m
 your task is done, complete each of them with `complete_task` and `merged_with` set to
 your task ID (or the pull request URL). A task already concluded as `not_adopted` that way
 can be completed with `merged_with` too.
+For work that shipped without any pull request, call `complete_task` with
+`without_pull_request: true` and a non-empty `note` explaining what shipped, not
+`conclude_task`: concluding means the work was not shipped. This requires no branch
+pull request at all, even closed or unrecorded. A merged PR needs `complete_task`
+without optional arguments; an open or closed one needs a merge, or conclusion if
+the work is abandoned (the user concludes an open PR in the app).
+The no-PR path marks `pr_merged` met with the note as evidence; every other criterion
+must still hold. It records branch commits and the completion note, ends as
+`completed` rather than `merged`, and unblocks dependents. Do not combine
+`without_pull_request` with `merged_with`.
 Deleting tasks happens in the Toodo app only.
 
 ## 1. Start
@@ -175,6 +185,25 @@ tasks and what they decided, links, and constraints the implementer has to respe
   no raw HTML.
 - Pick `task_type` by the kind of change (feat, fix, modify, refactor, docs, test, chore,
   rnd) and write a short imperative title.
+
+# Criteria
+
+`update_task` with `criteria` replaces the whole list: a criterion whose `id` is left
+out is deleted with its evidence. Keep one by sending `{"id": N}` alone (add `text`,
+`kind`, or `target` to change it) and add new ones with `text` and `kind`:
+
+```json
+{ "id": 12, "criteria": [
+  { "id": 31 },
+  { "id": 32 },
+  { "text": "The changelog lists the fix", "kind": "manual" }
+] }
+```
+
+Each `id` appears once. Leaving out the merge criterion is rejected unless you also pass
+`remove_merge_criterion: true`. `check_criterion` needs only `criterion_id` and
+`evidence`; `add_dependency` and `remove_dependency` take `depends_on` as one task id or
+an array, e.g. `{"task_id": 12, "depends_on": [10]}`.
 
 # Adding a workspace
 

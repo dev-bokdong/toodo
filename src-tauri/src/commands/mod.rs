@@ -213,7 +213,7 @@ impl From<StorageError> for CommandError {
             | StorageError::WorkspaceHasDependents { .. }
             | StorageError::BaseBranchInReview { .. }
             | StorageError::Transition(_)
-            | StorageError::DependenciesNotDone(_)
+            | StorageError::DependenciesNotDone { .. }
             | StorageError::CriteriaOfDoneTask(_)
             | StorageError::AutomaticCriterion { .. }
             | StorageError::MemorySuperseded { .. } => CommandErrorKind::Rejected,

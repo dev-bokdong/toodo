@@ -230,6 +230,8 @@ export function resolutionLabel(task: { resolution: TaskResolution | null }): st
   switch (task.resolution) {
     case "merged":
       return "Merged";
+    case "completed":
+      return "Completed";
     case "not_adopted":
       return "Not adopted";
     case null:
@@ -618,6 +620,7 @@ export function reviewMarkdown(
       const notAdopted = task.resolution === "not_adopted";
       const details = [names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`, formatDate(at)];
       if (notAdopted) details.push("not adopted");
+      if (task.resolution === "completed") details.push("Completed");
       if (task.estimate) details.push(`estimate ${formatEstimate(task.estimate)}`);
       if (task.dueDate) details.push(`due ${task.dueDate}`);
       if (task.issue) details.push(task.issue.url);

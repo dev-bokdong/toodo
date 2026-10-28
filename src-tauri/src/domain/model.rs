@@ -252,6 +252,8 @@ impl fmt::Display for TaskType {
 pub enum TaskResolution {
     /// Its pull request was merged into the base branch.
     Merged,
+    /// Its completion criteria were met without a pull request or a merge.
+    Completed,
     /// The work was concluded without merging, e.g. research whose result was not
     /// adopted. Its completion note says why; dependents stay blocked.
     NotAdopted,
@@ -261,6 +263,7 @@ impl TaskResolution {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Merged => "merged",
+            Self::Completed => "completed",
             Self::NotAdopted => "not_adopted",
         }
     }

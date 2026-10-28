@@ -120,7 +120,9 @@ it in the app. When one pull request ships the work of several tasks, complete e
 extra task with complete_task and merged_with set to the task that owns the pull \
 request (or the pull request URL) once it is merged, never with conclude_task: \
 not_adopted means the work did not ship. A task already concluded that way can be \
-completed with merged_with too.
+completed with merged_with too. For work shipped without any pull request, call \
+complete_task with without_pull_request: true and a non-empty note: the result is \
+completed, pr_merged uses that note as evidence, and every other criterion must hold.
 8. Project memory keeps what a restarted agent needs to continue from Toodo alone: \
 decisions (the choice and why), rules to follow, notes, and summaries, for one \
 workspace or, without workspace_id, shared by every workspace (the user's standing \
@@ -547,7 +549,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Check (met true, the default) or uncheck a manual completion criterion of a task that is not done, with evidence of what shows it holds. Toodo checks the other kinds itself. Once every criterion of an in_progress task is met, it awaits completion (in_review) until the user, or complete_task, confirms it. Returns the task with its criteria."
+        description = "Check (met true, the default) or uncheck a manual completion criterion of a task that is not done, with evidence of what shows it holds, e.g. {\"criterion_id\": 2, \"evidence\": \"...\"}. criterion_id (or id) alone finds its task; task_id is optional and must be that task when given. Toodo checks the other kinds itself. Once every criterion of an in_progress task is met, it awaits completion (in_review) until the user, or complete_task, confirms it. Returns the task with its criteria."
     )]
     fn check_criterion(
         &self,
@@ -557,7 +559,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged."
+        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged. criteria replaces the whole list: criteria whose id is left out are deleted with their evidence. Send {\"id\": N} to keep criterion N as it is (add text, kind, or target to change it), and text and kind without id for a new one, e.g. [{\"id\": 1}, {\"text\": \"Docs updated\", \"kind\": \"manual\"}]. Each id appears once and must belong to the task. A list without the merge criterion (pr_merged or branch_merged_locally) is rejected unless remove_merge_criterion is true."
     )]
     fn update_task(
         &self,
@@ -567,7 +569,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Make task_id depend on every task in depends_on. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session."
+        description = "Make task_id depend on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": [3, 4]}. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session."
     )]
     fn add_dependency(
         &self,
@@ -616,7 +618,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Complete a task being worked on once its completion criteria are met, as the Toodo app does; this is also how a task awaiting completion because of a manual criterion is confirmed. Toodo re-checks the automatic criteria first; the task becomes done (merged), its herdr workspace is closed, and its dependents can start. Rejected with the criteria not met yet, e.g. while its pull request is not merged. Toodo also completes tasks whose criteria are all automatic on its own within a minute. With merged_with, complete a task whose work shipped with the merged pull request of another task instead, e.g. the extra tasks one pull request fixed: an in_progress or in_review task, or one already done as not_adopted, becomes done (merged) through that pull request, which the app shows on the task. Rejected while that pull request or task is not merged yet, and while the task's own branch has an open or merged pull request. Never complete your own task, the one current_task finds: meeting its criteria completes it."
+        description = "Complete an in_progress or in_review task whose criteria are met, including confirmation after manual checks. Toodo checks automatic criteria first and rejects with each unmet criterion and its next step. The task becomes done, its herdr workspace closes, and dependents can start. A merged pull request gives resolution merged; criteria met with nothing merged gives completed. With without_pull_request: true and a required non-empty note, complete work that shipped without any pull request: pr_merged is met with the note as evidence, all other criteria must still hold, branch commits are recorded, and the note becomes the completion note. Rejected if any branch pull request exists, even unrecorded or closed; for a merged PR call complete_task without optional arguments, otherwise wait for merge or conclude abandoned work. without_pull_request and merged_with cannot be combined. With merged_with, complete work shipped by another task's merged pull request: pass its task ID or PR URL; active tasks or ones done as not_adopted become done as merged. Rejected if that PR is not merged or the task has its own open or merged PR. Never complete your own task, the one current_task finds: meeting its criteria completes it."
     )]
     async fn complete_task(
         &self,
@@ -637,7 +639,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Finish an in_progress or in_review task without merging, as Conclude in the Toodo app does: the task becomes done (not_adopted) with note, the reason, as its completion note, its herdr workspace is closed, and its dependents stay blocked. For research that is not adopted, a duplicate, or work no longer needed. Rejected when note is empty, when its branch has a merged pull request, and while its branch has an open pull request, even one Toodo has not recorded yet, which only the user closes, by concluding the task in the app. Never conclude your own task, the one current_task finds."
+        description = "Conclude an in_progress or in_review task whose work was not shipped: research not adopted, a duplicate, or work no longer needed. This means concluded, not completed as shipped: the task becomes done (not_adopted) with a required non-empty note as its conclusion, its herdr workspace closes, and dependents stay blocked. For work shipped without a pull request, call complete_task with without_pull_request: true and note instead; for work shipped in another task's merged PR use merged_with. Rejected if its branch has a merged PR (call complete_task without optional arguments) or an open PR, even unrecorded, which only the user closes by concluding in the app. Never conclude your own task, the one current_task finds."
     )]
     async fn conclude_task(
         &self,
@@ -657,7 +659,9 @@ impl ToodoMcp {
         self.announce(result)
     }
 
-    #[tool(description = "Remove the dependency of task_id on depends_on.")]
+    #[tool(
+        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}."
+    )]
     fn remove_dependency(
         &self,
         Parameters(request): Parameters<tools::Dependency>,

@@ -592,6 +592,8 @@ impl From<TaskType> for model::TaskType {
 pub enum TaskResolution {
     /// Its pull request was merged.
     Merged,
+    /// Its criteria were met without a pull request or a merge.
+    Completed,
     /// Concluded without merging; the completion note says why. Dependents stay
     /// waiting.
     NotAdopted,
@@ -601,6 +603,7 @@ impl From<model::TaskResolution> for TaskResolution {
     fn from(resolution: model::TaskResolution) -> Self {
         match resolution {
             model::TaskResolution::Merged => Self::Merged,
+            model::TaskResolution::Completed => Self::Completed,
             model::TaskResolution::NotAdopted => Self::NotAdopted,
         }
     }
@@ -652,6 +655,8 @@ pub struct Task {
     pub depends_on: Vec<TaskId>,
     pub branch: Option<String>,
     pub worktree_path: Option<String>,
+    /// An active task has a branch but no checkout; restore it in the Toodo app.
+    pub worktree_missing: bool,
     pub herdr_workspace_id: Option<String>,
     pub pull_request_url: Option<String>,
     /// The GitHub issue this task works on; its pull request closes it on merge.
@@ -813,21 +818,47 @@ impl From<&criteria::Criterion> for Criterion {
 #[serde(rename_all = "camelCase")]
 pub struct CriterionInput {
     /// An existing criterion of the task, which keeps its state unless its kind or
-    /// target changes; omit it for a new criterion.
+    /// target changes; omit it for a new criterion. `{"id": N}` alone keeps criterion N
+    /// as it is.
     #[serde(default)]
     pub id: Option<CriterionId>,
-    /// What has to hold, in words, e.g. `The server answers /health`.
-    pub text: String,
-    pub kind: CheckKind,
+    /// What has to hold, in words, e.g. `The server answers /health`. Required for a new
+    /// criterion; the stored text when omitted with `id`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Required for a new criterion; the stored kind when omitted with `id`.
+    #[serde(default)]
+    pub kind: Option<CheckKind>,
     /// The http(s) URL of a `url` criterion or the shell command of a `command`
-    /// criterion; omit it for other kinds.
+    /// criterion; omit it for other kinds. With `id`, the stored target when omitted and
+    /// the kind stays the same.
     #[serde(default)]
     pub target: Option<String>,
 }
 
 impl CriterionInput {
+    /// A new criterion, which needs its text and kind.
     pub fn parse(&self) -> CommandResult<criteria::NewCriterion> {
-        criteria::NewCriterion::parse(&self.text, self.kind.into(), self.target.as_deref())
+        let (Some(text), Some(kind)) = (&self.text, self.kind) else {
+            return Err(CommandError::invalid_input(
+                "a new criterion needs text and kind, e.g. {\"text\": \"Docs updated\", \"kind\": \"manual\"}; give an existing one by its id instead",
+            ));
+        };
+        criteria::NewCriterion::parse(text, kind.into(), self.target.as_deref())
+            .map_err(|error| CommandError::invalid_input(error.to_string()))
+    }
+
+    /// The criterion an edit of `known` asks for: omitted fields keep the stored values,
+    /// and the stored target stays only while the kind does.
+    pub fn parse_over(&self, known: &criteria::Criterion) -> CommandResult<criteria::NewCriterion> {
+        let kind = self.kind.map_or(known.kind, Into::into);
+        let text = self.text.as_deref().unwrap_or(&known.text);
+        let target = match &self.target {
+            Some(target) => Some(target.as_str()),
+            None if kind == known.kind && kind.takes_target() => known.target.as_deref(),
+            None => None,
+        };
+        criteria::NewCriterion::parse(text, kind, target)
             .map_err(|error| CommandError::invalid_input(error.to_string()))
     }
 }
@@ -984,6 +1015,12 @@ impl From<&model::Task> for Task {
             depends_on: task.depends_on.iter().copied().map(TaskId::from).collect(),
             branch: task.branch.clone(),
             worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
+            worktree_missing: task.branch.is_some()
+                && task.worktree_path.is_none()
+                && matches!(
+                    task.status,
+                    status::TaskStatus::InProgress | status::TaskStatus::InReview
+                ),
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
             issue: task.issue.as_ref().map(LinkedIssue::from),

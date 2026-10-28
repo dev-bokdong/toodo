@@ -58,7 +58,6 @@ export const queryKeys = {
   branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
-  taskPanes: (taskId: TaskId) => ["tasks", taskId, "panes"] as const,
   herdrMachines: ["herdr-machines"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
@@ -435,18 +434,6 @@ export function useStartTask() {
 export function useOpenTaskInHerdr() {
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.openTaskInHerdr(id)),
-  });
-}
-
-/**
- * The panes of a started task's herdr workspace, which is opened again (without focus) when
- * herdr no longer has it. Polled, since herdr reports no event for new panes.
- */
-export function useTaskPanes(taskId: TaskId) {
-  return useQuery({
-    queryKey: queryKeys.taskPanes(taskId),
-    queryFn: () => unwrap(commands.ensureTaskWorkspace(taskId)),
-    refetchInterval: 15_000,
   });
 }
 

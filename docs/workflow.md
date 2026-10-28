@@ -104,6 +104,21 @@ Completing a task ("Complete"/"Confirm completion", `complete_task`) re-checks i
 automatic criteria first and is rejected with the criteria that are not met. Done tasks
 keep their criteria as a record; they cannot change.
 
+Work shipped without a pull request can be completed through MCP with
+`complete_task {"id": 1, "without_pull_request": true, "note": "Deployed the configuration directly"}`.
+The note must be non-empty. Toodo uses the shared branch PR lookup to require no pull
+request at all, including closed or unrecorded ones. If one is merged, call
+`complete_task` with only `id`; otherwise wait for merge, or conclude abandoned work
+(an open PR is concluded by the user in the app).
+Only `pr_merged` is satisfied by the note as evidence; every other criterion must
+still hold. Rejections list unmet criteria and how to meet each. The branch commits
+and completion note are recorded, the task ends as `done` with resolution `completed`,
+and dependents become ready just as for `merged`. This cannot be combined with
+`merged_with`. Concluding as `not_adopted` means the work was not shipped.
+
+A task completed without criteria, a pull request, or `merged_with` also ends as
+`completed`, not `merged`. A verified local branch merge still ends as `merged`.
+
 When the database was migrated to criteria, every existing task got the `pr_merged`
 criterion (met for tasks done as merged), followed by the `- [ ]` and `- [x]` items of the
 `## Done when` section of its description as manual criteria, checked items met. The
