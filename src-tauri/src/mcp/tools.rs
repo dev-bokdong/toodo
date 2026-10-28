@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::adapters::git::Git;
+use crate::adapters::git::{Git, shell_quote};
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::completion::{self, OpenPullRequest};
@@ -21,6 +21,7 @@ use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
 use crate::domain::criteria::{CheckedBy, NewCriterion};
 use crate::domain::model::{self, NoteKind};
+use crate::mcp::ServerStatus;
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -736,11 +737,13 @@ pub fn resume_task(
 }
 
 /// Starts or resumes a ready `planned` task as the app's Start does, then runs
-/// `agent_command` in the first pane of its herdr workspace.
+/// `agent_command` in the first pane of its herdr workspace, with the MCP server's URL and
+/// token in its environment (see [`with_mcp_env`]).
 pub fn start_task(
     storage: &StorageState,
     git: &Git,
     herdr: &Herdr,
+    server: &ServerStatus,
     request: StartTask,
 ) -> CommandResult<TaskStart> {
     let id = request.id.into();
@@ -787,13 +790,27 @@ pub fn start_task(
     if let Some(command) = command {
         match panes.first() {
             None => started.pane_error = Some("herdr lists no pane of the task's workspace".into()),
-            Some(pane) => match herdr.run_in_pane(&pane.pane_id, command) {
+            Some(pane) => match herdr.run_in_pane(&pane.pane_id, &with_mcp_env(server, command)) {
                 Ok(()) => started.ran_in = Some(pane.pane_id.clone()),
                 Err(error) => started.pane_error = Some(error.to_string()),
             },
         }
     }
     Ok(started)
+}
+
+/// `command` after exporting `TOODO_MCP_URL` and `TOODO_MCP_TOKEN`, so the agent it starts
+/// can reach this server. The token is read from its file when the line runs, so it is
+/// never typed into the pane or its shell history.
+pub fn with_mcp_env(server: &ServerStatus, command: &str) -> String {
+    let Some(token_file) = &server.token_file else {
+        return command.to_owned();
+    };
+    format!(
+        "export TOODO_MCP_URL={}; export TOODO_MCP_TOKEN=\"$(cat {})\"; {command}",
+        shell_quote(&server.url),
+        shell_quote(&token_file.to_string_lossy()),
+    )
 }
 
 /// Tells the agent how to fix a start rejected because the task's machine has no worktree
@@ -1931,6 +1948,30 @@ mod tests {
         task.timeline.last().map(|event| event.status)
     }
 
+    fn server_status() -> ServerStatus {
+        ServerStatus {
+            url: crate::mcp::url(47617),
+            token: Some("secret".to_owned()),
+            token_file: Some("/home/me/toodo data/mcp-token".into()),
+            instance: "0123456789ab".to_owned(),
+            error: None,
+            rejections: Default::default(),
+        }
+    }
+
+    #[test]
+    fn agent_commands_get_the_mcp_url_and_token_without_the_token_typed() {
+        let mut server = server_status();
+        assert_eq!(
+            with_mcp_env(&server, "claude"),
+            "export TOODO_MCP_URL='http://127.0.0.1:47617/mcp'; \
+             export TOODO_MCP_TOKEN=\"$(cat '/home/me/toodo data/mcp-token')\"; claude"
+        );
+        assert!(!with_mcp_env(&server, "claude").contains("secret"));
+        server.token_file = None;
+        assert_eq!(with_mcp_env(&server, "claude"), "claude");
+    }
+
     #[test]
     fn start_is_rejected_for_a_task_that_is_not_ready_or_not_planned() {
         let (storage, task, dependent) = started(false);
@@ -1941,6 +1982,7 @@ mod tests {
             &storage,
             &git,
             &herdr,
+            &server_status(),
             StartTask {
                 id: dependent.id,
                 agent_command: None,
@@ -1957,6 +1999,7 @@ mod tests {
             &storage,
             &git,
             &herdr,
+            &server_status(),
             StartTask {
                 id: task.id,
                 agent_command: None,

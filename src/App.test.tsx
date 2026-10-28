@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import App from "@/App";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
@@ -248,7 +248,13 @@ describe("App", () => {
     mocked.listAgentStatuses.mockResolvedValue([]);
     mocked.listPullRequestStatuses.mockResolvedValue([]);
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
-    mocked.mcpServerInfo.mockResolvedValue({ url: "http://127.0.0.1:47615/mcp", token: "secret", error: null });
+    mocked.mcpServerInfo.mockResolvedValue({
+      url: "http://127.0.0.1:47615/mcp",
+      token: "secret",
+      error: null,
+      instance: "0123456789ab",
+      lastRejection: null,
+    });
     mocked.listMcpTunnels.mockResolvedValue([]);
     mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
@@ -1470,6 +1476,41 @@ describe("App", () => {
     });
   });
 
+  it("tests the MCP connection with the token shown and shows the last rejected agent request", async () => {
+    mocked.mcpServerInfo.mockResolvedValue({
+      url: "http://127.0.0.1:47615/mcp",
+      token: "secret",
+      error: null,
+      instance: "0123456789ab",
+      lastRejection: { reason: "wrong_token", at: Math.floor(Date.now() / 1000) - 120, count: 3 },
+    });
+    const fetch = vi.fn(async (_path: string, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("Authorization");
+      if (authorization !== "Bearer secret") return new Response("Toodo MCP: this server does not accept the token.", { status: 401 });
+      const body = { jsonrpc: "2.0", id: 1, result: { serverInfo: { name: "toodo", title: "Toodo (server instance 0123456789ab)" } } };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    onTestFinished(() => void vi.unstubAllGlobals());
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+    await openSettings("Agent access");
+
+    const panel = await screen.findByRole("region", { name: "Agent access" });
+    expect(await within(panel).findByLabelText("Server instance")).toHaveTextContent("0123456789ab");
+    expect(within(panel).getByLabelText("Last rejected agent request")).toHaveTextContent(
+      "Last rejected agent request 2 min. ago: a token this server does not accept (old, mistyped, or another server's) (3 since the server started).",
+    );
+    expect(within(panel).getByRole("button", { name: "Copy MCP token for agents" })).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "Test connection" }));
+    expect(await within(panel).findByRole("status", { name: "Connection test" })).toHaveTextContent(
+      "Connected: instance 0123456789ab accepts this token.",
+    );
+    const [path, init] = fetch.mock.calls[0];
+    expect(path).toBe("/mcp");
+    expect(JSON.parse(init?.body as string)).toMatchObject({ method: "initialize" });
+  });
+
   it("shows the tunnels to remote machines", async () => {
     mocked.listMcpTunnels.mockResolvedValue([
       { machine: "devbox", state: "open", error: null },
@@ -1494,6 +1535,8 @@ describe("App", () => {
       url: "http://127.0.0.1:47615/mcp",
       token: "secret",
       error: "could not listen on port 47615: address in use",
+      instance: "0123456789ab",
+      lastRejection: null,
     });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();

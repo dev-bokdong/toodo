@@ -38,6 +38,8 @@ pub enum Caller {
 pub struct Gate {
     pub services: Arc<Services>,
     pub shared_token: Arc<String>,
+    /// The MCP token, which `/api` rejects with a reason of its own.
+    pub mcp_token: Arc<String>,
 }
 
 /// The hash a device's token is stored as. Tokens are 32 random bytes, so a fast hash
@@ -64,18 +66,22 @@ pub async fn require_access(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(presented) = mcp::bearer(request.headers()) else {
-        return mcp::unauthorized();
+    let rejected = |rejection| mcp::unauthorized(mcp::Surface::Api, rejection, None);
+    let presented = match mcp::bearer(request.headers()) {
+        Ok(presented) => presented,
+        Err(rejection) => return rejected(rejection),
     };
     let caller = if mcp::same_secret(presented, &gate.shared_token) {
         Caller::Shared
+    } else if mcp::same_secret(presented, &gate.mcp_token) {
+        return rejected(mcp::Rejection::OtherSurfaceToken);
     } else {
         let hash = token_hash(presented);
         let services = gate.services.clone();
         let found = blocking(move || Ok(lock(&services.storage).authenticate_device(&hash)?)).await;
         match found {
             Ok(Some(device)) => Caller::Device(device.id),
-            Ok(None) => return mcp::unauthorized(),
+            Ok(None) => return rejected(mcp::Rejection::WrongToken),
             Err(error) => return Reply::Failed(error).into_response(),
         }
     };

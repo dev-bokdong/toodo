@@ -227,6 +227,10 @@ impl Backend for Services {
     fn herdr(&self) -> &Herdr {
         &self.herdr
     }
+
+    fn server(&self) -> &ServerStatus {
+        &self.mcp
+    }
 }
 
 impl Runtime for Services {
@@ -329,7 +333,8 @@ fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Erro
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
     let storage = Storage::open(&config.data_dir.join(DATABASE_FILE))?;
-    let mcp_token = mcp::load_token(&config.data_dir.join(mcp::TOKEN_FILE))?;
+    let mcp_token_path = config.data_dir.join(mcp::TOKEN_FILE);
+    let mcp_token = mcp::load_token(&mcp_token_path)?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
     let web_token = mcp::load_token(&web_token_path)?;
     let push = push::Push::load(&config.data_dir, config.push_subject.clone())?;
@@ -350,7 +355,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         mcp: ServerStatus {
             url: mcp::url(port),
             token: Some(mcp_token.clone()),
+            token_file: Some(mcp_token_path.clone()),
+            instance: mcp::new_instance()?,
             error: None,
+            rejections: mcp::Rejections::default(),
         },
         tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port))),
         events: broadcast::channel(EVENT_BUFFER).0,
@@ -370,11 +378,14 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         config.web_dir.as_deref(),
     );
     println!(
-        "{}: listening on http://{} (data in {}, web access token in {})",
+        "{}: listening on http://{} (data in {}, web access token in {}, MCP token for \
+         agents in {}, instance {})",
         version(),
         config.listen,
         config.data_dir.display(),
-        web_token_path.display()
+        web_token_path.display(),
+        mcp_token_path.display(),
+        services.mcp.instance
     );
     match &config.web_dir {
         Some(dir) => println!("toodo-server: serving the web app from {}", dir.display()),
@@ -449,7 +460,8 @@ fn router(
         .route_layer(middleware::from_fn_with_state(
             devices::Gate {
                 services: services.clone(),
-                shared_token: Arc::new(web_token),
+                shared_token: Arc::new(web_token.clone()),
+                mcp_token: Arc::new(mcp_token.clone()),
             },
             devices::require_access,
         ))
@@ -458,7 +470,9 @@ fn router(
     let streams = Router::new()
         .route("/api/panes/stream", get(panes::stream))
         .with_state(services.clone());
-    let app = api.merge(streams).merge(mcp::router(services, mcp_token));
+    let app = api
+        .merge(streams)
+        .merge(mcp::router(services, mcp_token, Some(web_token)));
     match web_dir {
         Some(dir) => app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
@@ -573,7 +587,10 @@ mod tests {
             mcp: ServerStatus {
                 url: mcp::url(0),
                 token: None,
+                token_file: None,
+                instance: "0123456789ab".to_owned(),
                 error: None,
+                rejections: mcp::Rejections::default(),
             },
             tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
             events: broadcast::channel(EVENT_BUFFER).0,
@@ -584,6 +601,15 @@ mod tests {
 
     /// The status line of a request to `address`.
     fn status(address: SocketAddr, method: &str, path: &str, token: Option<&str>) -> String {
+        response(address, method, path, token)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    /// The whole response to a request to `address`.
+    fn response(address: SocketAddr, method: &str, path: &str, token: Option<&str>) -> String {
         use std::io::{Read, Write};
         let mut stream = std::net::TcpStream::connect(address).unwrap();
         let authorization = token
@@ -597,7 +623,7 @@ mod tests {
         .unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
-        response.lines().next().unwrap_or_default().to_owned()
+        response
     }
 
     fn serve_router(web_dir: Option<&Path>) -> (SocketAddr, tempfile::TempDir) {
@@ -640,6 +666,13 @@ mod tests {
         assert!(status(address, "POST", "/mcp", None).contains(" 401 "));
         assert!(status(address, "POST", "/mcp", Some("web")).contains(" 401 "));
         assert!(!status(address, "POST", "/mcp", Some("agent")).contains(" 401 "));
+        // A 401 says why, and which token goes where.
+        let body = |path, token| response(address, "POST", path, token);
+        assert!(body(rpc, None).contains("Toodo API: the request has no Authorization header"));
+        assert!(body(rpc, Some("agent")).contains("this is the MCP token for agents"));
+        assert!(body(rpc, Some("nope")).contains("neither the web sign-in token"));
+        assert!(body("/mcp", Some("web")).contains("this is the web sign-in token"));
+        assert!(body("/mcp", Some("nope")).contains("does not accept the token"));
         // Without a web build, other paths are simply not there.
         assert!(status(address, "GET", "/", None).contains(" 404 "));
         assert!(status(address, "GET", "/tasks", None).contains(" 404 "));

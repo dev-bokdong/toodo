@@ -487,12 +487,37 @@ export type MachineSettings = {
 	worktreeRoot: string | null,
 };
 
+export type McpRejection = {
+	reason: McpRejectionReason,
+	at: Timestamp,
+	/**  How many requests `/mcp` turned away since the server started. */
+	count: number,
+};
+
+/**  Why `/mcp` turned a request away. */
+export type McpRejectionReason = 
+/**  No `Authorization` header. */
+"no_header" | 
+/**  The header is not `Bearer <token>`. */
+"not_bearer" | 
+/**  A token this server does not accept, e.g. an old or another server's one. */
+"wrong_token" | 
+/**  The web sign-in token instead of the MCP token. */
+"web_token";
+
 export type McpServerInfo = {
 	url: string,
 	/**  Bearer token agents send in the `Authorization` header. */
 	token: string | null,
 	/**  Why the server is not running, e.g. its port is taken. */
 	error: string | null,
+	/**
+	 *  Tells this server apart from other Toodo servers; `401` answers from `/mcp` and
+	 *  the MCP `serverInfo` name it too.
+	 */
+	instance: string,
+	/**  The last request `/mcp` turned away, from agents here or on SSH machines. */
+	lastRejection: McpRejection | null,
 };
 
 /**  The reverse tunnel that lets agents on one SSH machine reach the MCP server. */

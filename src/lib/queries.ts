@@ -105,12 +105,12 @@ export function useSupersedeMemory() {
   });
 }
 
-/** Where agents reach Toodo's MCP server; fixed while the app runs. */
+/** Where agents reach Toodo's MCP server, and the last request it turned away. */
 export function useMcpServerInfo() {
   return useQuery({
     queryKey: queryKeys.mcpServerInfo,
     queryFn: () => commands.mcpServerInfo(),
-    staleTime: Infinity,
+    refetchInterval: 5000,
   });
 }
 
