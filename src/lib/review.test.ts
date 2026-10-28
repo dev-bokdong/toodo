@@ -40,6 +40,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       dependsOn: [],
       branch: null,
       worktreePath: null,
+      worktreeMissing: false,
       herdrWorkspaceId: null,
       pullRequestUrl: null,
       issue: null,

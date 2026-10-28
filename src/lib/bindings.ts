@@ -675,6 +675,8 @@ export type Task = {
 	dependsOn: TaskId[],
 	branch: string | null,
 	worktreePath: string | null,
+	/**  An active task has a branch but no checkout; restore it in the Toodo app. */
+	worktreeMissing: boolean,
 	herdrWorkspaceId: string | null,
 	pullRequestUrl: string | null,
 	/**  The GitHub issue this task works on; its pull request closes it on merge. */

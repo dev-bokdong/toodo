@@ -121,6 +121,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     dependsOn: [],
     branch: null,
     worktreePath: null,
+    worktreeMissing: false,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
     issue: null,
@@ -1414,6 +1415,20 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Open pull request for #1" })).toBeInTheDocument();
     expect(mocked.restoreTaskWorktree).toHaveBeenCalledWith(1);
     expect(screen.queryByRole("button", { name: "Restore worktree of #1" })).not.toBeInTheDocument();
+  });
+
+  it("offers restore when an active task has a missing recorded worktree", async () => {
+    const missing = task(1, 1, "Add login", {
+      status: "in_progress",
+      branch: "feat/add-login-1",
+      worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
+      worktreeMissing: true,
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [missing] });
+    await renderWorkspace();
+
+    expect(await screen.findByRole("button", { name: "Restore worktree of #1" })).toBeInTheDocument();
   });
 
   it("shows why a task could not be started", async () => {

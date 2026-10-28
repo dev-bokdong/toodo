@@ -727,7 +727,7 @@ function TaskRow({
         }
       : null;
   const restore: Action | null =
-    active && task.worktreePath === null && task.branch !== null
+    active && (task.worktreePath === null || task.worktreeMissing) && task.branch !== null
       ? {
           key: "restore", changesData: true,
           label: restoreWorktree.isPending ? "Restoring..." : "Restore worktree",

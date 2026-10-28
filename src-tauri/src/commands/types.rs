@@ -652,6 +652,8 @@ pub struct Task {
     pub depends_on: Vec<TaskId>,
     pub branch: Option<String>,
     pub worktree_path: Option<String>,
+    /// An active task has a branch but no checkout; restore it in the Toodo app.
+    pub worktree_missing: bool,
     pub herdr_workspace_id: Option<String>,
     pub pull_request_url: Option<String>,
     /// The GitHub issue this task works on; its pull request closes it on merge.
@@ -984,6 +986,12 @@ impl From<&model::Task> for Task {
             depends_on: task.depends_on.iter().copied().map(TaskId::from).collect(),
             branch: task.branch.clone(),
             worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
+            worktree_missing: task.branch.is_some()
+                && task.worktree_path.is_none()
+                && matches!(
+                    task.status,
+                    status::TaskStatus::InProgress | status::TaskStatus::InReview
+                ),
             herdr_workspace_id: task.herdr_workspace_id.clone(),
             pull_request_url: task.pull_request_url.clone(),
             issue: task.issue.as_ref().map(LinkedIssue::from),

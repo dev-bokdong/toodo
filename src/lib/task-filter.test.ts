@@ -13,6 +13,7 @@ function task(overrides: Partial<Task> = {}): Task {
     dependsOn: [],
     branch: null,
     worktreePath: null,
+    worktreeMissing: false,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
     issue: null,
