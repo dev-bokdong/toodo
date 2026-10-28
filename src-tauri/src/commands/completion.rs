@@ -217,7 +217,7 @@ fn open(
     })?;
     // A closed pull request is not reused: a new one is opened into the right base.
     let existing = github
-        .find_pull_request(&repository, &checkout.branch)?
+        .find_pull_request(&repository, &checkout.branch, &checkout.base)?
         .filter(|pull_request| pull_request.state != PullRequestState::Closed);
     if let Some(pull_request) = &existing {
         check_base(pull_request, &checkout.base)?;
@@ -437,6 +437,11 @@ fn settle(
             )));
         }
     }
+    let task = if settle == Settle::Confirm && task.pull_request_url.is_none() {
+        adopt_pull_request(storage, git, github, id)?.unwrap_or(task)
+    } else {
+        task
+    };
     let base = &workspace.default_base_branch;
     let pull_request_unmet = task
         .criteria
@@ -746,22 +751,22 @@ pub(crate) fn conclude(
     };
     // The pull requests of the branch on GitHub decide, not only the recorded one: an
     // agent may have opened one that the background check has not adopted yet.
-    let pull_requests = match &task.branch {
-        Some(branch) => branch_pull_requests(git, github, &workspace, branch)?,
-        None => Vec::new(),
+    let pull_request = match &task.branch {
+        Some(branch) => branch_pull_request(git, github, &workspace, branch)?,
+        None => None,
     };
-    if let Some(merged) = pull_requests
-        .iter()
-        .find(|pull_request| pull_request.state == PullRequestState::Merged)
+    if let Some(merged) = pull_request
+        .as_ref()
+        .filter(|pull_request| pull_request.state == PullRequestState::Merged)
     {
         return Err(CommandError::rejected(format!(
-            "pull request {} was merged; the task completes with the merge instead",
+            "pull request {} was merged; call complete_task without merged_with so the task completes with the merge instead",
             merged.url
         )));
     }
-    let closed = match pull_requests
-        .iter()
-        .find(|pull_request| pull_request.state == PullRequestState::Open)
+    let closed = match pull_request
+        .as_ref()
+        .filter(|pull_request| pull_request.state == PullRequestState::Open)
     {
         None => None,
         Some(open) => match open_pull_request {
@@ -910,23 +915,23 @@ pub(crate) fn complete_merged_with(
         )?,
         _ => Vec::new(),
     };
-    if let Some(branch) = &task.branch {
-        for pull_request in branch_pull_requests(git, github, &workspace, branch)? {
-            match pull_request.state {
-                PullRequestState::Merged => {
-                    return Err(CommandError::rejected(format!(
-                        "pull request {} of the task's own branch was merged; complete_task without merged_with completes the task with it",
-                        pull_request.url
-                    )));
-                }
-                PullRequestState::Open => {
-                    return Err(CommandError::rejected(format!(
-                        "pull request {} of the task's own branch is still open; close it first, since the task ships through {} instead",
-                        pull_request.url, merged_with.pull_request_url
-                    )));
-                }
-                PullRequestState::Closed => {}
+    if let Some(branch) = &task.branch
+        && let Some(pull_request) = branch_pull_request(git, github, &workspace, branch)?
+    {
+        match pull_request.state {
+            PullRequestState::Merged => {
+                return Err(CommandError::rejected(format!(
+                    "pull request {} of the task's own branch was merged; complete_task without merged_with completes the task with it",
+                    pull_request.url
+                )));
             }
+            PullRequestState::Open => {
+                return Err(CommandError::rejected(format!(
+                    "pull request {} of the task's own branch is still open; close it first, since the task ships through {} instead",
+                    pull_request.url, merged_with.pull_request_url
+                )));
+            }
+            PullRequestState::Closed => {}
         }
     }
     // A workspace herdr no longer has was already closed, e.g. by the user.
@@ -972,18 +977,17 @@ fn shipped_by(other: &model::Task) -> CommandResult<(model::MergedWith, Option<i
     }
 }
 
-/// The pull requests from `branch` into the base branch of `workspace` on GitHub, newest
-/// first. A repository without an `origin` remote, or whose `origin` is not on GitHub,
-/// has none.
-fn branch_pull_requests(
+/// The preferred pull request from `branch` into the workspace base branch.
+/// A repository without a GitHub origin has none.
+fn branch_pull_request(
     git: &Git,
     github: &GitHub,
     workspace: &model::Workspace,
     branch: &str,
-) -> CommandResult<Vec<PullRequest>> {
+) -> CommandResult<Option<PullRequest>> {
     let location = &workspace.location;
     if !git.has_origin(location)? {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let path = match location {
         WorkspaceLocation::Local { path } => path.as_str(),
@@ -991,51 +995,69 @@ fn branch_pull_requests(
     };
     let origin = git.origin_url(location, path)?;
     let Some(repository) = GitHubRepository::from_remote_url(&origin) else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    Ok(github.pull_requests_into(&repository, branch, &workspace.default_base_branch)?)
+    Ok(github.find_pull_request(&repository, branch, &workspace.default_base_branch)?)
 }
 
-/// Moves an `in_progress` task to `in_review` when its branch has an open or merged
-/// pull request into the workspace base branch, which was opened outside Toodo (e.g. by
-/// an agent in herdr). Unlike opening a pull request, nothing is pushed. Returns the
-/// task if it moved; a branch without a pull request, or with a closed one only, leaves
-/// it `in_progress`.
+/// Records an open or merged pull request opened outside Toodo for an active task,
+/// including one without a worktree, and moves it to (or keeps it in) `in_review`.
+/// Nothing is pushed. A branch without a pull request, or with a closed one only,
+/// leaves the task as it is.
 fn adopt_pull_request(
     storage: &StorageState,
     git: &Git,
     github: &GitHub,
     id: model::TaskId,
 ) -> CommandResult<Option<model::Task>> {
-    let checkout = checkout(storage, id)?;
-    if checkout.task.status != TaskStatus::InProgress {
+    let (task, workspace) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        (task, workspace)
+    };
+    if !matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview) {
         return Ok(None);
     }
-    let origin = git.origin_url(&checkout.location, &checkout.worktree)?;
-    let repository = GitHubRepository::from_remote_url(&origin).ok_or_else(|| {
-        CommandError::rejected(format!(
-            "remote origin {origin:?} is not a GitHub repository; pull requests are looked up on GitHub only"
-        ))
-    })?;
-    let Some(pull_request) = github
-        .find_pull_request(&repository, &checkout.branch)?
+    let Some(branch) = &task.branch else {
+        return Ok(None);
+    };
+    let Some(pull_request) = branch_pull_request(git, github, &workspace, branch)?
         .filter(|pull_request| pull_request.state != PullRequestState::Closed)
     else {
         return Ok(None);
     };
-    check_base(&pull_request, &checkout.base)?;
-    let records = commit_records(git, &checkout)?;
+    check_base(&pull_request, &workspace.default_base_branch)?;
+    let records = match &task.worktree_path {
+        Some(worktree) => commit_records(
+            git,
+            &Checkout {
+                task: task.clone(),
+                location: workspace.location.clone(),
+                base: workspace.default_base_branch.clone(),
+                branch: branch.clone(),
+                worktree: worktree.to_string(),
+            },
+        )?,
+        None => Vec::new(),
+    };
     let mut storage = lock(storage);
     // The task may have been paused while git and gh ran.
     let task = storage
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
-    if task.status != TaskStatus::InProgress {
+    if !matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview)
+        || task.pull_request_url.is_some()
+    {
         return Ok(None);
     }
     // After a merge the base may already contain the branch, so its log can be empty;
     // keep the commits recorded before in that case.
-    let records = if records.is_empty() && pull_request.state == PullRequestState::Merged {
+    let records = if records.is_empty() {
         storage.list_commit_records(id)?
     } else {
         records
@@ -1129,9 +1151,8 @@ fn check_pull_requests(
     let adoptable: Vec<_> = tasks
         .iter()
         .filter(|task| {
-            task.status == TaskStatus::InProgress
+            matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview)
                 && task.branch.is_some()
-                && task.worktree_path.is_some()
                 && task.pull_request_url.is_none()
                 && task
                     .criteria
@@ -1664,6 +1685,203 @@ mod tests {
             .collect()
     }
 
+    fn merged_before_closed() -> Result<String, GitError> {
+        Ok(format!(
+            "[{},{}]",
+            pull_request_json("CLOSED", "main"),
+            pull_request_json("MERGED", "main").replace("/pull/12", "/pull/11")
+        ))
+    }
+
+    #[test]
+    fn completing_discovers_a_merged_pull_request_before_a_newer_closed_one() {
+        for status in [TaskStatus::InProgress, TaskStatus::InReview] {
+            for worktree in [true, false] {
+                let fixture = local_fixture();
+                if status == TaskStatus::InReview {
+                    lock(&fixture.storage)
+                        .set_task_status(fixture.task.id, status)
+                        .unwrap();
+                }
+                if !worktree {
+                    lock(&fixture.storage)
+                        .clear_task_worktree(fixture.task.id)
+                        .unwrap();
+                }
+                let mut git_results = vec![
+                    Ok("origin\n".to_owned()),
+                    origin("git@github.com:acme/toodo.git"),
+                ];
+                if worktree {
+                    git_results.push(log(&[]));
+                }
+                let gh_runner = runner(vec![
+                    merged_before_closed(),
+                    viewed("MERGED", "main").map(|value| value.replace("/pull/12", "/pull/11")),
+                    merged_details(&[SHA_A])
+                        .map(|value| value.replace("\"number\":12", "\"number\":11")),
+                ]);
+                let (git, github) = adapters(&runner(git_results), &gh_runner);
+
+                let done = complete(
+                    &fixture.storage,
+                    &git,
+                    &github,
+                    &closing_herdr().0,
+                    fixture.task.id,
+                )
+                .unwrap();
+
+                assert_eq!(done.status, TaskStatus::Done);
+                assert_eq!(done.resolution, Some(model::TaskResolution::Merged));
+                assert_eq!(
+                    done.pull_request_url.as_deref(),
+                    Some("https://github.com/acme/toodo/pull/11")
+                );
+                assert_eq!(done.pull_request_merged_at, Some(MERGED_AT.1));
+                assert_eq!(done.pull_request.as_ref().unwrap().number, 11);
+                assert_eq!(recorded_shas(&fixture), [SHA_A]);
+                assert!(dependent_ready(&fixture));
+                assert_eq!(stored(&fixture, &fixture.task), done);
+            }
+        }
+    }
+
+    #[test]
+    fn background_checks_discover_merged_pull_requests_without_a_worktree() {
+        for status in [TaskStatus::InProgress, TaskStatus::InReview] {
+            let fixture = local_fixture();
+            if status == TaskStatus::InReview {
+                lock(&fixture.storage)
+                    .set_task_status(fixture.task.id, status)
+                    .unwrap();
+            }
+            lock(&fixture.storage)
+                .clear_task_worktree(fixture.task.id)
+                .unwrap();
+            let git_runner = runner(vec![
+                Ok("origin\n".to_owned()),
+                origin("git@github.com:acme/toodo.git"),
+            ]);
+            let gh_runner = runner(vec![
+                merged_before_closed(),
+                viewed("MERGED", "main").map(|value| value.replace("/pull/12", "/pull/11")),
+                merged_details(&[SHA_A])
+                    .map(|value| value.replace("\"number\":12", "\"number\":11")),
+            ]);
+            let (git, github) = adapters(&git_runner, &gh_runner);
+            let mut failures = HashMap::new();
+
+            check_pull_requests(
+                &fixture.storage,
+                &git,
+                &github,
+                &closing_herdr().0,
+                &Recorder::default(),
+                &mut failures,
+                &PullRequestStatusState::default(),
+            );
+
+            let done = stored(&fixture, &fixture.task);
+            assert_eq!(done.status, TaskStatus::Done);
+            assert_eq!(done.resolution, Some(model::TaskResolution::Merged));
+            assert_eq!(
+                done.pull_request_url.as_deref(),
+                Some("https://github.com/acme/toodo/pull/11")
+            );
+            assert_eq!(done.pull_request_merged_at, Some(MERGED_AT.1));
+            assert_eq!(done.pull_request.as_ref().unwrap().number, 11);
+            assert!(failures.is_empty(), "{failures:?}");
+            assert!(dependent_ready(&fixture));
+        }
+    }
+
+    #[test]
+    fn adopting_an_open_pull_request_without_a_worktree_keeps_recorded_commits() {
+        for status in [TaskStatus::InProgress, TaskStatus::InReview] {
+            let fixture = local_fixture();
+            if status == TaskStatus::InReview {
+                lock(&fixture.storage)
+                    .set_task_status(fixture.task.id, status)
+                    .unwrap();
+            }
+            lock(&fixture.storage)
+                .clear_task_worktree(fixture.task.id)
+                .unwrap();
+            let records = vec![model::CommitRecord {
+                task_id: fixture.task.id,
+                sha: SHA_A.to_owned(),
+                message: "Add login".to_owned(),
+                author: "Ada <ada@example.com>".to_owned(),
+                committed_at: 1,
+            }];
+            lock(&fixture.storage)
+                .replace_commit_records(fixture.task.id, &records)
+                .unwrap();
+            let git_runner = runner(vec![
+                Ok("origin\n".to_owned()),
+                origin("git@github.com:acme/toodo.git"),
+            ]);
+            let gh_runner = runner(vec![Ok(format!(
+                "[{},{}]",
+                pull_request_json("CLOSED", "main"),
+                pull_request_json("OPEN", "main").replace("/pull/12", "/pull/11"),
+            ))]);
+            let (git, github) = adapters(&git_runner, &gh_runner);
+
+            let adopted = adopt_pull_request(&fixture.storage, &git, &github, fixture.task.id)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(adopted.status, TaskStatus::InReview);
+            assert_eq!(
+                adopted.pull_request_url.as_deref(),
+                Some("https://github.com/acme/toodo/pull/11")
+            );
+            assert_eq!(adopted.pull_request_merged_at, None);
+            assert_eq!(recorded_shas(&fixture), [SHA_A]);
+            assert_eq!(git_commands(&git_runner), ["remote", "remote"]);
+        }
+    }
+
+    #[test]
+    fn merged_with_rejects_an_own_merged_pull_request_before_a_newer_closed_one() {
+        let fixture = local_fixture();
+        lock(&fixture.storage)
+            .clear_task_worktree(fixture.task.id)
+            .unwrap();
+        let git_runner = runner(vec![
+            Ok("origin\n".to_owned()),
+            origin("git@github.com:acme/toodo.git"),
+        ]);
+        let gh_runner = runner(vec![
+            viewed("MERGED", "main").map(|value| value.replace("/pull/12", "/pull/13")),
+            merged_before_closed(),
+        ]);
+        let (git, github) = adapters(&git_runner, &gh_runner);
+
+        let error = complete_merged_with(
+            &fixture.storage,
+            &git,
+            &github,
+            &no_herdr(),
+            fixture.task.id,
+            MergedWithTarget::PullRequest("https://github.com/acme/toodo/pull/13".to_owned()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error
+                .message
+                .contains("https://github.com/acme/toodo/pull/11")
+        );
+        assert_eq!(
+            stored(&fixture, &fixture.task).status,
+            TaskStatus::InProgress
+        );
+    }
+
     #[test]
     fn an_open_pull_request_opened_outside_toodo_is_adopted_and_pushed() {
         let fixture = local_fixture();
@@ -1928,7 +2146,7 @@ mod tests {
 
         let error = complete(
             &fixture.storage,
-            &no_git(),
+            &Git::new(Box::new(runner(vec![Ok(String::new())]))),
             &github,
             &no_herdr(),
             fixture.task.id,
@@ -2267,7 +2485,7 @@ mod tests {
         let fixture = local_fixture();
         let before = stored(&fixture, &fixture.task);
         for open_pull_request in [OpenPullRequest::Reject, OpenPullRequest::Close] {
-            let gh_runner = runner(vec![listed("MERGED", "main")]);
+            let gh_runner = runner(vec![merged_before_closed()]);
             let (git, github) = adapters(&github_checkout(&[SHA_A]), &gh_runner);
             let error = conclude(
                 &fixture.storage,
@@ -2592,7 +2810,9 @@ mod tests {
     fn a_pull_request_opened_outside_toodo_moves_an_in_progress_task_to_review() {
         let fixture = local_fixture();
         let git_runner = runner(vec![
+            Ok("origin\n".to_owned()),
             origin("git@github.com:acme/toodo.git"),
+            Ok("origin\n".to_owned()),
             origin("git@github.com:acme/toodo.git"),
             log(&[SHA_A]),
         ]);
@@ -2636,7 +2856,10 @@ mod tests {
         assert!(!dependent_ready(&fixture));
         assert!(failures.is_empty());
         // Nothing is pushed: the pull request already has the branch.
-        assert_eq!(git_commands(&git_runner), ["remote", "remote", "log"]);
+        assert_eq!(
+            git_commands(&git_runner),
+            ["remote", "remote", "remote", "remote", "log"]
+        );
         assert_eq!(
             invocations(&gh_runner)[1].args[..6],
             [
@@ -2736,7 +2959,11 @@ mod tests {
     fn a_pull_request_opened_by_an_agent_gets_a_closing_reference_in_the_same_check() {
         let fixture = local_fixture();
         link_issue(&fixture);
-        let git_runner = runner(vec![origin("git@github.com:acme/toodo.git"), log(&[SHA_A])]);
+        let git_runner = runner(vec![
+            Ok("origin\n".to_owned()),
+            origin("git@github.com:acme/toodo.git"),
+            log(&[SHA_A]),
+        ]);
         let gh_runner = runner(vec![
             listed("OPEN", "main"),
             viewed("OPEN", "main"),
@@ -2776,7 +3003,11 @@ mod tests {
     #[test]
     fn an_in_progress_task_whose_pull_request_was_merged_is_completed_in_one_check() {
         let fixture = local_fixture();
-        let git_runner = runner(vec![origin("git@github.com:acme/toodo.git"), log(&[])]);
+        let git_runner = runner(vec![
+            Ok("origin\n".to_owned()),
+            origin("git@github.com:acme/toodo.git"),
+            log(&[]),
+        ]);
         let gh_runner = runner(vec![
             listed("MERGED", "main"),
             viewed("MERGED", "main"),
@@ -2812,7 +3043,9 @@ mod tests {
     fn a_closed_pull_request_or_one_into_another_base_keeps_the_task_in_progress() {
         let fixture = local_fixture();
         let git_runner = runner(vec![
+            Ok("origin\n".to_owned()),
             origin("git@github.com:acme/toodo.git"),
+            Ok("origin\n".to_owned()),
             origin("git@github.com:acme/toodo.git"),
         ]);
         let gh_runner = runner(vec![listed("CLOSED", "main"), listed("OPEN", "develop")]);
@@ -2847,7 +3080,10 @@ mod tests {
 
         assert_eq!(stored(&fixture, &fixture.task), fixture.task);
         assert!(recorder.0.lock().unwrap().is_empty());
-        assert_eq!(git_commands(&git_runner), ["remote", "remote"]);
+        assert_eq!(
+            git_commands(&git_runner),
+            ["remote", "remote", "remote", "remote"]
+        );
     }
 
     #[test]
@@ -2925,7 +3161,8 @@ mod tests {
     fn a_branch_merged_locally_completes_a_task_without_origin_or_gh() {
         let fixture = local_criteria_fixture(vec![NewCriterion::merge(false)]);
         set_start(&fixture, SHA_A);
-        let mut results = merged_locally();
+        let mut results = vec![Ok(String::new())];
+        results.extend(merged_locally());
         // The commits since the start; `origin/<start>` does not exist.
         results.extend([Err(failed()), log(&[SHA_A, SHA_B])]);
         let git_runner = runner(results);
@@ -2950,7 +3187,7 @@ mod tests {
             .map(|invocation| invocation.args[2..].join(" "))
             .collect();
         assert_eq!(
-            commands[..3],
+            commands[1..4],
             [
                 "rev-parse --verify --quiet refs/heads/feat/add-login-1".to_owned(),
                 "rev-list --count refs/heads/main..refs/heads/feat/add-login-1".to_owned(),
@@ -2963,6 +3200,7 @@ mod tests {
     fn a_branch_ahead_of_its_base_is_not_merged_and_keeps_where_it_started() {
         let fixture = local_criteria_fixture(vec![NewCriterion::merge(false)]);
         let git_runner = runner(vec![
+            Ok(String::new()),
             Ok(format!("{SHA_B}\n")),
             Ok("3\n".to_owned()),
             Ok(format!("{SHA_A}\n")),
@@ -3042,7 +3280,7 @@ mod tests {
         );
         assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
 
-        let git_runner = runner(vec![Err(failed()), log(&[SHA_B])]);
+        let git_runner = runner(vec![Ok(String::new()), Err(failed()), log(&[SHA_B])]);
         let git = Git::new(Box::new(git_runner.clone()));
         let (herdr, _) = closing_herdr();
         let done = complete(&fixture.storage, &git, &github, &herdr, fixture.task.id).unwrap();
@@ -3058,7 +3296,7 @@ mod tests {
 
         let error = complete(
             &fixture.storage,
-            &no_git(),
+            &Git::new(Box::new(runner(vec![Ok(String::new())]))),
             &github,
             &no_herdr(),
             fixture.task.id,
@@ -3082,7 +3320,7 @@ mod tests {
     #[test]
     fn a_task_without_criteria_is_completed_when_confirmed() {
         let fixture = local_criteria_fixture(Vec::new());
-        let git_runner = runner(vec![Err(failed()), Ok(String::new())]);
+        let git_runner = runner(vec![Ok(String::new()), Err(failed()), Ok(String::new())]);
         let git = Git::new(Box::new(git_runner.clone()));
         let gh_runner = runner(Vec::new());
         let github = GitHub::new(Box::new(gh_runner.clone()));

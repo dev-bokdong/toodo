@@ -1627,9 +1627,9 @@ mod tests {
     }
 
     #[test]
-    fn complete_is_rejected_for_a_task_that_is_not_in_review() {
+    fn complete_is_rejected_when_the_branch_has_no_pull_request() {
         let (storage, task, _) = started(false);
-        let (git, _) = fake(Git::new, vec![]);
+        let (git, _) = fake(Git::new, vec![Ok(String::new())]);
         let (github, gh_runner) = fake(GitHub::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
 
