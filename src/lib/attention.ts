@@ -1,4 +1,22 @@
-import type { AgentStatus, Task, TaskAgentStatus, TaskPullRequestStatus } from "@/lib/bindings";
+import type { AgentStatus, Task, TaskAgentStatus, TaskId, TaskNote, TaskPullRequestStatus } from "@/lib/bindings";
+import { prerequisitesResolved } from "@/lib/task-graph";
+
+/**
+ * The blocker reported on `task` that still stands: its latest note, if that is a blocker. A
+ * later progress note means the work got past it; finishing the task, or starting it again
+ * after the blocker (resuming a paused task), ends it too. The blocker a pause by a new
+ * prerequisite records ends once the prerequisites no longer block the task. `byId` holds the
+ * tasks of every workspace, since a prerequisite may belong to another one.
+ */
+export function openBlocker(task: Task, byId: ReadonlyMap<TaskId, Task>): TaskNote | null {
+  const latest = task.notes.at(-1);
+  if (task.status === "done" || latest?.kind !== "blocker") {
+    return null;
+  }
+  const resumed = task.timeline.some((event) => event.status === "in_progress" && event.at > latest.at);
+  const unblocked = latest.at === task.milestones.pausedAt && prerequisitesResolved(task, byId);
+  return resumed || unblocked ? null : latest;
+}
 
 /** Why a task waits on the user, most urgent first. */
 export const attentionReasons = ["agent_blocked", "blocker_note", "ci_failed", "changes_requested"] as const;
@@ -20,6 +38,7 @@ export function needsAttention(
   tasks: Task[],
   agentStatuses: TaskAgentStatus[],
   pullRequestStatuses: TaskPullRequestStatus[],
+  byId: ReadonlyMap<TaskId, Task> = new Map(tasks.map((task) => [task.id, task])),
 ): AttentionItem[] {
   const agents = new Map(agentStatuses.map((entry) => [entry.taskId, entry.status]));
   const pullRequests = new Map(pullRequestStatuses.map((entry) => [entry.taskId, entry]));
@@ -35,8 +54,7 @@ export function needsAttention(
           case "agent_blocked":
             return agentStatus === "blocked";
           case "blocker_note":
-            // A later progress note means the agent got past the blocker.
-            return task.status !== "done" && task.notes.at(-1)?.kind === "blocker";
+            return openBlocker(task, byId) !== null;
           case "ci_failed":
             return pullRequest?.checks === "failing";
           case "changes_requested":

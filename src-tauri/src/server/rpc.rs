@@ -233,8 +233,8 @@ commands!(s => {
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
         tasks::delete_task(State(&s.storage), State(&s.herdr), id, force)
     );
-    "add_dependency"(task_id: TaskId, depends_on: TaskId) => sync Reply::result(
-        tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on)
+    "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
+        tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
     );
     "remove_dependency"(task_id: TaskId, depends_on: TaskId) => sync Reply::result(
         tasks::remove_dependency(State(&s.storage), task_id, depends_on)

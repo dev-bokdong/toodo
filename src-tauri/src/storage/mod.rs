@@ -40,7 +40,7 @@ pub use criteria::{CriterionCheck, CriterionEdit};
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
 pub use search::TaskSearch;
-pub use tasks::{AddedDependencies, NewTask};
+pub use tasks::{AddedDependencies, DependencyChange, NewTask, PauseRule};
 pub use workspaces::NewWorkspace;
 
 pub type Result<T> = std::result::Result<T, StorageError>;
@@ -123,6 +123,21 @@ pub enum StorageError {
     DependenciesNotDone {
         task: TaskId,
         blockers: Vec<BlockingDependency>,
+    },
+    /// A `done` task cannot wait on new prerequisites.
+    PrerequisiteOfDoneTask {
+        task: TaskId,
+        depends_on: Vec<TaskId>,
+    },
+    /// The dependency to remove does not exist.
+    DependencyNotFound {
+        task: TaskId,
+        depends_on: TaskId,
+    },
+    /// The related link to remove does not exist.
+    RelationNotFound {
+        task: TaskId,
+        related: TaskId,
     },
     /// A task cannot be related to itself.
     SelfRelation(TaskId),
@@ -207,6 +222,22 @@ impl fmt::Display for StorageError {
                     .collect();
                 write!(f, "task {task} cannot start yet: {}", blockers.join("; "))
             }
+            Self::PrerequisiteOfDoneTask { task, depends_on } => {
+                let ids: Vec<String> = depends_on.iter().map(TaskId::to_string).collect();
+                write!(
+                    f,
+                    "task {task} is done, so it cannot wait on new prerequisites; for more work that needs them, create a follow-up task with create_task and depends_on [{}]",
+                    ids.join(", ")
+                )
+            }
+            Self::DependencyNotFound { task, depends_on } => write!(
+                f,
+                "task {task} does not depend on {depends_on}; get_task {task} lists the tasks it depends on (dependsOn), and task_id is the task that waits"
+            ),
+            Self::RelationNotFound { task, related } => write!(
+                f,
+                "tasks {task} and {related} are not related; get_task {task} lists its related tasks"
+            ),
             Self::SelfRelation(id) => write!(f, "task {id} cannot be related to itself"),
             Self::CriterionNotFound { task, criterion } => {
                 write!(f, "task {task} has no criterion {criterion}")

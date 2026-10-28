@@ -33,6 +33,18 @@ pub struct TaskRelation {
     pub related_id: TaskId,
 }
 
+/// What adding a prerequisite in the app did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyOutcome {
+    /// The dependency was added, pausing the task if it blocks it and the pause was
+    /// confirmed.
+    Added,
+    /// The prerequisite would pause the task, which is in progress; nothing was added.
+    /// Ask the user, then add it again with the pause confirmed.
+    ConfirmPause,
+}
+
 /// Seconds since the Unix epoch (UTC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]

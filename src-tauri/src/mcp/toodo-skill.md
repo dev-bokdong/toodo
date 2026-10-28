@@ -125,7 +125,8 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
    `add_related` to earlier tasks it builds on that it does not have to wait for.
 3. Tell the user which tasks you created and why this task needs them.
 4. Call `add_dependency` once, with `task_id` = your task and `depends_on` = every
-   prerequisite. This pauses your task.
+   prerequisite. This pauses your task; the reply's `paused` and `message` confirm it.
+   `get_task` and `list_tasks` show `ready` and `blockedBy` for any task.
 5. End your turn. Do not continue the implementation and do not open a pull request; the
    user resumes the task in the Toodo app once its prerequisites are done.
 

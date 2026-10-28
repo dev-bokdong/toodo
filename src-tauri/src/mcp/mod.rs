@@ -521,9 +521,18 @@ impl ToodoMcp {
     }
 
     fn announce(&self, result: CommandResult<Task>) -> Result<CallToolResult, ErrorData> {
-        if let Ok(task) = &result {
+        self.announce_with(result, |task| task)
+    }
+
+    /// [`Self::announce`] for a reply that carries the changed task, which `task` picks.
+    fn announce_with<T: Serialize>(
+        &self,
+        result: CommandResult<T>,
+        task: impl FnOnce(&T) -> &Task,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Ok(changed) = &result {
             self.backend
-                .tasks_changed(model::WorkspaceId(task.workspace_id.0));
+                .tasks_changed(model::WorkspaceId(task(changed).workspace_id.0));
         }
         reply(result)
     }
@@ -582,7 +591,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "List tasks with status and depends_on, of one workspace or of all workspaces."
+        description = "List tasks with status and depends_on, of one workspace or of all workspaces. Each task has ready (planned and nothing blocks it, so start_task or resume_task can begin it now) and blockedBy: the tasks it depends on that are not done yet, or done as not_adopted, which never unblocks it."
     )]
     fn list_tasks(
         &self,
@@ -602,7 +611,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Read one task with its whole history: description, status timeline, progress and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). Use it to learn what an earlier task decided, and follow its links with further get_task calls."
+        description = "Read one task with its whole history: description, status timeline, progress and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls."
     )]
     fn get_task(
         &self,
@@ -624,7 +633,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Remove the related link between two tasks, given in either order. Returns task_id's details."
+        description = "Remove the related link between two tasks, given in either order. A link that does not exist is rejected. Returns task_id's details."
     )]
     fn remove_related(
         &self,
@@ -797,13 +806,14 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Make task_id depend on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": [3, 4]}. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session."
+        description = "Make task_id depend on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": [3, 4]}. Rejects self and cyclic dependencies and a done task_id (create a follow-up task instead); one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused and a blocker note names what it waits on; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session. An in_review task is not paused; call pause_task if it must wait. Returns {task, paused, message}: task is task_id's details with each prerequisite's title and status, and message says what the change means and what to do next."
     )]
     fn add_dependency(
         &self,
         Parameters(request): Parameters<tools::AddDependencies>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::add_dependencies(storage, request))
+        let result = tools::add_dependencies(&mut lock(self.backend.storage()), request);
+        self.announce_with(result, |reply| &reply.task.task)
     }
 
     #[tool(
@@ -898,7 +908,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Conclude an in_progress or in_review task whose work was not shipped: research not adopted, a duplicate, or work no longer needed. This means concluded, not completed as shipped: the task becomes done (not_adopted) with a required non-empty note as its conclusion, its herdr workspace closes, and dependents stay blocked. For work shipped without a pull request, call complete_task with without_pull_request: true and note instead; for work shipped in another task's merged PR use merged_with. Rejected if its branch has a merged PR (call complete_task without optional arguments) or an open PR, even unrecorded, which only the user closes by concluding in the app. Never conclude your own task, the one current_task finds."
+        description = "Conclude an in_progress or in_review task whose work was not shipped: research not adopted, a duplicate, or work no longer needed. This means concluded, not completed as shipped: the task becomes done (not_adopted) with a required non-empty note as its conclusion, its herdr workspace closes, and dependents stay blocked; the reply lists them as blockedDependents with what to do for each. For work shipped without a pull request, call complete_task with without_pull_request: true and note instead; for work shipped in another task's merged PR use merged_with. Rejected if its branch has a merged PR (call complete_task without optional arguments) or an open PR, even unrecorded, which only the user closes by concluding in the app. Never conclude your own task, the one current_task finds."
     )]
     async fn conclude_task(
         &self,
@@ -915,17 +925,18 @@ impl ToodoMcp {
                 )
             })
             .await?;
-        self.announce(result)
+        self.announce_with(result, |concluded| &concluded.task)
     }
 
     #[tool(
-        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}."
+        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume."
     )]
     fn remove_dependency(
         &self,
         Parameters(request): Parameters<tools::Dependency>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::remove_dependency(storage, request))
+        let result = tools::remove_dependency(&mut lock(self.backend.storage()), request);
+        self.announce_with(result, |reply| &reply.task.task)
     }
 }
 

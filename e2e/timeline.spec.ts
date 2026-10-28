@@ -57,8 +57,8 @@ test("selecting a bar dims the tasks it does not depend on or lead to", async ({
   const [before, middle, after, apart] = await Promise.all(
     ["Before", "Middle", "After", "Apart"].map((title) => createTask(server, { workspaceId: 1, title })),
   );
-  await server.rpc("add_dependency", { taskId: middle.id, dependsOn: before.id });
-  await server.rpc("add_dependency", { taskId: after.id, dependsOn: middle.id });
+  await server.rpc("add_dependency", { taskId: middle.id, dependsOn: before.id, confirmPause: false });
+  await server.rpc("add_dependency", { taskId: after.id, dependsOn: middle.id, confirmPause: false });
   await app.reload();
   await openTimeline(app);
 

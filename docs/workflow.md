@@ -24,23 +24,39 @@ planned -----------------> in_progress ---------> in_review ---------> done (mer
 | `done` | Finished. Its `resolution` says how: `merged` (its completion criteria are met, e.g. its pull request is merged; dependents can start from the updated base branch) or `not_adopted` (concluded without merging, see step 7b; dependents stay blocked). |
 
 Whether a `planned` task can be started is not a state: it can be started once every
-task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**), and its dependencies can change while it
-is `planned` or `in_progress`. The UI names a `planned` task that was worked on before "Paused" and
-offers "Resume" instead of "Start".
+task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**). Its
+dependencies can change while it is `planned` or `in_progress`, and through MCP also while
+it is `in_review`; a `done` task cannot get new prerequisites (plan a follow-up task that
+depends on them instead). Removing a dependency that does not exist, or a related link
+that does not exist, is rejected. The UI names a `planned` task that was worked on before
+"Paused" and offers "Resume" instead of "Start". MCP's `list_tasks` and `get_task` give
+each task `ready` and `blockedBy`, the tasks it depends on that are not done yet or were
+not adopted.
 
 Work found while a task is in progress that the task needs before it can finish, such as
 fixes found while verifying it, becomes a **prerequisite** of that task, never a
 dependent: the task cannot finish before the fixes, so the fixes must not wait for it.
 Adding a prerequisite that is not done to an `in_progress` task, in the app or by an agent
-through MCP, pauses the task in the same step; the worktree and branch stay. In the app,
-Toodo asks for confirmation first ("Pause and add"), whatever the state of the task's
-agent, and then closes its herdr workspace, since that stops the agent. An agent's
-`add_dependency` cannot wait for that answer, so it leaves the workspace open: the paused
+through MCP, pauses the task in the same step; the worktree and branch stay, and a
+blocker note on the task names the prerequisites it waits on. In the app, Toodo asks for
+confirmation first ("Pause and add"), whatever the state of the task's agent, and then
+closes its herdr workspace, since that stops the agent. The server decides whether the
+new prerequisite pauses the task: the app adds it without confirmation, and the server
+adds nothing and asks for the confirmation when it would pause the task. An `in_review`
+task is not paused; the agent's reply says so, and `pause_task` pauses it if it must wait.
+An agent's `add_dependency` cannot wait for that answer, so it leaves the workspace open,
+and its reply says whether the task was paused and what to do next: the paused
 task then asks whether to close it ("Close workspace" or "Keep open", after which a small
 "Close workspace" button stays), and a notification tells the user when the app
 is in the background. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
-until those prerequisites are done; resuming opens the kept worktree in herdr again. If
-herdr fails to close the workspace, the task stays paused and the error says so.
+until those prerequisites are done, or their dependencies are removed; it is then shown as
+ready. Resuming opens the kept worktree in herdr again. If herdr fails to close the
+workspace, the task stays paused and the error says so.
+
+A blocker reported by an agent (`report_blocker`), or the one a pause by a new
+prerequisite records, shows as a "Blocker" chip on the task and puts the task under
+"Needs attention" until a later progress note, the task's completion, or resuming it; the
+one a pause recorded also ends once its prerequisites no longer block the task.
 
 Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
 keeps its branch, worktree, herdr workspace, commit records, and pull request, so
@@ -55,7 +71,26 @@ app (steps 3, 7, and 7b) and the same status history, so a task can go from requ
 merge without the user. Two differences: concluding through MCP rejects a task whose
 branch has a pull request still open, recorded or not, instead of closing it, and agents are told never to start,
 complete, or conclude their own task, whose pull request's merge completes it. Deleting
-(step 8) stays in the app.
+(step 8) stays in the app. `conclude_task` replies with the dependents the conclusion
+leaves blocked and how to unblock each.
+
+What the app and MCP can each do with a task:
+
+| Action | App | MCP |
+| --- | --- | --- |
+| Create and edit tasks | Yes | Yes (`create_task`, `update_task`) |
+| Add and remove dependencies and related links | Yes, while `planned` or `in_progress` | Yes, also while `in_review` |
+| See whether a task is ready and what blocks it | Status chips and "Waiting on" | `ready` and `blockedBy` |
+| Start, resume, and pause | Yes | Yes (`start_task`, `resume_task`, `pause_task`) |
+| Check manual criteria | Yes | Yes (`check_criterion`) |
+| Complete | Yes | Yes (`complete_task`) |
+| Complete through another task's pull request | Yes | Yes (`complete_task` with `merged_with`) |
+| Reopen a done task or change its outcome | Yes (step 7d) | No |
+| Conclude without merging | Yes, closing an open pull request | Yes, rejected while a pull request is open |
+| Record progress and blockers | Notes are shown | Yes (`add_progress_note`, `report_blocker`) |
+| Close a paused task's herdr workspace | Yes | No |
+| Open a pull request, link or create an issue | Yes | No (agents use `gh`) |
+| Delete a task | Yes | No |
 
 Every state change is recorded with its time in the task's status history, which feeds
 the timeline view and year-end reports (see

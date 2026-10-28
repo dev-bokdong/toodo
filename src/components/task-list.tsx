@@ -117,7 +117,6 @@ import {
   freshnessWarning,
   isNotAdopted,
   isPaused,
-  pausesStartedTask,
   waitingPrerequisites,
   type TimelineScale,
 } from "@/lib/task-graph";
@@ -132,7 +131,7 @@ import {
   type ShownStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { needsAttention } from "@/lib/attention";
+import { needsAttention, openBlocker } from "@/lib/attention";
 import { formatFull, formatWhen, reachedMilestones } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { firstParagraph, markdownPreview } from "@/lib/markdown";
@@ -354,7 +353,9 @@ export function TaskList({
               {groupTasks(
                 filtered,
                 context.byId,
-                needsAttention(filtered, agentStatuses.data ?? [], pullRequestStatuses.data ?? []).map((item) => item.task.id),
+                needsAttention(filtered, agentStatuses.data ?? [], pullRequestStatuses.data ?? [], context.byId).map(
+                  (item) => item.task.id,
+                ),
               ).map(({ group, tasks: grouped }) => {
                 const collapsed = group === "done" && !(doneShown ?? isFilterActive(taskFilter));
                 const name = taskGroupNames[group];
@@ -686,6 +687,8 @@ function TaskRow({
   const dependenciesEditable = dependencyEditableStatuses.includes(task.status);
   // A planned task can start (or a paused one resume) once these prerequisites are done.
   const waitingOn = waitingPrerequisites(task, context.byId);
+  // What an agent reported blocks the work, or the prerequisites a pause waits on.
+  const blocker = openBlocker(task, context.byId);
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const actionError =
     startTask.error ??
@@ -992,6 +995,16 @@ function TaskRow({
             )}
             {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
+            {blocker && (
+              <span
+                role="note"
+                aria-label={`Blocker on #${task.id}: ${blocker.body}`}
+                title={blocker.body}
+                className={cn("shrink-0 rounded-md px-1.5 text-xs font-medium", toneChip.attention)}
+              >
+                Blocker
+              </span>
+            )}
           </div>
           {detailed && <h3 className="break-words-keep text-base font-semibold leading-snug">{task.title}</h3>}
           {detailed && task.description.trim() && (
@@ -1040,7 +1053,7 @@ function TaskRow({
           pending={addDependency.isPending}
           onConfirm={() =>
             addDependency.mutate(
-              { id: task.id, dependsOn: confirmingPrerequisite },
+              { id: task.id, dependsOn: confirmingPrerequisite, confirmPause: true },
               { onSettled: () => setConfirmingPrerequisite(null) },
             )
           }
@@ -1097,11 +1110,11 @@ function TaskRow({
               onChange={(e) => {
                 if (e.target.value) {
                   const prerequisite = Number(e.target.value);
-                  if (pausesStartedTask(task, context.byId.get(prerequisite))) {
-                    setConfirmingPrerequisite(prerequisite);
-                  } else {
-                    addDependency.mutate({ id: task.id, dependsOn: prerequisite });
-                  }
+                  // The server tells whether it pauses this started task; then the user confirms it first.
+                  addDependency.mutate(
+                    { id: task.id, dependsOn: prerequisite, confirmPause: false },
+                    { onSuccess: (outcome) => outcome === "confirm_pause" && setConfirmingPrerequisite(prerequisite) },
+                  );
                 }
               }}
             >

@@ -36,6 +36,25 @@ pub struct AddedDependencies {
     pub paused: bool,
 }
 
+/// Whether adding prerequisites may pause an `in_progress` task that they block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseRule {
+    /// Pause the task in the same step.
+    Pause,
+    /// Add nothing and report [`DependencyChange::NeedsPause`] instead, so the user can
+    /// confirm the pause first.
+    Ask,
+}
+
+/// The outcome of [`Storage::add_dependencies_with`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyChange {
+    Added(Box<AddedDependencies>),
+    /// The prerequisites would pause the task and [`PauseRule::Ask`] was given; nothing
+    /// was written.
+    NeedsPause,
+}
+
 const TASK_TYPES: [TaskType; 8] = [
     TaskType::Feat,
     TaskType::Fix,
@@ -983,6 +1002,22 @@ impl Storage {
         task: TaskId,
         depends_on: &[TaskId],
     ) -> Result<AddedDependencies> {
+        match self.add_dependencies_with(task, depends_on, PauseRule::Pause)? {
+            DependencyChange::Added(added) => Ok(*added),
+            DependencyChange::NeedsPause => unreachable!("PauseRule::Pause always adds"),
+        }
+    }
+
+    /// [`Self::add_dependencies`], where `rule` decides whether a task that the new
+    /// prerequisites block may be paused. A `done` task is rejected: its work is finished
+    /// and cannot wait anymore. A paused task gets a blocker note naming the prerequisites
+    /// it waits on, stamped with the time of the pause.
+    pub fn add_dependencies_with(
+        &mut self,
+        task: TaskId,
+        depends_on: &[TaskId],
+        rule: PauseRule,
+    ) -> Result<DependencyChange> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         for &prerequisite in depends_on {
@@ -993,19 +1028,52 @@ impl Storage {
             )?;
         }
         let current = find_task(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
-        let paused =
-            current.status == TaskStatus::InProgress && !dag::is_ready(&all_tasks(&tx)?, task)?;
+        if current.status == TaskStatus::Done {
+            return Err(StorageError::PrerequisiteOfDoneTask {
+                task,
+                depends_on: depends_on.to_vec(),
+            });
+        }
+        let tasks = all_tasks(&tx)?;
+        let blockers = dag::blocking_dependencies(&tasks, task)?;
+        let paused = current.status == TaskStatus::InProgress && !blockers.is_empty();
         if paused {
+            if rule == PauseRule::Ask {
+                return Ok(DependencyChange::NeedsPause);
+            }
             let status = current.status.transition_to(TaskStatus::Planned)?;
             tx.execute(
                 "UPDATE tasks SET status = ?2 WHERE id = ?1",
                 params![task.0, status.as_str()],
             )?;
             record_event(&tx, task, status, at)?;
+            let titles: HashMap<TaskId, &str> = tasks
+                .iter()
+                .map(|task| (task.id, task.title.as_str()))
+                .collect();
+            let waiting: Vec<String> = blockers
+                .iter()
+                .map(|blocker| {
+                    let title = titles.get(&blocker.id).copied().unwrap_or_default();
+                    format!("#{} {title} ({})", blocker.id, blocker.status)
+                })
+                .collect();
+            tx.execute(
+                "INSERT INTO task_notes (task_id, kind, body, at) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    task.0,
+                    NoteKind::Blocker.as_str(),
+                    format!("Paused: waiting on {}", waiting.join(", ")),
+                    at
+                ],
+            )?;
         }
         let task = find_task(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
         tx.commit()?;
-        Ok(AddedDependencies { task, paused })
+        Ok(DependencyChange::Added(Box::new(AddedDependencies {
+            task,
+            paused,
+        })))
     }
 
     /// Forgets the herdr workspace of a task after it was closed; the worktree stays.
@@ -1020,14 +1088,17 @@ impl Storage {
         find_task(&self.conn, id)?.ok_or(StorageError::TaskNotFound(id))
     }
 
-    /// Removes the edge `task -> depends_on` if present.
+    /// Removes the edge `task -> depends_on`; rejects an edge that does not exist.
     pub fn remove_dependency(&mut self, task: TaskId, depends_on: TaskId) -> Result<()> {
         let tx = self.conn.transaction()?;
         task_workspace(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
-        tx.execute(
+        let removed = tx.execute(
             "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             [task.0, depends_on.0],
         )?;
+        if removed == 0 {
+            return Err(StorageError::DependencyNotFound { task, depends_on });
+        }
         tx.commit()?;
         Ok(())
     }

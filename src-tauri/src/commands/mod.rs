@@ -206,6 +206,8 @@ impl From<StorageError> for CommandError {
             | StorageError::MemoryNotFound(_)
             | StorageError::DeviceNotFound(_)
             | StorageError::PushSubscriptionNotFound(_)
+            | StorageError::DependencyNotFound { .. }
+            | StorageError::RelationNotFound { .. }
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
                 CommandErrorKind::NotFound
             }
@@ -214,6 +216,7 @@ impl From<StorageError> for CommandError {
             | StorageError::BaseBranchInReview { .. }
             | StorageError::Transition(_)
             | StorageError::DependenciesNotDone { .. }
+            | StorageError::PrerequisiteOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
             | StorageError::AutomaticCriterion { .. }
             | StorageError::MemorySuperseded { .. } => CommandErrorKind::Rejected,

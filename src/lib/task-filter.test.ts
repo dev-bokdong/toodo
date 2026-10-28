@@ -119,6 +119,19 @@ describe("matchesFilter", () => {
     expect(matchesFilter(pausedTask([]), paused, byId)).toBe(true);
   });
 
+  it("shows a task paused by a prerequisite as ready once that dependency is removed", () => {
+    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, pausedAt: 30, reopenedAt: null };
+    // The server records the prerequisites a pause waits on as a blocker note at the pause.
+    const pausedTask = (kind: "blocker" | "progress") =>
+      task({ id: 9, branch: "feat/add-storage-9", milestones, notes: [{ kind, body: "Paused: waiting on #3", at: 30 }] });
+    const ready = { ...emptyTaskFilter, status: "ready" as const };
+    const paused = { ...emptyTaskFilter, status: "paused" as const };
+
+    expect(matchesFilter(pausedTask("blocker"), ready, noTasks)).toBe(true);
+    // Paused by hand through MCP, which records the reason as a progress note.
+    expect(matchesFilter(pausedTask("progress"), paused, noTasks)).toBe(true);
+  });
+
   it("narrows to one task type", () => {
     expect(matchesFilter(task({ taskType: "fix" }), { ...emptyTaskFilter, type: "fix" }, noTasks)).toBe(true);
     expect(matchesFilter(task(), { ...emptyTaskFilter, type: "fix" }, noTasks)).toBe(false);
