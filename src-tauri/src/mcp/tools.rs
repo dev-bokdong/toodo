@@ -1828,7 +1828,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
-            error.message.contains("dependencies are done"),
+            error.message.contains("cannot start yet"),
             "{}",
             error.message
         );

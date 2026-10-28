@@ -373,10 +373,11 @@ fn stored_worktree_path<'a>(
 
 /// Rejects starting `task` while one of its dependencies, in any workspace, is not done.
 fn ensure_ready(conn: &Connection, task: TaskId) -> Result<()> {
-    if dag::is_ready(&all_tasks(conn)?, task)? {
+    let blockers = dag::blocking_dependencies(&all_tasks(conn)?, task)?;
+    if blockers.is_empty() {
         Ok(())
     } else {
-        Err(StorageError::DependenciesNotDone(task))
+        Err(StorageError::DependenciesNotDone { task, blockers })
     }
 }
 

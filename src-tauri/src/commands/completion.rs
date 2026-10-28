@@ -368,7 +368,7 @@ fn not_complete(task: &model::Task, viewed: Option<&ViewedPullRequest>) -> Comma
             }
             PullRequestState::Closed => {
                 return CommandError::rejected(format!(
-                    "pull request {url} was closed without merging; reopen it or pause the task"
+                    "pull request {url} was closed without merging; reopen the pull request, ask the user to pause the task in the Toodo app, or conclude_task if the work is abandoned"
                 ));
             }
             PullRequestState::Merged => {}
@@ -2327,7 +2327,10 @@ mod tests {
             viewed("CLOSED", "main"),
         ])));
 
-        for expected in ["is not merged yet", "was closed without merging"] {
+        for expected in [
+            "is not merged yet",
+            "was closed without merging; reopen the pull request, ask the user to pause the task in the Toodo app, or conclude_task if the work is abandoned",
+        ] {
             let error = complete(
                 &fixture.storage,
                 &no_git(),

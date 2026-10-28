@@ -995,7 +995,7 @@ mod tests {
         let error = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
-        assert!(error.message.contains("dependencies are done"));
+        assert!(error.message.contains("cannot start yet"));
         assert!(invocations(&runner).is_empty());
         assert_eq!(stored(&fixture), before);
     }

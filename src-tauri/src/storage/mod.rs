@@ -29,10 +29,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 use crate::domain::criteria::{CheckKind, CriterionId};
-use crate::domain::dag::DependencyError;
+use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
 use crate::domain::memory::MemoryId;
-use crate::domain::model::{TaskId, WorkspaceId};
+use crate::domain::model::{TaskId, TaskResolution, WorkspaceId};
 use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
@@ -118,8 +118,12 @@ pub enum StorageError {
     TaskNotFound(TaskId),
     Dependency(DependencyError),
     Transition(TransitionError),
-    /// A task cannot start while one of its dependencies is not done.
-    DependenciesNotDone(TaskId),
+    /// A task cannot start while one of its dependencies is not done or was concluded
+    /// without being adopted. `blockers` lists those dependencies.
+    DependenciesNotDone {
+        task: TaskId,
+        blockers: Vec<BlockingDependency>,
+    },
     /// A task cannot be related to itself.
     SelfRelation(TaskId),
     CriterionNotFound {
@@ -188,11 +192,20 @@ impl fmt::Display for StorageError {
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),
             Self::Dependency(error) => error.fmt(f),
             Self::Transition(error) => error.fmt(f),
-            Self::DependenciesNotDone(id) => {
-                write!(
-                    f,
-                    "task {id} cannot start before all its dependencies are done"
-                )
+            Self::DependenciesNotDone { task, blockers } => {
+                let blockers: Vec<String> = blockers
+                    .iter()
+                    .map(|blocker| {
+                        let id = blocker.id;
+                        match blocker.resolution {
+                            Some(TaskResolution::NotAdopted) => format!(
+                                "#{id} is done as not_adopted (remove_dependency task_id {task} depends_on {id} to unblock, or complete #{id} with merged_with)"
+                            ),
+                            _ => format!("#{id} is {} (wait for it)", blocker.status),
+                        }
+                    })
+                    .collect();
+                write!(f, "task {task} cannot start yet: {}", blockers.join("; "))
             }
             Self::SelfRelation(id) => write!(f, "task {id} cannot be related to itself"),
             Self::CriterionNotFound { task, criterion } => {
