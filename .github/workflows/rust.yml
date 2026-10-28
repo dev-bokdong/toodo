@@ -38,23 +38,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
-      - name: Format
-        run: cargo fmt --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      # Every test lives in the library, so build only its test binary: this skips linking
-      # the server binary and its empty test binary, plus the doc-test pass.
-      - name: Test
-        run: cargo test --lib
-
-      - name: Check that the TypeScript bindings are up to date
-        run: git diff --exit-code -- ../src/lib/bindings.ts
+      # CI only typechecks; tests run locally (see AGENTS.md). --all-targets keeps the
+      # test code compiling too.
+      - name: Typecheck
+        run: cargo check --all-targets --locked

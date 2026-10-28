@@ -53,8 +53,7 @@ scratch `toodo-server`. Every test starts its own server on a free loopback port
 temporary data directory, so a run never touches the data of a real server and never binds
 the default server ports. A run fails when it leaves a new workspace open in the herdr of
 the machine (`e2e/herdr-guard.ts`).
-CI runs the suite on pull requests into `dev`
-(`.github/workflows/e2e.yml`).
+CI does not run it; run it locally before merging changes to the web app.
 
 To run it locally (Node, Rust, and a Linux machine):
 

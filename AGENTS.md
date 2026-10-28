@@ -121,8 +121,12 @@ Run from the repository root unless noted. Package manager is npm.
   `toodo-server` and the web app (packaged by `scripts/package-server.sh`)
 
 After changing a command signature, run `cargo test` in `src-tauri/` and commit the
-updated `src/lib/bindings.ts` together with the Rust change; CI fails when it differs. A
-test in `server/rpc.rs` checks that the server serves every command in the bindings.
+updated `src/lib/bindings.ts` together with the Rust change. A test in `server/rpc.rs`
+checks that the server serves every command in the bindings.
+
+CI only typechecks (`cargo check --all-targets` for Rust, `npm run typecheck` for the
+frontend); it runs no tests, lints, or format checks. Run the tests, clippy, and
+`cargo fmt --check` locally before opening a pull request.
 
 ## Conventions
 
