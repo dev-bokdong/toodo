@@ -134,6 +134,16 @@ fn await_completion(conn: &Connection, id: TaskId, at: i64) -> Result<Task> {
 }
 
 impl Storage {
+    /// The task a criterion belongs to; criterion IDs are unique across tasks. `None`
+    /// when no task has it.
+    pub fn criterion_task(&self, criterion: CriterionId) -> Result<Option<TaskId>> {
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT task_id FROM task_criteria WHERE id = ?1")?;
+        let mut rows = statement.query_map([criterion.0], |row| row.get::<_, i64>(0))?;
+        Ok(rows.next().transpose()?.map(TaskId))
+    }
+
     /// Replaces the criteria of a task that is not done with `edits`, in that order.
     /// Existing criteria keep their state unless their kind or target changes; criteria
     /// left out are deleted; new ones start pending. A `branch_merged_locally` criterion
@@ -524,6 +534,16 @@ mod tests {
             ),
             Err(StorageError::CriterionNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn a_criterion_is_found_with_its_task() {
+        let (storage, task) = storage_with(vec![manual("Written")]);
+        assert_eq!(
+            storage.criterion_task(task.criteria[0].id).unwrap(),
+            Some(task.id)
+        );
+        assert_eq!(storage.criterion_task(CriterionId(99)).unwrap(), None);
     }
 
     #[test]

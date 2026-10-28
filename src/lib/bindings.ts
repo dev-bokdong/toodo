@@ -409,15 +409,21 @@ export type CriterionId = number;
 export type CriterionInput = {
 	/**
 	 *  An existing criterion of the task, which keeps its state unless its kind or
-	 *  target changes; omit it for a new criterion.
+	 *  target changes; omit it for a new criterion. `{"id": N}` alone keeps criterion N
+	 *  as it is.
 	 */
 	id?: CriterionId | null,
-	/**  What has to hold, in words, e.g. `The server answers /health`. */
-	text: string,
-	kind: CheckKind,
+	/**
+	 *  What has to hold, in words, e.g. `The server answers /health`. Required for a new
+	 *  criterion; the stored text when omitted with `id`.
+	 */
+	text?: string | null,
+	/**  Required for a new criterion; the stored kind when omitted with `id`. */
+	kind?: CheckKind | null,
 	/**
 	 *  The http(s) URL of a `url` criterion or the shell command of a `command`
-	 *  criterion; omit it for other kinds.
+	 *  criterion; omit it for other kinds. With `id`, the stored target when omitted and
+	 *  the kind stays the same.
 	 */
 	target?: string | null,
 };

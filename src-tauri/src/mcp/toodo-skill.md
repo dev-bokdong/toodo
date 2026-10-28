@@ -176,6 +176,25 @@ tasks and what they decided, links, and constraints the implementer has to respe
 - Pick `task_type` by the kind of change (feat, fix, modify, refactor, docs, test, chore,
   rnd) and write a short imperative title.
 
+# Criteria
+
+`update_task` with `criteria` replaces the whole list: a criterion whose `id` is left
+out is deleted with its evidence. Keep one by sending `{"id": N}` alone (add `text`,
+`kind`, or `target` to change it) and add new ones with `text` and `kind`:
+
+```json
+{ "id": 12, "criteria": [
+  { "id": 31 },
+  { "id": 32 },
+  { "text": "The changelog lists the fix", "kind": "manual" }
+] }
+```
+
+Each `id` appears once. Leaving out the merge criterion is rejected unless you also pass
+`remove_merge_criterion: true`. `check_criterion` needs only `criterion_id` and
+`evidence`; `add_dependency` and `remove_dependency` take `depends_on` as one task id or
+an array, e.g. `{"task_id": 12, "depends_on": [10]}`.
+
 # Adding a workspace
 
 Every task belongs to a workspace, one repository on a machine. To plan tasks for a

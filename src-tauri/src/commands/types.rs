@@ -815,21 +815,47 @@ impl From<&criteria::Criterion> for Criterion {
 #[serde(rename_all = "camelCase")]
 pub struct CriterionInput {
     /// An existing criterion of the task, which keeps its state unless its kind or
-    /// target changes; omit it for a new criterion.
+    /// target changes; omit it for a new criterion. `{"id": N}` alone keeps criterion N
+    /// as it is.
     #[serde(default)]
     pub id: Option<CriterionId>,
-    /// What has to hold, in words, e.g. `The server answers /health`.
-    pub text: String,
-    pub kind: CheckKind,
+    /// What has to hold, in words, e.g. `The server answers /health`. Required for a new
+    /// criterion; the stored text when omitted with `id`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Required for a new criterion; the stored kind when omitted with `id`.
+    #[serde(default)]
+    pub kind: Option<CheckKind>,
     /// The http(s) URL of a `url` criterion or the shell command of a `command`
-    /// criterion; omit it for other kinds.
+    /// criterion; omit it for other kinds. With `id`, the stored target when omitted and
+    /// the kind stays the same.
     #[serde(default)]
     pub target: Option<String>,
 }
 
 impl CriterionInput {
+    /// A new criterion, which needs its text and kind.
     pub fn parse(&self) -> CommandResult<criteria::NewCriterion> {
-        criteria::NewCriterion::parse(&self.text, self.kind.into(), self.target.as_deref())
+        let (Some(text), Some(kind)) = (&self.text, self.kind) else {
+            return Err(CommandError::invalid_input(
+                "a new criterion needs text and kind, e.g. {\"text\": \"Docs updated\", \"kind\": \"manual\"}; give an existing one by its id instead",
+            ));
+        };
+        criteria::NewCriterion::parse(text, kind.into(), self.target.as_deref())
+            .map_err(|error| CommandError::invalid_input(error.to_string()))
+    }
+
+    /// The criterion an edit of `known` asks for: omitted fields keep the stored values,
+    /// and the stored target stays only while the kind does.
+    pub fn parse_over(&self, known: &criteria::Criterion) -> CommandResult<criteria::NewCriterion> {
+        let kind = self.kind.map_or(known.kind, Into::into);
+        let text = self.text.as_deref().unwrap_or(&known.text);
+        let target = match &self.target {
+            Some(target) => Some(target.as_str()),
+            None if kind == known.kind && kind.takes_target() => known.target.as_deref(),
+            None => None,
+        };
+        criteria::NewCriterion::parse(text, kind, target)
             .map_err(|error| CommandError::invalid_input(error.to_string()))
     }
 }

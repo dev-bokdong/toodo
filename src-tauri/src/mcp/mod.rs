@@ -547,7 +547,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Check (met true, the default) or uncheck a manual completion criterion of a task that is not done, with evidence of what shows it holds. Toodo checks the other kinds itself. Once every criterion of an in_progress task is met, it awaits completion (in_review) until the user, or complete_task, confirms it. Returns the task with its criteria."
+        description = "Check (met true, the default) or uncheck a manual completion criterion of a task that is not done, with evidence of what shows it holds, e.g. {\"criterion_id\": 2, \"evidence\": \"...\"}. criterion_id (or id) alone finds its task; task_id is optional and must be that task when given. Toodo checks the other kinds itself. Once every criterion of an in_progress task is met, it awaits completion (in_review) until the user, or complete_task, confirms it. Returns the task with its criteria."
     )]
     fn check_criterion(
         &self,
@@ -557,7 +557,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged."
+        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged. criteria replaces the whole list: criteria whose id is left out are deleted with their evidence. Send {\"id\": N} to keep criterion N as it is (add text, kind, or target to change it), and text and kind without id for a new one, e.g. [{\"id\": 1}, {\"text\": \"Docs updated\", \"kind\": \"manual\"}]. Each id appears once and must belong to the task. A list without the merge criterion (pr_merged or branch_merged_locally) is rejected unless remove_merge_criterion is true."
     )]
     fn update_task(
         &self,
@@ -567,7 +567,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Make task_id depend on every task in depends_on. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session."
+        description = "Make task_id depend on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": [3, 4]}. Rejects self and cyclic dependencies; one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session."
     )]
     fn add_dependency(
         &self,
@@ -657,7 +657,9 @@ impl ToodoMcp {
         self.announce(result)
     }
 
-    #[tool(description = "Remove the dependency of task_id on depends_on.")]
+    #[tool(
+        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}."
+    )]
     fn remove_dependency(
         &self,
         Parameters(request): Parameters<tools::Dependency>,

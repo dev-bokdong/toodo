@@ -114,16 +114,27 @@ pub struct UpdateTask {
     #[schemars(with = "Option<String>")]
     pub due_date: Option<Option<String>>,
     /// The full new list of completion criteria, replacing the current one; unchanged when
-    /// omitted. Keep an existing criterion by passing its `id`; it keeps its state unless
-    /// its kind or target changes. Criteria of a done task cannot change.
+    /// omitted. Criteria whose `id` is left out are deleted with their evidence. Keep an
+    /// existing criterion by passing `{"id": N}`; given fields change it, omitted ones
+    /// keep their stored values, and it keeps its state unless its kind or target
+    /// changes. New criteria (no `id`) need `text` and `kind`. Criteria of a done task
+    /// cannot change.
     pub criteria: Option<Vec<types::CriterionInput>>,
+    /// True to let `criteria` leave out the merge criterion (`pr_merged` or
+    /// `branch_merged_locally`) and so remove it, e.g. for work that ships no code;
+    /// without it, such a list is rejected.
+    #[serde(default)]
+    pub remove_merge_criterion: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct CheckCriterion {
-    pub task_id: TaskId,
-    /// A manual criterion of the task; Toodo checks the other kinds itself.
+    /// The task of the criterion; found from the criterion when omitted.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+    /// A manual criterion; Toodo checks the other kinds itself. `id` is accepted too.
+    #[serde(alias = "id")]
     pub criterion_id: types::CriterionId,
     /// True to check it, false to uncheck it; true when omitted.
     #[serde(default)]
@@ -141,23 +152,46 @@ pub(super) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
+/// One task ID or several, as `depends_on` of the dependency tools accepts them.
+#[derive(Deserialize, JsonSchema)]
+#[serde(
+    untagged,
+    expecting = "a task id or an array of task ids, e.g. 3 or [3, 4]"
+)]
+enum TaskIds {
+    One(TaskId),
+    Many(Vec<TaskId>),
+}
+
+/// Reads [`TaskIds`] as a list.
+fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<TaskId>, D::Error> {
+    Ok(match TaskIds::deserialize(deserializer)? {
+        TaskIds::One(id) => vec![id],
+        TaskIds::Many(ids) => ids,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AddDependencies {
     /// The dependent task.
     pub task_id: TaskId,
     /// Its prerequisites, from any workspace, which must all be done before `task_id` is
-    /// ready.
+    /// ready: one task id or an array of them.
+    #[serde(deserialize_with = "one_or_many")]
+    #[schemars(with = "TaskIds")]
     pub depends_on: Vec<TaskId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Dependency {
     /// The dependent task.
     pub task_id: TaskId,
-    /// The prerequisite task, which must be done before `task_id` is ready.
-    pub depends_on: TaskId,
+    /// The prerequisites to remove: one task id or an array of them.
+    #[serde(deserialize_with = "one_or_many")]
+    #[schemars(with = "TaskIds")]
+    pub depends_on: Vec<TaskId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -540,6 +574,7 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
             due_date: request.due_date.unwrap_or(current.due_date),
             criteria: request.criteria,
         },
+        request.remove_merge_criterion,
     )
 }
 
@@ -577,8 +612,16 @@ pub fn add_dependencies(storage: &mut Storage, request: AddDependencies) -> Comm
     Ok((&added.task).into())
 }
 
+/// Removes the edges to every task of `depends_on` and returns the dependent task.
 pub fn remove_dependency(storage: &mut Storage, request: Dependency) -> CommandResult<Task> {
-    storage.remove_dependency(request.task_id.into(), request.depends_on.into())?;
+    if request.depends_on.is_empty() {
+        return Err(CommandError::invalid_input(
+            "depends_on must name at least one task, e.g. {\"task_id\": 5, \"depends_on\": 3}",
+        ));
+    }
+    for &prerequisite in &request.depends_on {
+        storage.remove_dependency(request.task_id.into(), prerequisite.into())?;
+    }
     get_task(storage, request.task_id)
 }
 
@@ -1052,7 +1095,7 @@ mod tests {
             &mut storage,
             Dependency {
                 task_id: second.id,
-                depends_on: first.id,
+                depends_on: vec![first.id],
             },
         )
         .unwrap();
@@ -1131,12 +1174,225 @@ mod tests {
                 estimate: None,
                 due_date: None,
                 criteria: None,
+                remove_merge_criterion: false,
             },
         )
         .unwrap();
         assert_eq!(updated.title, "Schema");
         assert_eq!(updated.task_type, TaskType::Feat);
         assert_eq!(updated.description, "Add tables");
+    }
+
+    fn update(storage: &mut Storage, request: serde_json::Value) -> CommandResult<Task> {
+        update_task(storage, serde_json::from_value(request).unwrap())
+    }
+
+    fn check(storage: &mut Storage, request: serde_json::Value) -> CommandResult<Task> {
+        check_criterion(storage, serde_json::from_value(request).unwrap())
+    }
+
+    /// A task with the merge criterion and a manual one checked with evidence.
+    fn task_with_checked_criterion(storage: &mut Storage, workspace: WorkspaceId) -> Task {
+        let task = create(storage, workspace, "Schema", vec![]).unwrap();
+        let merge = task.criteria[0].id.0;
+        let task = update(
+            storage,
+            serde_json::json!({ "id": task.id, "criteria": [
+                { "id": merge }, { "text": "Docs updated", "kind": "manual" }
+            ]}),
+        )
+        .unwrap();
+        let manual = task.criteria[1].id.0;
+        check(
+            storage,
+            serde_json::json!({ "id": manual, "evidence": "docs/guide.md" }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn criteria_given_by_id_alone_are_kept_with_their_evidence() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let [merge, manual] = [task.criteria[0].id.0, task.criteria[1].id.0];
+        let kept = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "criteria": [
+                { "id": merge }, { "id": manual }, { "text": "Released", "kind": "manual" }
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(kept.criteria[..2], task.criteria[..]);
+        assert_eq!(kept.criteria[2].text, "Released");
+        let renamed = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "criteria": [
+                { "id": merge }, { "id": manual, "text": "Guide updated" }
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(renamed.criteria[1].text, "Guide updated");
+        assert_eq!(renamed.criteria[1].state, types::CriterionState::Met);
+        assert_eq!(
+            renamed.criteria[1].evidence.as_deref(),
+            Some("docs/guide.md")
+        );
+
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "criteria": [
+                { "id": merge }, { "text": "No kind" }
+            ]}),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(
+            error.message.contains("needs text and kind"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn criteria_with_a_repeated_or_foreign_id_are_rejected() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let other = create(&mut storage, workspace, "API", vec![]).unwrap();
+        let merge = task.criteria[0].id.0;
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "criteria": [{ "id": merge }, { "id": merge }] }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert_eq!(
+            error.message,
+            format!("criterion {merge} appears twice; send each criterion once")
+        );
+        let foreign = other.criteria[0].id.0;
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "criteria": [{ "id": merge }, { "id": foreign }] }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(
+            error.message.starts_with(&format!(
+                "criterion {foreign} belongs to task {}, not task {}; call get_task",
+                other.id.0, task.id.0
+            )),
+            "{}",
+            error.message
+        );
+        assert_eq!(get_task(&storage, task.id).unwrap().criteria, task.criteria);
+    }
+
+    #[test]
+    fn dropping_the_merge_criterion_needs_remove_merge_criterion() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let [merge, manual] = [task.criteria[0].id.0, task.criteria[1].id.0];
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "criteria": [{ "id": manual }] }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error
+                .message
+                .contains(&format!("adding {{\"id\": {merge}}} to criteria"))
+                && error.message.contains("remove_merge_criterion: true"),
+            "{}",
+            error.message
+        );
+        assert_eq!(get_task(&storage, task.id).unwrap().criteria, task.criteria);
+
+        let removed = update(
+            &mut storage,
+            serde_json::json!({
+                "id": task.id, "criteria": [{ "id": manual }], "remove_merge_criterion": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(removed.criteria, task.criteria[1..]);
+    }
+
+    #[test]
+    fn check_criterion_finds_the_task_of_the_criterion() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let other = create(&mut storage, workspace, "API", vec![]).unwrap();
+        let manual = task.criteria[1].id.0;
+        assert_eq!(task.criteria[1].state, types::CriterionState::Met);
+        assert_eq!(task.criteria[1].evidence.as_deref(), Some("docs/guide.md"));
+
+        let error = check(
+            &mut storage,
+            serde_json::json!({ "task_id": other.id, "criterion_id": manual, "met": false }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(
+            error.message.starts_with(&format!(
+                "criterion {manual} belongs to task {}, not task {}",
+                task.id.0, other.id.0
+            )),
+            "{}",
+            error.message
+        );
+        let unchecked = check(
+            &mut storage,
+            serde_json::json!({ "task_id": task.id, "criterion_id": manual, "met": false }),
+        )
+        .unwrap();
+        assert_eq!(unchecked.criteria[1].state, types::CriterionState::Pending);
+        let error = check(
+            &mut storage,
+            serde_json::json!({ "id": 999, "evidence": "x" }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+    }
+
+    #[test]
+    fn depends_on_takes_one_task_id_or_an_array() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Verify", vec![]).unwrap();
+        let fix = create(&mut storage, workspace, "Fix login", vec![]).unwrap();
+        let docs = create(&mut storage, workspace, "Fix docs", vec![]).unwrap();
+        let add = |depends_on: serde_json::Value| -> AddDependencies {
+            serde_json::from_value(
+                serde_json::json!({ "task_id": task.id, "depends_on": depends_on }),
+            )
+            .unwrap()
+        };
+        let remove = |depends_on: serde_json::Value| -> Dependency {
+            serde_json::from_value(
+                serde_json::json!({ "task_id": task.id, "depends_on": depends_on }),
+            )
+            .unwrap()
+        };
+        add_dependencies(&mut storage, add(serde_json::json!(fix.id))).unwrap();
+        let both = add_dependencies(&mut storage, add(serde_json::json!([docs.id]))).unwrap();
+        assert_eq!(both.depends_on, vec![fix.id, docs.id]);
+        let one = remove_dependency(&mut storage, remove(serde_json::json!(fix.id))).unwrap();
+        assert_eq!(one.depends_on, vec![docs.id]);
+        add_dependencies(&mut storage, add(serde_json::json!(fix.id))).unwrap();
+        let none =
+            remove_dependency(&mut storage, remove(serde_json::json!([fix.id, docs.id]))).unwrap();
+        assert!(none.depends_on.is_empty());
+
+        let error = serde_json::from_value::<Dependency>(
+            serde_json::json!({ "task_id": 1, "depends_on": "2" }),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("a task id or an array of task ids"),
+            "{error}"
+        );
     }
 
     #[test]

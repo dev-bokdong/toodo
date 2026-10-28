@@ -7,7 +7,7 @@ use super::types::{
 };
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::domain::criteria::{CheckKind, CheckedBy, NewCriterion};
+use crate::domain::criteria::{self, CheckKind, CheckedBy, NewCriterion};
 use crate::domain::model;
 use crate::domain::model::TaskResolution;
 use crate::domain::status::TaskStatus;
@@ -86,12 +86,20 @@ pub(crate) fn merge_criterion(
     Ok(Some(NewCriterion::merge(has_origin)))
 }
 
+// The user edits the criteria list row by row in the app, so removing the merge
+// criterion there is deliberate.
 #[specta::specta]
 pub fn update_task(storage: State<'_, StorageState>, task: TaskEdit) -> CommandResult<Task> {
-    edit_task(&mut lock(&storage), task)
+    edit_task(&mut lock(&storage), task, true)
 }
 
-pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<Task> {
+/// Edits a task. New `criteria` replace the current ones; unless `may_remove_merge`, a
+/// list that would delete the task's merge criterion is rejected.
+pub(crate) fn edit_task(
+    storage: &mut Storage,
+    edit: TaskEdit,
+    may_remove_merge: bool,
+) -> CommandResult<Task> {
     let title = edit.title.trim();
     if title.is_empty() {
         return Err(CommandError::invalid_input("task title must not be empty"));
@@ -105,15 +113,10 @@ pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<
     task.estimate = types::estimate(edit.estimate)?;
     task.due_date = types::due_date(edit.due_date.as_deref())?;
     if let Some(criteria) = &edit.criteria {
-        let edits = criteria
-            .iter()
-            .map(|input| {
-                Ok(CriterionEdit {
-                    id: input.id.map(Into::into),
-                    criterion: input.parse()?,
-                })
-            })
-            .collect::<CommandResult<Vec<_>>>()?;
+        if task.status == TaskStatus::Done {
+            return Err(StorageError::CriteriaOfDoneTask(task.id).into());
+        }
+        let edits = criterion_edits(storage, &task, criteria, may_remove_merge)?;
         storage.set_criteria(task.id, &edits)?;
     }
     storage.update_task(&task)?;
@@ -121,6 +124,67 @@ pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<
         .get_task(task.id)?
         .ok_or(StorageError::TaskNotFound(task.id))?;
     Ok((&task).into())
+}
+
+fn is_merge(kind: CheckKind) -> bool {
+    matches!(
+        kind,
+        CheckKind::PullRequestMerged | CheckKind::BranchMergedLocally
+    )
+}
+
+/// The criteria `inputs` ask `task` to have, in order. An input with an `id` is an
+/// existing criterion of the task whose omitted fields keep their stored values; each
+/// one appears once.
+fn criterion_edits(
+    storage: &Storage,
+    task: &model::Task,
+    inputs: &[types::CriterionInput],
+    may_remove_merge: bool,
+) -> CommandResult<Vec<CriterionEdit>> {
+    let mut edits: Vec<CriterionEdit> = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let Some(id) = input.id else {
+            edits.push(CriterionEdit {
+                id: None,
+                criterion: input.parse()?,
+            });
+            continue;
+        };
+        let id: criteria::CriterionId = id.into();
+        if edits.iter().any(|edit| edit.id == Some(id)) {
+            return Err(CommandError::invalid_input(format!(
+                "criterion {id} appears twice; send each criterion once"
+            )));
+        }
+        let Some(known) = task.criteria.iter().find(|known| known.id == id) else {
+            let owner = match storage.criterion_task(id)? {
+                Some(owner) => format!(
+                    "criterion {id} belongs to task {owner}, not task {}",
+                    task.id
+                ),
+                None => format!("criterion {id} does not exist"),
+            };
+            return Err(CommandError::invalid_input(format!(
+                "{owner}; call get_task {} for the ids of its criteria, or leave out id to add a new criterion",
+                task.id
+            )));
+        };
+        edits.push(CriterionEdit {
+            id: Some(id),
+            criterion: input.parse_over(known)?,
+        });
+    }
+    if !may_remove_merge
+        && let Some(merge) = task.criteria.iter().find(|known| is_merge(known.kind))
+        && !edits.iter().any(|edit| is_merge(edit.criterion.kind))
+    {
+        return Err(CommandError::rejected(format!(
+            "these criteria would delete the merge criterion {} ({}) of task {} with its evidence; keep it by adding {{\"id\": {}}} to criteria, or pass remove_merge_criterion: true to remove it deliberately",
+            merge.id, merge.kind, task.id, merge.id
+        )));
+    }
+    Ok(edits)
 }
 
 /// Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
@@ -136,7 +200,7 @@ pub fn check_criterion(
 ) -> CommandResult<Task> {
     check(
         &mut lock(&storage),
-        task_id,
+        Some(task_id),
         criterion_id,
         met,
         evidence.as_deref(),
@@ -144,10 +208,11 @@ pub fn check_criterion(
     )
 }
 
-/// Checks a manual criterion as [`check_criterion`] does, as `by`.
+/// Checks a manual criterion as [`check_criterion`] does, as `by`. Without `task_id`,
+/// the task is the one the criterion belongs to; with one, it must be that task.
 pub(crate) fn check(
     storage: &mut Storage,
-    task_id: TaskId,
+    task_id: Option<TaskId>,
     criterion_id: CriterionId,
     met: bool,
     evidence: Option<&str>,
@@ -156,7 +221,21 @@ pub(crate) fn check(
     let evidence = evidence
         .map(str::trim)
         .filter(|evidence| !evidence.is_empty());
-    let task = storage.check_criterion(task_id.into(), criterion_id.into(), met, evidence, by)?;
+    let criterion: criteria::CriterionId = criterion_id.into();
+    let Some(owner) = storage.criterion_task(criterion)? else {
+        return Err(CommandError::not_found(format!(
+            "criterion {criterion} does not exist; call get_task on your task for the ids of its criteria"
+        )));
+    };
+    if let Some(task_id) = task_id
+        && model::TaskId::from(task_id) != owner
+    {
+        return Err(CommandError::invalid_input(format!(
+            "criterion {criterion} belongs to task {owner}, not task {}; call check_criterion with task_id {owner}, or without task_id",
+            task_id.0
+        )));
+    }
+    let task = storage.check_criterion(owner, criterion, met, evidence, by)?;
     Ok((&task).into())
 }
 
@@ -410,6 +489,7 @@ mod tests {
                 due_date: Some(" 2026-10-31 ".to_owned()),
                 criteria: None,
             },
+            true,
         )
         .unwrap();
         assert_eq!(edited.title, "Fix commands");
@@ -501,9 +581,9 @@ mod tests {
             due_date: None,
             criteria: None,
         };
-        let error = edit_task(&mut storage, edit(task.id.into(), " ")).unwrap_err();
+        let error = edit_task(&mut storage, edit(task.id.into(), " "), true).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
-        let error = edit_task(&mut storage, edit(TaskId(999), "Other")).unwrap_err();
+        let error = edit_task(&mut storage, edit(TaskId(999), "Other"), true).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
         assert_eq!(storage.get_task(task.id).unwrap().unwrap(), task);
     }
