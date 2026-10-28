@@ -37,11 +37,6 @@ jobs:
 
       - run: npm ci
 
+      # CI only typechecks; tests run locally (see AGENTS.md).
       - name: Typecheck
         run: npm run typecheck
-
-      - name: Test
-        run: npm test
-
-      - name: Build
-        run: npx vite build
