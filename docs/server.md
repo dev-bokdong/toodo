@@ -34,12 +34,11 @@ for a `command` criterion) with a Windows command line built by Toodo, so no she
 the arguments, and passes its output and exit code back unchanged.
 
 herdr on Windows serves its API on a named pipe, which `ssh -W` cannot forward, so a
-Windows host gets no herdr event subscription and no pane view. Toodo checks that herdr
+Windows host gets no herdr event subscription. Toodo checks that herdr
 runs there with a PowerShell script (it looks for `herdr.exe` on `PATH`, then under
 `%HERDR_HOME%` or `%USERPROFILE%\.herdr`, where herdr's installer puts it) and reads
 the agent statuses from `herdr --machine <id> pane list` every 5 seconds instead. Without
-events, Toodo does not notice a worktree removed or opened again in herdr on that PC, and
-the pane view of its tasks says that it is unavailable; open the pane in herdr there.
+events, Toodo does not notice a worktree removed or opened again in herdr on that PC.
 
 A workspace kept with a Windows path from the desktop app (`pathProblem: "foreign"`) can
 be moved to the PC it lives on: save the PC as a herdr machine, then use **Move** in the

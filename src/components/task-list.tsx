@@ -139,8 +139,6 @@ import { reachability, subscribeReachability } from "@/web/connection";
 const Markdown = lazy(() => import("@/components/markdown"));
 // The timeline pulls in React Flow, so it loads only when it is first shown.
 const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
-// Pane views pull in xterm.js, so they load only when a pane is first shown.
-const PaneView = lazy(() => import("@/components/pane-view"));
 
 const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
@@ -1116,11 +1114,6 @@ function TaskRow({
       {detailed && hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       {detailed && <TaskPlan task={task} />}
       {detailed && <TaskTimeline task={task} detailed />}
-      {detailed && active && task.herdrWorkspaceId && (
-        <Suspense fallback={null}>
-          <PaneView task={task} />
-        </Suspense>
-      )}
       {detailed && task.branch && (
         <DetailField label="Branch">
           <span className="break-all font-mono select-all">{task.branch}</span>
