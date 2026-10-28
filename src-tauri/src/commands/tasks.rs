@@ -407,6 +407,137 @@ pub(crate) fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
     Ok((&storage.set_task_status(id.into(), TaskStatus::Planned)?).into())
 }
 
+/// Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
+/// again, paused if it was started, so Start (or Resume) continues the work on its branch.
+/// Its resolution, completion note, and `merged_with` are cleared; `reason`, required, is
+/// kept as a progress note with the earlier outcome, and the timeline records the
+/// reopening. Rejected while a task that depends on it has started: it built on the
+/// outcome, which Set outcome corrects instead.
+#[specta::specta]
+pub fn reopen_task(
+    storage: State<'_, StorageState>,
+    id: TaskId,
+    reason: String,
+) -> CommandResult<Task> {
+    reopen(&mut lock(&storage), id, &reason)
+}
+
+pub(crate) fn reopen(storage: &mut Storage, id: TaskId, reason: &str) -> CommandResult<Task> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(CommandError::invalid_input(
+            "say why the task is reopened; the reason is kept as a progress note",
+        ));
+    }
+    let task = storage
+        .get_task(id.into())?
+        .ok_or(StorageError::TaskNotFound(id.into()))?;
+    if task.status != TaskStatus::Done {
+        return Err(CommandError::rejected(format!(
+            "task {} is {}; only a done task can be reopened, and this one is still open: continue it, or pause it to stop working on it",
+            task.id, task.status
+        )));
+    }
+    let started: Vec<String> = storage
+        .list_all_tasks()?
+        .into_iter()
+        .filter(|other| {
+            other.depends_on.contains(&task.id)
+                && (other.status != TaskStatus::Planned
+                    || crate::domain::timeline::milestones(&other.timeline)
+                        .started_at
+                        .is_some())
+        })
+        .map(|other| format!("#{} ({})", other.id, other.status))
+        .collect();
+    if !started.is_empty() {
+        return Err(CommandError::rejected(format!(
+            "task {} cannot be reopened: {} already started on its outcome; correct how it ended with Set outcome instead, or remove those dependencies first",
+            task.id,
+            started.join(", ")
+        )));
+    }
+    let mut note = format!("Reopened: {reason}");
+    if let Some(resolution) = task.resolution {
+        note.push_str(&format!("\nIt was done as {}", resolution.as_str()));
+        if let Some(merged_with) = &task.merged_with {
+            match (&merged_with.pull_request_url, merged_with.task_id) {
+                (Some(url), _) => note.push_str(&format!(" through {url}")),
+                (None, Some(other)) => note.push_str(&format!(" through task {other}")),
+                (None, None) => {}
+            }
+        }
+        match &task.completion_note {
+            Some(completion) => note.push_str(&format!(": {completion}")),
+            None => note.push('.'),
+        }
+    }
+    Ok((&storage.reopen_task(task.id, &note)?).into())
+}
+
+/// Corrects how a `done` task ended without reopening it: `resolution` replaces its
+/// resolution and `note`, required, its completion note; the earlier outcome is kept as
+/// a progress note. Merged needs a recorded merge, its own pull request's or the one it
+/// shipped with; for work another task or pull request shipped, use
+/// `complete_task_merged_with`. Not adopted keeps its dependents waiting.
+#[specta::specta]
+pub fn set_task_outcome(
+    storage: State<'_, StorageState>,
+    id: TaskId,
+    resolution: types::TaskResolution,
+    note: String,
+) -> CommandResult<Task> {
+    set_outcome(&mut lock(&storage), id, resolution.into(), &note)
+}
+
+pub(crate) fn set_outcome(
+    storage: &mut Storage,
+    id: TaskId,
+    resolution: TaskResolution,
+    note: &str,
+) -> CommandResult<Task> {
+    let note = note.trim();
+    if note.is_empty() {
+        return Err(CommandError::invalid_input(
+            "say why the outcome changes; the note becomes the task's completion note",
+        ));
+    }
+    let task = storage
+        .get_task(id.into())?
+        .ok_or(StorageError::TaskNotFound(id.into()))?;
+    let Some(current) = task.resolution.filter(|_| task.status == TaskStatus::Done) else {
+        return Err(CommandError::rejected(format!(
+            "task {} is {}; only a done task has an outcome to correct: complete or conclude it first",
+            task.id, task.status
+        )));
+    };
+    if current == resolution {
+        return Err(CommandError::rejected(format!(
+            "task {} is already done as {}; edit its completion note to change what it says",
+            task.id,
+            resolution.as_str()
+        )));
+    }
+    if resolution == TaskResolution::Merged
+        && task.pull_request_merged_at.is_none()
+        && task.merged_with.is_none()
+    {
+        return Err(CommandError::rejected(format!(
+            "task {} has no recorded merge; if another task or pull request shipped its work, complete it as shipped by that one, otherwise set the outcome to completed",
+            task.id
+        )));
+    }
+    let mut record = format!(
+        "Outcome changed from {} to {}: {note}",
+        current.as_str(),
+        resolution.as_str()
+    );
+    if let Some(earlier) = &task.completion_note {
+        record.push_str(&format!("\nEarlier completion note: {earlier}"));
+    }
+    Ok((&storage.set_task_outcome(task.id, resolution, note, &record)?).into())
+}
+
 /// Stores what the user wrote about the outcome of a `done` task, for reviews. The note
 /// is trimmed; an empty one clears it, except for a task that was not adopted, whose note
 /// is its required conclusion.
@@ -716,6 +847,181 @@ mod tests {
         let edited = note_completion(&mut storage, task.id.into(), "Twice as slow").unwrap();
         assert_eq!(edited.completion_note.as_deref(), Some("Twice as slow"));
         assert_eq!(edited.resolution, Some(types::TaskResolution::NotAdopted));
+    }
+
+    #[test]
+    fn reopening_a_concluded_task_pauses_it_and_keeps_the_earlier_outcome_as_a_note() {
+        let (mut storage, task) = storage_with_task();
+        let error = reopen(&mut storage, task.id.into(), "Too early").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        storage
+            .set_task_status(task.id, TaskStatus::InProgress)
+            .unwrap();
+        storage
+            .conclude_task(task.id, "Too slow", &[], None)
+            .unwrap();
+        let error = reopen(&mut storage, task.id.into(), "  ").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+
+        let reopened = reopen(&mut storage, task.id.into(), " The cache helps after all ").unwrap();
+
+        assert_eq!(reopened.status, types::TaskStatus::Planned);
+        assert_eq!(reopened.resolution, None);
+        assert_eq!(reopened.completion_note, None);
+        assert_eq!(reopened.branch, task.branch);
+        assert_eq!(
+            reopened.notes.last().map(|note| note.body.as_str()),
+            Some("Reopened: The cache helps after all\nIt was done as not_adopted: Too slow")
+        );
+        let last = reopened.timeline.last().unwrap();
+        assert!(last.reopened);
+        assert_eq!(last.status, types::TaskStatus::Planned);
+        assert_eq!(reopened.milestones.completed_at, None);
+        assert_eq!(reopened.milestones.reopened_at, Some(last.at));
+        assert_eq!(reopened.milestones.paused_at, Some(last.at));
+        assert_eq!(
+            Task::from(&storage.get_task(task.id).unwrap().unwrap()),
+            reopened
+        );
+        // A reopened task is started again like a paused one.
+        storage
+            .set_task_status(task.id, TaskStatus::InProgress)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_task_whose_dependents_started_on_it_is_not_reopened() {
+        let (mut storage, task) = storage_with_task();
+        let dependent = storage
+            .create_task(&NewTask {
+                workspace_id: task.workspace_id,
+                task_type: model::TaskType::Feat,
+                title: "Build on commands".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria: Vec::new(),
+            })
+            .unwrap();
+        for status in [
+            TaskStatus::InProgress,
+            TaskStatus::InReview,
+            TaskStatus::Done,
+        ] {
+            storage.set_task_status(task.id, status).unwrap();
+        }
+        storage.add_dependency(dependent.id, task.id).unwrap();
+        storage
+            .set_task_status(dependent.id, TaskStatus::InProgress)
+            .unwrap();
+        // Pausing the dependent does not undo that it started.
+        storage
+            .set_task_status(dependent.id, TaskStatus::Planned)
+            .unwrap();
+        let before = storage.get_task(task.id).unwrap().unwrap();
+
+        let error = reopen(&mut storage, task.id.into(), "Missed a case").unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error
+                .message
+                .contains(&format!("#{} (planned)", dependent.id))
+                && error.message.contains("Set outcome"),
+            "{}",
+            error.message
+        );
+        assert_eq!(storage.get_task(task.id).unwrap().unwrap(), before);
+    }
+
+    #[test]
+    fn the_outcome_of_a_done_task_is_corrected_with_a_note_and_a_record_of_the_change() {
+        let (mut storage, task) = storage_with_task();
+        let error = set_outcome(
+            &mut storage,
+            task.id.into(),
+            TaskResolution::NotAdopted,
+            "Dropped",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        for status in [
+            TaskStatus::InProgress,
+            TaskStatus::InReview,
+            TaskStatus::Done,
+        ] {
+            storage.set_task_status(task.id, status).unwrap();
+        }
+        storage
+            .set_completion_note(task.id, Some("Shipped"))
+            .unwrap();
+        let timeline = storage.get_task(task.id).unwrap().unwrap().timeline;
+
+        let error = set_outcome(
+            &mut storage,
+            task.id.into(),
+            TaskResolution::NotAdopted,
+            " ",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let error = set_outcome(
+            &mut storage,
+            task.id.into(),
+            TaskResolution::Merged,
+            "Merged",
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("already done as merged"),
+            "{}",
+            error.message
+        );
+
+        let corrected = set_outcome(
+            &mut storage,
+            task.id.into(),
+            TaskResolution::NotAdopted,
+            " Reverted the next day ",
+        )
+        .unwrap();
+        assert_eq!(
+            corrected.resolution,
+            Some(types::TaskResolution::NotAdopted)
+        );
+        assert_eq!(
+            corrected.completion_note.as_deref(),
+            Some("Reverted the next day")
+        );
+        assert_eq!(
+            corrected.notes.last().map(|note| note.body.as_str()),
+            Some(
+                "Outcome changed from merged to not_adopted: Reverted the next day\nEarlier completion note: Shipped"
+            )
+        );
+        assert_eq!(
+            storage.get_task(task.id).unwrap().unwrap().timeline,
+            timeline
+        );
+
+        // Nothing records a merge, so merged is not an outcome it can claim.
+        let error = set_outcome(
+            &mut storage,
+            task.id.into(),
+            TaskResolution::Merged,
+            "Merged",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("completed"), "{}", error.message);
+        let completed = set_outcome(
+            &mut storage,
+            task.id.into(),
+            TaskResolution::Completed,
+            "Deployed by hand",
+        )
+        .unwrap();
+        assert_eq!(completed.resolution, Some(types::TaskResolution::Completed));
     }
 
     #[test]

@@ -3,7 +3,11 @@ import type { TaskEvent, TaskStatus } from "@/lib/bindings";
 import { activeSeconds, formatDate, formatFull, formatWhen, reachedMilestones, workSegments } from "@/lib/timeline";
 
 function history(raw: [TaskStatus, number][]): TaskEvent[] {
-  return raw.map(([status, at]) => ({ status, at }));
+  return raw.map(([status, at], index) => ({
+    status,
+    at,
+    reopened: index > 0 && raw[index - 1][0] === "done" && status !== "done",
+  }));
 }
 
 const resumed = history([
@@ -31,6 +35,24 @@ describe("workSegments", () => {
       { state: "in_progress", start: 50, end: 80 },
       { state: "paused", start: 80, end: null },
     ]);
+  });
+
+  it("goes on after a reopening, which pauses the task until it is resumed", () => {
+    const reopened = history([
+      ["planned", 0],
+      ["in_progress", 100],
+      ["done", 200],
+      ["planned", 500],
+      ["in_progress", 600],
+      ["done", 700],
+    ]);
+
+    expect(workSegments(reopened)).toEqual([
+      { state: "in_progress", start: 100, end: 200 },
+      { state: "paused", start: 500, end: 600 },
+      { state: "in_progress", start: 600, end: 700 },
+    ]);
+    expect(activeSeconds(reopened, 5000)).toBe(200);
   });
 });
 
@@ -84,6 +106,7 @@ describe("reachedMilestones", () => {
         startedAt: 20,
         reviewAt: null,
         completedAt: null,
+        reopenedAt: null,
         pausedAt: 30,
       }),
     ).toEqual([
@@ -91,5 +114,18 @@ describe("reachedMilestones", () => {
       { label: "Started", at: 20 },
       { label: "Paused", at: 30 },
     ]);
+  });
+
+  it("orders them by time, so completing a reopened task again comes last", () => {
+    expect(
+      reachedMilestones({
+        plannedAt: 10,
+        startedAt: 20,
+        reviewAt: null,
+        completedAt: 60,
+        reopenedAt: 40,
+        pausedAt: null,
+      }).map(({ label }) => label),
+    ).toEqual(["Planned", "Started", "Reopened", "Completed"]);
   });
 });

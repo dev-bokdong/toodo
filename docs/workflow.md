@@ -113,7 +113,8 @@ The transition rule:
 
 Completing a task ("Complete"/"Confirm completion", `complete_task`) re-checks its
 automatic criteria first and is rejected with the criteria that are not met. Done tasks
-keep their criteria as a record; they cannot change.
+keep their criteria as a record; they cannot change. A done task completed by mistake is
+reopened in the app (step 7d).
 
 Work shipped without a pull request can be completed through MCP with
 `complete_task {"id": 1, "without_pull_request": true, "note": "Deployed the configuration directly"}`.
@@ -411,11 +412,13 @@ report how many were not adopted, with their conclusions.
 One pull request sometimes ships the work of several tasks, e.g. an agent that fixed a
 batch of small tasks on one branch. Only the task whose branch it is completes with its
 merge (step 7); the others did ship, so concluding them as `not_adopted` would be wrong.
-Agents complete each extra task through MCP with `complete_task` and `merged_with`: the
-ID of the task that owns the pull request, which must be `done` as merged, or the URL
-of the pull request, which must be merged into the workspace base branch (read with
-`gh pr view`). A task done that way in turn passes on the pull request it shipped with.
-Toodo:
+Agents complete each extra task through MCP with `complete_task` and `merged_with`; the
+user does it in the app with "Complete as shipped by...", offered in the Conclude form
+and on a task done as not adopted. The work is named by the ID of the task that shipped
+it, which must be `done` as merged or completed, or by the URL of the pull request, which
+must be merged into the workspace base branch (read with `gh pr view`). A task done that
+way in turn passes on the pull request it shipped with; a task done without a recorded
+pull request passes on itself. Toodo:
 
 1. Accepts an `in_progress` or `in_review` task, or one already `done` as
    `not_adopted`, which is how such tasks were closed before; it rejects the task itself
@@ -424,13 +427,31 @@ Toodo:
    requests of its branch as in step 7b: a merged one rejects it (it completes with its
    own merge), and so does an open one, which the user closes first. It then closes the
    task's herdr workspace.
-3. Moves the task to `done` with the resolution `merged`, records that pull request and
-   its task (`mergedWith`) and the merge time, and clears `herdrWorkspaceId`. A
-   `not_adopted` task keeps its status history and conclusion and only changes its
-   resolution.
+3. Moves the task to `done` with the resolution `merged` (or `completed` when the other
+   task was completed without a pull request), records that pull request and its task
+   (`mergedWith`, without a pull request URL for a task that has none) and the merge
+   time, and clears `herdrWorkspaceId`. A `not_adopted` task keeps its status history
+   and conclusion and only changes its resolution.
 
 Dependents are released as after any merge, reviews count the task as merged, and the
-task list shows which pull request shipped it ("Shipped with").
+task list shows which pull request or task shipped it ("Shipped with").
+
+### 7d. Reopen a done task or correct its outcome
+
+A task completed or concluded by mistake can be fixed in the app; MCP leaves done tasks
+alone (`update_task` rejects them and points to `add_progress_note`).
+
+- "Reopen" (`reopen_task`) takes a required reason. The task moves back to `planned`,
+  paused if it was started, so Resume continues on its branch; its resolution,
+  completion note, and `mergedWith` are cleared, and a progress note keeps the reason
+  with the earlier outcome. The status history records the move, and the timeline shows
+  it as Reopened; Completed shows again once the task is done again. Reopening is
+  rejected while a task that depends on it has started, since that work built on the
+  outcome.
+- "Change outcome" (`set_task_outcome`) keeps the task done and replaces its resolution
+  (merged, completed, or not adopted) and its completion note, which is required; a
+  progress note keeps the earlier outcome and note. Merged needs a recorded merge, its
+  own or the one it shipped with. Not adopted keeps dependents waiting again.
 
 ### 8. Delete the task and its worktree
 

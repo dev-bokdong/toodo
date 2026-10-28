@@ -112,6 +112,34 @@ pub fn conclude_task(
         .into())
 }
 
+/// Completes a task whose work shipped through another task, `merged_with_task`, or a
+/// merged pull request into the base branch, `pull_request_url`; exactly one of the two.
+/// An `in_progress` or `in_review` task, or one done as `not_adopted`, becomes done as
+/// merged (completed when the other task was completed without a pull request), and its
+/// dependents can start. See `complete_merged_with` for the checks.
+#[specta::specta]
+pub fn complete_task_merged_with(
+    storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
+    github: State<'_, GitHubState>,
+    herdr: State<'_, HerdrState>,
+    id: TaskId,
+    merged_with_task: Option<TaskId>,
+    pull_request_url: Option<String>,
+) -> CommandResult<Task> {
+    let pull_request_url = pull_request_url.filter(|url| !url.trim().is_empty());
+    let target = match (merged_with_task, pull_request_url) {
+        (Some(task), None) => MergedWithTarget::Task(task.into()),
+        (None, Some(url)) => MergedWithTarget::PullRequest(url),
+        _ => {
+            return Err(CommandError::invalid_input(
+                "name either the task that shipped the work or the URL of its merged pull request, not both or neither",
+            ));
+        }
+    };
+    Ok((&complete_merged_with(&storage, &git, &github, &herdr, id.into(), target)?).into())
+}
+
 /// What concluding does with a pull request of the task that is still open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenPullRequest {
@@ -1132,8 +1160,11 @@ pub(crate) fn complete_merged_with(
         TaskStatus::InProgress | TaskStatus::InReview => {}
         TaskStatus::Done if not_adopted => {}
         TaskStatus::Done => {
+            let resolution = task
+                .resolution
+                .map_or("done", model::TaskResolution::as_str);
             return Err(CommandError::rejected(format!(
-                "task {id} is already done as merged; there is nothing left to complete"
+                "task {id} is already done as {resolution}; there is nothing left to complete; to correct how it ended, change its outcome in the Toodo app"
             )));
         }
         status => {
@@ -1142,7 +1173,7 @@ pub(crate) fn complete_merged_with(
             )));
         }
     }
-    let (merged_with, merged_at) = match target {
+    let (merged_with, resolution, merged_at) = match target {
         MergedWithTarget::Task(other) => {
             if other == id {
                 return Err(CommandError::invalid_input(format!(
@@ -1191,14 +1222,24 @@ pub(crate) fn complete_merged_with(
                 .map(|other| other.id);
             let merged = model::MergedWith {
                 task_id,
-                pull_request_url: pull_request.url,
+                pull_request_url: Some(pull_request.url),
             };
-            (merged, pull_request.merged_at)
+            (
+                merged,
+                model::TaskResolution::Merged,
+                pull_request.merged_at,
+            )
         }
     };
     if not_adopted {
         // Concluding already recorded its commits and closed its workspace.
-        return Ok(lock(storage).complete_task_merged_with(id, &merged_with, merged_at, &[])?);
+        return Ok(lock(storage).complete_task_merged_with(
+            id,
+            &merged_with,
+            resolution,
+            merged_at,
+            &[],
+        )?);
     }
     // An empty branch log keeps the commits recorded before.
     let records = branch_commits(git, &task, &workspace)?;
@@ -1215,7 +1256,8 @@ pub(crate) fn complete_merged_with(
             PullRequestState::Open => {
                 return Err(CommandError::rejected(format!(
                     "pull request {} of the task's own branch is still open; close it first, since the task ships through {} instead",
-                    pull_request.url, merged_with.pull_request_url
+                    pull_request.url,
+                    shipped_through(&merged_with)
                 )));
             }
             PullRequestState::Closed => {}
@@ -1229,37 +1271,62 @@ pub(crate) fn complete_merged_with(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(lock(storage).complete_task_merged_with(id, &merged_with, merged_at, &records)?)
+    Ok(lock(storage).complete_task_merged_with(
+        id,
+        &merged_with,
+        resolution,
+        merged_at,
+        &records,
+    )?)
 }
 
-/// The merged pull request that shipped the work of `other` and its merge time: its own,
-/// or the one it was merged with in turn.
-fn shipped_by(other: &model::Task) -> CommandResult<(model::MergedWith, Option<i64>)> {
+/// What shipped a task's work, for messages: the pull request, or the task without one.
+fn shipped_through(merged_with: &model::MergedWith) -> String {
+    match (&merged_with.pull_request_url, merged_with.task_id) {
+        (Some(url), _) => url.clone(),
+        (None, Some(task)) => format!("task {task}"),
+        (None, None) => "another task".to_owned(),
+    }
+}
+
+/// What shipped the work of `other`, the resolution a task shipped through it gets, and
+/// the merge time: its own pull request, the one it was merged with in turn, or, for a
+/// task done without a recorded pull request, the task itself.
+fn shipped_by(
+    other: &model::Task,
+) -> CommandResult<(model::MergedWith, model::TaskResolution, Option<i64>)> {
     let id = other.id;
+    let itself = model::MergedWith {
+        task_id: Some(id),
+        pull_request_url: None,
+    };
     match (other.status, other.resolution) {
         (TaskStatus::Done, Some(model::TaskResolution::Merged)) => {
             let merged = match (&other.merged_with, &other.pull_request_url) {
                 (Some(merged), _) => merged.clone(),
                 (None, Some(url)) => model::MergedWith {
                     task_id: Some(id),
-                    pull_request_url: url.clone(),
+                    pull_request_url: Some(url.clone()),
                 },
-                (None, None) => {
-                    return Err(CommandError::rejected(format!(
-                        "task {id} is done without a recorded pull request; pass the URL of the pull request that shipped the work instead"
-                    )));
-                }
+                (None, None) => itself,
             };
-            Ok((merged, other.pull_request_merged_at))
+            Ok((
+                merged,
+                model::TaskResolution::Merged,
+                other.pull_request_merged_at,
+            ))
+        }
+        (TaskStatus::Done, Some(model::TaskResolution::Completed)) => {
+            Ok((itself, model::TaskResolution::Completed, None))
         }
         (TaskStatus::Done, _) => Err(CommandError::rejected(format!(
-            "task {id} was not adopted, so its work did not ship"
+            "task {id} was not adopted, so its work did not ship; pass the task or pull request that shipped the work instead"
         ))),
         (TaskStatus::InReview, _) => Err(CommandError::rejected(format!(
             "task {id} is in_review: its pull request is not merged, or its merge is not recorded yet (Toodo completes merged tasks within a minute); try again once task {id} is done, or pass the pull request URL"
         ))),
         (status, _) => Err(CommandError::rejected(format!(
-            "task {id} is {status}; only a task done as merged has shipped its pull request"
+            "task {id} is {status}; only a task done as merged or completed has shipped its work; complete it first, or pass the pull request URL"
         ))),
     }
 }

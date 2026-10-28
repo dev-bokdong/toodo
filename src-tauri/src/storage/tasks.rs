@@ -182,10 +182,13 @@ impl TaskRow {
             estimate_unit: row.get(24)?,
             estimate_amount: row.get(25)?,
             due_date: row.get(26)?,
-            merged_with: match row.get::<_, Option<String>>(27)? {
-                None => None,
-                Some(pull_request_url) => Some(MergedWith {
-                    task_id: row.get::<_, Option<i64>>(28)?.map(TaskId),
+            merged_with: match (
+                row.get::<_, Option<String>>(27)?,
+                row.get::<_, Option<i64>>(28)?,
+            ) {
+                (None, None) => None,
+                (pull_request_url, task_id) => Some(MergedWith {
+                    task_id: task_id.map(TaskId),
                     pull_request_url,
                 }),
             },
@@ -328,6 +331,19 @@ pub(super) fn record_event(
         "INSERT INTO task_events (task_id, status, at) VALUES (?1, ?2, ?3)",
         params![task.0, status.as_str(), at],
     )?;
+    Ok(())
+}
+
+/// Appends a note of `kind` to `task` at `at`.
+fn add_note(conn: &Connection, task: TaskId, kind: NoteKind, body: &str, at: i64) -> Result<()> {
+    let inserted = conn.execute(
+        "INSERT INTO task_notes (task_id, kind, body, at)
+         SELECT id, ?2, ?3, ?4 FROM tasks WHERE id = ?1",
+        params![task.0, kind.as_str(), body, at],
+    )?;
+    if inserted == 0 {
+        return Err(StorageError::TaskNotFound(task));
+    }
     Ok(())
 }
 
@@ -656,15 +672,17 @@ impl Storage {
         Ok(concluded)
     }
 
-    /// Moves an `in_progress` or `in_review` task to `done` as merged through the pull
-    /// request of another task, `merged_with`, merged at `merged_at`, and forgets its herdr
-    /// workspace, which was closed. A task `done` as `not_adopted` keeps its status history
-    /// and only changes its resolution: the work did ship. Non-empty `commits` replace its
-    /// commit records. Its dependents can then start.
+    /// Moves an `in_progress` or `in_review` task to `done` as `resolution` (merged, or
+    /// completed for work shipped by a task completed without a pull request) through
+    /// another task or its pull request, `merged_with`, merged at `merged_at`, and forgets
+    /// its herdr workspace, which was closed. A task `done` as `not_adopted` keeps its
+    /// status history and only changes its resolution: the work did ship. Non-empty
+    /// `commits` replace its commit records. Its dependents can then start.
     pub fn complete_task_merged_with(
         &mut self,
         id: TaskId,
         merged_with: &MergedWith,
+        resolution: TaskResolution,
         merged_at: Option<i64>,
         commits: &[CommitRecord],
     ) -> Result<Task> {
@@ -687,7 +705,7 @@ impl Storage {
             params![
                 id.0,
                 TaskStatus::Done.as_str(),
-                TaskResolution::Merged.as_str(),
+                resolution.as_str(),
                 merged_at,
                 merged_with.pull_request_url,
                 merged_with.task_id.map(|task| task.0)
@@ -702,6 +720,75 @@ impl Storage {
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
+    }
+
+    /// Reopens a `done` task in one transaction (see [`TaskStatus::reopen`]): it becomes
+    /// `planned` without a resolution, completion note, or `merged_with`, the reopening is
+    /// recorded in its status history, and `note`, which says why and keeps the earlier
+    /// outcome, is added as a progress note. Branch, worktree path, commit records, pull
+    /// request, and criteria stay. Whether its dependents allow it is up to the caller.
+    pub fn reopen_task(&mut self, id: TaskId, note: &str) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let status = task.status.reopen()?;
+        tx.execute(
+            "UPDATE tasks
+             SET status = ?2, resolution = NULL, completion_note = NULL,
+                 merged_with_pull_request_url = NULL, merged_with_task_id = NULL
+             WHERE id = ?1",
+            params![id.0, status.as_str()],
+        )?;
+        record_event(&tx, id, status, at)?;
+        add_note(&tx, id, NoteKind::Progress, note, at)?;
+        let reopened = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(reopened)
+    }
+
+    /// Corrects how a `done` task ended to `resolution` in one transaction: `completion_note`
+    /// becomes its completion note, and `note`, the record of the change, is added as a
+    /// progress note. Its status history stays: the task did finish then. Any other
+    /// resolution than merged or completed forgets `merged_with`. Whether the task and
+    /// `resolution` allow it is up to the caller.
+    pub fn set_task_outcome(
+        &mut self,
+        id: TaskId,
+        resolution: TaskResolution,
+        completion_note: &str,
+        note: &str,
+    ) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        if task.status != TaskStatus::Done {
+            return Err(StorageError::InvalidData(format!(
+                "task {id} is {}; only a done task has an outcome",
+                task.status
+            )));
+        }
+        let keeps_merged_with = matches!(
+            resolution,
+            TaskResolution::Merged | TaskResolution::Completed
+        );
+        tx.execute(
+            "UPDATE tasks
+             SET resolution = ?2, completion_note = ?3,
+                 merged_with_pull_request_url = CASE WHEN ?4 AND ?2 = 'merged'
+                     THEN merged_with_pull_request_url END,
+                 merged_with_task_id = CASE WHEN ?4 THEN merged_with_task_id END
+             WHERE id = ?1",
+            params![
+                id.0,
+                resolution.as_str(),
+                completion_note,
+                keeps_merged_with
+            ],
+        )?;
+        add_note(&tx, id, NoteKind::Progress, note, at)?;
+        let corrected = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(corrected)
     }
 
     /// Stores what the user wrote about the outcome of a task; `None` clears it. Whether
@@ -725,14 +812,7 @@ impl Storage {
     pub fn add_task_note(&mut self, id: TaskId, kind: NoteKind, body: &str) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
-        let inserted = tx.execute(
-            "INSERT INTO task_notes (task_id, kind, body, at)
-             SELECT id, ?2, ?3, ?4 FROM tasks WHERE id = ?1",
-            params![id.0, kind.as_str(), body, at],
-        )?;
-        if inserted == 0 {
-            return Err(StorageError::TaskNotFound(id));
-        }
+        add_note(&tx, id, kind, body, at)?;
         let noted = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(noted)

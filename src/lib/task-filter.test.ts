@@ -27,7 +27,7 @@ function task(overrides: Partial<Task> = {}): Task {
     notes: [],
     criteria: [],
     timeline: [],
-    milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, pausedAt: null },
+    milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: null },
     ...overrides,
   };
 }
@@ -100,11 +100,11 @@ describe("matchesFilter", () => {
   });
 
   it("shows a task paused by a new prerequisite as ready once that prerequisite is done", () => {
-    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, pausedAt: 30 };
+    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: 30 };
     const pausedTask = (dependsOn: number[]) =>
       task({ id: 9, branch: "feat/add-storage-9", dependsOn, milestones });
     const doneAt = (id: number, at: number) =>
-      task({ id, status: "done", resolution: "merged", milestones: { ...milestones, completedAt: at, pausedAt: null } });
+      task({ id, status: "done", resolution: "merged", milestones: { ...milestones, completedAt: at, reopenedAt: null, pausedAt: null } });
     const byId = new Map([doneAt(1, 5), doneAt(2, 40), task({ id: 3, status: "in_progress" })].map((each) => [each.id, each]));
     const ready = { ...emptyTaskFilter, status: "ready" as const };
     const paused = { ...emptyTaskFilter, status: "paused" as const };

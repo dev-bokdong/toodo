@@ -1067,6 +1067,7 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
             started_at: Some(200),
             review_at: Some(300),
             completed_at: Some(400),
+            reopened_at: None,
             paused_at: None,
         }
     );

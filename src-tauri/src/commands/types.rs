@@ -587,7 +587,7 @@ impl From<TaskType> for model::TaskType {
 }
 
 /// How a `done` task ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskResolution {
     /// Its pull request was merged.
@@ -597,6 +597,16 @@ pub enum TaskResolution {
     /// Concluded without merging; the completion note says why. Dependents stay
     /// waiting.
     NotAdopted,
+}
+
+impl From<TaskResolution> for model::TaskResolution {
+    fn from(resolution: TaskResolution) -> Self {
+        match resolution {
+            TaskResolution::Merged => Self::Merged,
+            TaskResolution::Completed => Self::Completed,
+            TaskResolution::NotAdopted => Self::NotAdopted,
+        }
+    }
 }
 
 impl From<model::TaskResolution> for TaskResolution {
@@ -873,14 +883,17 @@ impl CriterionInput {
     }
 }
 
-/// The merged pull request of another task that shipped the work of a task.
+/// The merged pull request or the other task that shipped the work of a task; at least
+/// one of the two is set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MergedWith {
-    /// The task whose pull request it is; `null` once that task is deleted or for a pull
+    /// The task that shipped the work; `null` once that task is deleted or for a pull
     /// request no task records.
     pub task_id: Option<TaskId>,
-    pub pull_request_url: String,
+    /// The merged pull request; `null` when the task that shipped the work has no
+    /// recorded pull request.
+    pub pull_request_url: Option<String>,
 }
 
 /// What a note left on a task records.
@@ -985,6 +998,8 @@ impl From<&model::PullRequestSnapshot> for PullRequestSnapshot {
 pub struct TaskEvent {
     pub status: TaskStatus,
     pub at: Timestamp,
+    /// The change reopened the task: it follows a move to `done`.
+    pub reopened: bool,
 }
 
 /// Milestones derived from a task's status history (see `docs/architecture.md`, Task
@@ -995,7 +1010,10 @@ pub struct TaskMilestones {
     pub planned_at: Option<Timestamp>,
     pub started_at: Option<Timestamp>,
     pub review_at: Option<Timestamp>,
+    /// The latest completion, unless the task was reopened after it.
     pub completed_at: Option<Timestamp>,
+    /// The latest reopening of the task after it was done.
+    pub reopened_at: Option<Timestamp>,
     /// The latest pause, unless the task was started again after it.
     pub paused_at: Option<Timestamp>,
 }
@@ -1007,6 +1025,7 @@ impl From<timeline::Milestones> for TaskMilestones {
             started_at: milestones.started_at.map(Timestamp),
             review_at: milestones.review_at.map(Timestamp),
             completed_at: milestones.completed_at.map(Timestamp),
+            reopened_at: milestones.reopened_at.map(Timestamp),
             paused_at: milestones.paused_at.map(Timestamp),
         }
     }
@@ -1046,9 +1065,13 @@ impl From<&model::Task> for Task {
             timeline: task
                 .timeline
                 .iter()
-                .map(|event| TaskEvent {
+                .enumerate()
+                .map(|(index, event)| TaskEvent {
                     status: event.status.into(),
                     at: Timestamp(event.at),
+                    reopened: index > 0
+                        && task.timeline[index - 1].status == status::TaskStatus::Done
+                        && event.status != status::TaskStatus::Done,
                 })
                 .collect(),
             milestones: timeline::milestones(&task.timeline).into(),

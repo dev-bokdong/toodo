@@ -15,6 +15,7 @@ import {
   type Task,
   type TaskEdit,
   type TaskId,
+  type TaskResolution,
   type TaskAgentStatus,
   type TaskPullRequestStatus,
   type Timestamp,
@@ -517,6 +518,62 @@ export function useSetCompletionNote() {
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
+/**
+ * Reopens a done task completed or concluded by mistake: it becomes `planned` again, paused if it
+ * was started, and `reason` is kept as a progress note with the earlier outcome.
+ */
+export function useReopenTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: TaskId; reason: string }) => unwrap(commands.reopenTask(id, reason)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
+/** Corrects how a done task ended; `note` becomes its completion note and the change is kept as a progress note. */
+export function useSetTaskOutcome() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, resolution, note }: { id: TaskId; resolution: TaskResolution; note: string }) =>
+      unwrap(commands.setTaskOutcome(id, resolution, note)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
+/**
+ * Completes a task whose work shipped through another task or a merged pull request: exactly one of
+ * `mergedWithTask` and `pullRequestUrl`. An active task, or one concluded as not adopted, becomes done.
+ */
+export function useCompleteTaskMergedWith() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      mergedWithTask,
+      pullRequestUrl,
+    }: {
+      id: TaskId;
+      mergedWithTask: TaskId | null;
+      pullRequestUrl: string | null;
+    }) => unwrap(commands.completeTaskMergedWith(id, mergedWithTask, pullRequestUrl)),
+    // Completing records the commits of the branch.
+    onSuccess: (task) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
         queryClient.invalidateQueries({ queryKey: ["review"] }),
       ]),
   });

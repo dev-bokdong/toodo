@@ -59,6 +59,9 @@ vi.mock("@/lib/bindings", () => ({
     openPullRequest: vi.fn(),
     completeTask: vi.fn(),
     concludeTask: vi.fn(),
+    completeTaskMergedWith: vi.fn(),
+    reopenTask: vi.fn(),
+    setTaskOutcome: vi.fn(),
     linkIssue: vi.fn(),
     createIssue: vi.fn(),
     listHerdrMachines: vi.fn(),
@@ -140,6 +143,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
       startedAt: null,
       reviewAt: null,
       completedAt: null,
+      reopenedAt: null,
       pausedAt: null,
     },
     ...overrides,
@@ -2222,6 +2226,106 @@ describe("App", () => {
     expect(within(details).getByLabelText("Completion note of #1")).toHaveTextContent(
       "Twice as slow as the current cache",
     );
+  });
+
+  it("reopens a done task with a reason and shows it paused and reopened", async () => {
+    const done = task(1, 1, "Add login", {
+      status: "done",
+      resolution: "merged",
+      branch: "feat/add-login-1",
+      milestones: { plannedAt: 100, startedAt: 200, reviewAt: null, completedAt: 300, reopenedAt: null, pausedAt: null },
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    const details = await openDetails("Add login");
+    await chooseAction(1, "Reopen #1", details);
+    const reopen = within(details).getByRole("button", { name: "Reopen" });
+    expect(reopen).toBeDisabled();
+
+    const reopened: Task = {
+      ...done,
+      status: "planned",
+      resolution: null,
+      milestones: { ...done.milestones, completedAt: null, reopenedAt: 400, pausedAt: 400 },
+    };
+    mocked.reopenTask.mockResolvedValue({ status: "ok", data: reopened });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [reopened] });
+    fireEvent.change(within(details).getByRole("textbox", { name: "Reason to reopen #1" }), {
+      target: { value: " Missed the logout case " },
+    });
+    fireEvent.click(reopen);
+
+    expect(await within(details).findByRole("button", { name: "Resume #1" })).toBeInTheDocument();
+    expect(mocked.reopenTask).toHaveBeenCalledWith(1, "Missed the logout case");
+    expect(within(details).getByLabelText("Timeline of #1")).toHaveTextContent("Reopened");
+  });
+
+  it("corrects the outcome of a done task with a note", async () => {
+    const done = task(1, 1, "Add login", { status: "done", resolution: "merged" });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
+    mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    const details = await openDetails("Add login");
+    await chooseAction(1, "Change outcome of #1", details);
+    const outcome = within(details).getByRole("combobox", { name: "New outcome of #1" });
+    expect(within(outcome).queryByRole("option", { name: "Merged" })).not.toBeInTheDocument();
+
+    const corrected: Task = { ...done, resolution: "not_adopted", completionNote: "Reverted the next day" };
+    mocked.setTaskOutcome.mockResolvedValue({ status: "ok", data: corrected });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [corrected] });
+    fireEvent.change(outcome, { target: { value: "not_adopted" } });
+    fireEvent.change(within(details).getByRole("textbox", { name: "Outcome note of #1" }), {
+      target: { value: "Reverted the next day" },
+    });
+    fireEvent.click(within(details).getByRole("button", { name: "Change outcome" }));
+
+    expect(await within(details).findByLabelText("Completion note of #1")).toHaveTextContent("Reverted the next day");
+    expect(mocked.setTaskOutcome).toHaveBeenCalledWith(1, "not_adopted", "Reverted the next day");
+  });
+
+  it("completes an active task as shipped by another task from the Conclude form", async () => {
+    const batch = task(1, 1, "Add login", { status: "done", resolution: "completed" });
+    const planned = task(3, 1, "Add logout");
+    const extra = task(2, 1, "Fix typo", {
+      status: "in_progress",
+      branch: "fix/fix-typo-2",
+      worktreePath: "D:\\wt\\toodo\\fix-fix-typo-2",
+      herdrWorkspaceId: "w2",
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [batch, extra, planned] });
+    await renderWorkspace();
+
+    await chooseAction(2, "Conclude #2 without merging");
+    fireEvent.click(screen.getByRole("button", { name: "Complete #2 as shipped by another task or pull request" }));
+    const shipper = screen.getByRole("combobox", { name: "Task that shipped #2" });
+    // Only work that shipped can be named.
+    expect(within(shipper).queryByRole("option", { name: "#3 Add logout" })).not.toBeInTheDocument();
+
+    const done: Task = {
+      ...extra,
+      status: "done",
+      resolution: "completed",
+      herdrWorkspaceId: null,
+      mergedWith: { taskId: 1, pullRequestUrl: null },
+    };
+    mocked.completeTaskMergedWith.mockResolvedValue({ status: "ok", data: done });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [batch, done, planned] });
+    mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    fireEvent.change(shipper, { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Complete as shipped" }));
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 2" }));
+    expect(mocked.completeTaskMergedWith).toHaveBeenCalledWith(2, 1, null);
+    const details = await openDetails("Fix typo");
+    expect(within(details).getByLabelText("Shipped with task of #2")).toHaveTextContent("#1");
   });
 
   it("adds and removes task dependencies", async () => {
