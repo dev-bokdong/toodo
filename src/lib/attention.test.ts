@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { needsAttention } from "@/lib/attention";
-import type { Task, TaskNote, TaskStatus } from "@/lib/bindings";
+import { needsAttention, openBlocker } from "@/lib/attention";
+import type { Task, TaskEvent, TaskNote, TaskStatus } from "@/lib/bindings";
 
-function task(id: number, status: TaskStatus, notes: TaskNote["kind"][] = []): Task {
+function task(id: number, status: TaskStatus, notes: TaskNote["kind"][] = [], timeline: TaskEvent[] = []): Task {
   return {
     id,
     title: `Task ${id}`,
     status,
     notes: notes.map((kind, at) => ({ kind, body: kind, at })),
+    timeline,
+    dependsOn: [],
+    branch: null,
+    milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, pausedAt: null },
   } as unknown as Task;
 }
 
@@ -68,5 +72,36 @@ describe("needsAttention", () => {
     expect(summary(needsAttention([task(1, "planned", ["blocker"])], [], []))).toEqual([
       { id: 1, reasons: ["blocker_note"] },
     ]);
+  });
+});
+
+describe("openBlocker", () => {
+  it("ends the blocker a pause recorded once the task is resumed after it", () => {
+    // The blocker note is at 0, written with the pause.
+    const paused = [
+      { status: "in_progress" as const, at: -10, reopened: false },
+      { status: "planned" as const, at: 0, reopened: false },
+    ];
+    expect(openBlocker(task(1, "planned", ["blocker"], paused), new Map())?.kind).toBe("blocker");
+    expect(
+      openBlocker(task(1, "in_progress", ["blocker"], [...paused, { status: "in_progress", at: 5, reopened: false }]), new Map()),
+    ).toBeNull();
+    // A blocker reported while the task was already in progress stays open.
+    expect(openBlocker(task(2, "in_progress", ["blocker"], [{ status: "in_progress", at: -10, reopened: false }]), new Map())?.kind).toBe(
+      "blocker",
+    );
+  });
+
+  it("ends the blocker of a pause by a prerequisite once nothing blocks the task", () => {
+    const paused = (dependsOn: number[]): Task => ({
+      ...task(1, "planned", ["blocker"]),
+      dependsOn,
+      milestones: { plannedAt: -20, startedAt: -10, reviewAt: null, completedAt: null, pausedAt: 0, reopenedAt: null },
+    });
+    const prerequisite = task(2, "planned");
+    const byId = new Map([[2, prerequisite]]);
+    expect(openBlocker(paused([2]), byId)?.kind).toBe("blocker");
+    // The dependency was removed.
+    expect(openBlocker(paused([]), byId)).toBeNull();
   });
 });

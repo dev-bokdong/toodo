@@ -47,7 +47,6 @@ import {
   openingViewport,
   waitingPrerequisites,
   relatedTasks,
-  pausesStartedTask,
   timelineAxis,
   timelineEdgePath,
   timelineScales,
@@ -442,13 +441,11 @@ export function TaskGraph({
 
   function connect({ source, target }: Connection) {
     const edge = { id: Number(target), dependsOn: Number(source) };
-    const task = allTasks.find((other) => other.id === edge.id);
-    const prerequisite = allTasks.find((other) => other.id === edge.dependsOn);
-    if (task !== undefined && pausesStartedTask(task, prerequisite)) {
-      setConfirmingEdge(edge);
-    } else {
-      addDependency.mutate(edge);
-    }
+    // The server tells whether the edge pauses a started task; then the user confirms it first.
+    addDependency.mutate(
+      { ...edge, confirmPause: false },
+      { onSuccess: (outcome) => outcome === "confirm_pause" && setConfirmingEdge(edge) },
+    );
   }
 
   function removeEdges(removed: { source: string; target: string }[]) {
@@ -677,7 +674,9 @@ export function TaskGraph({
           taskId={confirmingEdge.id}
           prerequisite={`#${confirmingEdge.dependsOn}`}
           pending={addDependency.isPending}
-          onConfirm={() => addDependency.mutate(confirmingEdge, { onSettled: () => setConfirmingEdge(null) })}
+          onConfirm={() =>
+            addDependency.mutate({ ...confirmingEdge, confirmPause: true }, { onSettled: () => setConfirmingEdge(null) })
+          }
           onCancel={() => setConfirmingEdge(null)}
         />
       )}

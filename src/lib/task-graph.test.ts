@@ -8,7 +8,6 @@ import {
   majorLabelOffset,
   openingViewport,
   relatedTasks,
-  pausesStartedTask,
   timelineAxis,
   timelineEdgePath,
   timelineYears,
@@ -106,17 +105,6 @@ describe("dependenciesDone", () => {
     expect(dependenciesDone(task(4, { dependsOn: [1] }), byId)).toBe(true);
     expect(dependenciesDone(task(5, { dependsOn: [1, 2] }), byId)).toBe(false);
     expect(dependenciesDone(task(6, { dependsOn: [3] }), byId)).toBe(false);
-  });
-});
-
-describe("pausesStartedTask", () => {
-  const started = task(2, { status: "in_progress" });
-
-  it("is true only for a task in progress and a prerequisite not done", () => {
-    expect(pausesStartedTask(started, task(1))).toBe(true);
-    expect(pausesStartedTask(started, task(1, { status: "done", resolution: "not_adopted" }))).toBe(true);
-    expect(pausesStartedTask(started, task(1, { status: "done", resolution: "merged" }))).toBe(false);
-    expect(pausesStartedTask(task(3), task(1))).toBe(false);
   });
 });
 

@@ -3,7 +3,8 @@
 use super::State;
 
 use super::types::{
-    self, CommitRecord, CriterionId, NewTask, Task, TaskEdit, TaskId, TaskRelation,
+    self, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task, TaskEdit, TaskId,
+    TaskRelation,
 };
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
@@ -584,17 +585,29 @@ pub fn delete_task(
 }
 
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
-/// self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
-/// paused and its herdr workspace closed.
+/// self and cyclic edges and `done` tasks. An `in_progress` task that the new
+/// prerequisite blocks is paused and its herdr workspace closed, but only with
+/// `confirm_pause`; without it, nothing is added and the outcome asks for confirmation.
+/// The server decides whether the task would pause, not the caller's view of it.
 #[specta::specta]
 pub fn add_dependency(
     storage: State<'_, StorageState>,
     herdr: State<'_, HerdrState>,
     task_id: TaskId,
     depends_on: TaskId,
-) -> CommandResult<()> {
-    super::herdr::add_dependencies(&storage, &herdr, task_id.into(), &[depends_on.into()])?;
-    Ok(())
+    confirm_pause: bool,
+) -> CommandResult<DependencyOutcome> {
+    let (task, depends_on) = (task_id.into(), [depends_on.into()]);
+    if !confirm_pause {
+        let change =
+            lock(&storage).add_dependencies_with(task, &depends_on, storage::PauseRule::Ask)?;
+        if change == storage::DependencyChange::NeedsPause {
+            return Ok(DependencyOutcome::ConfirmPause);
+        }
+        return Ok(DependencyOutcome::Added);
+    }
+    super::herdr::add_dependencies(&storage, &herdr, task, &depends_on)?;
+    Ok(DependencyOutcome::Added)
 }
 
 #[specta::specta]

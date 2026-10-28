@@ -421,7 +421,7 @@ describe("App", () => {
     const docs = task(4, 2, "Write docs");
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [api, ui, docs] });
-    mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: "added" });
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: /^herdr/ }));
@@ -438,7 +438,7 @@ describe("App", () => {
     fireEvent.change(add, { target: { value: "1" } });
     const dependencies = await screen.findByRole("group", { name: "Dependencies of #3" });
     await waitFor(() => expect(within(dependencies).getByText("toodo #1")).toBeInTheDocument());
-    expect(mocked.addDependency).toHaveBeenCalledWith(3, 1);
+    expect(mocked.addDependency).toHaveBeenCalledWith(3, 1, false);
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     expect(await screen.findByRole("heading", { name: "All workspaces" })).toBeInTheDocument();
@@ -2333,7 +2333,7 @@ describe("App", () => {
     const ui = task(2, 1, "Add UI");
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
-    mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: "added" });
     await renderWorkspace();
 
     const details = await openDetails("Add UI");
@@ -2347,7 +2347,7 @@ describe("App", () => {
     fireEvent.change(add, { target: { value: "1" } });
 
     const remove = await within(details).findByRole("button", { name: "Remove dependency #1 from #2" });
-    expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
+    expect(mocked.addDependency).toHaveBeenCalledWith(2, 1, false);
     expect(within(details).getByRole("button", { name: "Start #2" })).toBeDisabled();
     mocked.removeDependency.mockResolvedValue({ status: "ok", data: null });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
@@ -2377,7 +2377,7 @@ describe("App", () => {
     });
 
     expect(await screen.findByRole("alert")).toHaveTextContent("would create a cycle");
-    expect(mocked.addDependency).toHaveBeenCalledWith(1, 2);
+    expect(mocked.addDependency).toHaveBeenCalledWith(1, 2, false);
     expect(screen.queryByRole("combobox", { name: "Add dependency to #2" })).not.toBeInTheDocument();
   });
 
@@ -2674,26 +2674,24 @@ describe("App", () => {
     });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, started] });
-    mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: "confirm_pause" });
     await renderWorkspace();
 
     const details = await openDetails("Verify login");
     const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
+    fireEvent.change(add, { target: { value: "1" } });
+    const confirmation = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: "added" });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
       data: [fix, { ...started, status: "planned", herdrWorkspaceId: null, dependsOn: [1] }],
     });
-    fireEvent.change(add, { target: { value: "1" } });
-    fireEvent.click(
-      within(await screen.findByRole("group", { name: "Confirm prerequisite of #2" })).getByRole("button", {
-        name: "Pause and add",
-      }),
-    );
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Pause and add" }));
 
     expect(await within(details).findByRole("note", { name: "Waiting prerequisites of #2" })).toHaveTextContent(
       "Waiting on #1",
     );
-    expect(mocked.addDependency).toHaveBeenCalledWith(2, 1);
+    expect(mocked.addDependency).toHaveBeenCalledWith(2, 1, true);
     expect(within(details).getByRole("button", { name: "Resume #2" })).toBeDisabled();
     expect(within(row("Verify login")).getByRole("note", { name: "Waiting prerequisites of #2" })).toBeInTheDocument();
   });
@@ -3025,7 +3023,8 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [fix, started] });
     mocked.listAgentStatuses.mockResolvedValue([{ taskId: 2, status: "idle" }]);
-    mocked.addDependency.mockResolvedValue({ status: "ok", data: null });
+    // The server decides that the prerequisite pauses the task and asks for confirmation.
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: "confirm_pause" });
     await renderWorkspace();
     await screen.findByLabelText("Agent of #2");
     const details = await openDetails("Verify login");
@@ -3036,18 +3035,16 @@ describe("App", () => {
     expect(confirmation).toHaveTextContent("Adding #1 as a prerequisite pauses #2");
     // The question takes the place of the dependency row instead of pushing the row down.
     expect(screen.queryByRole("group", { name: "Dependencies of #2" })).not.toBeInTheDocument();
-    expect(mocked.addDependency).not.toHaveBeenCalled();
+    expect(mocked.addDependency).toHaveBeenCalledWith(2, 1, false);
     fireEvent.click(within(confirmation).getByRole("button", { name: "Back" }));
     expect(screen.queryByRole("group", { name: "Confirm prerequisite of #2" })).not.toBeInTheDocument();
-    expect(mocked.addDependency).not.toHaveBeenCalled();
+    expect(mocked.addDependency).not.toHaveBeenCalledWith(2, 1, true);
 
     fireEvent.change(add(), { target: { value: "1" } });
-    fireEvent.click(
-      within(await screen.findByRole("group", { name: "Confirm prerequisite of #2" })).getByRole("button", {
-        name: "Pause and add",
-      }),
-    );
-    await waitFor(() => expect(mocked.addDependency).toHaveBeenCalledWith(2, 1));
+    const again = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
+    mocked.addDependency.mockResolvedValue({ status: "ok", data: "added" });
+    fireEvent.click(within(again).getByRole("button", { name: "Pause and add" }));
+    await waitFor(() => expect(mocked.addDependency).toHaveBeenCalledWith(2, 1, true));
     await waitFor(() =>
       expect(screen.queryByRole("group", { name: "Confirm prerequisite of #2" })).not.toBeInTheDocument(),
     );

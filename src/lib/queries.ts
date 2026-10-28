@@ -637,8 +637,15 @@ export function useDeleteTask() {
 /** The edge `id -> dependsOn`; `dependsOn` may be a task of another workspace. */
 type Dependency = { id: TaskId; dependsOn: TaskId };
 
+/**
+ * Adds the edge `id -> dependsOn`. Without `confirmPause`, a prerequisite that would pause the
+ * started task is not added and the outcome is `confirm_pause`: the server decides, so the
+ * user is asked before the pause even when the cached tasks are stale.
+ */
 export function useAddDependency() {
-  return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.addDependency(id, dependsOn)));
+  return useTasksMutation(({ id, dependsOn, confirmPause }: Dependency & { confirmPause: boolean }) =>
+    unwrap(commands.addDependency(id, dependsOn, confirmPause)),
+  );
 }
 
 export function useRemoveDependency() {

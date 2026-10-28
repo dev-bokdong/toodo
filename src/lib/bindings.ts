@@ -126,10 +126,12 @@ export const commands = {
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(invoke("delete_task", { id, force })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
-	 *  self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
-	 *  paused and its herdr workspace closed.
+	 *  self and cyclic edges and `done` tasks. An `in_progress` task that the new
+	 *  prerequisite blocks is paused and its herdr workspace closed, but only with
+	 *  `confirm_pause`; without it, nothing is added and the outcome asks for confirmation.
+	 *  The server decides whether the task would pause, not the caller's view of it.
 	 */
-	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(invoke("add_dependency", { taskId, dependsOn })),
+	addDependency: (taskId: TaskId, dependsOn: TaskId, confirmPause: boolean) => typedError<DependencyOutcome, CommandError>(invoke("add_dependency", { taskId, dependsOn, confirmPause })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(invoke("remove_dependency", { taskId, dependsOn })),
 	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(invoke("list_commit_records", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(invoke("herdr_status")),
@@ -464,6 +466,19 @@ export type CriterionState = "pending" | "met" |
  *  it again.
  */
 "failed";
+
+/**  What adding a prerequisite in the app did. */
+export type DependencyOutcome = 
+/**
+ *  The dependency was added, pausing the task if it blocks it and the pause was
+ *  confirmed.
+ */
+"added" | 
+/**
+ *  The prerequisite would pause the task, which is in progress; nothing was added.
+ *  Ask the user, then add it again with the pause confirmed.
+ */
+"confirm_pause";
 
 /**  The expected size of a task. */
 export type Estimate = {

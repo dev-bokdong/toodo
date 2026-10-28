@@ -127,16 +127,20 @@ impl Storage {
         Ok(())
     }
 
-    /// Removes the link between `task` and `related`, in either direction, if present.
+    /// Removes the link between `task` and `related`, given in either order; rejects a link
+    /// that does not exist.
     pub fn remove_related(&mut self, task: TaskId, related: TaskId) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.query_row("SELECT 1 FROM tasks WHERE id = ?1", [task.0], |_| Ok(()))
             .optional()?
             .ok_or(StorageError::TaskNotFound(task))?;
-        tx.execute(
+        let removed = tx.execute(
             "DELETE FROM task_relations WHERE task_id = ?1 AND related_id = ?2",
             [task.0.min(related.0), task.0.max(related.0)],
         )?;
+        if removed == 0 {
+            return Err(StorageError::RelationNotFound { task, related });
+        }
         tx.commit()?;
         Ok(())
     }

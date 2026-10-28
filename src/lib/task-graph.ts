@@ -5,10 +5,9 @@ import { dueEnd, dueState, estimatedSeconds, type DueState } from "@/lib/plan";
 /** A dependency drawn from the prerequisite (`source`) to the task that waits on it (`target`). */
 export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
 
-/** Statuses whose dependencies can still change; the backend rejects edits for the others. */
 /**
- * Statuses whose dependencies can change. A new prerequisite that is not done pauses an
- * `in_progress` task and closes its herdr workspace.
+ * Statuses whose dependencies can change in the app. A new prerequisite that is not done
+ * pauses an `in_progress` task and closes its herdr workspace, after the user confirms it.
  */
 export const dependencyEditableStatuses: TaskStatus[] = ["planned", "in_progress"];
 
@@ -57,25 +56,23 @@ export function freshnessWarning(freshness: BranchFreshness): string | null {
   return parts.join("; ");
 }
 
-/**
- * Whether making `task` depend on `prerequisite` pauses it: the task is in progress and the
- * prerequisite is not done (or not adopted), so its herdr workspace is closed, whatever its
- * agent is doing.
- */
-export function pausesStartedTask(task: Task, prerequisite: Task | undefined): boolean {
-  const done = prerequisite?.status === "done" && !isNotAdopted(prerequisite);
-  return task.status === "in_progress" && !done;
-}
-
 /** A planned task that was worked on before: it keeps its branch and worktree. */
 export function isPaused(task: Task): boolean {
   return task.status === "planned" && (task.milestones.startedAt !== null || task.branch !== null);
 }
 
 /**
- * Whether paused `task` waited on a prerequisite that has been completed since its pause, and
- * every prerequisite is now done and adopted: the pause came from a new prerequisite, which
- * no longer blocks it. A task paused by hand had its prerequisites done before it started.
+ * Whether paused `task` was paused by a new prerequisite: the server records the prerequisites
+ * it waits on as a blocker note at the time of the pause.
+ */
+function pausedByPrerequisite(task: Task, pausedAt: Timestamp): boolean {
+  return task.notes.some((note) => note.kind === "blocker" && note.at === pausedAt);
+}
+
+/**
+ * Whether paused `task` waited on prerequisites that no longer block it: every prerequisite is
+ * now done and adopted, and the pause came from a new prerequisite, which was completed since
+ * or removed. A task paused by hand had its prerequisites done before it started.
  */
 export function prerequisitesResolved(task: Task, byId: ReadonlyMap<TaskId, Task>): boolean {
   const pausedAt = task.milestones.pausedAt;
@@ -83,7 +80,8 @@ export function prerequisitesResolved(task: Task, byId: ReadonlyMap<TaskId, Task
     isPaused(task) &&
     pausedAt !== null &&
     dependenciesDone(task, byId) &&
-    task.dependsOn.some((id) => (byId.get(id)?.milestones.completedAt ?? -Infinity) >= pausedAt)
+    (pausedByPrerequisite(task, pausedAt) ||
+      task.dependsOn.some((id) => (byId.get(id)?.milestones.completedAt ?? -Infinity) >= pausedAt))
   );
 }
 
