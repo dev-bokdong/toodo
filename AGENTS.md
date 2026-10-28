@@ -149,8 +149,7 @@ test in `server/rpc.rs` checks that the server serves every command in the bindi
   - Remote workspaces map to saved herdr SSH machines (`herdr machine ...`), found by
     their SSH target. The user adds one with `herdr machine add <host>` in a terminal on
     the server; Toodo never installs herdr on a remote host itself.
-  - Implementation happens in herdr itself; Toodo does not embed a terminal (the web app's
-    pane view mirrors herdr panes).
+  - Implementation happens in herdr itself; Toodo does not embed a terminal.
 - **git**: run the `git` CLI (not libgit2) for branches and commit history.
 - **ssh**: run OpenSSH `ssh` for git commands on remote workspaces, sharing the server
   user's `~/.ssh/config` and ssh-agent with herdr.
