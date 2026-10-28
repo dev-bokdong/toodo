@@ -46,6 +46,9 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
       completedAt: null,
       reopenedAt: null,
       pausedAt: null,
+      lastReviewAt: null,
+      activeSeconds: 0,
+      pauseCount: 0,
     },
     ...overrides,
   };

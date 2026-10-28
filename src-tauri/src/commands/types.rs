@@ -1028,6 +1028,14 @@ pub struct TaskMilestones {
     pub reopened_at: Option<Timestamp>,
     /// The latest pause, unless the task was started again after it.
     pub paused_at: Option<Timestamp>,
+    /// The latest move to `in_review`.
+    pub last_review_at: Option<Timestamp>,
+    /// Seconds spent in progress or in review up to the latest status change, pauses left
+    /// out; the current period of an active task is not counted yet.
+    #[specta(type = Number)]
+    pub active_seconds: i64,
+    /// How often the task was paused after work started.
+    pub pause_count: u32,
 }
 
 impl From<timeline::Milestones> for TaskMilestones {
@@ -1039,6 +1047,9 @@ impl From<timeline::Milestones> for TaskMilestones {
             completed_at: milestones.completed_at.map(Timestamp),
             reopened_at: milestones.reopened_at.map(Timestamp),
             paused_at: milestones.paused_at.map(Timestamp),
+            last_review_at: milestones.last_review_at.map(Timestamp),
+            active_seconds: milestones.active_seconds,
+            pause_count: milestones.pause_count,
         }
     }
 }

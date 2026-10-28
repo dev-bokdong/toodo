@@ -25,14 +25,14 @@ use crate::mcp::ServerStatus;
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ListTasks {
     /// Only tasks of this workspace; all workspaces when omitted.
     pub workspace_id: Option<WorkspaceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CreateWorkspace {
     /// Name shown in Toodo, e.g. the repository name.
     pub name: String,
@@ -56,14 +56,20 @@ pub struct CreateWorkspace {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CurrentTask {
     /// Absolute path of the agent's working directory, e.g. the worktree of its task.
     pub cwd: String,
+    /// The machine the agent runs on: `local` for the machine Toodo runs on, or the SSH
+    /// host of a remote machine, as in a workspace's `location.machine`. Omit it to
+    /// search every machine; a path inside worktrees on several machines is then
+    /// rejected, naming them.
+    #[serde(default)]
+    pub machine: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CreateTask {
     pub workspace_id: WorkspaceId,
     pub task_type: TaskType,
@@ -94,10 +100,16 @@ pub struct CreateTask {
     /// omitted. Set false for work that ships nothing, e.g. research or an errand.
     #[serde(default)]
     pub merge_criterion: Option<bool>,
+    /// Ignored: agents started before the lead was removed may still send it, and other
+    /// unknown arguments are rejected.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(transform = without_null_defaults)]
 pub struct UpdateTask {
     pub id: TaskId,
     /// Unchanged when omitted.
@@ -129,7 +141,7 @@ pub struct UpdateTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CheckCriterion {
     /// The task of the criterion; found from the criterion when omitted.
     #[serde(default)]
@@ -147,7 +159,7 @@ pub struct CheckCriterion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AddCriterion {
     /// The task that gets the criterion; it must not be done.
     pub task_id: TaskId,
@@ -161,7 +173,7 @@ pub struct AddCriterion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RemoveCriterion {
     /// The task of the criterion; found from the criterion when omitted.
     #[serde(default)]
@@ -169,6 +181,25 @@ pub struct RemoveCriterion {
     /// The criterion to delete with its evidence. `id` is accepted too.
     #[serde(alias = "id")]
     pub criterion_id: types::CriterionId,
+}
+
+/// Drops the `"default": null` schemars derives from `#[serde(default)]` for the fields
+/// of a patch: there an omitted field stays unchanged while an explicit `null` clears it,
+/// so a client that fills in advertised defaults would clear what it meant to keep.
+pub(super) fn without_null_defaults(schema: &mut schemars::Schema) {
+    let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for property in properties.values_mut() {
+        if let Some(property) = property.as_object_mut()
+            && property.get("default") == Some(&serde_json::Value::Null)
+        {
+            property.remove("default");
+        }
+    }
 }
 
 /// Tells a field given as `null` (`Some(None)`) from an omitted one (`None`, the default).
@@ -198,7 +229,7 @@ fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<TaskId>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AddDependencies {
     /// The dependent task.
     pub task_id: TaskId,
@@ -210,7 +241,7 @@ pub struct AddDependencies {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Dependency {
     /// The dependent task.
     pub task_id: TaskId,
@@ -221,7 +252,7 @@ pub struct Dependency {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AddNote {
     /// The task the note is about, usually your current task.
     pub task_id: TaskId,
@@ -230,7 +261,7 @@ pub struct AddNote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PauseTask {
     /// The task, e.g. your current task.
     pub id: TaskId,
@@ -239,7 +270,7 @@ pub struct PauseTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ResumeTask {
     /// The paused task.
     pub id: TaskId,
@@ -249,7 +280,7 @@ pub struct ResumeTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StartTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -258,6 +289,11 @@ pub struct StartTask {
     /// workspaces on the machine Toodo runs on.
     #[serde(default)]
     pub agent_command: Option<String>,
+    /// Ignored: agents started before the lead was removed may still send it, and other
+    /// unknown arguments are rejected.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub request_id: Option<String>,
 }
 
 /// A started task with the panes of its herdr workspace.
@@ -277,7 +313,7 @@ pub struct TaskStart {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CompleteTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -322,7 +358,7 @@ impl MergedWithRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct SearchTasks {
     /// Words to look for in any language, e.g. `deploy server`; short words such as
     /// two-character Korean ones work too. Every word must appear in the
@@ -334,19 +370,28 @@ pub struct SearchTasks {
     pub workspace_id: Option<WorkspaceId>,
     /// Only tasks with this status; any status when omitted.
     pub status: Option<TaskStatus>,
-    /// At most this many results, best match first: 20 when omitted, at most 100.
+    /// At most this many results, best match first: 20 when omitted, at most 100; 0
+    /// returns none.
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RestoreWorktree {
+    /// An in_progress or in_review task whose worktree directory is gone, e.g. yours
+    /// when current_task returns it with worktreeMissing true.
+    pub id: TaskId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct GetTask {
     /// The task, e.g. one that search_tasks found.
     pub id: TaskId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Related {
     /// One task of the link, e.g. your current task.
     pub task_id: TaskId,
@@ -355,7 +400,7 @@ pub struct Related {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ConcludeTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -365,7 +410,7 @@ pub struct ConcludeTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct SetWorktreeRoot {
     /// SSH host of a remote machine, as in `machine.label` of list_machine_settings or a
     /// workspace's `location.machine`; omit it for the machine Toodo runs on.
@@ -587,52 +632,149 @@ pub struct CurrentTaskReply {
     /// Whether you merge the task's pull request yourself: `never`, or `afterChecks`
     /// (into `base_branch` only, once every check on it passed).
     pub agent_merge: types::AgentMerge,
+    /// The machine of the task's workspace, where its worktree is.
+    pub machine: types::Machine,
 }
 
-/// The task whose worktree contains `cwd`; the innermost one if worktrees are nested.
+/// What to tell an agent that current_task found no task for; the server instructions
+/// and the skill give the same next step.
+const NO_CURRENT_TASK: &str = "if you were asked to work on a Toodo task, tell the user \
+    and ask for its id, then read it with get_task; to plan new work outside a task, \
+    pick the workspace with list_workspaces";
+
+fn machine_of(machine: &model::Machine) -> types::Machine {
+    match machine {
+        model::Machine::Local => types::Machine::Local,
+        model::Machine::Ssh(label) => types::Machine::Ssh {
+            label: label.as_str().to_owned(),
+        },
+    }
+}
+
+fn machine_name(machine: &model::Machine) -> &str {
+    match machine {
+        model::Machine::Local => "local",
+        model::Machine::Ssh(label) => label.as_str(),
+    }
+}
+
+/// The task whose worktree contains `cwd` on the requested machine; the innermost one if
+/// worktrees are nested. Paths are compared after resolving `.` and `..` by their text,
+/// since a remote path cannot be resolved on this machine.
 pub fn current_task(storage: &Storage, request: CurrentTask) -> CommandResult<CurrentTaskReply> {
+    let wanted = request
+        .machine
+        .as_deref()
+        .map(str::trim)
+        .filter(|machine| !machine.is_empty());
     let cwd = comparable_path(&request.cwd);
-    let task = storage
+    let workspaces: HashMap<_, _> = storage
+        .list_workspaces()?
+        .into_iter()
+        .map(|workspace| (workspace.id, workspace))
+        .collect();
+    let matches: Vec<_> = storage
         .list_all_tasks()?
-        .iter()
+        .into_iter()
         .filter_map(|task| {
+            let workspace = workspaces.get(&task.workspace_id)?;
+            let machine = workspace.location.machine();
+            let on_machine = match wanted {
+                None => true,
+                Some(wanted) => match &machine {
+                    model::Machine::Local => wanted.eq_ignore_ascii_case("local"),
+                    model::Machine::Ssh(label) => label.as_str() == wanted,
+                },
+            };
             let worktree = comparable_path(&task.worktree_path.as_ref()?.to_string());
             let inside = cwd == worktree
                 || cwd
                     .strip_prefix(&worktree)
-                    .is_some_and(|rest| rest.starts_with('/'));
-            inside.then_some((worktree.len(), task))
+                    .is_some_and(|rest| rest.starts_with('/') || worktree.ends_with('/'));
+            (on_machine && inside).then_some((worktree.len(), task, workspace))
         })
-        .max_by_key(|(length, _)| *length)
-        .map(|(_, task)| Task::from(task))
-        .ok_or_else(|| {
-            CommandError::not_found(format!(
-                "no Toodo task has a worktree containing {}",
+        .collect();
+    let innermost = matches.iter().map(|(length, ..)| *length).max();
+    let innermost: Vec<_> = matches
+        .into_iter()
+        .filter(|(length, ..)| Some(*length) == innermost)
+        .collect();
+    let (task, workspace) = match innermost.as_slice() {
+        [] => {
+            let scope = wanted.map_or(String::new(), |machine| format!(" on machine {machine}"));
+            return Err(CommandError::not_found(format!(
+                "no Toodo task has a worktree containing {}{scope}; {NO_CURRENT_TASK}",
                 request.cwd
-            ))
-        })?;
-    let workspace = storage
-        .get_workspace(task.workspace_id.into())?
-        .ok_or(StorageError::WorkspaceNotFound(task.workspace_id.into()))?;
+            )));
+        }
+        [(_, task, workspace)] => (task, *workspace),
+        several => {
+            let found = several
+                .iter()
+                .map(|(_, task, workspace)| {
+                    format!(
+                        "#{} on {}",
+                        task.id,
+                        machine_name(&workspace.location.machine())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CommandError::rejected(format!(
+                "{} is inside the worktrees of several tasks: {found}; call current_task again with machine set to the machine you run on (`local` or its SSH host)",
+                request.cwd
+            )));
+        }
+    };
     Ok(CurrentTaskReply {
-        task,
-        base_branch: workspace.default_base_branch,
+        task: Task::from(task),
+        base_branch: workspace.default_base_branch.clone(),
         agent_merge: workspace.agent_merge.into(),
+        machine: machine_of(&workspace.location.machine()),
     })
 }
 
-/// A path with `/` separators and no trailing separator; Windows paths, which are
-/// case-insensitive, are also lowercased.
+/// A path with `/` separators, `.` and `..` resolved by their text, and no repeated or
+/// trailing separator; Windows paths, which are case-insensitive, are also lowercased.
 fn comparable_path(path: &str) -> String {
     let path = path.trim().replace('\\', "/");
-    let path = path.trim_end_matches('/');
     let bytes = path.as_bytes();
-    let windows = path.starts_with("//") || (bytes.len() >= 2 && bytes[1] == b':');
-    if windows {
-        path.to_lowercase()
+    let drive = bytes.len() >= 2 && bytes[1] == b':';
+    let windows = path.starts_with("//") || drive;
+    // The part `..` never climbs above: `/`, `//` of a UNC path, or a drive such as `c:/`.
+    let (root, rest) = if let Some(rest) = path.strip_prefix("//") {
+        ("//".to_owned(), rest)
+    } else if drive {
+        (format!("{}/", &path[..2]), &path[2..])
+    } else if let Some(rest) = path.strip_prefix('/') {
+        ("/".to_owned(), rest)
     } else {
-        path.to_owned()
+        (String::new(), path.as_str())
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|last| *last != "..") => {
+                parts.pop();
+            }
+            ".." if !root.is_empty() => {}
+            part => parts.push(part),
+        }
     }
+    let path = root + &parts.join("/");
+    if windows { path.to_lowercase() } else { path }
+}
+
+/// Checks out the branch of an active task that lost its worktree into a new one, as
+/// Restore worktree in the Toodo app does.
+pub fn restore_worktree(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: RestoreWorktree,
+) -> CommandResult<Task> {
+    Ok((&herdr_commands::restore(storage, git, herdr, request.id.into())?).into())
 }
 
 /// Creates a `planned` task with its dependencies. Unknown prerequisites are rejected
@@ -1388,7 +1530,7 @@ pub fn search_tasks(storage: &Storage, request: SearchTasks) -> CommandResult<Ve
         limit: request
             .limit
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
-            .clamp(1, MAX_SEARCH_LIMIT),
+            .min(MAX_SEARCH_LIMIT),
     })?;
     let links = Links::load(storage)?;
     ids.into_iter().map(|id| links.hit(id)).collect()
@@ -1499,6 +1641,7 @@ mod tests {
                 due_date: None,
                 criteria: Vec::new(),
                 merge_criterion: None,
+                request_id: None,
             },
             Some(NewCriterion::merge(true)),
         )
@@ -2361,6 +2504,7 @@ mod tests {
                 &storage,
                 CurrentTask {
                     cwd: cwd.to_owned(),
+                    machine: None,
                 },
             )
         };
@@ -2394,6 +2538,7 @@ mod tests {
                 storage,
                 CurrentTask {
                     cwd: r"D:\wt\toodo\feat-schema-1".to_owned(),
+                    machine: None,
                 },
             )
             .unwrap();
@@ -2431,11 +2576,121 @@ mod tests {
                 &storage,
                 CurrentTask {
                     cwd: cwd.to_owned(),
+                    machine: None,
                 },
             )
         };
         assert_eq!(find("/wt/app/feat-remote-1/src").unwrap().task.id, task.id);
         assert!(find("/WT/app/feat-remote-1").is_err());
+        assert_eq!(
+            find("/wt/app/other/../feat-remote-1/./src")
+                .unwrap()
+                .task
+                .id,
+            task.id
+        );
+        assert!(find("/wt/app/feat-remote-1/../outside").is_err());
+    }
+
+    #[test]
+    fn unknown_arguments_are_rejected_with_the_accepted_ones() {
+        let error = serde_json::from_value::<UpdateTask>(
+            serde_json::json!({"id": 1, "dueDate": "2026-11-01"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unknown field `dueDate`"), "{error}");
+        assert!(error.contains("`due_date`"), "{error}");
+    }
+
+    #[test]
+    fn patch_schemas_advertise_no_null_defaults() {
+        for schema in [
+            schemars::schema_for!(UpdateTask),
+            schemars::schema_for!(crate::mcp::memory::UpdateMemory),
+            schemars::schema_for!(crate::mcp::memory::SupersedeMemory),
+        ] {
+            let properties = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .unwrap();
+            for (name, property) in properties {
+                assert_ne!(
+                    property.get("default"),
+                    Some(&serde_json::Value::Null),
+                    "{name}: {property}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_search_limit_of_zero_returns_no_tasks() {
+        let (mut storage, workspace) = storage_with_workspace();
+        create(&mut storage, workspace, "Search schema", vec![]).unwrap();
+        let limited = |limit| {
+            search_tasks(
+                &storage,
+                SearchTasks {
+                    query: "schema".to_owned(),
+                    workspace_id: None,
+                    status: None,
+                    limit,
+                },
+            )
+            .unwrap()
+            .len()
+        };
+        assert_eq!(limited(Some(0)), 0);
+        assert_eq!(limited(None), 1);
+    }
+
+    #[test]
+    fn the_current_task_is_scoped_to_the_machine_the_agent_runs_on() {
+        let (mut storage, local) = storage_with_workspace();
+        let remote = storage
+            .create_workspace(&NewWorkspace {
+                name: "server".to_owned(),
+                location: WorkspaceLocation::Ssh {
+                    machine: model::MachineLabel::parse("devbox").unwrap(),
+                    path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
+                },
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        let here = create(&mut storage, local, "Here", vec![]).unwrap();
+        let there = create(&mut storage, remote.id.into(), "There", vec![]).unwrap();
+        for id in [here.id, there.id] {
+            set_worktree(
+                &mut storage,
+                id,
+                HostPath::Windows(WindowsPath::parse(r"D:\wt\shared").unwrap()),
+            );
+        }
+        let find = |machine: Option<&str>| {
+            current_task(
+                &storage,
+                CurrentTask {
+                    cwd: r"D:\wt\shared\src".to_owned(),
+                    machine: machine.map(str::to_owned),
+                },
+            )
+        };
+
+        let error = find(None).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("on devbox"), "{}", error.message);
+        assert_eq!(find(Some("local")).unwrap().task.id, here.id);
+        let found = find(Some("devbox")).unwrap();
+        assert_eq!(found.task.id, there.id);
+        assert_eq!(
+            serde_json::to_value(&found).unwrap()["machine"]["label"],
+            "devbox"
+        );
+        assert_eq!(
+            find(Some("gpu")).unwrap_err().kind,
+            CommandErrorKind::NotFound
+        );
     }
 
     type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
@@ -2555,6 +2810,7 @@ mod tests {
             StartTask {
                 id: dependent.id,
                 agent_command: None,
+                request_id: None,
             },
         )
         .unwrap_err();
@@ -2572,6 +2828,7 @@ mod tests {
             StartTask {
                 id: task.id,
                 agent_command: None,
+                request_id: None,
             },
         )
         .unwrap_err();

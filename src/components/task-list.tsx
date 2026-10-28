@@ -720,6 +720,13 @@ function TaskRow({
 
   // Actions in a fixed order; the first applicable of the main ones is the task's next action.
   const herdrBlocked = task.herdrWorkspaceId !== null && !herdrRunning;
+  // Why actions that need herdr are disabled, as their tooltip and as a note below them.
+  const herdrReason = herdrRunning
+    ? null
+    : herdr.isPending
+      ? "Checking whether herdr is running..."
+      : "herdr is not running on the server; start it there (`herdr status --json` shows whether it runs), then try again";
+  const needsHerdr = (title: string | undefined) => herdrReason ?? title;
   const start: Action | null =
     task.status === "planned"
       ? {
@@ -728,7 +735,7 @@ function TaskRow({
           ariaLabel: `${paused ? "Resume" : "Start"} #${task.id}`,
           icon: <Play />,
           title: startable
-            ? undefined
+            ? needsHerdr(undefined)
             : notAdopted.length > 0
               ? "A dependency was not adopted; remove it to start"
               : "Waits until all its dependencies are done",
@@ -743,7 +750,7 @@ function TaskRow({
           label: restoreWorktree.isPending ? "Restoring..." : "Restore worktree",
           ariaLabel: `Restore worktree of #${task.id}`,
           icon: <FolderGit2 />,
-          title: `Check out ${task.branch} into a new worktree and open it in herdr`,
+          title: needsHerdr(`Check out ${task.branch} into a new worktree and open it in herdr`),
           disabled: !herdrRunning || restoreWorktree.isPending,
           onSelect: () => restoreWorktree.mutate(task.id),
         }
@@ -754,7 +761,9 @@ function TaskRow({
         label: completeTask.isPending ? "Completing..." : "Confirm completion",
         ariaLabel: `Confirm completion of #${task.id}`,
         icon: <Check />,
-        title: "Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept",
+        title: herdrBlocked
+          ? needsHerdr(undefined)
+          : "Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept",
         disabled: finishing || herdrBlocked,
         onSelect: () => completeTask.mutate(task.id),
       }
@@ -777,8 +786,9 @@ function TaskRow({
           label: completeTask.isPending ? "Completing..." : "Complete",
           ariaLabel: `Complete #${task.id}`,
           icon: <Check />,
-          title:
-            task.criteria.length === 0
+          title: herdrBlocked
+            ? needsHerdr(undefined)
+            : task.criteria.length === 0
               ? "Complete the task; its herdr workspace is closed and the worktree kept"
               : "Check the criteria again and complete the task once all are met; its herdr workspace is closed and the worktree kept",
           disabled: finishing || herdrBlocked,
@@ -803,6 +813,7 @@ function TaskRow({
           label: "Open in herdr",
           ariaLabel: `Open #${task.id} in herdr`,
           icon: <SquareTerminal />,
+          title: needsHerdr(undefined),
           disabled: !herdrRunning || openTask.isPending,
           onSelect: () => openTask.mutate(task.id),
         }
@@ -814,7 +825,7 @@ function TaskRow({
           label: "Focus agent pane",
           ariaLabel: `Focus agent pane of #${task.id}`,
           icon: <Crosshair />,
-          title: "Focus the herdr pane of the agent working on this task",
+          title: needsHerdr("Focus the herdr pane of the agent working on this task"),
           disabled: !herdrRunning || focusAgent.isPending,
           onSelect: () => focusAgent.mutate(task.id),
         }
@@ -835,7 +846,9 @@ function TaskRow({
         label: "Conclude",
         ariaLabel: `Conclude #${task.id} without merging`,
         icon: <CircleSlash />,
-        title: "Finish without merging, e.g. research whose result is not adopted; an open pull request is closed",
+        title: herdrBlocked
+          ? needsHerdr(undefined)
+          : "Finish without merging, e.g. research whose result is not adopted; an open pull request is closed",
         disabled: finishing || herdrBlocked,
         onSelect: () => setConcluding(true),
       }
@@ -914,7 +927,7 @@ function TaskRow({
           ariaLabel: `Delete #${task.id}`,
           icon: <Trash2 />,
           title: removableWorktree
-            ? "Delete the task and remove its worktree and herdr workspace; the branch is kept"
+            ? needsHerdr("Delete the task and remove its worktree and herdr workspace; the branch is kept")
             : "Delete",
           disabled: removableWorktree && !herdrRunning,
           destructive: true,
@@ -934,6 +947,11 @@ function TaskRow({
     : null;
   // In the details sheet the main actions are buttons; in a row only the next action is.
   const menu = detailed ? secondary : [...(details ? [details] : []), ...others, ...secondary];
+  // A shown action is disabled because herdr is not running: say so next to it, not only on hover.
+  const shownActions = detailed ? [primary, ...others] : [primary];
+  const herdrNote =
+    herdrReason !== null &&
+    shownActions.some((action) => action?.disabled === true && action.title === herdrReason);
   const latest = reachedMilestones(task.milestones).at(-1);
   const metCriteria = task.criteria.filter((criterion) => criterion.state === "met").length;
   const failedCriteria = task.criteria.filter((criterion) => criterion.state === "failed").length;
@@ -1157,6 +1175,7 @@ function TaskRow({
         <OpenWorkspaceNote
           taskId={task.id}
           collapsed={keepingWorkspace}
+          blockedReason={herdrReason}
           disabled={!herdrRunning || closeWorkspace.isPending}
           onClose={() => closeWorkspace.mutate(task.id)}
           onKeep={() => setKeepingWorkspace(true)}
@@ -1210,6 +1229,11 @@ function TaskRow({
       {actionError && (
         <p role="alert" className="text-xs text-destructive">
           {actionError.message}
+        </p>
+      )}
+      {herdrNote && !editing && !concluding && correcting === null && (
+        <p role="note" aria-label={`herdr unavailable for #${task.id}`} className="text-xs text-muted-foreground">
+          {herdrReason}
         </p>
       )}
       {concluding && !editing && (
@@ -1267,7 +1291,7 @@ function TaskRow({
                     size="xs"
                     variant="destructive"
                     aria-label={`Force delete #${task.id}`}
-                    title="Delete the task and discard the modified and untracked files of its worktree"
+                    title={needsHerdr("Delete the task and discard the modified and untracked files of its worktree")}
                     disabled={!herdrRunning}
                     onClick={() => setConfirming("force-delete")}
                   >
@@ -2087,12 +2111,15 @@ function TaskIssue({
 function OpenWorkspaceNote({
   taskId,
   collapsed,
+  blockedReason,
   disabled,
   onClose,
   onKeep,
 }: {
   taskId: TaskId;
   collapsed: boolean;
+  /** Why closing needs herdr and cannot happen now; null while herdr runs. */
+  blockedReason: string | null;
   disabled: boolean;
   onClose: () => void;
   onKeep: () => void;
@@ -2102,7 +2129,7 @@ function OpenWorkspaceNote({
       size="xs"
       variant="destructive"
       aria-label={`Close herdr workspace of #${taskId}`}
-      title="Close the herdr workspace, which ends its agent session; the worktree is kept"
+      title={blockedReason ?? "Close the herdr workspace, which ends its agent session; the worktree is kept"}
       disabled={disabled}
       onClick={onClose}
     >

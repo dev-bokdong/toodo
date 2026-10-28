@@ -27,7 +27,7 @@ function task(overrides: Partial<Task> = {}): Task {
     notes: [],
     criteria: [],
     timeline: [],
-    milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: null },
+    milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: null, lastReviewAt: null, activeSeconds: 0, pauseCount: 0 },
     ...overrides,
   };
 }
@@ -100,7 +100,7 @@ describe("matchesFilter", () => {
   });
 
   it("shows a task paused by a new prerequisite as ready once that prerequisite is done", () => {
-    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: 30 };
+    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: 30, lastReviewAt: null, activeSeconds: 10, pauseCount: 1 };
     const pausedTask = (dependsOn: number[]) =>
       task({ id: 9, branch: "feat/add-storage-9", dependsOn, milestones });
     const doneAt = (id: number, at: number) =>
@@ -120,7 +120,7 @@ describe("matchesFilter", () => {
   });
 
   it("shows a task paused by a prerequisite as ready once that dependency is removed", () => {
-    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, pausedAt: 30, reopenedAt: null };
+    const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, pausedAt: 30, reopenedAt: null, lastReviewAt: null, activeSeconds: 10, pauseCount: 1 };
     // The server records the prerequisites a pause waits on as a blocker note at the pause.
     const pausedTask = (kind: "blocker" | "progress") =>
       task({ id: 9, branch: "feat/add-storage-9", milestones, notes: [{ kind, body: "Paused: waiting on #3", at: 30 }] });

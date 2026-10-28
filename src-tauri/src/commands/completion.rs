@@ -1845,6 +1845,30 @@ mod tests {
         assert_eq!(*recorder.0.lock().unwrap(), [task.workspace_id]);
     }
 
+    #[test]
+    fn background_checks_forget_the_missing_worktree_of_a_done_task() {
+        let (fixture, _dir) = deleted_worktree_fixture(Vec::new());
+        lock(&fixture.storage)
+            .complete_task_without_pull_request(fixture.task.id, "Shipped elsewhere", &[])
+            .unwrap();
+        let git = Git::new(Box::new(runner(vec![Ok(String::new())])));
+        let github = GitHub::new(Box::new(runner(Vec::new())));
+
+        check_pull_requests(
+            &fixture.storage,
+            &git,
+            &github,
+            &no_herdr(),
+            &Recorder::default(),
+            &mut HashMap::new(),
+            &PullRequestStatusState::default(),
+        );
+
+        let task = stored(&fixture, &fixture.task);
+        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(task.worktree_path, None);
+    }
+
     fn runner(results: Vec<Result<String, GitError>>) -> Arc<FakeRunner> {
         Arc::new(FakeRunner::new(results))
     }

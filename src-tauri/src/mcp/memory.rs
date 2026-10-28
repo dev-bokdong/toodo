@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::tools::present;
+use super::tools::{present, without_null_defaults};
 use crate::commands::memory::{self, scope};
 use crate::commands::types::{
     self, MemoryContent, MemoryEntry, MemoryId, MemoryKind, TaskId, WorkspaceId,
@@ -16,7 +16,7 @@ const DEFAULT_SEARCH_LIMIT: u32 = 20;
 const MAX_SEARCH_LIMIT: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ListMemory {
     /// The workspace whose entries to list; omit it for the shared entries alone.
     pub workspace_id: Option<WorkspaceId>,
@@ -31,7 +31,7 @@ pub struct ListMemory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct SearchMemory {
     /// Words that must all appear in an entry's title or body.
     pub query: String,
@@ -43,18 +43,18 @@ pub struct SearchMemory {
     /// Also search superseded entries.
     #[serde(default)]
     pub include_superseded: bool,
-    /// At most this many entries (default 20, at most 100).
+    /// At most this many entries (default 20, at most 100; 0 returns none).
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct GetMemory {
     pub id: MemoryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AddMemory {
     /// The workspace the entry is about; omit it for knowledge shared by every workspace.
     pub workspace_id: Option<WorkspaceId>,
@@ -69,7 +69,8 @@ pub struct AddMemory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(transform = without_null_defaults)]
 pub struct UpdateMemory {
     pub id: MemoryId,
     /// Unchanged when omitted.
@@ -85,7 +86,8 @@ pub struct UpdateMemory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(transform = without_null_defaults)]
 pub struct SupersedeMemory {
     /// The current entry to replace.
     pub id: MemoryId,
@@ -136,7 +138,7 @@ pub fn search_memory(storage: &Storage, request: SearchMemory) -> CommandResult<
     let limit = request
         .limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
-        .clamp(1, MAX_SEARCH_LIMIT);
+        .min(MAX_SEARCH_LIMIT);
     Ok(types::map_all(&storage.search_memory(
         &request.query,
         scope,

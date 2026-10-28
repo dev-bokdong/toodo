@@ -108,6 +108,9 @@ describe("reachedMilestones", () => {
         completedAt: null,
         reopenedAt: null,
         pausedAt: 30,
+        lastReviewAt: null,
+        activeSeconds: 0,
+        pauseCount: 0,
       }),
     ).toEqual([
       { label: "Planned", at: 10 },
@@ -125,6 +128,9 @@ describe("reachedMilestones", () => {
         completedAt: 60,
         reopenedAt: 40,
         pausedAt: null,
+        lastReviewAt: null,
+        activeSeconds: 0,
+        pauseCount: 0,
       }).map(({ label }) => label),
     ).toEqual(["Planned", "Started", "Reopened", "Completed"]);
   });

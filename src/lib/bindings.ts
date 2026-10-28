@@ -854,6 +854,15 @@ export type TaskMilestones = {
 	reopenedAt: Timestamp | null,
 	/**  The latest pause, unless the task was started again after it. */
 	pausedAt: Timestamp | null,
+	/**  The latest move to `in_review`. */
+	lastReviewAt: Timestamp | null,
+	/**
+	 *  Seconds spent in progress or in review up to the latest status change, pauses left
+	 *  out; the current period of an active task is not counted yet.
+	 */
+	activeSeconds: number,
+	/**  How often the task was paused after work started. */
+	pauseCount: number,
 };
 
 /**  A note an agent left on a task while working on it. */
