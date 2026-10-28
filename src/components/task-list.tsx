@@ -8,6 +8,7 @@ import {
   CircleSlash,
   CircleX,
   Crosshair,
+  Flag,
   FolderGit2,
   GitMerge,
   GitPullRequest,
@@ -18,6 +19,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   SquareTerminal,
   StickyNote,
@@ -60,6 +62,7 @@ import type {
   NoteKind,
   Task,
   TaskId,
+  TaskResolution,
   TaskStatus,
   TaskType,
   Workspace,
@@ -78,6 +81,7 @@ import {
   usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
+  useCompleteTaskMergedWith,
   useConcludeTask,
   useCreateBaseBranch,
   useCreateIssue,
@@ -93,9 +97,11 @@ import {
   useRefreshCommitRecords,
   useRemoveDependency,
   useRemoveRelation,
+  useReopenTask,
   useRestoreTaskWorktree,
   useSaveMachineSettings,
   useSetCompletionNote,
+  useSetTaskOutcome,
   useStartTask,
   useTaskRelations,
   useTasks,
@@ -645,6 +651,8 @@ function TaskRow({
   // The user chose to keep the herdr workspace of this paused task open for now.
   const [keepingWorkspace, setKeepingWorkspace] = useState(false);
   const [concluding, setConcluding] = useState(false);
+  // A form that changes how the task ends: reopening or correcting a done task, or completing it as shipped by another.
+  const [correcting, setCorrecting] = useState<"reopen" | "outcome" | "shipped" | null>(null);
   const [linkingIssue, setLinkingIssue] = useState(false);
   const [addingNote, setAddingNote] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
@@ -855,6 +863,36 @@ function TaskRow({
           title: "Pause: stop working on the task; it keeps its branch, worktree, and pull request and can be resumed",
           disabled: pauseTask.isPending,
           onSelect: () => pauseTask.mutate(task.id),
+        }
+      : null,
+    final && isNotAdopted(task)
+      ? {
+          key: "shipped",
+          label: "Complete as shipped by...",
+          ariaLabel: `Complete #${task.id} as shipped by another task or pull request`,
+          icon: <GitMerge />,
+          title: "The work did ship, through another task or a merged pull request: mark it done as that one ended",
+          onSelect: () => setCorrecting("shipped"),
+        }
+      : null,
+    final
+      ? {
+          key: "outcome",
+          label: "Change outcome",
+          ariaLabel: `Change outcome of #${task.id}`,
+          icon: <Flag />,
+          title: "Correct how the task ended, e.g. merged work that was reverted; the change is kept as a note",
+          onSelect: () => setCorrecting("outcome"),
+        }
+      : null,
+    final
+      ? {
+          key: "reopen",
+          label: "Reopen",
+          ariaLabel: `Reopen #${task.id}`,
+          icon: <RotateCcw />,
+          title: "Reopen a task completed or concluded by mistake; it is paused and resumes on its branch",
+          onSelect: () => setCorrecting("reopen"),
         }
       : null,
     final && task.completionNote === null && !addingNote
@@ -1161,8 +1199,22 @@ function TaskRow({
           {actionError.message}
         </p>
       )}
-      {concluding && !editing && <ConcludeForm task={task} onDone={() => setConcluding(false)} />}
-      {!editing && !concluding && (
+      {concluding && !editing && (
+        <ConcludeForm
+          task={task}
+          onDone={() => setConcluding(false)}
+          onShipped={() => {
+            setConcluding(false);
+            setCorrecting("shipped");
+          }}
+        />
+      )}
+      {correcting === "shipped" && !editing && (
+        <ShippedByForm task={task} tasks={tasks} context={context} onDone={() => setCorrecting(null)} />
+      )}
+      {correcting === "outcome" && !editing && <OutcomeForm task={task} onDone={() => setCorrecting(null)} />}
+      {correcting === "reopen" && !editing && <ReopenForm task={task} onDone={() => setCorrecting(null)} />}
+      {!editing && !concluding && correcting === null && (
         <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
           {primary && actionButton(primary, detailed ? "default" : "outline")}
           {detailed && others.map((action) => actionButton(action, "outline"))}
@@ -1463,7 +1515,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
  * Concludes an active task without merging: the conclusion, why the work is not adopted, is
  * required and becomes its completion note.
  */
-function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
+function ConcludeForm({ task, onDone, onShipped }: { task: Task; onDone: () => void; onShipped: () => void }) {
   const concludeTask = useConcludeTask();
   const [note, setNote] = useState("");
   const guard = useDiscardGuard(note.trim() !== "", onDone, concludeTask.isPending);
@@ -1511,6 +1563,19 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
             <CircleSlash />
             {concludeTask.isPending ? "Concluding..." : "Conclude without merge"}
           </Button>
+          {/* Work that shipped through another task's pull request is done, not concluded. */}
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            aria-label={`Complete #${task.id} as shipped by another task or pull request`}
+            title="The work shipped through another task or a merged pull request: complete the task instead"
+            disabled={concludeTask.isPending}
+            onClick={onShipped}
+          >
+            <GitMerge />
+            Complete as shipped by...
+          </Button>
           <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
             Back
           </Button>
@@ -1519,6 +1584,251 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
       {concludeTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {concludeTask.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** What a form says about the outcome of a task. */
+const resolutionNames: Record<TaskResolution, string> = {
+  merged: "Merged",
+  completed: "Completed",
+  not_adopted: statusNames.not_adopted,
+};
+
+/**
+ * Reopens a done task completed or concluded by mistake. The reason is required and kept as
+ * a progress note with the earlier outcome.
+ */
+function ReopenForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const reopenTask = useReopenTask();
+  const [reason, setReason] = useState("");
+  const guard = useDiscardGuard(reason.trim() !== "", onDone, reopenTask.isPending);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    reopenTask.mutate({ id: task.id, reason: reason.trim() }, { onSuccess: onDone });
+  }
+
+  return (
+    <form onSubmit={submit} aria-label={`Reopen #${task.id}`} className="flex flex-col gap-1" onKeyDown={guard.onKeyDown}>
+      <p className="text-xs text-muted-foreground">
+        Reopen #{task.id}: it is paused with its branch and commits, and Resume continues the work. Its outcome and
+        completion note are cleared and kept, with your reason, as a progress note.
+      </p>
+      <textarea
+        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
+        aria-label={`Reason to reopen #${task.id}`}
+        placeholder="Why is the task not finished after all?"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        required
+        autoFocus
+      />
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard reason to reopen #${task.id}`}
+          question={`Discard your reason to reopen #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button changesData type="submit" size="xs" disabled={reopenTask.isPending || reason.trim() === ""}>
+            <RotateCcw />
+            {reopenTask.isPending ? "Reopening..." : "Reopen"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
+      {reopenTask.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {reopenTask.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/**
+ * Corrects how a done task ended without reopening it. The note is required and becomes its
+ * completion note; the earlier outcome is kept as a progress note.
+ */
+function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const setOutcome = useSetTaskOutcome();
+  const choices = (Object.keys(resolutionNames) as TaskResolution[]).filter((resolution) => resolution !== task.resolution);
+  const [resolution, setResolution] = useState<TaskResolution>(choices[0]);
+  const [note, setNote] = useState("");
+  const guard = useDiscardGuard(note.trim() !== "", onDone, setOutcome.isPending);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setOutcome.mutate({ id: task.id, resolution, note: note.trim() }, { onSuccess: onDone });
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      aria-label={`Outcome of #${task.id}`}
+      className="flex flex-col gap-1"
+      onKeyDown={guard.onKeyDown}
+    >
+      <p className="text-xs text-muted-foreground">
+        #{task.id} is done as {task.resolution === null ? "done" : resolutionNames[task.resolution].toLowerCase()}.
+        Correct how it ended; the earlier outcome and note are kept as a progress note. Tasks that depend on it wait
+        while it is not adopted.
+      </p>
+      <select
+        aria-label={`New outcome of #${task.id}`}
+        className={cn(inputClass, "w-40")}
+        value={resolution}
+        onChange={(e) => setResolution(e.target.value as TaskResolution)}
+      >
+        {choices.map((choice) => (
+          <option key={choice} value={choice}>
+            {resolutionNames[choice]}
+          </option>
+        ))}
+      </select>
+      <textarea
+        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
+        aria-label={`Outcome note of #${task.id}`}
+        placeholder="What happened, e.g. the change was reverted. This becomes the completion note."
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        required
+        autoFocus
+      />
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard outcome of #${task.id}`}
+          question={`Discard the new outcome of #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button changesData type="submit" size="xs" disabled={setOutcome.isPending || note.trim() === ""}>
+            <Flag />
+            {setOutcome.isPending ? "Saving..." : "Change outcome"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
+      {setOutcome.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {setOutcome.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/**
+ * Completes a task whose work shipped through another task, one done as merged or
+ * completed, or through a merged pull request: an active task, or one concluded as not
+ * adopted, becomes done and its dependents can start.
+ */
+function ShippedByForm({
+  task,
+  tasks,
+  context,
+  onDone,
+}: {
+  task: Task;
+  tasks: Task[];
+  context: TaskContext;
+  onDone: () => void;
+}) {
+  const completeMergedWith = useCompleteTaskMergedWith();
+  // Only work that shipped can carry this task's work with it.
+  const shippers = tasks
+    .filter(
+      (other) =>
+        other.id !== task.id &&
+        other.status === "done" &&
+        (other.resolution === "merged" || other.resolution === "completed"),
+    )
+    .sort((a, b) => b.id - a.id);
+  const [shipper, setShipper] = useState("");
+  const [url, setUrl] = useState("");
+  const byTask = shipper !== "";
+  const ready = byTask || url.trim() !== "";
+  const guard = useDiscardGuard(ready, onDone, completeMergedWith.isPending);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    completeMergedWith.mutate(
+      {
+        id: task.id,
+        mergedWithTask: byTask ? Number(shipper) : null,
+        pullRequestUrl: byTask ? null : url.trim(),
+      },
+      { onSuccess: onDone },
+    );
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      aria-label={`Complete #${task.id} as shipped by`}
+      className="flex flex-col gap-1"
+      onKeyDown={guard.onKeyDown}
+    >
+      <p className="text-xs text-muted-foreground">
+        Complete #{task.id} as shipped by another task or a merged pull request into its base branch. It becomes done as
+        that one ended, and tasks that depend on it can start. An open pull request of its own must be closed first.
+      </p>
+      <select
+        aria-label={`Task that shipped #${task.id}`}
+        className={inputClass}
+        value={shipper}
+        onChange={(e) => setShipper(e.target.value)}
+        autoFocus
+      >
+        <option value="">A pull request URL instead</option>
+        {shippers.map((other) => (
+          <option key={other.id} value={other.id}>
+            {taskRef(other.id, task.workspaceId, context)} {other.title}
+          </option>
+        ))}
+      </select>
+      {!byTask && (
+        <input
+          className={inputClass}
+          type="url"
+          aria-label={`Pull request that shipped #${task.id}`}
+          placeholder="https://github.com/owner/repo/pull/123"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      )}
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard completion of #${task.id}`}
+          question={`Discard completing #${task.id} as shipped by another?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button changesData type="submit" size="xs" disabled={completeMergedWith.isPending || !ready}>
+            <GitMerge />
+            {completeMergedWith.isPending ? "Completing..." : "Complete as shipped"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
+      {completeMergedWith.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {completeMergedWith.error.message}
         </p>
       )}
     </form>
@@ -1816,7 +2126,10 @@ function OpenWorkspaceNote({
 }
 
 /** A labeled block of the task details sheet. */
-/** The pull request of another task that shipped a task done without one of its own. */
+/**
+ * The pull request, or the other task without a recorded one, that shipped a task done
+ * without a pull request of its own.
+ */
 function ShippedWith({
   task,
   mergedWith,
@@ -1828,12 +2141,28 @@ function ShippedWith({
   through: string | null;
   detailed: boolean;
 }) {
+  const url = mergedWith.pullRequestUrl;
+  if (url === null) {
+    // The other task shipped the work without a pull request Toodo recorded.
+    const label = `Shipped with task of #${task.id}`;
+    return detailed ? (
+      <DetailField label="Shipped with">
+        <span aria-label={label}>{through ?? "A deleted task"}</span>
+      </DetailField>
+    ) : (
+      <p className="flex min-w-0 items-center gap-1 text-xs">
+        <GitMerge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 text-muted-foreground">Shipped with</span>
+        <span aria-label={label}>{through ?? "a deleted task"}</span>
+      </p>
+    );
+  }
   const label = `Shipped with pull request of #${task.id}`;
   if (detailed) {
     return (
       <DetailField label="Shipped with">
         <span aria-label={label} className="break-all font-mono select-all">
-          {mergedWith.pullRequestUrl}
+          {url}
         </span>
         {through && <span className="text-muted-foreground">Pull request of {through}</span>}
       </DetailField>
@@ -1844,7 +2173,7 @@ function ShippedWith({
       <GitMerge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
       <span className="shrink-0 text-muted-foreground">Shipped with</span>
       <span aria-label={label} className="truncate select-all font-mono">
-        {mergedWith.pullRequestUrl}
+        {url}
       </span>
       {through && <span className="shrink-0 text-muted-foreground">of {through}</span>}
     </p>

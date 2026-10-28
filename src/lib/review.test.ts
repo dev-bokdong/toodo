@@ -69,6 +69,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
         startedAt: null,
         reviewAt: null,
         completedAt: null,
+        reopenedAt: null,
         pausedAt: null,
       },
       ...overrides,
@@ -298,12 +299,12 @@ describe("summarize", () => {
     const end = local(2026, 5, 20);
     const resumed = completed(1, end, { startedAt: end - 10 * day }, {
       timeline: [
-        { status: "planned", at: end - 20 * day },
-        { status: "in_progress", at: end - 10 * day },
-        { status: "planned", at: end - 9 * day },
-        { status: "in_progress", at: end - 2 * day },
-        { status: "in_review", at: end - day },
-        { status: "done", at: end },
+        { status: "planned", at: end - 20 * day, reopened: false },
+        { status: "in_progress", at: end - 10 * day, reopened: false },
+        { status: "planned", at: end - 9 * day, reopened: false },
+        { status: "in_progress", at: end - 2 * day, reopened: false },
+        { status: "in_review", at: end - day, reopened: false },
+        { status: "done", at: end, reopened: false },
       ],
     });
 
@@ -451,8 +452,8 @@ describe("reviewMarkdown", () => {
 describe("planVsActual", () => {
   const week = weekStarting("2026-10-12");
   const worked = (start: number, end: number): Task["timeline"] => [
-    { status: "in_progress", at: start },
-    { status: "done", at: end },
+    { status: "in_progress", at: start, reopened: false },
+    { status: "done", at: end, reopened: false },
   ];
 
   it("compares estimates in any unit with active time and rates due dates of completed tasks", () => {
@@ -531,8 +532,8 @@ describe("yearInReview overruns", () => {
       completed(id, local(2026, 5, 1, 12), {}, {
         estimate: { unit: "hours", amount: estimate },
         timeline: [
-          { status: "in_progress", at: local(2026, 5, 1, 12) - activeHours * hour },
-          { status: "done", at: local(2026, 5, 1, 12) },
+          { status: "in_progress", at: local(2026, 5, 1, 12) - activeHours * hour, reopened: false },
+          { status: "done", at: local(2026, 5, 1, 12), reopened: false },
         ],
       });
     const entries = [overran(1, 2, 3), overran(2, 1, 6), overran(3, 4, 2), overran(4, 1, 3), overran(5, 2, 4)];
@@ -649,13 +650,13 @@ describe("reviewCsv", () => {
     });
 
     done.task.timeline = [
-      { status: "planned", at: local(2026, 10, 1, 9) },
-      { status: "in_progress", at: at - 3 * hour },
-      { status: "in_review", at: at - 2 * hour },
-      { status: "done", at },
+      { status: "planned", at: local(2026, 10, 1, 9), reopened: false },
+      { status: "in_progress", at: at - 3 * hour, reopened: false },
+      { status: "in_review", at: at - 2 * hour, reopened: false },
+      { status: "done", at, reopened: false },
     ];
     const working = entry(8, "planned", { workspaceId: 9, title: "Plan café" });
-    working.task.timeline = [{ status: "in_progress", at: at - 1800 }];
+    working.task.timeline = [{ status: "in_progress", at: at - 1800, reopened: false }];
 
     const csv = reviewCsv([done, working], [toodo], at);
 
