@@ -121,6 +121,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     dependsOn: [],
     branch: null,
     worktreePath: null,
+    worktreeMissing: false,
     herdrWorkspaceId: null,
     pullRequestUrl: null,
     issue: null,
@@ -1416,6 +1417,20 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "Restore worktree of #1" })).not.toBeInTheDocument();
   });
 
+  it("offers restore when an active task has a missing recorded worktree", async () => {
+    const missing = task(1, 1, "Add login", {
+      status: "in_progress",
+      branch: "feat/add-login-1",
+      worktreePath: "D:\\wt\\toodo\\feat-add-login-1",
+      worktreeMissing: true,
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [missing] });
+    await renderWorkspace();
+
+    expect(await screen.findByRole("button", { name: "Restore worktree of #1" })).toBeInTheDocument();
+  });
+
   it("shows why a task could not be started", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
@@ -2055,6 +2070,21 @@ describe("App", () => {
     expect(await screen.findByLabelText("Completion note of #1")).toHaveTextContent("Cut sign-in time in half");
     expect(screen.queryByRole("textbox", { name: "Completion note for #1" })).not.toBeInTheDocument();
     expect(mocked.setCompletionNote).toHaveBeenCalledWith(1, "Cut sign-in time in half");
+  });
+
+  it("shows work completed without a pull request and its ready dependent", async () => {
+    const shipped = task(1, 1, "Deploy configuration", {
+      status: "done", resolution: "completed", completionNote: "Deployed directly",
+    });
+    const dependent = task(2, 1, "Verify configuration", { dependsOn: [1] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [shipped, dependent] });
+    await renderWorkspace();
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+
+    expect(within(row("Deploy configuration")).getByText("Completed")).toBeInTheDocument();
+    expect(within(row("Verify configuration")).getByText("Ready")).toBeInTheDocument();
   });
 
   it("shows pull request snapshots and research conclusions in the year in review", async () => {

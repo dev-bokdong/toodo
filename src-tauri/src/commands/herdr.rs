@@ -108,6 +108,11 @@ pub(crate) fn start(
         let task = storage
             .get_task(id)?
             .ok_or(StorageError::TaskNotFound(id))?;
+        if task.status == TaskStatus::InProgress {
+            return Err(CommandError::rejected(format!(
+                "task {id} is already in progress; keep working in its worktree, or restore its worktree in the Toodo app if the directory is gone"
+            )));
+        }
         task.status
             .transition_to(TaskStatus::InProgress)
             .map_err(StorageError::from)?;
@@ -234,6 +239,19 @@ fn restore(
     herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
+    let (task, workspace) = {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        (task, workspace)
+    };
+    if matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview) {
+        super::completion::clear_missing_worktree(storage, git, &task, &workspace)?;
+    }
     let (workspace, checkout) = {
         let storage = lock(storage);
         let task = storage
@@ -247,7 +265,7 @@ fn restore(
         }
         if let Some(path) = &task.worktree_path {
             return Err(CommandError::rejected(format!(
-                "task {id} already has its worktree at {path}"
+                "task {id} already has its worktree at {path}; keep working in that worktree"
             )));
         }
         let branch = task
@@ -703,6 +721,47 @@ mod tests {
         r#"{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w31"}}}"#;
 
     #[test]
+    fn restore_accepts_a_recorded_worktree_that_git_marks_missing() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let (starter, _) = herdr(vec![Ok(CREATED.to_owned())]);
+        start(
+            &fixture.storage,
+            &existing_base(),
+            &starter,
+            fixture.task.id,
+        )
+        .unwrap();
+        let git = Git::new(Box::new(Arc::new(FakeRunner::new(vec![
+            Ok("worktree D:/wt/toodo/feat-add-login-1\0HEAD abc\0prunable gitdir file points to non-existent location\0\0".to_owned()),
+            Ok("abc\n".to_owned()),
+        ]))));
+        let (herdr, runner) = herdr(vec![Ok(RECREATED.to_owned())]);
+
+        let task = restore(&fixture.storage, &git, &herdr, fixture.task.id).unwrap();
+
+        assert_eq!(task.herdr_workspace_id.as_deref(), Some("w31"));
+        assert!(task.worktree_path.is_some());
+        assert_eq!(task.status, TaskStatus::InProgress);
+        assert_eq!(invocations(&runner).len(), 1);
+    }
+
+    #[test]
+    fn starting_an_active_task_explains_how_to_keep_working_or_restore_it() {
+        let fixture = lost_worktree();
+        let (herdr, runner) = herdr(Vec::new());
+
+        let error = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap_err();
+
+        assert!(error.message.contains("task 1 is already in progress"));
+        assert!(
+            error
+                .message
+                .contains("restore its worktree in the Toodo app")
+        );
+        assert!(invocations(&runner).is_empty());
+    }
+
+    #[test]
     fn restore_checks_out_the_kept_branch_into_a_new_worktree() {
         let fixture = lost_worktree();
         let mut renamed = stored(&fixture);
@@ -774,7 +833,10 @@ mod tests {
         )
         .unwrap();
         let lost = lost_worktree();
-        for (fixture, git) in [(&ready, gone()), (&started, gone()), (&lost, gone())] {
+        let existing = Git::new(Box::new(Arc::new(FakeRunner::new(vec![Ok(
+            "worktree D:/wt/toodo/feat-add-login-1\0HEAD abc\0\0".to_owned(),
+        )]))));
+        for (fixture, git) in [(&ready, gone()), (&started, existing), (&lost, gone())] {
             let error = restore(&fixture.storage, &git, &herdr, fixture.task.id).unwrap_err();
             assert_eq!(error.kind, CommandErrorKind::Rejected, "{}", error.message);
         }
@@ -933,7 +995,7 @@ mod tests {
         let error = start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
-        assert!(error.message.contains("dependencies are done"));
+        assert!(error.message.contains("cannot start yet"));
         assert!(invocations(&runner).is_empty());
         assert_eq!(stored(&fixture), before);
     }

@@ -448,6 +448,29 @@ impl Git {
         Ok(())
     }
 
+    /// Whether the repository still has a checkout at `path`. Git marks a registered
+    /// worktree whose directory was deleted as prunable, even before it is pruned.
+    pub fn worktree_exists(
+        &self,
+        repo: &WorkspaceLocation,
+        path: &HostPath,
+    ) -> Result<bool, GitError> {
+        let output = self.run(
+            repo,
+            Some(location_path(repo)),
+            &["worktree", "list", "--porcelain", "-z"],
+        )?;
+        let expected = path.to_string().replace('\\', "/");
+        Ok(output.split("\0\0").any(|record| {
+            let mut fields = record.split('\0');
+            fields
+                .next()
+                .and_then(|field| field.strip_prefix("worktree "))
+                .is_some_and(|listed| listed.replace('\\', "/") == expected)
+                && !fields.any(|field| field == "prunable" || field.starts_with("prunable "))
+        }))
+    }
+
     /// Commits reachable from `branch` but not from `base`, oldest first, read in the
     /// repository or worktree at `dir` on the machine of `location`.
     pub fn commits_between(
@@ -1015,6 +1038,50 @@ mod tests {
             machine: MachineLabel::parse("devbox").unwrap(),
             path: HostPath::parse(path).unwrap(),
         }
+    }
+
+    #[test]
+    fn worktree_presence_distinguishes_existing_prunable_and_unregistered_paths() {
+        let path = HostPath::parse(r"D:\wt\some task").unwrap();
+        for (listing, expected) in [
+            ("worktree D:/wt/some task\0HEAD abc\0\0", true),
+            (
+                "worktree D:/wt/some task\0HEAD abc\0prunable gitdir file points to non-existent location\0\0",
+                false,
+            ),
+            ("worktree C:/repo\0HEAD abc\0\0", false),
+            ("", false),
+        ] {
+            let (git, runner) = git(vec![Ok(listing.to_owned())]);
+            assert_eq!(
+                git.worktree_exists(&local(r"C:\repo"), &path).unwrap(),
+                expected
+            );
+            assert_eq!(
+                runner.invocations.lock().unwrap()[0].args,
+                ["-C", r"C:\repo", "worktree", "list", "--porcelain", "-z"]
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_presence_uses_the_ssh_repository_and_preserves_lookup_errors() {
+        let repo = remote("/srv/repo");
+        let path = HostPath::parse("/wt/some\n task").unwrap();
+        let (git, runner) = git(vec![
+            Ok("worktree /wt/some\n task\0HEAD abc\0\0".to_owned()),
+            Err(failed()),
+        ]);
+
+        assert!(git.worktree_exists(&repo, &path).unwrap());
+        assert!(git.worktree_exists(&repo, &path).is_err());
+        let calls = runner.invocations.lock().unwrap();
+        assert_eq!(calls[0].program, "ssh");
+        assert_eq!(calls[0].args[3], "devbox");
+        assert_eq!(
+            calls[0].args[4],
+            "git '-C' '/srv/repo' 'worktree' 'list' '--porcelain' '-z'"
+        );
     }
 
     /// The PowerShell script the only invocation ran over `ssh devbox`.

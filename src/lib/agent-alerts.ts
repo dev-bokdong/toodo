@@ -11,6 +11,7 @@ const statusNames: Record<TaskStatus, string> = {
 };
 
 function statusName(task: Task): string {
+  if (task.status === "done" && task.resolution === "completed") return "Completed";
   return task.status === "done" && task.resolution === "not_adopted" ? "Not adopted" : statusNames[task.status];
 }
 

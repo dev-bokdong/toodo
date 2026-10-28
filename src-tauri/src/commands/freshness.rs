@@ -32,10 +32,10 @@ fn freshness(
     github: &GitHub,
     id: model::TaskId,
 ) -> CommandResult<Option<BranchFreshness>> {
-    let checkout = checkout(storage, id)?;
+    let checkout = checkout(storage, git, id)?;
     let Some(behind) = git.commits_behind(
         &checkout.location,
-        &checkout.worktree,
+        &checkout.repository,
         &checkout.base,
         &checkout.branch,
     )?
@@ -110,7 +110,12 @@ mod tests {
     ) -> (Git, GitHub, Arc<FakeRunner>) {
         let gh = Arc::new(FakeRunner::new(gh));
         (
-            Git::new(Box::new(Arc::new(FakeRunner::new(git)))),
+            Git::new(Box::new(Arc::new(FakeRunner::new(
+                std::iter::once(Ok(
+                    "worktree D:/wt/toodo/feat-use-login-1\0HEAD abc\0\0".to_owned()
+                ))
+                .chain(git),
+            )))),
             GitHub::new(Box::new(gh.clone())),
             gh,
         )
@@ -123,6 +128,31 @@ mod tests {
             Ok("abc\n".to_owned()),
             Ok(format!("{count}\n")),
         ]
+    }
+
+    #[test]
+    fn a_missing_worktree_still_fetches_and_counts_from_the_workspace_repository() {
+        let (storage, id) = started_task();
+        let runner = Arc::new(FakeRunner::new(
+            std::iter::once(Ok(String::new())).chain(behind_by(3)),
+        ));
+        let git = Git::new(Box::new(runner.clone()));
+        let github = GitHub::new(Box::new(Arc::new(FakeRunner::default())));
+
+        let result = freshness(&storage, &git, &github, id).unwrap().unwrap();
+
+        assert_eq!(result.behind, 3);
+        assert!(
+            lock(&storage)
+                .get_task(id)
+                .unwrap()
+                .unwrap()
+                .worktree_path
+                .is_none()
+        );
+        for invocation in runner.invocations.lock().unwrap().iter() {
+            assert_eq!(invocation.args[..2], ["-C", r"C:\dev\toodo"]);
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ import {
   reviewCsv,
   reviewFileName,
   reviewMarkdown,
+  resolutionLabel,
   shiftPeriod,
   startOfWeek,
   summarize,
@@ -28,6 +29,15 @@ const day = 24 * hour;
 const local = (year: number, month: number, date: number, hours = 0) =>
   new Date(year, month - 1, date, hours).getTime() / 1000;
 
+it.each([
+  ["merged", "Merged"],
+  ["completed", "Completed"],
+  ["not_adopted", "Not adopted"],
+  [null, null],
+] as const)("labels resolution %s as %s", (resolution, label) => {
+  expect(resolutionLabel({ resolution })).toBe(label);
+});
+
 function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<Task> = {}): ReviewEntry {
   return {
     task: {
@@ -40,6 +50,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       dependsOn: [],
       branch: null,
       worktreePath: null,
+      worktreeMissing: false,
       herdrWorkspaceId: null,
       pullRequestUrl: null,
       issue: null,

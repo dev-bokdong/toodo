@@ -150,6 +150,7 @@ const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "tes
  * concluded without merging "Not adopted".
  */
 function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
+  if (task.status === "done" && task.resolution === "completed") return "Completed";
   return statusNames[shownStatus(task, byId)];
 }
 
@@ -727,7 +728,7 @@ function TaskRow({
         }
       : null;
   const restore: Action | null =
-    active && task.worktreePath === null && task.branch !== null
+    active && (task.worktreePath === null || task.worktreeMissing) && task.branch !== null
       ? {
           key: "restore", changesData: true,
           label: restoreWorktree.isPending ? "Restoring..." : "Restore worktree",

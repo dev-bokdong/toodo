@@ -342,72 +342,53 @@ impl GitHub {
         Self { runner }
     }
 
-    /// The most recent pull request whose head is `head`, in any state, if there is one.
-    /// It may have been opened outside Toodo, e.g. by an agent in herdr.
+    /// The pull request from `head` into `base`, preferring merged over open over
+    /// closed, then newest first. Read every result, including beyond the first page.
     pub fn find_pull_request(
         &self,
         repository: &GitHubRepository,
         head: &str,
+        base: &str,
     ) -> Result<Option<PullRequest>, GitError> {
         let repository = repository.to_string();
-        let invocation = invocation(&[
-            "pr",
-            "list",
-            "--repo",
-            &repository,
-            "--head",
-            head,
-            "--state",
-            "all",
-            "--json",
-            PULL_REQUEST_FIELDS,
-            "--limit",
-            "1",
-        ]);
-        let output = self.runner.run(&invocation)?;
-        let unexpected = || unexpected(&invocation, &output);
-        let pull_requests: Value = serde_json::from_str(&output).map_err(|_| unexpected())?;
-        let pull_requests = pull_requests.as_array().ok_or_else(unexpected)?;
-        pull_requests
-            .first()
-            .map(|pull_request| parse_pull_request(pull_request).ok_or_else(unexpected))
-            .transpose()
-    }
-
-    /// The pull requests from `head` into `base`, in any state, newest first. They may
-    /// have been opened outside Toodo, e.g. by an agent in herdr.
-    pub fn pull_requests_into(
-        &self,
-        repository: &GitHubRepository,
-        head: &str,
-        base: &str,
-    ) -> Result<Vec<PullRequest>, GitError> {
-        let repository = repository.to_string();
-        let invocation = invocation(&[
-            "pr",
-            "list",
-            "--repo",
-            &repository,
-            "--head",
-            head,
-            "--base",
-            base,
-            "--state",
-            "all",
-            "--json",
-            PULL_REQUEST_FIELDS,
-            "--limit",
-            "100",
-        ]);
-        let output = self.runner.run(&invocation)?;
-        let unexpected = || unexpected(&invocation, &output);
-        let pull_requests: Value = serde_json::from_str(&output).map_err(|_| unexpected())?;
-        pull_requests
-            .as_array()
-            .ok_or_else(unexpected)?
-            .iter()
-            .map(|pull_request| parse_pull_request(pull_request).ok_or_else(unexpected))
-            .collect()
+        let mut limit = 100_usize;
+        loop {
+            // `gh pr list` paginates up to its limit, but has no unlimited flag.
+            let invocation = invocation(&[
+                "pr",
+                "list",
+                "--repo",
+                &repository,
+                "--head",
+                head,
+                "--base",
+                base,
+                "--state",
+                "all",
+                "--json",
+                PULL_REQUEST_FIELDS,
+                "--limit",
+                &limit.to_string(),
+            ]);
+            let output = self.runner.run(&invocation)?;
+            let unexpected = || unexpected(&invocation, &output);
+            let values: Value = serde_json::from_str(&output).map_err(|_| unexpected())?;
+            let values = values.as_array().ok_or_else(unexpected)?;
+            let pull_requests = values
+                .iter()
+                .map(|value| parse_pull_request(value).ok_or_else(unexpected))
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.len() < limit {
+                return Ok(pull_requests
+                    .into_iter()
+                    .min_by_key(|pull_request| match pull_request.state {
+                        PullRequestState::Merged => 0,
+                        PullRequestState::Open => 1,
+                        PullRequestState::Closed => 2,
+                    }));
+            }
+            limit = limit.checked_mul(2).ok_or_else(unexpected)?;
+        }
     }
 
     /// Opens a pull request and returns its URL.
@@ -653,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn find_pull_request_reads_the_first_pull_request_in_any_state() {
+    fn find_pull_request_reads_the_pull_request_into_the_base() {
         let (github, runner) = github(vec![
             Ok(format!(
                 r#"[{{"baseRefName":"main","mergedAt":"{MERGED_AT}","state":"MERGED","url":"{URL}"}}]"#
@@ -661,60 +642,17 @@ mod tests {
             Ok("[]\n".to_owned()),
         ]);
         assert_eq!(
-            github.find_pull_request(&repository(), "feat/x-1").unwrap(),
+            github
+                .find_pull_request(&repository(), "feat/x-1", "main")
+                .unwrap(),
             Some(pull_request(PullRequestState::Merged, "main"))
         );
         assert_eq!(
-            github.find_pull_request(&repository(), "feat/x-1").unwrap(),
+            github
+                .find_pull_request(&repository(), "feat/x-1", "main")
+                .unwrap(),
             None
         );
-        assert_eq!(
-            runner.invocations.lock().unwrap()[0],
-            invocation(&[
-                "pr",
-                "list",
-                "--repo",
-                "github.com/acme/toodo",
-                "--head",
-                "feat/x-1",
-                "--state",
-                "all",
-                "--json",
-                "url,state,baseRefName,mergedAt",
-                "--limit",
-                "1",
-            ])
-        );
-    }
-
-    #[test]
-    fn pull_requests_into_reads_every_pull_request_from_the_head_into_the_base() {
-        let (github, runner) = github(vec![
-            Ok(format!(
-                r#"[{{"baseRefName":"main","mergedAt":null,"state":"OPEN","url":"{URL}"}},{{"baseRefName":"main","mergedAt":"{MERGED_AT}","state":"MERGED","url":"{URL}"}}]"#
-            )),
-            Ok("[]\n".to_owned()),
-            Ok(format!(r#"[{{"url":"{URL}","state":"OPEN"}}]"#)),
-        ]);
-        assert_eq!(
-            github
-                .pull_requests_into(&repository(), "feat/x-1", "main")
-                .unwrap(),
-            [
-                pull_request(PullRequestState::Open, "main"),
-                pull_request(PullRequestState::Merged, "main"),
-            ]
-        );
-        assert_eq!(
-            github
-                .pull_requests_into(&repository(), "feat/x-1", "main")
-                .unwrap(),
-            []
-        );
-        assert!(matches!(
-            github.pull_requests_into(&repository(), "feat/x-1", "main"),
-            Err(GitError::UnexpectedOutput { .. })
-        ));
         assert_eq!(
             runner.invocations.lock().unwrap()[0],
             invocation(&[
@@ -737,6 +675,60 @@ mod tests {
     }
 
     #[test]
+    fn find_pull_request_prefers_merged_then_open_then_closed() {
+        let closed = r#"{"baseRefName":"main","mergedAt":null,"state":"CLOSED","url":"https://github.com/acme/toodo/pull/12"}"#;
+        let open = r#"{"baseRefName":"main","mergedAt":null,"state":"OPEN","url":"https://github.com/acme/toodo/pull/13"}"#;
+        let merged = format!(
+            r#"{{"baseRefName":"main","mergedAt":"{MERGED_AT}","state":"MERGED","url":"https://github.com/acme/toodo/pull/11"}}"#
+        );
+        let (github, _) = github(vec![
+            Ok(format!("[{closed},{open},{merged}]")),
+            Ok(format!("[{closed},{open}]")),
+            Ok(format!("[{closed}]")),
+        ]);
+        for (number, state) in [
+            (11, PullRequestState::Merged),
+            (13, PullRequestState::Open),
+            (12, PullRequestState::Closed),
+        ] {
+            let found = github
+                .find_pull_request(&repository(), "feat/x-1", "main")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                found.url,
+                format!("https://github.com/acme/toodo/pull/{number}")
+            );
+            assert_eq!(found.state, state);
+        }
+    }
+
+    #[test]
+    fn find_pull_request_reads_beyond_the_first_page() {
+        let closed =
+            format!(r#"{{"baseRefName":"main","mergedAt":null,"state":"CLOSED","url":"{URL}"}}"#);
+        let page = std::iter::repeat_n(closed.as_str(), 100)
+            .collect::<Vec<_>>()
+            .join(",");
+        let (github, runner) = github(vec![
+            Ok(format!("[{page}]")),
+            Ok(format!(
+                r#"[{page},{{"baseRefName":"main","mergedAt":"{MERGED_AT}","state":"MERGED","url":"{URL}"}}]"#
+            )),
+        ]);
+        assert_eq!(
+            github
+                .find_pull_request(&repository(), "feat/x-1", "main")
+                .unwrap(),
+            Some(pull_request(PullRequestState::Merged, "main"))
+        );
+        assert_eq!(
+            runner.invocations.lock().unwrap()[1].args.last().unwrap(),
+            "200"
+        );
+    }
+
+    #[test]
     fn find_pull_request_rejects_unexpected_output() {
         let (github, _) = github(vec![
             Ok("no pull requests\n".to_owned()),
@@ -747,7 +739,7 @@ mod tests {
         ]);
         for _ in 0..3 {
             assert!(matches!(
-                github.find_pull_request(&repository(), "feat/x-1"),
+                github.find_pull_request(&repository(), "feat/x-1", "main"),
                 Err(GitError::UnexpectedOutput { .. })
             ));
         }

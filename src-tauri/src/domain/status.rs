@@ -15,7 +15,7 @@ pub enum TaskStatus {
     /// every completion criterion is met and one of them is manual, waiting for someone to
     /// confirm it (see [`super::criteria`]).
     InReview,
-    /// Finished: its pull request was merged, or the work was concluded without merging
+    /// Finished: its criteria were met, or the work was concluded without adoption
     /// (see [`super::model::TaskResolution`]).
     Done,
 }
@@ -43,8 +43,8 @@ impl TaskStatus {
     }
 
     /// Concludes a task that is being worked on without merging it, e.g. research that
-    /// is not adopted: unlike completing, which needs a merged pull request and so a task
-    /// `in_review`, an `in_progress` task can be concluded too.
+    /// is not adopted. Both concluding and completing allow `in_progress` and
+    /// `in_review` tasks; completing requires their completion criteria to be met.
     pub fn conclude(self) -> Result<Self, TransitionError> {
         match self {
             Self::InProgress | Self::InReview => Ok(Self::Done),

@@ -23,8 +23,17 @@ impl fmt::Display for DependencyError {
             Self::UnknownTask(id) => write!(f, "unknown task {id}"),
             Self::SelfDependency(id) => write!(f, "task {id} cannot depend on itself"),
             Self::Cycle(path) => {
-                let path: Vec<String> = path.iter().map(TaskId::to_string).collect();
-                write!(f, "dependency cycle: {}", path.join(" -> "))
+                let ids: Vec<String> = path.iter().map(TaskId::to_string).collect();
+                write!(f, "dependency cycle: {}", ids.join(" -> "))?;
+                // Each task depends on the next one, so the last edge is the existing one
+                // that closes the loop.
+                if let [.., waiting, prerequisite] = path.as_slice() {
+                    write!(
+                        f,
+                        "; task {waiting} already depends on {prerequisite}. task_id is the task that waits, depends_on its prerequisites; did you swap them?"
+                    )?;
+                }
+                Ok(())
             }
         }
     }
@@ -91,17 +100,46 @@ fn dependency_path(
     None
 }
 
-fn dependencies_done(by_id: &HashMap<TaskId, &Task>, task: &Task) -> Result<bool, DependencyError> {
-    let mut all_done = true;
+/// A dependency that keeps a task from starting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockingDependency {
+    pub id: TaskId,
+    pub status: TaskStatus,
+    pub resolution: Option<TaskResolution>,
+}
+
+fn blocking(
+    by_id: &HashMap<TaskId, &Task>,
+    task: &Task,
+) -> Result<Vec<BlockingDependency>, DependencyError> {
+    let mut blockers = Vec::new();
     for dependency in &task.depends_on {
         let dependency = by_id
             .get(dependency)
             .ok_or(DependencyError::UnknownTask(*dependency))?;
-        // Work that was not adopted is not there to build on.
-        all_done &= dependency.status == TaskStatus::Done
-            && dependency.resolution != Some(TaskResolution::NotAdopted);
+        // Merged and completed work can be built on; work not adopted cannot.
+        if dependency.status != TaskStatus::Done
+            || dependency.resolution == Some(TaskResolution::NotAdopted)
+        {
+            blockers.push(BlockingDependency {
+                id: dependency.id,
+                status: dependency.status,
+                resolution: dependency.resolution,
+            });
+        }
     }
-    Ok(all_done)
+    Ok(blockers)
+}
+
+/// The dependencies of `task` that keep it from starting: not done, or done as not
+/// adopted. Empty when the task is ready.
+pub fn blocking_dependencies(
+    tasks: &[Task],
+    task: TaskId,
+) -> Result<Vec<BlockingDependency>, DependencyError> {
+    let by_id = index(tasks);
+    let task = by_id.get(&task).ok_or(DependencyError::UnknownTask(task))?;
+    blocking(&by_id, task)
 }
 
 /// Whether all dependencies of `task` are done and none of them was concluded without
@@ -109,7 +147,7 @@ fn dependencies_done(by_id: &HashMap<TaskId, &Task>, task: &Task) -> Result<bool
 pub fn is_ready(tasks: &[Task], task: TaskId) -> Result<bool, DependencyError> {
     let by_id = index(tasks);
     let task = by_id.get(&task).ok_or(DependencyError::UnknownTask(task))?;
-    dependencies_done(&by_id, task)
+    Ok(blocking(&by_id, task)?.is_empty())
 }
 
 /// Orders tasks so that every task comes after its dependencies. Ties are broken by
@@ -257,7 +295,48 @@ mod tests {
         ];
         let error = validate_dependency(&tasks, TaskId(3), TaskId(1)).unwrap_err();
         assert_eq!(error, DependencyError::Cycle(ids(&[3, 1, 2, 3])));
-        assert_eq!(error.to_string(), "dependency cycle: 3 -> 1 -> 2 -> 3");
+        assert_eq!(
+            error.to_string(),
+            "dependency cycle: 3 -> 1 -> 2 -> 3; task 2 already depends on 3. task_id is the task that waits, depends_on its prerequisites; did you swap them?"
+        );
+    }
+
+    #[test]
+    fn blocking_dependencies_skip_merged_and_completed_and_list_the_rest() {
+        let mut merged = task(1, Done, &[]);
+        merged.resolution = Some(TaskResolution::Merged);
+        let mut legacy = task(2, Done, &[]);
+        legacy.resolution = None;
+        let mut not_adopted = task(3, Done, &[]);
+        not_adopted.resolution = Some(TaskResolution::NotAdopted);
+        let mut completed = task(6, Done, &[]);
+        completed.resolution = Some(TaskResolution::Completed);
+        let tasks = [
+            merged,
+            legacy,
+            not_adopted,
+            task(4, Planned, &[]),
+            task(5, Planned, &[1, 2, 3, 4, 6]),
+            completed,
+            task(7, Planned, &[1, 6]),
+        ];
+        assert_eq!(
+            blocking_dependencies(&tasks, TaskId(5)),
+            Ok(vec![
+                BlockingDependency {
+                    id: TaskId(3),
+                    status: Done,
+                    resolution: Some(TaskResolution::NotAdopted),
+                },
+                BlockingDependency {
+                    id: TaskId(4),
+                    status: Planned,
+                    resolution: None,
+                },
+            ])
+        );
+        assert_eq!(blocking_dependencies(&tasks, TaskId(4)), Ok(Vec::new()));
+        assert!(is_ready(&tasks, TaskId(7)).unwrap());
     }
 
     #[test]

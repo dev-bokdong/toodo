@@ -30,6 +30,9 @@ describe("taskStatusAlerts", () => {
     expect(taskStatusAlerts([started], [{ ...started, status: "done", resolution: "not_adopted" }])).toEqual([
       { title: "Task concluded without merging", body: "#1 Add login: In progress -> Not adopted" },
     ]);
+    expect(taskStatusAlerts([started], [{ ...started, status: "done", resolution: "completed" }])).toEqual([
+      { title: "Task done", body: "#1 Add login: In progress -> Completed" },
+    ]);
     expect(taskStatusAlerts([started], [login])).toEqual([
       { title: "Task paused", body: "#1 Add login: In progress -> Planned" },
     ]);

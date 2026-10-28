@@ -377,7 +377,7 @@ fn status_changes_follow_transitions_and_wait_for_dependencies() {
 
     assert!(matches!(
         storage.set_task_status(b.id, InProgress),
-        Err(StorageError::DependenciesNotDone(id)) if id == b.id
+        Err(StorageError::DependenciesNotDone { task, .. }) if task == b.id
     ));
     assert!(matches!(
         storage.set_task_status(a.id, Planned),
@@ -437,7 +437,7 @@ fn a_paused_task_keeps_its_work_and_starts_again_once_its_dependencies_are_done(
     storage.add_dependency(a.id, b.id).unwrap();
     assert!(matches!(
         storage.set_task_status(a.id, InProgress),
-        Err(StorageError::DependenciesNotDone(_))
+        Err(StorageError::DependenciesNotDone { .. })
     ));
     storage.remove_dependency(a.id, b.id).unwrap();
     set_now(&now, 500);
@@ -865,7 +865,7 @@ fn start_task_writes_nothing_when_it_is_rejected() {
 
     assert!(matches!(
         storage.start_task(second.id, &checkout(posix, "feat/x"), "w1"),
-        Err(StorageError::DependenciesNotDone(id)) if id == second.id
+        Err(StorageError::DependenciesNotDone { task, .. }) if task == second.id
     ));
     assert!(matches!(
         storage.start_task(first.id, &checkout(windows, "feat/x"), "w1"),
@@ -1429,4 +1429,30 @@ fn related_links_go_both_ways_across_workspaces_and_never_block() {
     storage.add_related(later.id, earlier.id).unwrap();
     storage.delete_task(earlier.id).unwrap();
     assert!(storage.list_relations().unwrap().is_empty());
+}
+
+#[test]
+fn dependencies_not_done_names_each_blocker_and_its_next_step() {
+    use crate::domain::dag::BlockingDependency;
+    use crate::domain::model::TaskResolution;
+
+    let error = StorageError::DependenciesNotDone {
+        task: TaskId(2),
+        blockers: vec![
+            BlockingDependency {
+                id: TaskId(1),
+                status: Done,
+                resolution: Some(TaskResolution::NotAdopted),
+            },
+            BlockingDependency {
+                id: TaskId(7),
+                status: Planned,
+                resolution: None,
+            },
+        ],
+    };
+    assert_eq!(
+        error.to_string(),
+        "task 2 cannot start yet: #1 is done as not_adopted (remove_dependency task_id 2 depends_on 1 to unblock, or complete #1 with merged_with); #7 is planned (wait for it)"
+    );
 }
