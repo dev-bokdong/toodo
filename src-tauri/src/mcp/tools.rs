@@ -364,9 +364,11 @@ pub struct SearchTasks {
     /// two-character Korean ones work too. Every word must appear in the
     /// task's title, description, notes, completion note, branch, or pull request, as a
     /// case-insensitive substring; words are taken literally, not as operators. Use a few
-    /// distinctive words and search again with others to widen the search.
+    /// distinctive words and search again with others to widen the search. A task number
+    /// alone, e.g. `431` or `#431`, also finds that task first, in any workspace.
     pub query: String,
-    /// Only tasks of this workspace; all workspaces when omitted.
+    /// Only tasks of this workspace; all workspaces when omitted. A task found by its
+    /// number is returned whatever its workspace.
     pub workspace_id: Option<WorkspaceId>,
     /// Only tasks with this status; any status when omitted.
     pub status: Option<TaskStatus>,
@@ -1513,7 +1515,18 @@ impl Links {
     }
 }
 
-/// Tasks matching the query, best match first, each with its links.
+/// The task number a query consists of, e.g. `431` or `#431`.
+fn task_number(query: &str) -> Option<model::TaskId> {
+    let query = query.trim();
+    let digits = query.strip_prefix('#').unwrap_or(query);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().map(model::TaskId)
+}
+
+/// Tasks matching the query, best match first, each with its links. A query that is a
+/// task number puts that task first, in any workspace, ahead of the text matches.
 pub fn search_tasks(storage: &Storage, request: SearchTasks) -> CommandResult<Vec<SearchHit>> {
     if request.query.trim().is_empty() {
         return Err(CommandError::invalid_input("query must contain a word"));
@@ -1523,16 +1536,29 @@ pub fn search_tasks(storage: &Storage, request: SearchTasks) -> CommandResult<Ve
             .get_workspace(workspace.into())?
             .ok_or(StorageError::WorkspaceNotFound(workspace.into()))?;
     }
-    let ids = storage.search_tasks(&TaskSearch {
+    let status = request.status.map(Into::into);
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_SEARCH_LIMIT)
+        .min(MAX_SEARCH_LIMIT);
+    let mut ids = storage.search_tasks(&TaskSearch {
         query: &request.query,
         workspace: request.workspace_id.map(Into::into),
-        status: request.status.map(Into::into),
-        limit: request
-            .limit
-            .unwrap_or(DEFAULT_SEARCH_LIMIT)
-            .min(MAX_SEARCH_LIMIT),
+        status,
+        limit,
     })?;
     let links = Links::load(storage)?;
+    let numbered = task_number(&request.query).filter(|id| {
+        links
+            .tasks
+            .get(id)
+            .is_some_and(|task| status.is_none_or(|status| task.status == status))
+    });
+    if let Some(id) = numbered {
+        ids.retain(|other| *other != id);
+        ids.insert(0, id);
+        ids.truncate(limit as usize);
+    }
     ids.into_iter().map(|id| links.hit(id)).collect()
 }
 
@@ -2622,6 +2648,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_task_number_finds_that_task_first_in_any_workspace() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let other = storage
+            .create_workspace(&NewWorkspace {
+                name: "server".to_owned(),
+                location: WorkspaceLocation::Ssh {
+                    machine: model::MachineLabel::parse("devbox").unwrap(),
+                    path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
+                },
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        let numbered = create(&mut storage, other.id.into(), "Deploy server", vec![]).unwrap();
+        let number = numbered.id.0;
+        let mention = create(
+            &mut storage,
+            workspace,
+            &format!("Follow up on {number}"),
+            vec![],
+        )
+        .unwrap();
+        let ids = |query: String, workspace_id, status| -> Vec<TaskId> {
+            search_tasks(
+                &storage,
+                SearchTasks {
+                    query,
+                    workspace_id,
+                    status,
+                    limit: None,
+                },
+            )
+            .unwrap()
+            .iter()
+            .map(|hit| hit.id)
+            .collect()
+        };
+        assert_eq!(
+            ids(format!("{number}"), None, None),
+            [numbered.id, mention.id]
+        );
+        assert_eq!(
+            ids(format!(" #{number} "), Some(workspace), None),
+            [numbered.id]
+        );
+        assert_eq!(
+            ids(format!("{number}"), Some(workspace), None),
+            [numbered.id, mention.id]
+        );
+        assert_eq!(
+            ids(format!("{number}"), None, Some(TaskStatus::Done)),
+            Vec::<TaskId>::new()
+        );
+        assert_eq!(ids("999".to_owned(), None, None), Vec::<TaskId>::new());
     }
 
     #[test]

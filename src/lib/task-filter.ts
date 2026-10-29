@@ -87,7 +87,10 @@ export function groupTasks(
 
 /** What the task views are narrowed to; `null` lets every type through. */
 export type TaskFilter = {
-  /** Text searched for in the title and description, ignoring case. */
+  /**
+   * Text searched for in the title and description, ignoring case. A task number alone, e.g.
+   * `431` or `#431`, also finds that task in any workspace (see {@link taskNumber}).
+   */
   query: string;
   /** Tasks with any of these statuses pass; an empty list lets every status through. */
   statuses: ShownStatus[];
@@ -103,6 +106,12 @@ export function isFilterActive(filter: TaskFilter): boolean {
 /** `statuses` with `status` added, or removed when it is already there, in the order of `shownStatuses`. */
 export function toggleStatus(statuses: ShownStatus[], status: ShownStatus): ShownStatus[] {
   return shownStatuses.filter((each) => (each === status) !== statuses.includes(each));
+}
+
+/** The task number `query` consists of, e.g. `431` or `#431`; null for any other query. */
+export function taskNumber(query: string): TaskId | null {
+  const match = /^#?(\d+)$/.exec(query.trim());
+  return match === null ? null : Number(match[1]);
 }
 
 /** Whether `task` passes `filter`: every word of the query appears in its title or description. */
