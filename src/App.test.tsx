@@ -669,6 +669,35 @@ describe("App", () => {
     expect(within(all).getByText("Fix ssh")).toBeInTheDocument();
   });
 
+  it("finds a task by its number in any workspace, first, with the text matches", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage"),
+        task(2, 1, "Follow up on 3", { status: "in_progress" }),
+        task(3, 2, "Fix ssh"),
+      ],
+    });
+    await renderWorkspace();
+
+    const tasks = await taskList();
+    const search = screen.getByRole("searchbox", { name: "Search tasks" });
+    fireEvent.change(search, { target: { value: "#3" } });
+    const match = within(tasks).getByRole("list", { name: "Task number match" });
+    expect(within(match).getByText("Fix ssh")).toBeInTheDocument();
+    expect(within(match).getByText("herdr")).toBeInTheDocument();
+    expect(within(tasks).getAllByRole("listitem")).toHaveLength(1);
+
+    fireEvent.change(search, { target: { value: "3" } });
+    const rows = within(tasks).getAllByRole("listitem");
+    expect(rows.map((row) => row.getAttribute("data-task-row"))).toEqual(["3", "2"]);
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "In progress" }));
+    expect(within(tasks).queryByRole("list", { name: "Task number match" })).not.toBeInTheDocument();
+    expect(within(tasks).getByText("Follow up on 3")).toBeInTheDocument();
+  });
+
   it("filters the tasks that can be started now in the list and on the timeline", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));

@@ -128,6 +128,7 @@ import {
   shownStatus,
   shownStatuses,
   taskGroupNames,
+  taskNumber,
   toggleStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
@@ -245,9 +246,20 @@ export function TaskList({
     context.workspaceName(a).localeCompare(context.workspaceName(b)),
   );
   const filter = timelineWorkspace !== null && filterOptions.includes(timelineWorkspace) ? timelineWorkspace : null;
+  // A search for a task number finds that task in any workspace, shown first, ahead of the text matches.
+  const numberedId = taskNumber(taskFilter.query);
+  const numberedCandidate = numberedId === null ? undefined : context.byId.get(numberedId);
+  const numbered =
+    numberedCandidate !== undefined && matchesFilter(numberedCandidate, { ...taskFilter, query: "" }, context.byId)
+      ? numberedCandidate
+      : undefined;
   const filtered = tasks?.filter(
-    (task) => (!showTimeline || filter === null || task.workspaceId === filter) && matchesFilter(task, taskFilter, context.byId),
+    (task) =>
+      task !== numbered &&
+      (!showTimeline || filter === null || task.workspaceId === filter) &&
+      matchesFilter(task, taskFilter, context.byId),
   );
+  const timelineTasks = numbered === undefined ? (filtered ?? []) : [numbered, ...(filtered ?? [])];
   const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
   useEffect(() => {
     if (shownTaskData === undefined) {
@@ -265,7 +277,10 @@ export function TaskList({
     filter === null
       ? []
       : (tasks ?? []).filter(
-          (task) => task.workspaceId !== filter && filtered?.some((own) => own.dependsOn.includes(task.id)),
+          (task) =>
+            task !== numbered &&
+            task.workspaceId !== filter &&
+            timelineTasks.some((own) => own.dependsOn.includes(task.id)),
         );
 
   return (
@@ -341,7 +356,7 @@ export function TaskList({
             )}
             <TaskFilterBar filter={taskFilter} onChange={setTaskFilter} />
           </div>
-          {filtered.length === 0 ? (
+          {filtered.length === 0 && numbered === undefined ? (
             <EmptyState
               icon={<Search />}
               title="No tasks match the search and filters."
@@ -350,6 +365,22 @@ export function TaskList({
           ) : !showTimeline ? (
             <>
             <div role="region" aria-label="Tasks" className="flex flex-col gap-4">
+              {numbered && (
+                <section aria-label="Task number match" className="flex flex-col gap-2">
+                  <h3 className="text-sm font-medium text-muted-foreground">
+                    Task <span className="tabular-nums font-normal">#{numbered.id}</span>
+                  </h3>
+                  <ul aria-label="Task number match" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
+                    <TaskRow
+                      task={numbered}
+                      tasks={allTasks.data}
+                      context={context}
+                      showWorkspace={workspace === null || numbered.workspaceId !== workspace.id}
+                      onShowDetails={() => setDetailId(numbered.id)}
+                    />
+                  </ul>
+                </section>
+              )}
               {groupTasks(
                 filtered,
                 context.byId,
@@ -414,7 +445,7 @@ export function TaskList({
           ) : (
             <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
               <TaskGraph
-                tasks={[...filtered, ...prerequisites]}
+                tasks={[...timelineTasks, ...prerequisites]}
                 allTasks={allTasks.data}
                 dimmed={new Set(prerequisites.map((task) => task.id))}
                 workspaceLabel={(task) =>
@@ -517,7 +548,7 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
       <input
         type="search"
         aria-label="Search tasks"
-        placeholder="Search title or description"
+        placeholder="Search title, description, or #number"
         className={cn(compactSelectClass, "w-56 max-md:col-span-2 max-md:w-full")}
         value={filter.query}
         onChange={(event) => onChange({ ...filter, query: event.target.value })}

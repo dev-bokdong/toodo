@@ -450,7 +450,8 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
   - `search_tasks` finds earlier tasks of all workspaces (or one, or one status) by words
     in their title, description, completion note and notes, branch, and pull request
     title and URL; every word must appear, and results come best match first with
-    their `depends_on`, `dependents`, and `related` IDs. `get_task` returns one task
+    their `depends_on`, `dependents`, and `related` IDs; a task number alone (`431` or
+    `#431`) puts that task first, in any workspace. `get_task` returns one task
     with its whole history (timeline, notes, completion note, pull request, commits)
     and its linked tasks (id, title, status). `add_related` / `remove_related` set
     [related links](#related-tasks). The instructions and the `toodo` skill tell agents

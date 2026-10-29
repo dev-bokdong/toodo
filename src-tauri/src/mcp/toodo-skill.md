@@ -92,7 +92,8 @@ user's standing preferences and cross-project rules).
   appear (as a substring, in any language, short Korean words included); words are
   literal, never operators. Use two or three distinctive words, e.g. a component name
   and a verb, and search again with other words or synonyms before concluding there is
-  nothing. Narrow with `workspace_id` or `status` when there are too many results.
+  nothing. Narrow with `workspace_id` or `status` when there are too many results. A
+  task number alone, e.g. `431` or `#431`, returns that task first, in any workspace.
 - `get_task` returns one task with its whole history: description, status timeline,
   progress and blocker notes, completion note (for a task done as `not_adopted`, the
   conclusion of why it was not adopted), pull request, and commits, plus the tasks it
