@@ -128,7 +128,7 @@ import {
   shownStatus,
   shownStatuses,
   taskGroupNames,
-  type ShownStatus,
+  toggleStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
 import { needsAttention, openBlocker } from "@/lib/attention";
@@ -522,21 +522,23 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
         value={filter.query}
         onChange={(event) => onChange({ ...filter, query: event.target.value })}
       />
-      <select
-        aria-label="Status filter"
-        className={compactSelectClass}
-        value={filter.status ?? "all"}
-        onChange={(event) =>
-          onChange({ ...filter, status: event.target.value === "all" ? null : (event.target.value as ShownStatus) })
-        }
-      >
-        <option value="all">All statuses</option>
-        {shownStatuses.map((status) => (
-          <option key={status} value={status}>
-            {statusNames[status]}
-          </option>
-        ))}
-      </select>
+      <div role="group" aria-label="Status filter" className="flex flex-wrap gap-1 max-md:col-span-2 max-md:gap-2">
+        {shownStatuses.map((status) => {
+          const selected = filter.statuses.includes(status);
+          return (
+            <Button
+              key={status}
+              size="xs"
+              variant={selected ? "default" : "outline"}
+              className="rounded-full"
+              aria-pressed={selected}
+              onClick={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
+            >
+              {statusNames[status]}
+            </Button>
+          );
+        })}
+      </div>
       <select
         aria-label="Type filter"
         className={compactSelectClass}

@@ -641,10 +641,17 @@ describe("App", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "sqlite" } });
     expect(within(tasks).getByText("Add storage")).toBeInTheDocument();
     expect(within(tasks).queryByText("Fix login")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "in_progress" } });
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "In progress" }));
     expect(await screen.findByText("No tasks match the search and filters.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(2);
+    // Selected statuses add up: Ready alone, then Ready and In progress together.
+    const statusFilter = screen.getByRole("group", { name: "Status filter" });
+    fireEvent.click(within(statusFilter).getByRole("button", { name: "Ready" }));
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(1);
+    fireEvent.click(within(statusFilter).getByRole("button", { name: "In progress" }));
+    expect(within(screen.getByRole("region", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
@@ -687,7 +694,7 @@ describe("App", () => {
     expect(await within(tasks).findByText("Add UI")).toBeInTheDocument();
     expect(within(row("Add UI")).getByText("Ready")).toBeInTheDocument();
     expect(within(row("Write docs")).getByText("Blocked")).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "ready" } });
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Ready" }));
     expect(within(tasks).getAllByRole("listitem")).toHaveLength(1);
     expect(within(tasks).getByText("Add UI")).toBeInTheDocument();
 
@@ -696,7 +703,7 @@ describe("App", () => {
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const bars = timeline.querySelector(".react-flow__nodes") as HTMLElement;
     expect(await within(bars).findByText("Write docs")).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "ready" } });
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Ready" }));
     expect(await within(bars).findByText("Add UI")).toBeInTheDocument();
     expect(within(bars).getByText("Ready")).toBeInTheDocument();
     expect(within(bars).queryByText("Write docs")).not.toBeInTheDocument();
@@ -2947,13 +2954,13 @@ describe("App", () => {
 
     // The task shows even from the list view, with a filter hiding it.
     fireEvent.click(screen.getByRole("button", { name: "List" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "planned" } });
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Blocked" }));
     expect(screen.queryByRole("region", { name: "Task timeline" })).not.toBeInTheDocument();
     fireEvent.click(within(items[2]).getByRole("button", { name: /Fix redirect/ }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const details = await within(timeline).findByRole("complementary", { name: "Task details" });
     expect(within(details).getByRole("heading", { name: "Fix redirect" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Status filter" })).toHaveValue("all");
+    expect(within(screen.getByRole("group", { name: "Status filter" })).queryAllByRole("button", { pressed: true })).toHaveLength(0);
 
     // Once the agent is answered and the pull request fixed, the task leaves the group.
     const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
