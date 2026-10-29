@@ -130,6 +130,7 @@ import {
   taskGroupNames,
   taskNumber,
   toggleStatus,
+  type ShownStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
 import { needsAttention, openBlocker } from "@/lib/attention";
@@ -138,7 +139,15 @@ import { When } from "@/components/when";
 import { firstParagraph, markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
 import { normalizePath, shortPath } from "@/lib/paths";
-import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
+import {
+  statusNames,
+  toneChip,
+  toneFill,
+  toneOutline,
+  tonePanel,
+  toneText,
+  type Tone,
+} from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { reachability, subscribeReachability } from "@/web/connection";
 
@@ -158,27 +167,27 @@ function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   return statusNames[shownStatus(task, byId)];
 }
 
-const statusStyles: Record<TaskStatus, string> = {
-  planned: toneChip.neutral,
-  in_progress: toneChip.progress,
-  in_review: toneChip.review,
-  done: toneChip.success,
+/** The tone of each shown status, shared by the status chips and the status filter. */
+const statusTones: Record<ShownStatus, Tone> = {
+  planned: "neutral",
+  ready: "attention",
+  paused: "neutral",
+  in_progress: "progress",
+  in_review: "review",
+  done: "success",
+  not_adopted: "neutral",
 };
 
 /** Not adopted is a valid end of research, not a failure: neutral, outlined to tell it from planned. */
 const notAdoptedStyle = cn(toneChip.neutral, "ring-1 ring-inset ring-muted-foreground/40");
 
-const readyStyle = toneChip.attention;
+/** The filled chip of a shown status. */
+function shownStatusStyle(status: ShownStatus): string {
+  return status === "not_adopted" ? notAdoptedStyle : toneChip[statusTones[status]];
+}
 
 function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
-  switch (shownStatus(task, byId)) {
-    case "not_adopted":
-      return notAdoptedStyle;
-    case "ready":
-      return readyStyle;
-    default:
-      return statusStyles[task.status];
-  }
+  return shownStatusStyle(shownStatus(task, byId));
 }
 
 /** What the task list needs to name tasks of other workspaces. */
@@ -556,17 +565,29 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
       <div role="group" aria-label="Status filter" className="flex flex-wrap gap-1 max-md:col-span-2 max-md:gap-2">
         {shownStatuses.map((status) => {
           const selected = filter.statuses.includes(status);
+          const tone = statusTones[status];
+          // Selected: filled like the status chip, with a check. Not selected: outlined in the
+          // same hue, with a dot.
           return (
-            <Button
+            <button
               key={status}
-              size="xs"
-              variant={selected ? "default" : "outline"}
-              className="rounded-full"
+              type="button"
+              className={cn(
+                "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11",
+                selected
+                  ? cn(shownStatusStyle(status), "border-transparent hover:brightness-95 dark:hover:brightness-125")
+                  : cn(toneOutline[tone], "bg-transparent hover:bg-muted"),
+              )}
               aria-pressed={selected}
               onClick={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
             >
+              {selected ? (
+                <Check aria-hidden className="size-3" />
+              ) : (
+                <span aria-hidden className={cn("size-1.5 rounded-full", toneFill[tone])} />
+              )}
               {statusNames[status]}
-            </Button>
+            </button>
           );
         })}
       </div>
