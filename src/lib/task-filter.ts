@@ -85,23 +85,29 @@ export function groupTasks(
     .filter((section) => section.tasks.length > 0);
 }
 
-/** What the task views are narrowed to; `null` lets every status or type through. */
+/** What the task views are narrowed to; `null` lets every type through. */
 export type TaskFilter = {
   /** Text searched for in the title and description, ignoring case. */
   query: string;
-  status: ShownStatus | null;
+  /** Tasks with any of these statuses pass; an empty list lets every status through. */
+  statuses: ShownStatus[];
   type: TaskType | null;
 };
 
-export const emptyTaskFilter: TaskFilter = { query: "", status: null, type: null };
+export const emptyTaskFilter: TaskFilter = { query: "", statuses: [], type: null };
 
 export function isFilterActive(filter: TaskFilter): boolean {
-  return filter.query.trim() !== "" || filter.status !== null || filter.type !== null;
+  return filter.query.trim() !== "" || filter.statuses.length > 0 || filter.type !== null;
+}
+
+/** `statuses` with `status` added, or removed when it is already there, in the order of `shownStatuses`. */
+export function toggleStatus(statuses: ShownStatus[], status: ShownStatus): ShownStatus[] {
+  return shownStatuses.filter((each) => (each === status) !== statuses.includes(each));
 }
 
 /** Whether `task` passes `filter`: every word of the query appears in its title or description. */
 export function matchesFilter(task: Task, filter: TaskFilter, byId: ReadonlyMap<TaskId, Task>): boolean {
-  if (filter.status !== null && shownStatus(task, byId) !== filter.status) {
+  if (filter.statuses.length > 0 && !filter.statuses.includes(shownStatus(task, byId))) {
     return false;
   }
   if (filter.type !== null && task.taskType !== filter.type) {
