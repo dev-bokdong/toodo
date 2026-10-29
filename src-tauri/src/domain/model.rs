@@ -269,15 +269,17 @@ impl TaskResolution {
     }
 }
 
-/// The merged pull request of another task that shipped the work of a task, e.g. one
-/// pull request that fixed several tasks: the task is `done` as merged without a pull
-/// request of its own.
+/// The merged pull request or the other task that shipped the work of a task, e.g. one
+/// pull request that fixed several tasks: the task is `done` without a pull request of
+/// its own. At least one of the two is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedWith {
-    /// The task whose pull request it is, if Toodo knows one; `None` once that task is
+    /// The task that shipped the work, if Toodo knows one; `None` once that task is
     /// deleted or for a pull request no task records.
     pub task_id: Option<TaskId>,
-    pub pull_request_url: String,
+    /// The merged pull request; `None` when the task that shipped the work has no
+    /// recorded pull request, e.g. it was completed without one.
+    pub pull_request_url: Option<String>,
 }
 
 /// What a note left on a task records.

@@ -134,7 +134,15 @@ On first start the data directory gets two access tokens:
 The data directory is created readable by its owner only (`0700`) and the token files
 `0600`; the server tightens an existing directory and token files on start. To replace a
 token, delete its file and restart the server. Replacing `web-token` does not sign out
-registered devices; revoke them one by one.
+registered devices; revoke them one by one. The server logs every token file it creates,
+and its start line names both token files and the server's instance id.
+
+A request without a valid token gets `401` with `WWW-Authenticate: Bearer` and a
+plain-text body that says why and what to do, never the token: no `Authorization`
+header, a header that is not `Bearer <token>` (the scheme is case-insensitive), a token
+the server does not accept, or the other surface's token (`web-token` at `/mcp`, the MCP
+token at `/api`). At `/mcp` the body also names the server instance, which tells a reply
+from another Toodo server, e.g. one an old config or a tunnel reached, apart from this one.
 
 ### Import
 
@@ -145,7 +153,7 @@ toodo-server import FILE
 adds the data of another Toodo database, such as a Windows desktop app's (see
 [migrate-desktop-data.md](migrate-desktop-data.md)), to the data in `TOODO_DATA_DIR`, then
 exits. It imports workspaces, tasks (with dependencies, status history, commit records,
-notes, related links, criteria, and pull request snapshots), and project memory, in one
+notes, related links, criteria, and pull request snapshots) in one
 transaction, after writing a pre-restore backup into `<data>/backups/`. Devices, push
 subscriptions, chat messages, and machine settings (worktree roots) are not imported, and
 tasks lose their herdr workspace link. The file is checked and migrated to the latest
@@ -233,6 +241,13 @@ contents of `mcp-token`):
 Agents on the server's SSH machines reach the same URL through the reverse tunnels the
 server keeps open to them.
 
+Settings > Agent access in the web app copies this config or the MCP token alone
+("Copy MCP token for agents"; it is not the web sign-in token), checks with **Test
+connection** that the server accepts the token it shows, and shows the server instance
+and the last request `/mcp` turned away (local and tunneled agents alike), with its
+reason and how many it turned away since the server started. The MCP `initialize` reply
+names the instance in `serverInfo.title`.
+
 ### Agent MCP Tools
 
 Besides the regular task tools, two arguments help an agent wire and start a plan:
@@ -241,7 +256,11 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
   call; an unknown task in either rejects the call and creates nothing.
 - **Start.** `start_task` takes `agent_command`, which Toodo runs in the shell pane of
   the task's new herdr workspace once the task is started (for the coding agent; only
-  for workspaces on the server's machine). The reply is the task with `panes`, `ranIn`
+  for workspaces on the server's machine). The command runs after
+  `export TOODO_MCP_URL=<url>; export TOODO_MCP_TOKEN="$(cat <data dir>/mcp-token)"`, so
+  the agent can reach the MCP server without the token being typed into the pane; a
+  client that expands environment variables in its config can use
+  `"Authorization": "Bearer ${TOODO_MCP_TOKEN}"`. The reply is the task with `panes`, `ranIn`
   (the pane the command ran in), and `paneError` when the panes could not be listed or
   the command did not run; the task is started either way.
 

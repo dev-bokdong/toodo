@@ -1,8 +1,7 @@
 //! Merging another Toodo database, such as one of the former desktop app, into this one.
 //!
-//! Workspaces, tasks with their history, and project memory are added next to the data
-//! already here. Imported rows get IDs after every ID this database has used, so nothing
-//! here changes; references between imported rows move along. Devices, push
+//! Workspaces and tasks with their history are added next to the data already here.
+//! Imported rows get IDs after every ID this database has used, so nothing here changes; references between imported rows move along. Devices, push
 //! subscriptions, and the lead chat of the other database are not imported: they belong
 //! to the server that kept them. Tasks forget their herdr workspace, whose ID only meant
 //! something to the other machine's herdr.
@@ -19,7 +18,6 @@ use super::{Result, StagedBackup, Storage, StorageError};
 pub struct ImportSummary {
     pub workspaces: i64,
     pub tasks: i64,
-    pub memory_entries: i64,
     /// Task #N of the imported database is task #(N + offset) here.
     pub task_id_offset: i64,
 }
@@ -27,8 +25,8 @@ pub struct ImportSummary {
 const SOURCE: &str = "import_source";
 
 /// How a column of an imported table gets its value: the expression to select, in which
-/// `{w}`, `{t}`, and `{m}` are the workspace, task, and memory ID offsets, or `None` to
-/// leave it to its default (a new row ID, for example).
+/// `{w}` and `{t}` are the workspace and task ID offsets, or `None` to leave it to its
+/// default (a new row ID, for example).
 type Column = (&'static str, Option<&'static str>);
 
 /// The imported tables in the order they are inserted, each with its columns that are
@@ -80,15 +78,6 @@ const TABLES: &[(&str, &[Column])] = &[
         ],
     ),
     (
-        "memory_entries",
-        &[
-            ("id", Some("id + {m}")),
-            ("workspace_id", Some("workspace_id + {w}")),
-            ("task_id", Some("task_id + {t}")),
-            ("superseded_by", Some("superseded_by + {m}")),
-        ],
-    ),
-    (
         "task_criteria",
         &[("id", None), ("task_id", Some("task_id + {t}"))],
     ),
@@ -107,7 +96,7 @@ pub(super) const SKIPPED: &[&str] = &[
 ];
 
 impl Storage {
-    /// Adds the workspaces, tasks, and memory of `staged` to this database in one
+    /// Adds the workspaces and tasks of `staged` to this database in one
     /// transaction. Machine settings stay as they are here: worktree roots of the other
     /// machine would not fit this one.
     pub fn import(&mut self, staged: &StagedBackup) -> Result<ImportSummary> {
@@ -135,7 +124,6 @@ fn merge(tx: &Transaction<'_>) -> Result<ImportSummary> {
     tx.pragma_update(None, "defer_foreign_keys", true)?;
     let w = offset(tx, "workspaces")?;
     let t = offset(tx, "tasks")?;
-    let m = offset(tx, "memory_entries")?;
     let count = |table: &str| -> Result<i64> {
         Ok(tx.query_row(
             &format!("SELECT count(*) FROM {SOURCE}.{table}"),
@@ -146,7 +134,6 @@ fn merge(tx: &Transaction<'_>) -> Result<ImportSummary> {
     let summary = ImportSummary {
         workspaces: count("workspaces")?,
         tasks: count("tasks")?,
-        memory_entries: count("memory_entries")?,
         task_id_offset: t,
     };
     for (table, columns) in TABLES {
@@ -164,8 +151,7 @@ fn merge(tx: &Transaction<'_>) -> Result<ImportSummary> {
                 Some((_, None)) => continue,
                 Some((_, Some(value))) => value
                     .replace("{w}", &w.to_string())
-                    .replace("{t}", &t.to_string())
-                    .replace("{m}", &m.to_string()),
+                    .replace("{t}", &t.to_string()),
                 None => name.clone(),
             };
             names.push(name);
@@ -213,7 +199,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::domain::memory::{MemoryContent, MemoryKind};
     use crate::domain::model::{NoteKind, TaskId, TaskType, Workspace, WorkspaceLocation};
     use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::{NewTask, NewWorkspace, TaskSearch, stage_backup};
@@ -247,17 +232,9 @@ mod tests {
         storage.conn.query_row(sql, [], |row| row.get(0)).unwrap()
     }
 
-    fn memory(title: &str, task: Option<TaskId>) -> MemoryContent {
-        MemoryContent {
-            kind: MemoryKind::Decision,
-            title: title.to_owned(),
-            body: String::new(),
-            task,
-        }
-    }
-
     /// A database like the desktop app's: a Windows workspace whose second task waits on
-    /// the first, with history, notes, a related link, memory, and a device.
+    /// the first, with history, notes, a related link, and a device, saved at schema
+    /// version 25, which still kept project memory entries.
     fn desktop_database(path: &Path) {
         let mut desktop = Storage::open(path).unwrap();
         let workspace = add_workspace(
@@ -275,19 +252,27 @@ mod tests {
             .add_task_note(first, NoteKind::Progress, "Schema drafted")
             .unwrap();
         desktop.set_task_herdr_workspace(first, "w1").unwrap();
-        let old = desktop
-            .add_memory(Some(workspace.id), &memory("Use SQLite", Some(first)))
-            .unwrap();
-        desktop
-            .supersede_memory(old.id, &memory("Use SQLite in WAL mode", Some(first)))
-            .unwrap();
         desktop
             .conn
             .execute_batch(
                 r"INSERT INTO devices (label, token_hash, created_at, last_seen_at)
                  VALUES ('Browser', printf('%064d', 0), 0, 0);
                  INSERT INTO machine_settings (kind, label, worktree_root)
-                 VALUES ('local', '', 'D:\worktrees');",
+                 VALUES ('local', '', 'D:\worktrees');
+                 CREATE TABLE memory_entries (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     workspace_id INTEGER REFERENCES workspaces (id) ON DELETE CASCADE,
+                     kind TEXT NOT NULL,
+                     title TEXT NOT NULL,
+                     body TEXT NOT NULL DEFAULT '',
+                     task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     superseded_by INTEGER REFERENCES memory_entries (id) ON DELETE SET NULL
+                 );
+                 INSERT INTO memory_entries (workspace_id, kind, title, created_at, updated_at)
+                 VALUES (NULL, 'rule', 'Reply in English', 0, 0);
+                 PRAGMA user_version = 25;",
             )
             .unwrap();
     }
@@ -317,7 +302,6 @@ mod tests {
             ImportSummary {
                 workspaces: 1,
                 tasks: 2,
-                memory_entries: 2,
                 task_id_offset: 2,
             }
         );
@@ -349,10 +333,9 @@ mod tests {
         assert_eq!(
             count(
                 &server,
-                "SELECT count(*) FROM memory_entries
-                 WHERE id = 1 AND superseded_by = 2 AND task_id = 3 AND workspace_id = 2"
+                "SELECT count(*) FROM sqlite_master WHERE name = 'memory_entries'"
             ),
-            1
+            0
         );
         assert_eq!(count(&server, "SELECT count(*) FROM devices"), 0);
         assert_eq!(count(&server, "SELECT count(*) FROM machine_settings"), 0);

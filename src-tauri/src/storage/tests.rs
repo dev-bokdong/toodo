@@ -482,6 +482,87 @@ fn a_prerequisite_that_is_not_done_pauses_a_task_in_progress() {
     let cleared = storage.clear_task_herdr_workspace(a.id).unwrap();
     assert_eq!(cleared.herdr_workspace_id, None);
     assert_eq!(cleared.branch.as_deref(), Some("feat/a-1"));
+    // The pause records what it waits on, at the time of the pause.
+    let note = added.task.notes.last().unwrap();
+    assert_eq!(note.kind, NoteKind::Blocker);
+    assert_eq!(note.at, 300);
+    assert_eq!(
+        note.body,
+        format!(
+            "Paused: waiting on #{} Fix (planned), #{} Docs (planned)",
+            fix.id, docs.id
+        )
+    );
+}
+
+#[test]
+fn asking_before_a_pause_adds_nothing_that_would_pause_the_task() {
+    use super::{DependencyChange, PauseRule};
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    let b = add_task(&mut storage, &workspace, "B");
+    storage.set_task_status(a.id, InProgress).unwrap();
+
+    assert_eq!(
+        storage
+            .add_dependencies_with(a.id, &[fix.id], PauseRule::Ask)
+            .unwrap(),
+        DependencyChange::NeedsPause
+    );
+    let a_now = storage.get_task(a.id).unwrap().unwrap();
+    assert_eq!(a_now.status, InProgress);
+    assert!(a_now.depends_on.is_empty());
+    assert!(a_now.notes.is_empty());
+
+    // A task that the prerequisite does not pause gets it right away.
+    assert!(matches!(
+        storage.add_dependencies_with(b.id, &[fix.id], PauseRule::Ask).unwrap(),
+        DependencyChange::Added(added)
+            if !added.paused && added.task.depends_on == std::collections::BTreeSet::from([fix.id])
+    ));
+}
+
+#[test]
+fn a_done_task_cannot_wait_on_new_prerequisites() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let fix = add_task(&mut storage, &workspace, "Fix");
+    for status in [InProgress, InReview, Done] {
+        storage.set_task_status(a.id, status).unwrap();
+    }
+
+    assert!(matches!(
+        storage.add_dependency(a.id, fix.id),
+        Err(StorageError::PrerequisiteOfDoneTask { task, .. }) if task == a.id
+    ));
+    assert!(
+        storage
+            .get_task(a.id)
+            .unwrap()
+            .unwrap()
+            .depends_on
+            .is_empty()
+    );
+}
+
+#[test]
+fn removing_a_dependency_or_link_that_does_not_exist_is_rejected() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+
+    assert!(matches!(
+        storage.remove_dependency(a.id, b.id),
+        Err(StorageError::DependencyNotFound { task, depends_on }) if task == a.id && depends_on == b.id
+    ));
+    assert!(matches!(
+        storage.remove_related(a.id, b.id),
+        Err(StorageError::RelationNotFound { task, related }) if task == a.id && related == b.id
+    ));
 }
 
 #[test]
@@ -1067,7 +1148,11 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
             started_at: Some(200),
             review_at: Some(300),
             completed_at: Some(400),
+            reopened_at: None,
             paused_at: None,
+            last_review_at: Some(300),
+            active_seconds: 200,
+            pause_count: 0,
         }
     );
 }

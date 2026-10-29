@@ -8,7 +8,7 @@ description: Work on a Toodo task from its description to a pull request into th
 Toodo tracks your task by its completion criteria, the `criteria` of the task: it is
 done once every criterion is met. Toodo checks every kind but `manual` itself about once
 a minute (`pr_merged`, `pr_open_ci_green`, `branch_merged_locally`, `url`, and `command`,
-which runs once every other criterion is met); you check `manual` ones with
+which runs once every other criterion but the merge criterion is met); you check `manual` ones with
 `check_criterion` and evidence. A pull request from the task branch into the base branch
 moves the task to `in_review`. Once every criterion is met, a task whose criteria are all
 automatic is `done` at once; one with a manual criterion awaits completion (`in_review`)
@@ -40,36 +40,29 @@ Deleting tasks happens in the Toodo app only.
 1. Call `current_task` with your absolute working directory. Note the task's `id`,
    `workspaceId`, `branch`, `baseBranch`, and `agentMerge` (whether you merge your pull
    request, see step 4 of "Otherwise: finish with a pull request").
-2. If no task matches, you are not in a Toodo task worktree: tell the user and ask which
-   task you are working on instead of guessing.
+2. If no task matches and you were asked to work on a Toodo task, you are not in its
+   worktree: tell the user and ask for its id instead of guessing, then read it with
+   `get_task`. To plan new work outside a task, pick the workspace with
+   `list_workspaces`. If the same path may exist on several machines, call
+   `current_task` with `machine` (`local` or your SSH host). If the task's
+   `worktreeMissing` is true, call `restore_worktree` with its id and work in the new
+   `worktreePath`.
 3. Read the description and the task's `criteria`: the criteria are your finish line;
    `## Purpose` decides questions they leave open. Tasks created before criteria
    existed keep their old `## Done when` list as manual criteria. If the description is unclear or contradicts the
    code, call `report_blocker` with what you need and ask the user.
-4. Read the project memory: `list_memory` with the task's `workspaceId` and
-   `include_shared: true`. Follow its rules and decisions unless the task says to change
-   them (see "Project memory" below).
-5. Before you plan, look up the history of the subject (see "Finding earlier work"
+4. Before you plan, look up the history of the subject (see "Finding earlier work"
    below): earlier tasks may already have decided an approach, rejected one, or left
    work you build on.
 
-## Project memory
-
-Project memory is what a restarted agent needs to continue from Toodo alone: entries of
-kind `decision` (a choice and why), `rule` (to follow), `note`, or `summary`, kept for
-one workspace (`workspace_id`) or shared by every workspace (no `workspace_id`: the
-user's standing preferences and cross-project rules).
-
-- Read: `list_memory` (current entries; `include_superseded` adds the history),
-  `search_memory` for a subject, `get_memory` for one entry and the entries it replaced.
-- Write when you learn something that stays true after your task: a decision taken, a
-  convention the user stated, how the project is laid out. `add_memory` with one point
-  per entry, a one-line title that states it, the why in the body, and `task_id` of
-  your task.
-- When an entry no longer holds, `supersede_memory` it with the new text instead of
-  adding a contradicting entry; the old one stays as history. `update_memory` only fixes
-  the wording of an entry that still holds.
-- Progress notes record the history of one task; memory is what stays true afterwards.
+If a Toodo tool call fails with HTTP `401`, read the reply body: it says why (no
+`Authorization` header, not `Bearer <token>`, a token this server does not accept, or
+the web sign-in token instead of the MCP token) and names the Toodo server instance.
+Retrying with the same config fails again. In a pane Toodo started for you,
+`TOODO_MCP_URL` and `TOODO_MCP_TOKEN` hold the current URL and token. Otherwise tell the
+user that the Toodo MCP token in your config is stale or wrong and that they can copy the
+config again from Settings > Agent access (checking that it shows the same instance), and
+continue the work that needs no Toodo tool.
 
 ## Finding earlier work
 
@@ -78,7 +71,8 @@ user's standing preferences and cross-project rules).
   appear (as a substring, in any language, short Korean words included); words are
   literal, never operators. Use two or three distinctive words, e.g. a component name
   and a verb, and search again with other words or synonyms before concluding there is
-  nothing. Narrow with `workspace_id` or `status` when there are too many results.
+  nothing. Narrow with `workspace_id` or `status` when there are too many results. A
+  task number alone, e.g. `431` or `#431`, returns that task first, in any workspace.
 - `get_task` returns one task with its whole history: description, status timeline,
   progress and blocker notes, completion note (for a task done as `not_adopted`, the
   conclusion of why it was not adopted), pull request, and commits, plus the tasks it
@@ -98,6 +92,11 @@ user's standing preferences and cross-project rules).
 - Change only this worktree, on the task's branch.
 - Call `add_progress_note` when you take a decision worth remembering (the choice and why)
   or finish a meaningful step.
+- When the work has to stop for a reason other than a prerequisite task (the user asks
+  you to hold, or you wait on something outside Toodo), call `pause_task` with the
+  reason and end your turn. It pauses the task as the app's Pause does and records the
+  reason as a progress note. `resume_task`, with an optional note, continues a paused
+  task once the reason is gone; for a prerequisite task use section 3 instead.
 
 ## 3. A prerequisite is needed: plan it and stop
 
@@ -111,7 +110,8 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
    `add_related` to earlier tasks it builds on that it does not have to wait for.
 3. Tell the user which tasks you created and why this task needs them.
 4. Call `add_dependency` once, with `task_id` = your task and `depends_on` = every
-   prerequisite. This pauses your task.
+   prerequisite. This pauses your task; the reply's `paused` and `message` confirm it.
+   `get_task` and `list_tasks` show `ready` and `blockedBy` for any task.
 5. End your turn. Do not continue the implementation and do not open a pull request; the
    user resumes the task in the Toodo app once its prerequisites are done.
 
@@ -187,6 +187,33 @@ tasks and what they decided, links, and constraints the implementer has to respe
   rnd) and write a short imperative title.
 
 # Criteria
+
+| Kind | Checked by | When | `target` | Needs |
+| --- | --- | --- | --- | --- |
+| `manual` | you (`check_criterion`) or the user | once it holds | none | evidence |
+| `pr_merged` | Toodo | every minute | none | an `origin` remote; the branch pull request into `baseBranch` merged |
+| `branch_merged_locally` | Toodo | every minute | the start commit Toodo finds | no `origin` remote; the task branch merged into `baseBranch` locally |
+| `pr_open_ci_green` | Toodo | every minute | none | an `origin` remote; the branch pull request open with passing checks |
+| `url` | Toodo | every minute | http(s) URL | a GET answering 2xx or 3xx (`GET <url> -> <status>`) |
+| `command` | Toodo | once every criterion but the merge criterion is met | shell command | the task worktree; exit status 0 there |
+
+A task has one merge criterion (`pr_merged` or `branch_merged_locally`), the one its
+repository uses; Toodo rejects the other, a second one, and `pr_open_ci_green` without
+`origin`. A waiting `command` criterion says what it waits for in its evidence. A met
+criterion stays met, but Toodo runs met `url` and `command` criteria again right before
+it completes the task.
+
+Add one criterion with `add_criterion` and delete one with `remove_criterion`; the
+others keep their state and evidence:
+
+```json
+{ "task_id": 12, "text": "Tests pass", "kind": "command", "target": "npm test" }
+{ "criterion_id": 33 }
+```
+
+Uncheck a manual criterion that no longer holds with
+`check_criterion {"criterion_id": 32, "met": false}`; it is pending again without
+evidence.
 
 `update_task` with `criteria` replaces the whole list: a criterion whose `id` is left
 out is deleted with its evidence. Keep one by sending `{"id": N}` alone (add `text`,

@@ -17,8 +17,7 @@ use specta_typescript::{Error, Exporter, FrameworkExporter, Typescript, define};
 
 use crate::commands::events::{self, names};
 use crate::commands::{
-    self, backup, completion, freshness, herdr, issues, machines, mcp, memory, review, tasks,
-    workspaces,
+    self, backup, completion, freshness, herdr, issues, machines, mcp, review, tasks, workspaces,
 };
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -54,6 +53,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         tasks::update_task,
         tasks::pause_task,
         tasks::set_completion_note,
+        tasks::reopen_task,
+        tasks::set_task_outcome,
         tasks::check_criterion,
         tasks::delete_task,
         tasks::add_dependency,
@@ -70,6 +71,7 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         completion::open_pull_request,
         completion::complete_task,
         completion::conclude_task,
+        completion::complete_task_merged_with,
         freshness::branch_freshness,
         completion::list_pull_request_statuses,
         issues::link_issue,
@@ -81,10 +83,6 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         backup::get_backup_settings,
         backup::save_backup_settings,
         backup::list_backups,
-        memory::list_memory,
-        memory::add_memory,
-        memory::update_memory,
-        memory::supersede_memory,
         backup::restore_backup,
     ](types)
 }
@@ -102,11 +100,6 @@ fn collect_events(types: &mut Types) -> Vec<(&'static str, &'static str, DataTyp
             "workspacesChanged",
             names::WORKSPACES_CHANGED,
             events::WorkspacesChanged::definition(types),
-        ),
-        (
-            "memoryChanged",
-            names::MEMORY_CHANGED,
-            events::MemoryChanged::definition(types),
         ),
         (
             "agentStatusesChanged",

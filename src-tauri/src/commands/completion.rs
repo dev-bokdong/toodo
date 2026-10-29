@@ -112,6 +112,34 @@ pub fn conclude_task(
         .into())
 }
 
+/// Completes a task whose work shipped through another task, `merged_with_task`, or a
+/// merged pull request into the base branch, `pull_request_url`; exactly one of the two.
+/// An `in_progress` or `in_review` task, or one done as `not_adopted`, becomes done as
+/// merged (completed when the other task was completed without a pull request), and its
+/// dependents can start. See `complete_merged_with` for the checks.
+#[specta::specta]
+pub fn complete_task_merged_with(
+    storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
+    github: State<'_, GitHubState>,
+    herdr: State<'_, HerdrState>,
+    id: TaskId,
+    merged_with_task: Option<TaskId>,
+    pull_request_url: Option<String>,
+) -> CommandResult<Task> {
+    let pull_request_url = pull_request_url.filter(|url| !url.trim().is_empty());
+    let target = match (merged_with_task, pull_request_url) {
+        (Some(task), None) => MergedWithTarget::Task(task.into()),
+        (None, Some(url)) => MergedWithTarget::PullRequest(url),
+        _ => {
+            return Err(CommandError::invalid_input(
+                "name either the task that shipped the work or the URL of its merged pull request, not both or neither",
+            ));
+        }
+    };
+    Ok((&complete_merged_with(&storage, &git, &github, &herdr, id.into(), target)?).into())
+}
+
 /// What concluding does with a pull request of the task that is still open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenPullRequest {
@@ -618,6 +646,15 @@ fn settle(
                 viewed,
             });
         }
+        let rechecks = recheck_met(git, &task, &workspace, &checks);
+        if !rechecks.is_empty() {
+            let task = lock(storage).record_criterion_rechecks(id, &rechecks)?;
+            return Ok(Settled::Open {
+                task: Box::new(task),
+                changed: true,
+                viewed,
+            });
+        }
         return Ok(Settled::Done(Box::new(finish_task(
             storage,
             git,
@@ -642,6 +679,15 @@ fn settle(
             viewed,
         });
     }
+    let rechecks = recheck_met(git, &task, &workspace, &checks);
+    if !rechecks.is_empty() {
+        let task = lock(storage).record_criterion_rechecks(id, &rechecks)?;
+        return Ok(Settled::Open {
+            task: Box::new(task),
+            changed: true,
+            viewed,
+        });
+    }
     Ok(Settled::Done(Box::new(finish_task(
         storage,
         git,
@@ -654,29 +700,33 @@ fn settle(
 }
 
 /// What the automatic checks of the criteria of `task` that are not met yet find.
-/// `command` criteria run only once every other criterion is met, or with `all`, so a
-/// slow command does not run every minute while the work is still going on.
+/// A `command` criterion runs only once every other criterion but the merge criterion is
+/// met, so it checks the work before the merge without running every minute while the
+/// work is still going on; until then it records what it waits for. One that failed runs
+/// again in the background check only once the merge criterion is met too, unless
+/// `retry_failed`.
 fn check_criteria(
     git: &Git,
     task: &model::Task,
     workspace: &model::Workspace,
     viewed: Option<&ViewedPullRequest>,
     records: &[model::CommitRecord],
-    all: bool,
+    retry_failed: bool,
 ) -> Vec<CriterionCheck> {
-    let others_met = task
-        .criteria
-        .iter()
-        .all(|criterion| criterion.is_met() || criterion.kind == CheckKind::Command);
     let base = &workspace.default_base_branch;
     let location = &workspace.location;
     let failed = |evidence: String| (CriterionState::Failed, Some(evidence), None);
-    task.criteria
+    let mut checks: Vec<CriterionCheck> = task
+        .criteria
         .iter()
-        .filter(|criterion| criterion.kind.is_automatic() && !criterion.is_met())
+        .filter(|criterion| {
+            criterion.kind.is_automatic()
+                && criterion.kind != CheckKind::Command
+                && !criterion.is_met()
+        })
         .filter_map(|criterion| {
             let (state, evidence, target) = match criterion.kind {
-                CheckKind::Manual => return None,
+                CheckKind::Manual | CheckKind::Command => return None,
                 CheckKind::PullRequestMerged => match viewed.map(|viewed| &viewed.pull_request) {
                     None => (CriterionState::Pending, None, None),
                     Some(pull_request) => match pull_request.state {
@@ -738,49 +788,9 @@ fn check_criteria(
                         }
                     }
                 },
-                CheckKind::Url => match &criterion.target {
-                    None => return None,
-                    Some(url) => match git.fetch_url(url) {
-                        Ok(()) => (CriterionState::Met, Some(url.clone()), None),
-                        Err(error) => failed(clip(&error.to_string())),
-                    },
-                },
-                CheckKind::Command => {
-                    let Some(command) = &criterion.target else {
-                        return None;
-                    };
-                    if !all && !others_met && task.worktree_path.is_some() {
-                        return None;
-                    }
-                    let exists = task.worktree_path.as_ref().map_or(Ok(false), |worktree| {
-                        git.worktree_exists(location, worktree)
-                    });
-                    match exists {
-                        Ok(false) => return Some(CriterionCheck {
-                            id: criterion.id,
-                            state: CriterionState::Pending,
-                            evidence: Some("worktree is missing; restore it in the Toodo app or conclude the task".to_owned()),
-                            target: None,
-                        }),
-                        Err(error) => return Some(CriterionCheck {
-                            id: criterion.id,
-                            state: CriterionState::Failed,
-                            evidence: Some(clip(&error.to_string())),
-                            target: None,
-                        }),
-                        Ok(true) => {}
-                    }
-                    let Some(worktree) = &task.worktree_path else {
-                        return None;
-                    };
-                    match git.run_command(location, &worktree.to_string(), command) {
-                        Ok(output) => (
-                            CriterionState::Met,
-                            Some(clip(&format!("`{command}` succeeded\n{}", output.trim()))),
-                            None,
-                        ),
-                        Err(error) => failed(clip(&error.to_string())),
-                    }
+                CheckKind::Url => {
+                    let (state, evidence) = check_url(git, criterion.target.as_deref()?);
+                    (state, evidence, None)
                 }
             };
             Some(CriterionCheck {
@@ -789,6 +799,152 @@ fn check_criteria(
                 evidence,
                 target,
             })
+        })
+        .collect();
+    let met = |criterion: &criteria::Criterion| {
+        criterion.is_met()
+            || checks
+                .iter()
+                .any(|check| check.id == criterion.id && check.state == CriterionState::Met)
+    };
+    let waiting: Vec<String> = task
+        .criteria
+        .iter()
+        .filter(|criterion| {
+            criterion.kind != CheckKind::Command && !is_merge(criterion.kind) && !met(criterion)
+        })
+        .map(|criterion| format!("#{}", criterion.id))
+        .collect();
+    let merged = task
+        .criteria
+        .iter()
+        .filter(|criterion| is_merge(criterion.kind))
+        .all(met);
+    let commands: Vec<CriterionCheck> = task
+        .criteria
+        .iter()
+        .filter(|criterion| criterion.kind == CheckKind::Command && !criterion.is_met())
+        .filter_map(|criterion| {
+            let command = criterion.target.as_deref()?;
+            if !waiting.is_empty() {
+                return Some(CriterionCheck {
+                    id: criterion.id,
+                    state: CriterionState::Pending,
+                    evidence: Some(format!(
+                        "waits for criteria {} to be met; Toodo runs the command then",
+                        waiting.join(", ")
+                    )),
+                    target: None,
+                });
+            }
+            if criterion.state == CriterionState::Failed && !retry_failed && !merged {
+                return None;
+            }
+            Some(check_command(git, task, location, criterion.id, command))
+        })
+        .collect();
+    checks.extend(commands);
+    checks
+}
+
+fn is_merge(kind: CheckKind) -> bool {
+    matches!(
+        kind,
+        CheckKind::PullRequestMerged | CheckKind::BranchMergedLocally
+    )
+}
+
+/// What a GET of `url` finds: met with a 2xx or 3xx status, failed otherwise.
+fn check_url(git: &Git, url: &str) -> (CriterionState, Option<String>) {
+    match git.fetch_url(url) {
+        Ok(status) if (200..400).contains(&status) => {
+            (CriterionState::Met, Some(format!("GET {url} -> {status}")))
+        }
+        Ok(status) => (
+            CriterionState::Failed,
+            Some(format!("GET {url} -> {status}")),
+        ),
+        Err(GitError::Failed { stderr, .. }) => (
+            CriterionState::Failed,
+            Some(clip(&format!("GET {url} failed: {}", stderr.trim()))),
+        ),
+        Err(error) => (
+            CriterionState::Failed,
+            Some(clip(&format!("GET {url} failed: {error}"))),
+        ),
+    }
+}
+
+/// What running `command` in the worktree of `task` finds; pending while the worktree
+/// is missing.
+fn check_command(
+    git: &Git,
+    task: &model::Task,
+    location: &model::WorkspaceLocation,
+    id: criteria::CriterionId,
+    command: &str,
+) -> CriterionCheck {
+    let check = |state, evidence: String| CriterionCheck {
+        id,
+        state,
+        evidence: Some(evidence),
+        target: None,
+    };
+    let exists = task.worktree_path.as_ref().map_or(Ok(false), |worktree| {
+        git.worktree_exists(location, worktree)
+    });
+    let worktree = match (exists, &task.worktree_path) {
+        (Ok(true), Some(worktree)) => worktree,
+        (Err(error), _) => return check(CriterionState::Failed, clip(&error.to_string())),
+        _ => {
+            return check(
+                CriterionState::Pending,
+                "worktree is missing; restore it in the Toodo app or conclude the task".to_owned(),
+            );
+        }
+    };
+    match git.run_command(location, &worktree.to_string(), command) {
+        Ok(output) => check(
+            CriterionState::Met,
+            clip(&format!("`{command}` succeeded\n{}", output.trim())),
+        ),
+        Err(error) => check(CriterionState::Failed, clip(&error.to_string())),
+    }
+}
+
+/// Checks the met `url` and `command` criteria of `task` that this pass did not
+/// check (`checked`) again right before it is completed, so a later change that broke
+/// one keeps the task open. Returns the ones that fail now; a command whose worktree is
+/// missing cannot run and stays met.
+fn recheck_met(
+    git: &Git,
+    task: &model::Task,
+    workspace: &model::Workspace,
+    checked: &[CriterionCheck],
+) -> Vec<CriterionCheck> {
+    task.criteria
+        .iter()
+        .filter(|criterion| {
+            criterion.is_met() && !checked.iter().any(|check| check.id == criterion.id)
+        })
+        .filter_map(|criterion| {
+            let target = criterion.target.as_deref()?;
+            let check = match criterion.kind {
+                CheckKind::Url => {
+                    let (state, evidence) = check_url(git, target);
+                    CriterionCheck {
+                        id: criterion.id,
+                        state,
+                        evidence,
+                        target: None,
+                    }
+                }
+                CheckKind::Command => {
+                    check_command(git, task, &workspace.location, criterion.id, target)
+                }
+                _ => return None,
+            };
+            (check.state == CriterionState::Failed).then_some(check)
         })
         .collect()
 }
@@ -1004,8 +1160,11 @@ pub(crate) fn complete_merged_with(
         TaskStatus::InProgress | TaskStatus::InReview => {}
         TaskStatus::Done if not_adopted => {}
         TaskStatus::Done => {
+            let resolution = task
+                .resolution
+                .map_or("done", model::TaskResolution::as_str);
             return Err(CommandError::rejected(format!(
-                "task {id} is already done as merged; there is nothing left to complete"
+                "task {id} is already done as {resolution}; there is nothing left to complete; to correct how it ended, change its outcome in the Toodo app"
             )));
         }
         status => {
@@ -1014,7 +1173,7 @@ pub(crate) fn complete_merged_with(
             )));
         }
     }
-    let (merged_with, merged_at) = match target {
+    let (merged_with, resolution, merged_at) = match target {
         MergedWithTarget::Task(other) => {
             if other == id {
                 return Err(CommandError::invalid_input(format!(
@@ -1063,14 +1222,24 @@ pub(crate) fn complete_merged_with(
                 .map(|other| other.id);
             let merged = model::MergedWith {
                 task_id,
-                pull_request_url: pull_request.url,
+                pull_request_url: Some(pull_request.url),
             };
-            (merged, pull_request.merged_at)
+            (
+                merged,
+                model::TaskResolution::Merged,
+                pull_request.merged_at,
+            )
         }
     };
     if not_adopted {
         // Concluding already recorded its commits and closed its workspace.
-        return Ok(lock(storage).complete_task_merged_with(id, &merged_with, merged_at, &[])?);
+        return Ok(lock(storage).complete_task_merged_with(
+            id,
+            &merged_with,
+            resolution,
+            merged_at,
+            &[],
+        )?);
     }
     // An empty branch log keeps the commits recorded before.
     let records = branch_commits(git, &task, &workspace)?;
@@ -1087,7 +1256,8 @@ pub(crate) fn complete_merged_with(
             PullRequestState::Open => {
                 return Err(CommandError::rejected(format!(
                     "pull request {} of the task's own branch is still open; close it first, since the task ships through {} instead",
-                    pull_request.url, merged_with.pull_request_url
+                    pull_request.url,
+                    shipped_through(&merged_with)
                 )));
             }
             PullRequestState::Closed => {}
@@ -1101,37 +1271,62 @@ pub(crate) fn complete_merged_with(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(lock(storage).complete_task_merged_with(id, &merged_with, merged_at, &records)?)
+    Ok(lock(storage).complete_task_merged_with(
+        id,
+        &merged_with,
+        resolution,
+        merged_at,
+        &records,
+    )?)
 }
 
-/// The merged pull request that shipped the work of `other` and its merge time: its own,
-/// or the one it was merged with in turn.
-fn shipped_by(other: &model::Task) -> CommandResult<(model::MergedWith, Option<i64>)> {
+/// What shipped a task's work, for messages: the pull request, or the task without one.
+fn shipped_through(merged_with: &model::MergedWith) -> String {
+    match (&merged_with.pull_request_url, merged_with.task_id) {
+        (Some(url), _) => url.clone(),
+        (None, Some(task)) => format!("task {task}"),
+        (None, None) => "another task".to_owned(),
+    }
+}
+
+/// What shipped the work of `other`, the resolution a task shipped through it gets, and
+/// the merge time: its own pull request, the one it was merged with in turn, or, for a
+/// task done without a recorded pull request, the task itself.
+fn shipped_by(
+    other: &model::Task,
+) -> CommandResult<(model::MergedWith, model::TaskResolution, Option<i64>)> {
     let id = other.id;
+    let itself = model::MergedWith {
+        task_id: Some(id),
+        pull_request_url: None,
+    };
     match (other.status, other.resolution) {
         (TaskStatus::Done, Some(model::TaskResolution::Merged)) => {
             let merged = match (&other.merged_with, &other.pull_request_url) {
                 (Some(merged), _) => merged.clone(),
                 (None, Some(url)) => model::MergedWith {
                     task_id: Some(id),
-                    pull_request_url: url.clone(),
+                    pull_request_url: Some(url.clone()),
                 },
-                (None, None) => {
-                    return Err(CommandError::rejected(format!(
-                        "task {id} is done without a recorded pull request; pass the URL of the pull request that shipped the work instead"
-                    )));
-                }
+                (None, None) => itself,
             };
-            Ok((merged, other.pull_request_merged_at))
+            Ok((
+                merged,
+                model::TaskResolution::Merged,
+                other.pull_request_merged_at,
+            ))
+        }
+        (TaskStatus::Done, Some(model::TaskResolution::Completed)) => {
+            Ok((itself, model::TaskResolution::Completed, None))
         }
         (TaskStatus::Done, _) => Err(CommandError::rejected(format!(
-            "task {id} was not adopted, so its work did not ship"
+            "task {id} was not adopted, so its work did not ship; pass the task or pull request that shipped the work instead"
         ))),
         (TaskStatus::InReview, _) => Err(CommandError::rejected(format!(
             "task {id} is in_review: its pull request is not merged, or its merge is not recorded yet (Toodo completes merged tasks within a minute); try again once task {id} is done, or pass the pull request URL"
         ))),
         (status, _) => Err(CommandError::rejected(format!(
-            "task {id} is {status}; only a task done as merged has shipped its pull request"
+            "task {id} is {status}; only a task done as merged or completed has shipped its work; complete it first, or pass the pull request URL"
         ))),
     }
 }
@@ -1648,6 +1843,30 @@ mod tests {
         assert_eq!(task.branch, fixture.task.branch);
         assert_eq!(task.status, TaskStatus::InProgress);
         assert_eq!(*recorder.0.lock().unwrap(), [task.workspace_id]);
+    }
+
+    #[test]
+    fn background_checks_forget_the_missing_worktree_of_a_done_task() {
+        let (fixture, _dir) = deleted_worktree_fixture(Vec::new());
+        lock(&fixture.storage)
+            .complete_task_without_pull_request(fixture.task.id, "Shipped elsewhere", &[])
+            .unwrap();
+        let git = Git::new(Box::new(runner(vec![Ok(String::new())])));
+        let github = GitHub::new(Box::new(runner(Vec::new())));
+
+        check_pull_requests(
+            &fixture.storage,
+            &git,
+            &github,
+            &no_herdr(),
+            &Recorder::default(),
+            &mut HashMap::new(),
+            &PullRequestStatusState::default(),
+        );
+
+        let task = stored(&fixture, &fixture.task);
+        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(task.worktree_path, None);
     }
 
     fn runner(results: Vec<Result<String, GitError>>) -> Arc<FakeRunner> {
@@ -2946,8 +3165,6 @@ mod tests {
         }
 
         fn workspaces_changed(&self) {}
-
-        fn memory_changed(&self) {}
 
         fn agent_statuses_changed(&self, _: &[types::TaskAgentStatus]) {}
 

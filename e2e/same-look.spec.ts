@@ -1,12 +1,8 @@
 import { expect, test } from "./fixtures";
 import { createTask } from "./server";
 
-test("edits tasks and memory entries through the same labelled pencil action", async ({ app, server }) => {
+test("edits a task through a labelled pencil action", async ({ app, server }) => {
   const task = await createTask(server, { workspaceId: 1, title: "Tidy the settings page" });
-  await server.rpc("add_memory", {
-    workspaceId: null,
-    content: { kind: "rule", title: "Write commits in English", body: "", taskId: null },
-  });
   await app.reload();
 
   await app.getByRole("button", { name: /^alpha/ }).click();
@@ -15,11 +11,6 @@ test("edits tasks and memory entries through the same labelled pencil action", a
   await expect(taskEdit).toHaveText("Edit");
   await expect(taskEdit.locator("svg.lucide-pencil")).toHaveCount(1);
   await app.keyboard.press("Escape");
-
-  await app.getByRole("button", { name: "Shared memory" }).click();
-  const memoryEdit = app.getByRole("button", { name: /^Edit memory entry #/ });
-  await expect(memoryEdit).toHaveText("Edit");
-  await expect(memoryEdit.locator("svg.lucide-pencil")).toHaveCount(1);
 });
 
 test("gives the backup actions one style and names the restore of a file", async ({ app }) => {

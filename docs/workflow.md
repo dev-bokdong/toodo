@@ -24,28 +24,46 @@ planned -----------------> in_progress ---------> in_review ---------> done (mer
 | `done` | Finished. Its `resolution` says how: `merged` (its completion criteria are met, e.g. its pull request is merged; dependents can start from the updated base branch) or `not_adopted` (concluded without merging, see step 7b; dependents stay blocked). |
 
 Whether a `planned` task can be started is not a state: it can be started once every
-task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**), and its dependencies can change while it
-is `planned` or `in_progress`. The UI names a `planned` task that was worked on before "Paused" and
-offers "Resume" instead of "Start".
+task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**). Its
+dependencies can change while it is `planned` or `in_progress`, and through MCP also while
+it is `in_review`; a `done` task cannot get new prerequisites (plan a follow-up task that
+depends on them instead). Removing a dependency that does not exist, or a related link
+that does not exist, is rejected. The UI names a `planned` task that was worked on before
+"Paused" and offers "Resume" instead of "Start". MCP's `list_tasks` and `get_task` give
+each task `ready` and `blockedBy`, the tasks it depends on that are not done yet or were
+not adopted.
 
 Work found while a task is in progress that the task needs before it can finish, such as
 fixes found while verifying it, becomes a **prerequisite** of that task, never a
 dependent: the task cannot finish before the fixes, so the fixes must not wait for it.
 Adding a prerequisite that is not done to an `in_progress` task, in the app or by an agent
-through MCP, pauses the task in the same step; the worktree and branch stay. In the app,
-Toodo asks for confirmation first ("Pause and add"), whatever the state of the task's
-agent, and then closes its herdr workspace, since that stops the agent. An agent's
-`add_dependency` cannot wait for that answer, so it leaves the workspace open: the paused
+through MCP, pauses the task in the same step; the worktree and branch stay, and a
+blocker note on the task names the prerequisites it waits on. In the app, Toodo asks for
+confirmation first ("Pause and add"), whatever the state of the task's agent, and then
+closes its herdr workspace, since that stops the agent. The server decides whether the
+new prerequisite pauses the task: the app adds it without confirmation, and the server
+adds nothing and asks for the confirmation when it would pause the task. An `in_review`
+task is not paused; the agent's reply says so, and `pause_task` pauses it if it must wait.
+An agent's `add_dependency` cannot wait for that answer, so it leaves the workspace open,
+and its reply says whether the task was paused and what to do next: the paused
 task then asks whether to close it ("Close workspace" or "Keep open", after which a small
 "Close workspace" button stays), and a notification tells the user when the app
 is in the background. The paused task shows "Waiting on #x, #y" and "Resume" stays disabled
-until those prerequisites are done; resuming opens the kept worktree in herdr again. If
-herdr fails to close the workspace, the task stays paused and the error says so.
+until those prerequisites are done, or their dependencies are removed; it is then shown as
+ready. Resuming opens the kept worktree in herdr again. If herdr fails to close the
+workspace, the task stays paused and the error says so.
+
+A blocker reported by an agent (`report_blocker`), or the one a pause by a new
+prerequisite records, shows as a "Blocker" chip on the task and puts the task under
+"Needs attention" until a later progress note, the task's completion, or resuming it; the
+one a pause recorded also ends once its prerequisites no longer block the task.
 
 Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
 keeps its branch, worktree, herdr workspace, commit records, and pull request, so
-resuming it continues the same work (see step 3). `done` is a final state. A task that
-is abandoned is deleted (step 8); a paused one stays in the reports.
+resuming it continues the same work (see step 3). Agents do the same through MCP:
+`pause_task` pauses a task with a required reason, recorded as a progress note, and
+`resume_task` resumes a paused task as "Resume" does, with an optional note. `done` is a
+final state. A task that is abandoned is deleted (step 8); a paused one stays in the reports.
 
 Agents can start, complete, and conclude tasks through Toodo's MCP server too
 (`start_task`, `complete_task`, `conclude_task`), with the same steps and checks as the
@@ -53,7 +71,26 @@ app (steps 3, 7, and 7b) and the same status history, so a task can go from requ
 merge without the user. Two differences: concluding through MCP rejects a task whose
 branch has a pull request still open, recorded or not, instead of closing it, and agents are told never to start,
 complete, or conclude their own task, whose pull request's merge completes it. Deleting
-(step 8) stays in the app.
+(step 8) stays in the app. `conclude_task` replies with the dependents the conclusion
+leaves blocked and how to unblock each.
+
+What the app and MCP can each do with a task:
+
+| Action | App | MCP |
+| --- | --- | --- |
+| Create and edit tasks | Yes | Yes (`create_task`, `update_task`) |
+| Add and remove dependencies and related links | Yes, while `planned` or `in_progress` | Yes, also while `in_review` |
+| See whether a task is ready and what blocks it | Status chips and "Waiting on" | `ready` and `blockedBy` |
+| Start, resume, and pause | Yes | Yes (`start_task`, `resume_task`, `pause_task`) |
+| Check manual criteria | Yes | Yes (`check_criterion`) |
+| Complete | Yes | Yes (`complete_task`) |
+| Complete through another task's pull request | Yes | Yes (`complete_task` with `merged_with`) |
+| Reopen a done task or change its outcome | Yes (step 7d) | No |
+| Conclude without merging | Yes, closing an open pull request | Yes, rejected while a pull request is open |
+| Record progress and blockers | Notes are shown | Yes (`add_progress_note`, `report_blocker`) |
+| Close a paused task's herdr workspace | Yes | No |
+| Open a pull request, link or create an issue | Yes | No (agents use `gh`) |
+| Delete a task | Yes | No |
 
 Every state change is recorded with its time in the task's status history, which feeds
 the timeline view and year-end reports (see
@@ -73,36 +110,46 @@ it when (`user`, `agent`, or `toodo`):
 | `pr_merged` | Toodo | the task's pull request is merged into the base branch |
 | `pr_open_ci_green` | Toodo | the task's pull request is open and all its checks passed (or it is merged) |
 | `branch_merged_locally` | Toodo | the task branch has commits since it started and the local base branch contains it |
-| `url` | Toodo | `curl --fail --location` of its target, an http(s) URL, succeeds |
+| `url` | Toodo | a GET of its target, an http(s) URL, following redirects, answers 2xx or 3xx (evidence `GET <url> -> <status>`) |
 | `command` | Toodo | its target, a shell command, exits with status 0 in the task worktree (`sh`, over `ssh` for SSH workspaces) |
 
 Criteria are set when the task is created, in the app or through MCP (`create_task`), and
-can be edited later (`update_task`) until the task is done: a kept criterion keeps its
-state unless its kind or target changes. Unless its author opts out, a new task gets the
-merge criterion first: `pr_merged` when the repository has an `origin` remote,
-`branch_merged_locally` otherwise. `branch_merged_locally` keeps the commit the branch
-started from (read when Toodo creates the branch, or the fork point once the branch is
+can be edited later (`update_task`, or one at a time through MCP with `add_criterion` and
+`remove_criterion`) until the task is done: a kept criterion keeps its state unless its
+kind or target changes. Unless its author opts out, a new task gets the merge criterion
+first: `pr_merged` when the repository has an `origin` remote, `branch_merged_locally`
+otherwise; "Done when merged" in the edit form puts it back on a task without one. A task
+has at most one merge criterion, and criteria its repository could never meet are
+rejected when they are added or their kind changes: `pr_merged` and `pr_open_ci_green`
+without an `origin` remote, `branch_merged_locally` with one. `branch_merged_locally`
+keeps the commit the branch started from (read when Toodo creates the branch, or the fork point once the branch is
 ahead of its base), so a branch nobody committed to does not count as merged.
 
 Toodo checks the automatic criteria of every `in_progress` and `in_review` task in the
 background check (step 7), once a minute, and when a task is completed. A met automatic
-criterion stays met. A `command` criterion runs only once every other criterion is met, or
-when the task is completed, so a slow command does not run every minute while the work
-goes on. A failed check marks its criterion `failed` with the reason as evidence and is
-retried; a pull request that cannot be read changes nothing, as before.
+criterion stays met, except that met `url` and `command` criteria run once more right
+before the task is completed, and one that fails then keeps it open. A `command`
+criterion runs only once every other criterion but the merge criterion is met, so it
+checks the work before the merge without running every minute while the work goes on;
+until then its evidence names the criteria it waits for. A failed check marks its
+criterion `failed` with the reason as evidence and is retried, a failed command in the
+background check only once the merge criterion is met too or when the task is completed;
+a pull request that cannot be read changes nothing, as before.
 
 The transition rule:
 
 - Every criterion met and all of them automatic: the task is `done` right away (step 7).
 - Every criterion met and one of them manual: an `in_progress` task moves to
   `in_review` and awaits completion until someone confirms it ("Confirm completion" in
-  the app, or `complete_task`). Unchecking a criterion afterwards keeps it there;
-  confirming needs every criterion met.
+  the app, or `complete_task`). Unchecking a criterion afterwards (`check_criterion`
+  with `met: false`) makes it pending without evidence or checker and keeps the task
+  there; confirming needs every criterion met.
 - A task without criteria is completed only by confirming it.
 
 Completing a task ("Complete"/"Confirm completion", `complete_task`) re-checks its
 automatic criteria first and is rejected with the criteria that are not met. Done tasks
-keep their criteria as a record; they cannot change.
+keep their criteria as a record; they cannot change. A done task completed by mistake is
+reopened in the app (step 7d).
 
 Work shipped without a pull request can be completed through MCP with
 `complete_task {"id": 1, "without_pull_request": true, "note": "Deployed the configuration directly"}`.
@@ -400,11 +447,13 @@ report how many were not adopted, with their conclusions.
 One pull request sometimes ships the work of several tasks, e.g. an agent that fixed a
 batch of small tasks on one branch. Only the task whose branch it is completes with its
 merge (step 7); the others did ship, so concluding them as `not_adopted` would be wrong.
-Agents complete each extra task through MCP with `complete_task` and `merged_with`: the
-ID of the task that owns the pull request, which must be `done` as merged, or the URL
-of the pull request, which must be merged into the workspace base branch (read with
-`gh pr view`). A task done that way in turn passes on the pull request it shipped with.
-Toodo:
+Agents complete each extra task through MCP with `complete_task` and `merged_with`; the
+user does it in the app with "Complete as shipped by...", offered in the Conclude form
+and on a task done as not adopted. The work is named by the ID of the task that shipped
+it, which must be `done` as merged or completed, or by the URL of the pull request, which
+must be merged into the workspace base branch (read with `gh pr view`). A task done that
+way in turn passes on the pull request it shipped with; a task done without a recorded
+pull request passes on itself. Toodo:
 
 1. Accepts an `in_progress` or `in_review` task, or one already `done` as
    `not_adopted`, which is how such tasks were closed before; it rejects the task itself
@@ -413,13 +462,31 @@ Toodo:
    requests of its branch as in step 7b: a merged one rejects it (it completes with its
    own merge), and so does an open one, which the user closes first. It then closes the
    task's herdr workspace.
-3. Moves the task to `done` with the resolution `merged`, records that pull request and
-   its task (`mergedWith`) and the merge time, and clears `herdrWorkspaceId`. A
-   `not_adopted` task keeps its status history and conclusion and only changes its
-   resolution.
+3. Moves the task to `done` with the resolution `merged` (or `completed` when the other
+   task was completed without a pull request), records that pull request and its task
+   (`mergedWith`, without a pull request URL for a task that has none) and the merge
+   time, and clears `herdrWorkspaceId`. A `not_adopted` task keeps its status history
+   and conclusion and only changes its resolution.
 
 Dependents are released as after any merge, reviews count the task as merged, and the
-task list shows which pull request shipped it ("Shipped with").
+task list shows which pull request or task shipped it ("Shipped with").
+
+### 7d. Reopen a done task or correct its outcome
+
+A task completed or concluded by mistake can be fixed in the app; MCP leaves done tasks
+alone (`update_task` rejects them and points to `add_progress_note`).
+
+- "Reopen" (`reopen_task`) takes a required reason. The task moves back to `planned`,
+  paused if it was started, so Resume continues on its branch; its resolution,
+  completion note, and `mergedWith` are cleared, and a progress note keeps the reason
+  with the earlier outcome. The status history records the move, and the timeline shows
+  it as Reopened; Completed shows again once the task is done again. Reopening is
+  rejected while a task that depends on it has started, since that work built on the
+  outcome.
+- "Change outcome" (`set_task_outcome`) keeps the task done and replaces its resolution
+  (merged, completed, or not adopted) and its completion note, which is required; a
+  progress note keeps the earlier outcome and note. Merged needs a recorded merge, its
+  own or the one it shipped with. Not adopted keeps dependents waiting again.
 
 ### 8. Delete the task and its worktree
 

@@ -619,6 +619,121 @@ pub(super) const MIGRATIONS: &[&str] = &[
             SELECT * FROM task_search_source WHERE id = OLD.task_id;
     END;
     ",
+    // Version 25: a task can ship through another task that has no recorded pull request,
+    // e.g. one completed without one, so a task ID without a pull request URL is allowed
+    // for tasks done as merged or completed. Rebuilt as version 24 was.
+    r"
+    DROP TRIGGER task_search_task_inserted;
+    DROP TRIGGER task_search_task_updated;
+    DROP TRIGGER task_search_task_deleted;
+    DROP TRIGGER task_search_note_inserted;
+    DROP TRIGGER task_search_note_deleted;
+    DROP TRIGGER task_search_pull_request_inserted;
+    DROP TRIGGER task_search_pull_request_updated;
+    DROP TRIGGER task_search_pull_request_deleted;
+    DROP VIEW task_search_source;
+    CREATE TABLE tasks_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+        type TEXT NOT NULL
+            CHECK (type IN ('feat', 'fix', 'modify', 'refactor', 'docs', 'test', 'chore', 'rnd')),
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('planned', 'in_progress', 'in_review', 'done')),
+        resolution TEXT CHECK (resolution IN ('merged', 'completed', 'not_adopted')),
+        branch TEXT,
+        worktree_path TEXT,
+        herdr_workspace_id TEXT,
+        pull_request_url TEXT,
+        pull_request_merged_at INTEGER,
+        completion_note TEXT,
+        issue_number INTEGER CHECK (issue_number > 0),
+        issue_url TEXT CHECK ((issue_url IS NULL) = (issue_number IS NULL)),
+        due_date TEXT CHECK (date(due_date) IS due_date),
+        estimate_unit TEXT CHECK (estimate_unit IN ('hours', 'days', 'weeks', 'months')),
+        estimate_amount REAL
+            CHECK ((estimate_amount IS NULL) = (estimate_unit IS NULL))
+            CHECK (estimate_amount > 0),
+        merged_with_pull_request_url TEXT
+            CHECK (merged_with_pull_request_url IS NULL OR resolution = 'merged'),
+        merged_with_task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL
+            CHECK (merged_with_task_id IS NULL OR resolution IN ('merged', 'completed')),
+        CHECK ((status = 'done') = (resolution IS NOT NULL))
+    );
+    INSERT INTO tasks_new (id, workspace_id, type, title, description, status, resolution,
+        branch, worktree_path, herdr_workspace_id, pull_request_url, pull_request_merged_at,
+        completion_note, issue_number, issue_url, due_date, estimate_unit, estimate_amount,
+        merged_with_pull_request_url, merged_with_task_id)
+    SELECT id, workspace_id, type, title, description, status, resolution,
+        branch, worktree_path, herdr_workspace_id, pull_request_url, pull_request_merged_at,
+        completion_note, issue_number, issue_url, due_date, estimate_unit, estimate_amount,
+        merged_with_pull_request_url, merged_with_task_id
+    FROM tasks;
+    DELETE FROM sqlite_sequence WHERE name = 'tasks_new';
+    INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'tasks_new', seq FROM sqlite_sequence WHERE name = 'tasks';
+    DROP TABLE tasks;
+    ALTER TABLE tasks_new RENAME TO tasks;
+    CREATE INDEX tasks_workspace_id ON tasks (workspace_id);
+    CREATE VIEW task_search_source (id, title, description, notes, branch, pull_request) AS
+    SELECT t.id, t.title, t.description,
+        trim(coalesce(t.completion_note, '') || char(10) || coalesce(
+            (SELECT group_concat(n.body, char(10)) FROM task_notes n WHERE n.task_id = t.id),
+            ''), char(10)),
+        coalesce(t.branch, ''),
+        trim(coalesce((SELECT s.title FROM pull_request_snapshots s WHERE s.task_id = t.id), '')
+            || ' ' || coalesce(t.pull_request_url, ''))
+    FROM tasks t;
+    CREATE TRIGGER task_search_task_inserted AFTER INSERT ON tasks BEGIN
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER task_search_task_updated
+        AFTER UPDATE OF title, description, completion_note, branch, pull_request_url ON tasks
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER task_search_task_deleted AFTER DELETE ON tasks BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.id;
+    END;
+    CREATE TRIGGER task_search_note_inserted AFTER INSERT ON task_notes BEGIN
+        DELETE FROM task_search WHERE rowid = NEW.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.task_id;
+    END;
+    CREATE TRIGGER task_search_note_deleted AFTER DELETE ON task_notes BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_inserted AFTER INSERT ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = NEW.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_updated AFTER UPDATE ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_deleted AFTER DELETE ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    ",
+    // Version 26: project memory is gone. Its entries, shared and of each workspace, are
+    // dropped with their indexes; nothing else references them.
+    r"
+    DROP INDEX IF EXISTS memory_entries_workspace_id;
+    DROP INDEX IF EXISTS memory_entries_superseded_by;
+    DROP TABLE IF EXISTS memory_entries;
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1514,7 +1629,8 @@ mod tests {
             // Work that was not adopted did not ship with a pull request.
             "UPDATE tasks SET merged_with_pull_request_url = 'https://github.com/acme/toodo/pull/1'
              WHERE id = 2",
-            "UPDATE tasks SET resolution = 'merged', merged_with_task_id = 1 WHERE id = 2",
+            // A task without a pull request URL is allowed since version 25.
+            "UPDATE tasks SET resolution = 'not_adopted', merged_with_task_id = 1 WHERE id = 2",
             "UPDATE tasks SET resolution = 'merged', merged_with_pull_request_url = 'x',
                 merged_with_task_id = 9 WHERE id = 2",
         ] {
@@ -1968,5 +2084,99 @@ mod tests {
         assert!(add("user", Some("matrix"), None).is_err());
         assert!(add("user", None, Some("m3")).is_err());
         add("user", None, None).unwrap();
+    }
+
+    #[test]
+    fn version_25_lets_a_task_ship_through_another_task_without_a_pull_request_url() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..24] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 24).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', '/repo', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status, resolution, pull_request_url)
+                VALUES (1, 'feat', 'Shipped', 'done', 'merged', 'https://example.com/pull/1');
+             INSERT INTO tasks (workspace_id, type, title, status, resolution,
+                 merged_with_pull_request_url, merged_with_task_id)
+                VALUES (1, 'fix', 'Included', 'done', 'merged', 'https://example.com/pull/1', 1);
+             INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'rnd', 'Next', 'planned');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let kept: (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT merged_with_pull_request_url, merged_with_task_id FROM tasks WHERE id = 2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (Some("https://example.com/pull/1".into()), Some(1)));
+        let set = |sql: &str| conn.execute(sql, []);
+        set("UPDATE tasks SET status = 'done', resolution = 'completed', merged_with_task_id = 1 WHERE id = 3")
+            .unwrap();
+        set("UPDATE tasks SET resolution = 'merged' WHERE id = 3").unwrap();
+        assert!(set("UPDATE tasks SET resolution = 'not_adopted' WHERE id = 3").is_err());
+        assert!(
+            set("UPDATE tasks SET resolution = 'completed', merged_with_pull_request_url = 'https://example.com/pull/1' WHERE id = 3")
+                .is_err()
+        );
+        set("UPDATE tasks SET title = 'Renamed' WHERE id = 3").unwrap();
+        let found: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM task_search WHERE task_search MATCH 'Renamed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1);
+    }
+
+    #[test]
+    fn version_26_drops_project_memory_and_keeps_workspaces_and_tasks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..25] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 25).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', '/repo', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'feat', 'Plan', 'planned');
+             INSERT INTO memory_entries (workspace_id, kind, title, task_id, created_at, updated_at)
+                VALUES (NULL, 'rule', 'Reply in English', NULL, 1, 1);
+             INSERT INTO memory_entries (workspace_id, kind, title, task_id, created_at, updated_at)
+                VALUES (1, 'decision', 'Use SQLite in WAL mode', 1, 2, 2);
+             INSERT INTO memory_entries
+                 (workspace_id, kind, title, task_id, created_at, updated_at, superseded_by)
+                VALUES (1, 'decision', 'Use SQLite', 1, 1, 2, 2);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let memory: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'memory_entries%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(memory, 0);
+        let kept: (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM workspaces), (SELECT count(*) FROM tasks)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (1, 1));
     }
 }

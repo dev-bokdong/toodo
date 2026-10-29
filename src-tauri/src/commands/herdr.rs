@@ -110,7 +110,7 @@ pub(crate) fn start(
             .ok_or(StorageError::TaskNotFound(id))?;
         if task.status == TaskStatus::InProgress {
             return Err(CommandError::rejected(format!(
-                "task {id} is already in progress; keep working in its worktree, or restore its worktree in the Toodo app if the directory is gone"
+                "task {id} is already in progress; keep working in its worktree, or restore its worktree in the Toodo app (or with the restore_worktree tool) if the directory is gone"
             )));
         }
         task.status
@@ -162,7 +162,16 @@ pub(crate) fn start(
         }
     }
     let source = if resumed {
-        git.branch_source(&workspace.location, &checkout.branch)?
+        let source = git.branch_source(&workspace.location, &checkout.branch)?;
+        if source.is_none() {
+            // Starting over from the base would hide that the earlier commits are gone.
+            return Err(CommandError::rejected(format!(
+                "branch {branch} of task {id} no longer exists in the repository or on origin, so resuming would start the task over from {base} without its earlier commits; push or recreate the branch and resume again (to start over on purpose: `git branch {branch} {base}` in the repository), or delete the task in the Toodo app",
+                branch = checkout.branch,
+                base = workspace.default_base_branch,
+            )));
+        }
+        source
     } else {
         None
     };
@@ -217,7 +226,8 @@ pub(crate) fn start(
                 // by the next attempt.
                 let _ = git.delete_branch(&workspace.location, &checkout.branch);
             }
-        })?;
+        })
+        .map_err(|error| worktree_error(error, id, &path))?;
     let mut storage = lock(storage);
     let mut started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
     if !start_checks.is_empty() {
@@ -233,7 +243,22 @@ pub(crate) fn start(
     Ok(storage.add_task_note(id, model::NoteKind::Progress, &note)?)
 }
 
-fn restore(
+/// Names the next step when git refused to create a task's worktree because a directory
+/// is already at its path; other herdr failures pass through.
+fn worktree_error(error: HerdrError, id: model::TaskId, path: &str) -> CommandError {
+    match &error {
+        HerdrError::Failed { message, .. }
+            if message.contains("' already exists") && !message.contains("branch named") =>
+        {
+            CommandError::rejected(format!(
+                "a directory already exists at {path}, where the worktree of task {id} goes; move or remove that directory (or rename the task, which moves the path) and try again"
+            ))
+        }
+        _ => error.into(),
+    }
+}
+
+pub(crate) fn restore(
     storage: &StorageState,
     git: &Git,
     herdr: &Herdr,
@@ -295,15 +320,17 @@ fn restore(
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
     let path = checkout.path.to_string();
-    let herdr_workspace_id = herdr.create_worktree(
-        &workspace.location.machine(),
-        &NewWorktree {
-            repository,
-            path: &path,
-            branch: &checkout.branch,
-            base: &base,
-        },
-    )?;
+    let herdr_workspace_id = herdr
+        .create_worktree(
+            &workspace.location.machine(),
+            &NewWorktree {
+                repository,
+                path: &path,
+                branch: &checkout.branch,
+                base: &base,
+            },
+        )
+        .map_err(|error| worktree_error(error, id, &path))?;
     Ok(lock(storage).restore_task_worktree(id, &checkout.path, &herdr_workspace_id)?)
 }
 
@@ -1280,6 +1307,55 @@ mod tests {
             ["rev-parse --verify --quiet refs/heads/feat/add-login-1"]
         );
         assert_eq!(herdr_base(&runner), "feat/add-login-1");
+    }
+
+    #[test]
+    fn resuming_a_task_whose_branch_is_gone_everywhere_is_rejected() {
+        let (fixture, _, _) = paused_task(Vec::new());
+        lock(&fixture.storage)
+            .clear_task_worktree(fixture.task.id)
+            .unwrap();
+        let git = Git::new(Box::new(Arc::new(FakeRunner::new(vec![
+            Err(failed()),
+            Err(failed()),
+        ]))));
+        let (herdr, runner) = herdr(Vec::new());
+
+        let error = start(&fixture.storage, &git, &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("git branch feat/add-login-1"),
+            "{}",
+            error.message
+        );
+        assert!(invocations(&runner).is_empty());
+        let task = lock(&fixture.storage)
+            .get_task(fixture.task.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Planned);
+    }
+
+    #[test]
+    fn a_directory_in_the_way_of_a_worktree_names_the_next_step() {
+        let fixture = lost_worktree();
+        let git = Git::new(Box::new(Arc::new(FakeRunner::new(vec![Ok(
+            "abc\n".to_owned()
+        )]))));
+        let (herdr, _) = herdr(vec![Err(GitError::Failed {
+            command: "herdr worktree create".to_owned(),
+            stderr: "fatal: '/wt/feat-add-login-1' already exists".to_owned(),
+        })]);
+
+        let error = restore(&fixture.storage, &git, &herdr, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("move or remove that directory"),
+            "{}",
+            error.message
+        );
     }
 
     /// Runs real git with the placeholder workspace path replaced by a real directory, so a

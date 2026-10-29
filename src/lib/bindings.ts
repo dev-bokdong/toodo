@@ -76,6 +76,11 @@ export const commands = {
 	 *  check over `ssh`, so this runs off the main thread.
 	 */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(invoke("create_task", { task })),
+	/**
+	 *  The user edits the criteria list row by row in the app, so removing the merge
+	 *  criterion there is deliberate. With `mergeCriterion`, a task without a merge
+	 *  criterion gets the one of its repository back in front of its criteria.
+	 */
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(invoke("update_task", { task })),
 	/**
 	 *  Pauses an `in_progress` or `in_review` task: it becomes `planned` again and keeps
@@ -89,6 +94,23 @@ export const commands = {
 	 *  is its required conclusion.
 	 */
 	setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(invoke("set_completion_note", { id, note })),
+	/**
+	 *  Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
+	 *  again, paused if it was started, so Start (or Resume) continues the work on its branch.
+	 *  Its resolution, completion note, and `merged_with` are cleared; `reason`, required, is
+	 *  kept as a progress note with the earlier outcome, and the timeline records the
+	 *  reopening. Rejected while a task that depends on it has started: it built on the
+	 *  outcome, which Set outcome corrects instead.
+	 */
+	reopenTask: (id: TaskId, reason: string) => typedError<Task, CommandError>(invoke("reopen_task", { id, reason })),
+	/**
+	 *  Corrects how a `done` task ended without reopening it: `resolution` replaces its
+	 *  resolution and `note`, required, its completion note; the earlier outcome is kept as
+	 *  a progress note. Merged needs a recorded merge, its own pull request's or the one it
+	 *  shipped with; for work another task or pull request shipped, use
+	 *  `complete_task_merged_with`. Not adopted keeps its dependents waiting.
+	 */
+	setTaskOutcome: (id: TaskId, resolution: TaskResolution, note: string) => typedError<Task, CommandError>(invoke("set_task_outcome", { id, resolution, note })),
 	/**
 	 *  Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
 	 *  with what shows it; blank evidence is none. A task in progress whose criteria are then
@@ -104,10 +126,12 @@ export const commands = {
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(invoke("delete_task", { id, force })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
-	 *  self and cyclic edges. An `in_progress` task that the new prerequisite blocks is
-	 *  paused and its herdr workspace closed.
+	 *  self and cyclic edges and `done` tasks. An `in_progress` task that the new
+	 *  prerequisite blocks is paused and its herdr workspace closed, but only with
+	 *  `confirm_pause`; without it, nothing is added and the outcome asks for confirmation.
+	 *  The server decides whether the task would pause, not the caller's view of it.
 	 */
-	addDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(invoke("add_dependency", { taskId, dependsOn })),
+	addDependency: (taskId: TaskId, dependsOn: TaskId, confirmPause: boolean) => typedError<DependencyOutcome, CommandError>(invoke("add_dependency", { taskId, dependsOn, confirmPause })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(invoke("remove_dependency", { taskId, dependsOn })),
 	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(invoke("list_commit_records", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(invoke("herdr_status")),
@@ -176,6 +200,14 @@ export const commands = {
 	 */
 	concludeTask: (id: TaskId, note: string) => typedError<Task, CommandError>(invoke("conclude_task", { id, note })),
 	/**
+	 *  Completes a task whose work shipped through another task, `merged_with_task`, or a
+	 *  merged pull request into the base branch, `pull_request_url`; exactly one of the two.
+	 *  An `in_progress` or `in_review` task, or one done as `not_adopted`, becomes done as
+	 *  merged (completed when the other task was completed without a pull request), and its
+	 *  dependents can start. See `complete_merged_with` for the checks.
+	 */
+	completeTaskMergedWith: (id: TaskId, mergedWithTask: number | null, pullRequestUrl: string | null) => typedError<Task, CommandError>(invoke("complete_task_merged_with", { id, mergedWithTask, pullRequestUrl })),
+	/**
 	 *  Counts the commits of the base branch (fetched from `origin` first) that the task's
 	 *  branch lacks, and asks GitHub whether its pull request, if any, merges without
 	 *  conflicts. A failing fetch or pull request lookup is reported in the result rather
@@ -228,20 +260,6 @@ export const commands = {
 	/**  Backups in Toodo's backup directory, newest first. */
 	listBackups: () => typedError<BackupEntry[], CommandError>(invoke("list_backups")),
 	/**
-	 *  The entries of the workspace, or the shared ones when `workspace_id` is `null`; the
-	 *  superseded ones too when `include_superseded`. Most recently changed first.
-	 */
-	listMemory: (workspaceId: number | null, includeSuperseded: boolean) => typedError<MemoryEntry[], CommandError>(invoke("list_memory", { workspaceId, includeSuperseded })),
-	/**  Adds an entry to the workspace, or a shared one when `workspace_id` is `null`. */
-	addMemory: (workspaceId: number | null, content: MemoryContent) => typedError<MemoryEntry, CommandError>(invoke("add_memory", { workspaceId, content })),
-	/**  Rewrites a current entry, e.g. to fix a mistake. Superseded entries cannot change. */
-	updateMemory: (id: MemoryId, content: MemoryContent) => typedError<MemoryEntry, CommandError>(invoke("update_memory", { id, content })),
-	/**
-	 *  Replaces a current entry with a new one in the same scope and returns the new entry;
-	 *  the old one stays as history.
-	 */
-	supersedeMemory: (id: MemoryId, content: MemoryContent) => typedError<MemoryEntry, CommandError>(invoke("supersede_memory", { id, content })),
-	/**
 	 *  Replaces all data with the backup named `name` in Toodo's backup directory (see
 	 *  [`list_backups`]). The current data is first saved as a pre-restore backup, which is
 	 *  returned.
@@ -253,7 +271,6 @@ export const commands = {
 export const events = {
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
-	memoryChanged: makeEvent<MemoryChanged>("memory-changed"),
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 };
@@ -435,6 +452,19 @@ export type CriterionState = "pending" | "met" |
  */
 "failed";
 
+/**  What adding a prerequisite in the app did. */
+export type DependencyOutcome = 
+/**
+ *  The dependency was added, pausing the task if it blocks it and the pause was
+ *  confirmed.
+ */
+"added" | 
+/**
+ *  The prerequisite would pause the task, which is in progress; nothing was added.
+ *  Ask the user, then add it again with the pause confirmed.
+ */
+"confirm_pause";
+
 /**  The expected size of a task. */
 export type Estimate = {
 	unit: EstimateUnit,
@@ -487,12 +517,37 @@ export type MachineSettings = {
 	worktreeRoot: string | null,
 };
 
+export type McpRejection = {
+	reason: McpRejectionReason,
+	at: Timestamp,
+	/**  How many requests `/mcp` turned away since the server started. */
+	count: number,
+};
+
+/**  Why `/mcp` turned a request away. */
+export type McpRejectionReason = 
+/**  No `Authorization` header. */
+"no_header" | 
+/**  The header is not `Bearer <token>`. */
+"not_bearer" | 
+/**  A token this server does not accept, e.g. an old or another server's one. */
+"wrong_token" | 
+/**  The web sign-in token instead of the MCP token. */
+"web_token";
+
 export type McpServerInfo = {
 	url: string,
 	/**  Bearer token agents send in the `Authorization` header. */
 	token: string | null,
 	/**  Why the server is not running, e.g. its port is taken. */
 	error: string | null,
+	/**
+	 *  Tells this server apart from other Toodo servers; `401` answers from `/mcp` and
+	 *  the MCP `serverInfo` name it too.
+	 */
+	instance: string,
+	/**  The last request `/mcp` turned away, from agents here or on SSH machines. */
+	lastRejection: McpRejection | null,
 };
 
 /**  The reverse tunnel that lets agents on one SSH machine reach the MCP server. */
@@ -506,64 +561,26 @@ export type McpTunnel = {
 export type McpTunnelState = "connecting" | "open" | "retrying";
 
 /**
- *  Project memory entries changed outside the app's own forms, e.g. by an agent through
- *  MCP.
- */
-export type MemoryChanged = null;
-
-/**  What a memory entry says, when it is added, edited, or replaced. */
-export type MemoryContent = {
-	kind: MemoryKind,
-	title: string,
-	/**  Markdown. */
-	body: string,
-	taskId: TaskId | null,
-};
-
-/**  A project memory entry: knowledge of one workspace, or shared by every workspace. */
-export type MemoryEntry = {
-	id: MemoryId,
-	/**  `null` for an entry shared by every workspace. */
-	workspaceId: WorkspaceId | null,
-	kind: MemoryKind,
-	title: string,
-	/**  Markdown. */
-	body: string,
-	/**  The task the entry came from. */
-	taskId: TaskId | null,
-	createdAt: Timestamp,
-	updatedAt: Timestamp,
-	/**  The entry that replaced this one; `null` while it is current. */
-	supersededBy: MemoryId | null,
-};
-
-export type MemoryId = number;
-
-/**  What a memory entry records. */
-export type MemoryKind = 
-/**  A choice that was made, and why. */
-"decision" | 
-/**  A standing rule to follow. */
-"rule" | 
-/**  Anything else worth knowing. */
-"note" | 
-/**  An overview, e.g. of the project's state or architecture. */
-"summary";
-
-/**
  *  Whether GitHub can merge a pull request into its base without conflicts; `unknown`
  *  until GitHub has computed it, and for a pull request that is no longer open.
  */
 export type MergeState = "mergeable" | "conflicting" | "unknown";
 
-/**  The merged pull request of another task that shipped the work of a task. */
+/**
+ *  The merged pull request or the other task that shipped the work of a task; at least
+ *  one of the two is set.
+ */
 export type MergedWith = {
 	/**
-	 *  The task whose pull request it is; `null` once that task is deleted or for a pull
+	 *  The task that shipped the work; `null` once that task is deleted or for a pull
 	 *  request no task records.
 	 */
 	taskId: TaskId | null,
-	pullRequestUrl: string,
+	/**
+	 *  The merged pull request; `null` when the task that shipped the work has no
+	 *  recorded pull request.
+	 */
+	pullRequestUrl: string | null,
 };
 
 /**  A remote machine to append to the user's SSH config. */
@@ -747,11 +764,18 @@ export type TaskEdit = {
 	 *  keeps them. The criteria of a done task cannot change.
 	 */
 	criteria: CriterionInput[] | null,
+	/**
+	 *  Whether to put the merge criterion of the task's repository first when the task
+	 *  is left without one (see [`NewTask::merge_criterion`]); false changes nothing.
+	 */
+	mergeCriterion?: boolean,
 };
 
 export type TaskEvent = {
 	status: TaskStatus,
 	at: Timestamp,
+	/**  The change reopened the task: it follows a move to `done`. */
+	reopened: boolean,
 };
 
 export type TaskId = number;
@@ -764,9 +788,21 @@ export type TaskMilestones = {
 	plannedAt: Timestamp | null,
 	startedAt: Timestamp | null,
 	reviewAt: Timestamp | null,
+	/**  The latest completion, unless the task was reopened after it. */
 	completedAt: Timestamp | null,
+	/**  The latest reopening of the task after it was done. */
+	reopenedAt: Timestamp | null,
 	/**  The latest pause, unless the task was started again after it. */
 	pausedAt: Timestamp | null,
+	/**  The latest move to `in_review`. */
+	lastReviewAt: Timestamp | null,
+	/**
+	 *  Seconds spent in progress or in review up to the latest status change, pauses left
+	 *  out; the current period of an active task is not counted yet.
+	 */
+	activeSeconds: number,
+	/**  How often the task was paused after work started. */
+	pauseCount: number,
 };
 
 /**  A note an agent left on a task while working on it. */

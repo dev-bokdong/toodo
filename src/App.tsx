@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { BookMarked, ChartColumn, FolderPlus, Layers, ListTodo, Menu, Settings, X } from "lucide-react";
+import { ChartColumn, FolderPlus, Layers, ListTodo, Menu, Settings, X } from "lucide-react";
 import { AgentAccessStatus } from "@/components/agent-access-panel";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
-import { MemoryPanel, type MemoryDraft } from "@/components/memory";
 import { NeedsAttention } from "@/components/needs-attention";
 import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
@@ -22,12 +21,8 @@ export default function App() {
   useHerdrEvents();
   const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
   const [reviewing, setReviewing] = useState(false);
-  const [sharedMemory, setSharedMemory] = useState(false);
-  // Whether a workspace shows its tasks or its memory; kept across workspaces.
-  const [workspaceView, setWorkspaceView] = useState<"tasks" | "memory">("tasks");
-  const openPage = (page: "review" | "memory" | null) => {
+  const openPage = (page: "review" | null) => {
     setReviewing(page === "review");
-    setSharedMemory(page === "memory");
     setMenuOpen(false);
   };
   // On narrow screens the sidebar is a modal drawer over the content.
@@ -73,10 +68,6 @@ export default function App() {
   const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
   const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
   const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
-  // Keyed by workspace, or null for shared memory.
-  const [memoryDrafts, setMemoryDrafts] = useState<ReadonlyMap<WorkspaceId | null, MemoryDraft>>(new Map());
-  const setMemoryDraft = (id: WorkspaceId | null, draft: MemoryDraft) =>
-    setMemoryDrafts((current) => new Map(current).set(id, draft));
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
   const showTask = (id: TaskId) => {
@@ -86,8 +77,7 @@ export default function App() {
   };
   // A clicked notification opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
-  const onPage = reviewing || sharedMemory;
-  const showingAll = selectedId === "all" && !onPage;
+  const showingAll = selectedId === "all" && !reviewing;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
 
@@ -141,15 +131,6 @@ export default function App() {
             Review
           </Button>
           <Button
-            variant={sharedMemory ? "secondary" : "ghost"}
-            className="justify-start"
-            aria-pressed={sharedMemory}
-            onClick={() => openPage("memory")}
-          >
-            <BookMarked />
-            Shared memory
-          </Button>
-          <Button
             variant={showingAll ? "secondary" : "ghost"}
             className="justify-start"
             aria-pressed={showingAll}
@@ -164,7 +145,7 @@ export default function App() {
           </Button>
         </nav>
         <WorkspaceList
-          selectedId={onPage || showingAll ? null : (selected?.id ?? null)}
+          selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
           onSelect={(id) => {
             setSelectedId(id);
             openPage(null);
@@ -203,12 +184,6 @@ export default function App() {
           <HerdrBanner />
           {reviewing ? (
             <Review onShowTask={showTask} />
-          ) : sharedMemory ? (
-            <MemoryPanel
-              workspace={null}
-              draft={memoryDrafts.get(null)}
-              onDraftChange={(draft) => setMemoryDraft(null, draft)}
-            />
           ) : showingAll && workspaces.data?.length ? (
             <TaskList
               key="all"
@@ -219,39 +194,14 @@ export default function App() {
               onTaskShown={() => setShownTask(null)}
             />
           ) : selected ? (
-            <div className="flex flex-1 flex-col gap-4">
-              <div role="group" aria-label="Workspace view" className="flex gap-1 max-md:gap-2">
-                {(["tasks", "memory"] as const).map((view) => (
-                  <Button
-                    key={view}
-                    size="sm"
-                    variant={workspaceView === view ? "secondary" : "ghost"}
-                    aria-pressed={workspaceView === view}
-                    onClick={() => setWorkspaceView(view)}
-                  >
-                    {view === "tasks" ? <ListTodo /> : <BookMarked />}
-                    {view === "tasks" ? "Tasks" : "Memory"}
-                  </Button>
-                ))}
-              </div>
-              {workspaceView === "memory" ? (
-                <MemoryPanel
-                  key={selected.id}
-                  workspace={selected}
-                  draft={memoryDrafts.get(selected.id)}
-                  onDraftChange={(draft) => setMemoryDraft(selected.id, draft)}
-                />
-              ) : (
-                <TaskList
-                  key={selected.id}
-                  workspace={selected}
-                  timelineScale={timelineScale}
-                  onTimelineScaleChange={setTimelineScale}
-                  draft={drafts.get(selected.id)}
-                  onDraftChange={(draft) => setDraft(selected.id, draft)}
-                />
-              )}
-            </div>
+            <TaskList
+              key={selected.id}
+              workspace={selected}
+              timelineScale={timelineScale}
+              onTimelineScaleChange={setTimelineScale}
+              draft={drafts.get(selected.id)}
+              onDraftChange={(draft) => setDraft(selected.id, draft)}
+            />
           ) : (
             // A failed load is explained, with a retry, in the sidebar's workspace list.
             !workspaces.isPending && !workspaces.isError && (

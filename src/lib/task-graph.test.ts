@@ -8,7 +8,6 @@ import {
   majorLabelOffset,
   openingViewport,
   relatedTasks,
-  pausesStartedTask,
   timelineAxis,
   timelineEdgePath,
   timelineYears,
@@ -45,7 +44,11 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
       startedAt: null,
       reviewAt: null,
       completedAt: null,
+      reopenedAt: null,
       pausedAt: null,
+      lastReviewAt: null,
+      activeSeconds: 0,
+      pauseCount: 0,
     },
     ...overrides,
   };
@@ -105,17 +108,6 @@ describe("dependenciesDone", () => {
     expect(dependenciesDone(task(4, { dependsOn: [1] }), byId)).toBe(true);
     expect(dependenciesDone(task(5, { dependsOn: [1, 2] }), byId)).toBe(false);
     expect(dependenciesDone(task(6, { dependsOn: [3] }), byId)).toBe(false);
-  });
-});
-
-describe("pausesStartedTask", () => {
-  const started = task(2, { status: "in_progress" });
-
-  it("is true only for a task in progress and a prerequisite not done", () => {
-    expect(pausesStartedTask(started, task(1))).toBe(true);
-    expect(pausesStartedTask(started, task(1, { status: "done", resolution: "not_adopted" }))).toBe(true);
-    expect(pausesStartedTask(started, task(1, { status: "done", resolution: "merged" }))).toBe(false);
-    expect(pausesStartedTask(task(3), task(1))).toBe(false);
   });
 });
 
@@ -244,12 +236,12 @@ describe("layoutTimeline", () => {
       status: "done",
       branch: "feat/task-6-6",
       timeline: [
-        { status: "planned", at: jan(1) },
-        { status: "in_progress", at: jan(2) },
-        { status: "planned", at: jan(3) },
-        { status: "in_progress", at: jan(5) },
-        { status: "in_review", at: jan(6) },
-        { status: "done", at: jan(7) },
+        { status: "planned", at: jan(1), reopened: false },
+        { status: "in_progress", at: jan(2), reopened: false },
+        { status: "planned", at: jan(3), reopened: false },
+        { status: "in_progress", at: jan(5), reopened: false },
+        { status: "in_review", at: jan(6), reopened: false },
+        { status: "done", at: jan(7), reopened: false },
       ],
       milestones: milestones({ plannedAt: jan(1), startedAt: jan(2), reviewAt: jan(6), completedAt: jan(7) }),
     });
@@ -274,10 +266,10 @@ describe("layoutTimeline", () => {
       status: "done",
       branch: "feat/task-7-7",
       timeline: [
-        { status: "in_progress", at: jan(2) },
-        { status: "planned", at: jan(3) },
-        { status: "in_progress", at: jan(4) },
-        { status: "done", at: jan(7) },
+        { status: "in_progress", at: jan(2), reopened: false },
+        { status: "planned", at: jan(3), reopened: false },
+        { status: "in_progress", at: jan(4), reopened: false },
+        { status: "done", at: jan(7), reopened: false },
       ],
       milestones: milestones({ plannedAt: jan(2), startedAt: jan(2), completedAt: jan(7) }),
     });

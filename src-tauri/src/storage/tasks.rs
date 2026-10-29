@@ -36,6 +36,25 @@ pub struct AddedDependencies {
     pub paused: bool,
 }
 
+/// Whether adding prerequisites may pause an `in_progress` task that they block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseRule {
+    /// Pause the task in the same step.
+    Pause,
+    /// Add nothing and report [`DependencyChange::NeedsPause`] instead, so the user can
+    /// confirm the pause first.
+    Ask,
+}
+
+/// The outcome of [`Storage::add_dependencies_with`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyChange {
+    Added(Box<AddedDependencies>),
+    /// The prerequisites would pause the task and [`PauseRule::Ask`] was given; nothing
+    /// was written.
+    NeedsPause,
+}
+
 const TASK_TYPES: [TaskType; 8] = [
     TaskType::Feat,
     TaskType::Fix,
@@ -182,10 +201,13 @@ impl TaskRow {
             estimate_unit: row.get(24)?,
             estimate_amount: row.get(25)?,
             due_date: row.get(26)?,
-            merged_with: match row.get::<_, Option<String>>(27)? {
-                None => None,
-                Some(pull_request_url) => Some(MergedWith {
-                    task_id: row.get::<_, Option<i64>>(28)?.map(TaskId),
+            merged_with: match (
+                row.get::<_, Option<String>>(27)?,
+                row.get::<_, Option<i64>>(28)?,
+            ) {
+                (None, None) => None,
+                (pull_request_url, task_id) => Some(MergedWith {
+                    task_id: task_id.map(TaskId),
                     pull_request_url,
                 }),
             },
@@ -328,6 +350,19 @@ pub(super) fn record_event(
         "INSERT INTO task_events (task_id, status, at) VALUES (?1, ?2, ?3)",
         params![task.0, status.as_str(), at],
     )?;
+    Ok(())
+}
+
+/// Appends a note of `kind` to `task` at `at`.
+fn add_note(conn: &Connection, task: TaskId, kind: NoteKind, body: &str, at: i64) -> Result<()> {
+    let inserted = conn.execute(
+        "INSERT INTO task_notes (task_id, kind, body, at)
+         SELECT id, ?2, ?3, ?4 FROM tasks WHERE id = ?1",
+        params![task.0, kind.as_str(), body, at],
+    )?;
+    if inserted == 0 {
+        return Err(StorageError::TaskNotFound(task));
+    }
     Ok(())
 }
 
@@ -656,15 +691,17 @@ impl Storage {
         Ok(concluded)
     }
 
-    /// Moves an `in_progress` or `in_review` task to `done` as merged through the pull
-    /// request of another task, `merged_with`, merged at `merged_at`, and forgets its herdr
-    /// workspace, which was closed. A task `done` as `not_adopted` keeps its status history
-    /// and only changes its resolution: the work did ship. Non-empty `commits` replace its
-    /// commit records. Its dependents can then start.
+    /// Moves an `in_progress` or `in_review` task to `done` as `resolution` (merged, or
+    /// completed for work shipped by a task completed without a pull request) through
+    /// another task or its pull request, `merged_with`, merged at `merged_at`, and forgets
+    /// its herdr workspace, which was closed. A task `done` as `not_adopted` keeps its
+    /// status history and only changes its resolution: the work did ship. Non-empty
+    /// `commits` replace its commit records. Its dependents can then start.
     pub fn complete_task_merged_with(
         &mut self,
         id: TaskId,
         merged_with: &MergedWith,
+        resolution: TaskResolution,
         merged_at: Option<i64>,
         commits: &[CommitRecord],
     ) -> Result<Task> {
@@ -687,7 +724,7 @@ impl Storage {
             params![
                 id.0,
                 TaskStatus::Done.as_str(),
-                TaskResolution::Merged.as_str(),
+                resolution.as_str(),
                 merged_at,
                 merged_with.pull_request_url,
                 merged_with.task_id.map(|task| task.0)
@@ -702,6 +739,75 @@ impl Storage {
         let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(done)
+    }
+
+    /// Reopens a `done` task in one transaction (see [`TaskStatus::reopen`]): it becomes
+    /// `planned` without a resolution, completion note, or `merged_with`, the reopening is
+    /// recorded in its status history, and `note`, which says why and keeps the earlier
+    /// outcome, is added as a progress note. Branch, worktree path, commit records, pull
+    /// request, and criteria stay. Whether its dependents allow it is up to the caller.
+    pub fn reopen_task(&mut self, id: TaskId, note: &str) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let status = task.status.reopen()?;
+        tx.execute(
+            "UPDATE tasks
+             SET status = ?2, resolution = NULL, completion_note = NULL,
+                 merged_with_pull_request_url = NULL, merged_with_task_id = NULL
+             WHERE id = ?1",
+            params![id.0, status.as_str()],
+        )?;
+        record_event(&tx, id, status, at)?;
+        add_note(&tx, id, NoteKind::Progress, note, at)?;
+        let reopened = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(reopened)
+    }
+
+    /// Corrects how a `done` task ended to `resolution` in one transaction: `completion_note`
+    /// becomes its completion note, and `note`, the record of the change, is added as a
+    /// progress note. Its status history stays: the task did finish then. Any other
+    /// resolution than merged or completed forgets `merged_with`. Whether the task and
+    /// `resolution` allow it is up to the caller.
+    pub fn set_task_outcome(
+        &mut self,
+        id: TaskId,
+        resolution: TaskResolution,
+        completion_note: &str,
+        note: &str,
+    ) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        if task.status != TaskStatus::Done {
+            return Err(StorageError::InvalidData(format!(
+                "task {id} is {}; only a done task has an outcome",
+                task.status
+            )));
+        }
+        let keeps_merged_with = matches!(
+            resolution,
+            TaskResolution::Merged | TaskResolution::Completed
+        );
+        tx.execute(
+            "UPDATE tasks
+             SET resolution = ?2, completion_note = ?3,
+                 merged_with_pull_request_url = CASE WHEN ?4 AND ?2 = 'merged'
+                     THEN merged_with_pull_request_url END,
+                 merged_with_task_id = CASE WHEN ?4 THEN merged_with_task_id END
+             WHERE id = ?1",
+            params![
+                id.0,
+                resolution.as_str(),
+                completion_note,
+                keeps_merged_with
+            ],
+        )?;
+        add_note(&tx, id, NoteKind::Progress, note, at)?;
+        let corrected = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(corrected)
     }
 
     /// Stores what the user wrote about the outcome of a task; `None` clears it. Whether
@@ -725,14 +831,7 @@ impl Storage {
     pub fn add_task_note(&mut self, id: TaskId, kind: NoteKind, body: &str) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
-        let inserted = tx.execute(
-            "INSERT INTO task_notes (task_id, kind, body, at)
-             SELECT id, ?2, ?3, ?4 FROM tasks WHERE id = ?1",
-            params![id.0, kind.as_str(), body, at],
-        )?;
-        if inserted == 0 {
-            return Err(StorageError::TaskNotFound(id));
-        }
+        add_note(&tx, id, kind, body, at)?;
         let noted = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(noted)
@@ -903,6 +1002,22 @@ impl Storage {
         task: TaskId,
         depends_on: &[TaskId],
     ) -> Result<AddedDependencies> {
+        match self.add_dependencies_with(task, depends_on, PauseRule::Pause)? {
+            DependencyChange::Added(added) => Ok(*added),
+            DependencyChange::NeedsPause => unreachable!("PauseRule::Pause always adds"),
+        }
+    }
+
+    /// [`Self::add_dependencies`], where `rule` decides whether a task that the new
+    /// prerequisites block may be paused. A `done` task is rejected: its work is finished
+    /// and cannot wait anymore. A paused task gets a blocker note naming the prerequisites
+    /// it waits on, stamped with the time of the pause.
+    pub fn add_dependencies_with(
+        &mut self,
+        task: TaskId,
+        depends_on: &[TaskId],
+        rule: PauseRule,
+    ) -> Result<DependencyChange> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         for &prerequisite in depends_on {
@@ -913,19 +1028,52 @@ impl Storage {
             )?;
         }
         let current = find_task(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
-        let paused =
-            current.status == TaskStatus::InProgress && !dag::is_ready(&all_tasks(&tx)?, task)?;
+        if current.status == TaskStatus::Done {
+            return Err(StorageError::PrerequisiteOfDoneTask {
+                task,
+                depends_on: depends_on.to_vec(),
+            });
+        }
+        let tasks = all_tasks(&tx)?;
+        let blockers = dag::blocking_dependencies(&tasks, task)?;
+        let paused = current.status == TaskStatus::InProgress && !blockers.is_empty();
         if paused {
+            if rule == PauseRule::Ask {
+                return Ok(DependencyChange::NeedsPause);
+            }
             let status = current.status.transition_to(TaskStatus::Planned)?;
             tx.execute(
                 "UPDATE tasks SET status = ?2 WHERE id = ?1",
                 params![task.0, status.as_str()],
             )?;
             record_event(&tx, task, status, at)?;
+            let titles: HashMap<TaskId, &str> = tasks
+                .iter()
+                .map(|task| (task.id, task.title.as_str()))
+                .collect();
+            let waiting: Vec<String> = blockers
+                .iter()
+                .map(|blocker| {
+                    let title = titles.get(&blocker.id).copied().unwrap_or_default();
+                    format!("#{} {title} ({})", blocker.id, blocker.status)
+                })
+                .collect();
+            tx.execute(
+                "INSERT INTO task_notes (task_id, kind, body, at) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    task.0,
+                    NoteKind::Blocker.as_str(),
+                    format!("Paused: waiting on {}", waiting.join(", ")),
+                    at
+                ],
+            )?;
         }
         let task = find_task(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
         tx.commit()?;
-        Ok(AddedDependencies { task, paused })
+        Ok(DependencyChange::Added(Box::new(AddedDependencies {
+            task,
+            paused,
+        })))
     }
 
     /// Forgets the herdr workspace of a task after it was closed; the worktree stays.
@@ -940,14 +1088,17 @@ impl Storage {
         find_task(&self.conn, id)?.ok_or(StorageError::TaskNotFound(id))
     }
 
-    /// Removes the edge `task -> depends_on` if present.
+    /// Removes the edge `task -> depends_on`; rejects an edge that does not exist.
     pub fn remove_dependency(&mut self, task: TaskId, depends_on: TaskId) -> Result<()> {
         let tx = self.conn.transaction()?;
         task_workspace(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
-        tx.execute(
+        let removed = tx.execute(
             "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             [task.0, depends_on.0],
         )?;
+        if removed == 0 {
+            return Err(StorageError::DependencyNotFound { task, depends_on });
+        }
         tx.commit()?;
         Ok(())
     }

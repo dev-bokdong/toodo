@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::adapters::git::Git;
+use crate::adapters::git::{Git, shell_quote};
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::completion::{self, OpenPullRequest};
@@ -21,17 +21,18 @@ use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
 use crate::domain::criteria::{CheckedBy, NewCriterion};
 use crate::domain::model::{self, NoteKind};
+use crate::mcp::ServerStatus;
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ListTasks {
     /// Only tasks of this workspace; all workspaces when omitted.
     pub workspace_id: Option<WorkspaceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CreateWorkspace {
     /// Name shown in Toodo, e.g. the repository name.
     pub name: String,
@@ -55,14 +56,20 @@ pub struct CreateWorkspace {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CurrentTask {
     /// Absolute path of the agent's working directory, e.g. the worktree of its task.
     pub cwd: String,
+    /// The machine the agent runs on: `local` for the machine Toodo runs on, or the SSH
+    /// host of a remote machine, as in a workspace's `location.machine`. Omit it to
+    /// search every machine; a path inside worktrees on several machines is then
+    /// rejected, naming them.
+    #[serde(default)]
+    pub machine: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CreateTask {
     pub workspace_id: WorkspaceId,
     pub task_type: TaskType,
@@ -93,10 +100,16 @@ pub struct CreateTask {
     /// omitted. Set false for work that ships nothing, e.g. research or an errand.
     #[serde(default)]
     pub merge_criterion: Option<bool>,
+    /// Ignored: agents started before the lead was removed may still send it, and other
+    /// unknown arguments are rejected.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(transform = without_null_defaults)]
 pub struct UpdateTask {
     pub id: TaskId,
     /// Unchanged when omitted.
@@ -117,8 +130,8 @@ pub struct UpdateTask {
     /// omitted. Criteria whose `id` is left out are deleted with their evidence. Keep an
     /// existing criterion by passing `{"id": N}`; given fields change it, omitted ones
     /// keep their stored values, and it keeps its state unless its kind or target
-    /// changes. New criteria (no `id`) need `text` and `kind`. Criteria of a done task
-    /// cannot change.
+    /// changes. New criteria (no `id`) need `text` and `kind`. A done task cannot change
+    /// at all through MCP.
     pub criteria: Option<Vec<types::CriterionInput>>,
     /// True to let `criteria` leave out the merge criterion (`pr_merged` or
     /// `branch_merged_locally`) and so remove it, e.g. for work that ships no code;
@@ -128,7 +141,7 @@ pub struct UpdateTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CheckCriterion {
     /// The task of the criterion; found from the criterion when omitted.
     #[serde(default)]
@@ -143,6 +156,50 @@ pub struct CheckCriterion {
     /// verified and how. Required to check it.
     #[serde(default)]
     pub evidence: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AddCriterion {
+    /// The task that gets the criterion; it must not be done.
+    pub task_id: TaskId,
+    /// What has to hold, in words, e.g. `The server answers /health`.
+    pub text: String,
+    pub kind: types::CheckKind,
+    /// The http(s) URL of a `url` criterion or the shell command of a `command`
+    /// criterion; omit it for other kinds.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RemoveCriterion {
+    /// The task of the criterion; found from the criterion when omitted.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+    /// The criterion to delete with its evidence. `id` is accepted too.
+    #[serde(alias = "id")]
+    pub criterion_id: types::CriterionId,
+}
+
+/// Drops the `"default": null` schemars derives from `#[serde(default)]` for the fields
+/// of a patch: there an omitted field stays unchanged while an explicit `null` clears it,
+/// so a client that fills in advertised defaults would clear what it meant to keep.
+pub(super) fn without_null_defaults(schema: &mut schemars::Schema) {
+    let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for property in properties.values_mut() {
+        if let Some(property) = property.as_object_mut()
+            && property.get("default") == Some(&serde_json::Value::Null)
+        {
+            property.remove("default");
+        }
+    }
 }
 
 /// Tells a field given as `null` (`Some(None)`) from an omitted one (`None`, the default).
@@ -172,7 +229,7 @@ fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<TaskId>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AddDependencies {
     /// The dependent task.
     pub task_id: TaskId,
@@ -184,7 +241,7 @@ pub struct AddDependencies {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Dependency {
     /// The dependent task.
     pub task_id: TaskId,
@@ -195,7 +252,7 @@ pub struct Dependency {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AddNote {
     /// The task the note is about, usually your current task.
     pub task_id: TaskId,
@@ -204,7 +261,26 @@ pub struct AddNote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PauseTask {
+    /// The task, e.g. your current task.
+    pub id: TaskId,
+    /// Why the work stops, in GitHub-flavored Markdown; recorded as a progress note.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ResumeTask {
+    /// The paused task.
+    pub id: TaskId,
+    /// Why the work continues, in GitHub-flavored Markdown; recorded as a progress note.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StartTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -213,6 +289,11 @@ pub struct StartTask {
     /// workspaces on the machine Toodo runs on.
     #[serde(default)]
     pub agent_command: Option<String>,
+    /// Ignored: agents started before the lead was removed may still send it, and other
+    /// unknown arguments are rejected.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub request_id: Option<String>,
 }
 
 /// A started task with the panes of its herdr workspace.
@@ -232,7 +313,7 @@ pub struct TaskStart {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CompleteTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -277,31 +358,42 @@ impl MergedWithRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct SearchTasks {
     /// Words to look for in any language, e.g. `deploy server`; short words such as
     /// two-character Korean ones work too. Every word must appear in the
     /// task's title, description, notes, completion note, branch, or pull request, as a
     /// case-insensitive substring; words are taken literally, not as operators. Use a few
-    /// distinctive words and search again with others to widen the search.
+    /// distinctive words and search again with others to widen the search. A task number
+    /// alone, e.g. `431` or `#431`, also finds that task first, in any workspace.
     pub query: String,
-    /// Only tasks of this workspace; all workspaces when omitted.
+    /// Only tasks of this workspace; all workspaces when omitted. A task found by its
+    /// number is returned whatever its workspace.
     pub workspace_id: Option<WorkspaceId>,
     /// Only tasks with this status; any status when omitted.
     pub status: Option<TaskStatus>,
-    /// At most this many results, best match first: 20 when omitted, at most 100.
+    /// At most this many results, best match first: 20 when omitted, at most 100; 0
+    /// returns none.
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RestoreWorktree {
+    /// An in_progress or in_review task whose worktree directory is gone, e.g. yours
+    /// when current_task returns it with worktreeMissing true.
+    pub id: TaskId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct GetTask {
     /// The task, e.g. one that search_tasks found.
     pub id: TaskId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Related {
     /// One task of the link, e.g. your current task.
     pub task_id: TaskId,
@@ -310,7 +402,7 @@ pub struct Related {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ConcludeTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -320,7 +412,7 @@ pub struct ConcludeTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct SetWorktreeRoot {
     /// SSH host of a remote machine, as in `machine.label` of list_machine_settings or a
     /// workspace's `location.machine`; omit it for the machine Toodo runs on.
@@ -425,7 +517,22 @@ pub fn create_workspace(
     Ok((&workspaces::create(storage, git, herdr, setup)?).into())
 }
 
-pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<Task>> {
+/// A task as list_tasks returns it, with whether it can start now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListedTask {
+    #[serde(flatten)]
+    pub task: Task,
+    /// Whether the task is planned and every task it depends on is done and adopted, so
+    /// start_task (or resume_task for a paused task) can begin it now.
+    pub ready: bool,
+    /// The tasks it depends on that keep it from starting: not done yet, or done as
+    /// not_adopted, which never unblocks it.
+    pub blocked_by: Vec<TaskLink>,
+}
+
+pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<ListedTask>> {
+    let links = Links::load(storage)?;
     let tasks = match request.workspace_id {
         Some(workspace) => {
             storage
@@ -435,7 +542,85 @@ pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<Ta
         }
         None => storage.list_all_tasks()?,
     };
-    Ok(types::map_all(&tasks))
+    Ok(tasks
+        .iter()
+        .map(|task| {
+            let blocked_by = links.blocked_by(task);
+            ListedTask {
+                task: task.into(),
+                ready: is_ready(task, &blocked_by),
+                blocked_by,
+            }
+        })
+        .collect())
+}
+
+/// Whether `task` can start (or resume) now: it is planned and nothing blocks it.
+fn is_ready(task: &model::Task, blocked_by: &[TaskLink]) -> bool {
+    task.status == crate::domain::status::TaskStatus::Planned && blocked_by.is_empty()
+}
+
+/// `links` as a list such as "#3 (planned), #4 (done as not_adopted)".
+fn describe_links(links: &[TaskLink]) -> String {
+    let described: Vec<String> = links
+        .iter()
+        .map(|link| {
+            let state = match (link.status, link.resolution) {
+                (_, Some(TaskResolution::NotAdopted)) => "done as not_adopted",
+                (TaskStatus::Planned, _) => "planned",
+                (TaskStatus::InProgress, _) => "in_progress",
+                (TaskStatus::InReview, _) => "in_review",
+                (TaskStatus::Done, _) => "done",
+            };
+            format!("#{} ({state})", link.id.0)
+        })
+        .collect();
+    described.join(", ")
+}
+
+/// What a dependency change means for `details`' task and what to do next.
+fn dependency_message(details: &TaskDetails, paused: bool) -> String {
+    let task = &details.task;
+    let id = task.id.0;
+    let blockers = &details.blocked_by;
+    let waiting = describe_links(blockers);
+    let mut message = if paused {
+        format!(
+            "task {id} is paused until {waiting} {} done; it keeps its branch, worktree, and herdr workspace. The user decides in the Toodo app whether to close the workspace, which ends the session there. Stop working on task {id}; resume_task resumes it once it is ready.",
+            if blockers.len() == 1 { "is" } else { "are" }
+        )
+    } else {
+        match task.status {
+            TaskStatus::InProgress => format!(
+                "task {id} stays in_progress: every task it depends on is done and adopted."
+            ),
+            TaskStatus::InReview if blockers.is_empty() => {
+                format!("task {id} stays in_review: every task it depends on is done and adopted.")
+            }
+            TaskStatus::InReview => format!(
+                "task {id} is in_review, so it was not paused and can still complete before {waiting}; call pause_task if it must wait for them."
+            ),
+            TaskStatus::Done => format!("task {id} is done."),
+            TaskStatus::Planned if !blockers.is_empty() => {
+                format!("task {id} waits for {waiting} before it can start.")
+            }
+            TaskStatus::Planned if task.branch.is_some() => format!(
+                "task {id} is paused and no longer waits on any task: resume_task resumes it."
+            ),
+            TaskStatus::Planned => {
+                format!("task {id} is ready: nothing it depends on blocks start_task.")
+            }
+        }
+    };
+    for blocker in blockers {
+        if blocker.resolution == Some(TaskResolution::NotAdopted) {
+            let prerequisite = blocker.id.0;
+            message.push_str(&format!(
+                " #{prerequisite} was not adopted, so it never unblocks task {id}: call remove_dependency {{\"task_id\": {id}, \"depends_on\": {prerequisite}}} if the work can go ahead without it, or complete_task {prerequisite} with merged_with if another merged pull request shipped it."
+            ));
+        }
+    }
+    message
 }
 
 /// The current task, with the base branch its pull request goes into.
@@ -449,68 +634,167 @@ pub struct CurrentTaskReply {
     /// Whether you merge the task's pull request yourself: `never`, or `afterChecks`
     /// (into `base_branch` only, once every check on it passed).
     pub agent_merge: types::AgentMerge,
+    /// The machine of the task's workspace, where its worktree is.
+    pub machine: types::Machine,
 }
 
-/// The task whose worktree contains `cwd`; the innermost one if worktrees are nested.
+/// What to tell an agent that current_task found no task for; the server instructions
+/// and the skill give the same next step.
+const NO_CURRENT_TASK: &str = "if you were asked to work on a Toodo task, tell the user \
+    and ask for its id, then read it with get_task; to plan new work outside a task, \
+    pick the workspace with list_workspaces";
+
+fn machine_of(machine: &model::Machine) -> types::Machine {
+    match machine {
+        model::Machine::Local => types::Machine::Local,
+        model::Machine::Ssh(label) => types::Machine::Ssh {
+            label: label.as_str().to_owned(),
+        },
+    }
+}
+
+fn machine_name(machine: &model::Machine) -> &str {
+    match machine {
+        model::Machine::Local => "local",
+        model::Machine::Ssh(label) => label.as_str(),
+    }
+}
+
+/// The task whose worktree contains `cwd` on the requested machine; the innermost one if
+/// worktrees are nested. Paths are compared after resolving `.` and `..` by their text,
+/// since a remote path cannot be resolved on this machine.
 pub fn current_task(storage: &Storage, request: CurrentTask) -> CommandResult<CurrentTaskReply> {
+    let wanted = request
+        .machine
+        .as_deref()
+        .map(str::trim)
+        .filter(|machine| !machine.is_empty());
     let cwd = comparable_path(&request.cwd);
-    let task = storage
+    let workspaces: HashMap<_, _> = storage
+        .list_workspaces()?
+        .into_iter()
+        .map(|workspace| (workspace.id, workspace))
+        .collect();
+    let matches: Vec<_> = storage
         .list_all_tasks()?
-        .iter()
+        .into_iter()
         .filter_map(|task| {
+            let workspace = workspaces.get(&task.workspace_id)?;
+            let machine = workspace.location.machine();
+            let on_machine = match wanted {
+                None => true,
+                Some(wanted) => match &machine {
+                    model::Machine::Local => wanted.eq_ignore_ascii_case("local"),
+                    model::Machine::Ssh(label) => label.as_str() == wanted,
+                },
+            };
             let worktree = comparable_path(&task.worktree_path.as_ref()?.to_string());
             let inside = cwd == worktree
                 || cwd
                     .strip_prefix(&worktree)
-                    .is_some_and(|rest| rest.starts_with('/'));
-            inside.then_some((worktree.len(), task))
+                    .is_some_and(|rest| rest.starts_with('/') || worktree.ends_with('/'));
+            (on_machine && inside).then_some((worktree.len(), task, workspace))
         })
-        .max_by_key(|(length, _)| *length)
-        .map(|(_, task)| Task::from(task))
-        .ok_or_else(|| {
-            CommandError::not_found(format!(
-                "no Toodo task has a worktree containing {}",
+        .collect();
+    let innermost = matches.iter().map(|(length, ..)| *length).max();
+    let innermost: Vec<_> = matches
+        .into_iter()
+        .filter(|(length, ..)| Some(*length) == innermost)
+        .collect();
+    let (task, workspace) = match innermost.as_slice() {
+        [] => {
+            let scope = wanted.map_or(String::new(), |machine| format!(" on machine {machine}"));
+            return Err(CommandError::not_found(format!(
+                "no Toodo task has a worktree containing {}{scope}; {NO_CURRENT_TASK}",
                 request.cwd
-            ))
-        })?;
-    let workspace = storage
-        .get_workspace(task.workspace_id.into())?
-        .ok_or(StorageError::WorkspaceNotFound(task.workspace_id.into()))?;
+            )));
+        }
+        [(_, task, workspace)] => (task, *workspace),
+        several => {
+            let found = several
+                .iter()
+                .map(|(_, task, workspace)| {
+                    format!(
+                        "#{} on {}",
+                        task.id,
+                        machine_name(&workspace.location.machine())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CommandError::rejected(format!(
+                "{} is inside the worktrees of several tasks: {found}; call current_task again with machine set to the machine you run on (`local` or its SSH host)",
+                request.cwd
+            )));
+        }
+    };
     Ok(CurrentTaskReply {
-        task,
-        base_branch: workspace.default_base_branch,
+        task: Task::from(task),
+        base_branch: workspace.default_base_branch.clone(),
         agent_merge: workspace.agent_merge.into(),
+        machine: machine_of(&workspace.location.machine()),
     })
 }
 
-/// A path with `/` separators and no trailing separator; Windows paths, which are
-/// case-insensitive, are also lowercased.
+/// A path with `/` separators, `.` and `..` resolved by their text, and no repeated or
+/// trailing separator; Windows paths, which are case-insensitive, are also lowercased.
 fn comparable_path(path: &str) -> String {
     let path = path.trim().replace('\\', "/");
-    let path = path.trim_end_matches('/');
     let bytes = path.as_bytes();
-    let windows = path.starts_with("//") || (bytes.len() >= 2 && bytes[1] == b':');
-    if windows {
-        path.to_lowercase()
+    let drive = bytes.len() >= 2 && bytes[1] == b':';
+    let windows = path.starts_with("//") || drive;
+    // The part `..` never climbs above: `/`, `//` of a UNC path, or a drive such as `c:/`.
+    let (root, rest) = if let Some(rest) = path.strip_prefix("//") {
+        ("//".to_owned(), rest)
+    } else if drive {
+        (format!("{}/", &path[..2]), &path[2..])
+    } else if let Some(rest) = path.strip_prefix('/') {
+        ("/".to_owned(), rest)
     } else {
-        path.to_owned()
+        (String::new(), path.as_str())
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|last| *last != "..") => {
+                parts.pop();
+            }
+            ".." if !root.is_empty() => {}
+            part => parts.push(part),
+        }
     }
+    let path = root + &parts.join("/");
+    if windows { path.to_lowercase() } else { path }
+}
+
+/// Checks out the branch of an active task that lost its worktree into a new one, as
+/// Restore worktree in the Toodo app does.
+pub fn restore_worktree(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: RestoreWorktree,
+) -> CommandResult<Task> {
+    Ok((&herdr_commands::restore(storage, git, herdr, request.id.into())?).into())
 }
 
 /// Creates a `planned` task with its dependencies. Unknown prerequisites are rejected
 /// before anything is written; a new task has no dependents, so its edges cannot close
 /// a cycle.
 pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> CommandResult<Task> {
-    let merge = if request.merge_criterion.unwrap_or(true) {
-        let criteria = request
-            .criteria
-            .iter()
-            .map(types::CriterionInput::parse)
-            .collect::<CommandResult<Vec<_>>>()?;
-        task_commands::merge_criterion(storage, git, request.workspace_id.into(), &criteria)?
-    } else {
-        None
-    };
+    let criteria = request
+        .criteria
+        .iter()
+        .map(types::CriterionInput::parse)
+        .collect::<CommandResult<Vec<_>>>()?;
+    let merge = task_commands::merge_criterion(
+        storage,
+        git,
+        request.workspace_id.into(),
+        &criteria,
+        request.merge_criterion.unwrap_or(true),
+    )?;
     insert_task(&mut lock(storage), request, merge)
 }
 
@@ -567,8 +851,21 @@ fn insert_task(
     get_task(storage, task.id.into())
 }
 
-pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<Task> {
+/// Edits a task as `update_task` does; `origin` says whether its repository has an
+/// `origin` remote (see [`task_commands::edit_origin`]).
+pub fn update_task(
+    storage: &mut Storage,
+    request: UpdateTask,
+    origin: Option<bool>,
+) -> CommandResult<Task> {
     let current = get_task(storage, request.id)?;
+    // A done task is part of the record reviews are built on; agents add to it instead.
+    if current.status == types::TaskStatus::Done {
+        return Err(CommandError::rejected(format!(
+            "task {} is done, so update_task leaves its record as it was finished; record a correction with add_progress_note task_id {}, or ask the user to reopen it in the Toodo app",
+            request.id.0, request.id.0
+        )));
+    }
     edit_task(
         storage,
         TaskEdit {
@@ -579,8 +876,82 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
             estimate: request.estimate.unwrap_or(current.estimate),
             due_date: request.due_date.unwrap_or(current.due_date),
             criteria: request.criteria,
+            merge_criterion: false,
         },
         request.remove_merge_criterion,
+        origin,
+    )
+}
+
+/// The criterion `request` adds to the end of its task's criteria, as an edit input.
+pub fn new_criterion(request: &AddCriterion) -> types::CriterionInput {
+    types::CriterionInput {
+        id: None,
+        text: Some(request.text.clone()),
+        kind: Some(request.kind),
+        target: request.target.clone(),
+    }
+}
+
+/// Adds one criterion, pending, after the task's criteria, which stay as they are;
+/// `origin` as for [`update_task`].
+pub fn add_criterion(
+    storage: &mut Storage,
+    request: AddCriterion,
+    origin: Option<bool>,
+) -> CommandResult<Task> {
+    let current = get_task(storage, request.task_id)?;
+    let mut criteria: Vec<types::CriterionInput> = current
+        .criteria
+        .iter()
+        .map(|criterion| types::CriterionInput::keep(criterion.id))
+        .collect();
+    criteria.push(new_criterion(&request));
+    update_task(
+        storage,
+        UpdateTask {
+            id: request.task_id,
+            task_type: None,
+            title: None,
+            description: None,
+            estimate: None,
+            due_date: None,
+            criteria: Some(criteria),
+            remove_merge_criterion: false,
+        },
+        origin,
+    )
+}
+
+/// Deletes one criterion of a task that is not done with its evidence, the merge
+/// criterion too; the others stay as they are.
+pub fn remove_criterion(storage: &mut Storage, request: RemoveCriterion) -> CommandResult<Task> {
+    let owner = task_commands::criterion_owner(
+        storage,
+        request.task_id,
+        request.criterion_id,
+        "remove_criterion",
+    )?;
+    let current = get_task(storage, owner.into())?;
+    let criteria = current
+        .criteria
+        .iter()
+        .filter(|criterion| criterion.id != request.criterion_id)
+        .map(|criterion| types::CriterionInput::keep(criterion.id))
+        .collect();
+    update_task(
+        storage,
+        UpdateTask {
+            id: owner.into(),
+            task_type: None,
+            title: None,
+            description: None,
+            estimate: None,
+            due_date: None,
+            criteria: Some(criteria),
+            remove_merge_criterion: true,
+        },
+        None,
     )
 }
 
@@ -603,11 +974,28 @@ pub fn check_criterion(storage: &mut Storage, request: CheckCriterion) -> Comman
     )
 }
 
-/// Adds the edges in one step and returns the dependent task. Self and cyclic edges are
-/// rejected, and one rejected edge adds none. An `in_progress` task that a prerequisite
-/// blocks is paused; its herdr workspace stays open, and the app asks the user whether to
-/// close it, since that ends the agent's session.
-pub fn add_dependencies(storage: &mut Storage, request: AddDependencies) -> CommandResult<Task> {
+/// The dependent task after add_dependency or remove_dependency, with what the change
+/// means for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyReply {
+    /// The dependent task with its links; `dependsOn` names each prerequisite's
+    /// workspace, title, and status.
+    pub task: TaskDetails,
+    /// Whether this change paused the task.
+    pub paused: bool,
+    /// What the change means for the task and what to do next.
+    pub message: String,
+}
+
+/// Adds the edges in one step and returns the dependent task. Self and cyclic edges and
+/// `done` dependent tasks are rejected, and one rejected edge adds none. An `in_progress`
+/// task that a prerequisite blocks is paused; its herdr workspace stays open, and the app
+/// asks the user whether to close it, since that ends the agent's session.
+pub fn add_dependencies(
+    storage: &mut Storage,
+    request: AddDependencies,
+) -> CommandResult<DependencyReply> {
     if request.depends_on.is_empty() {
         return Err(CommandError::invalid_input(
             "depends_on must name at least one task",
@@ -615,20 +1003,56 @@ pub fn add_dependencies(storage: &mut Storage, request: AddDependencies) -> Comm
     }
     let depends_on: Vec<_> = request.depends_on.iter().map(|&id| id.into()).collect();
     let added = storage.add_dependencies(request.task_id.into(), &depends_on)?;
-    Ok((&added.task).into())
+    let task = task_details(
+        storage,
+        GetTask {
+            id: request.task_id,
+        },
+    )?;
+    Ok(DependencyReply {
+        message: dependency_message(&task, added.paused),
+        paused: added.paused,
+        task,
+    })
 }
 
-/// Removes the edges to every task of `depends_on` and returns the dependent task.
-pub fn remove_dependency(storage: &mut Storage, request: Dependency) -> CommandResult<Task> {
+/// Removes the edges to every task of `depends_on` and returns the dependent task. An
+/// edge that does not exist is rejected, and then none is removed.
+pub fn remove_dependency(
+    storage: &mut Storage,
+    request: Dependency,
+) -> CommandResult<DependencyReply> {
     if request.depends_on.is_empty() {
         return Err(CommandError::invalid_input(
             "depends_on must name at least one task, e.g. {\"task_id\": 5, \"depends_on\": 3}",
         ));
     }
+    let current = get_task(storage, request.task_id)?;
+    if let Some(&missing) = request
+        .depends_on
+        .iter()
+        .find(|id| !current.depends_on.contains(id))
+    {
+        return Err(StorageError::DependencyNotFound {
+            task: request.task_id.into(),
+            depends_on: missing.into(),
+        }
+        .into());
+    }
     for &prerequisite in &request.depends_on {
         storage.remove_dependency(request.task_id.into(), prerequisite.into())?;
     }
-    get_task(storage, request.task_id)
+    let task = task_details(
+        storage,
+        GetTask {
+            id: request.task_id,
+        },
+    )?;
+    Ok(DependencyReply {
+        message: dependency_message(&task, false),
+        paused: false,
+        task,
+    })
 }
 
 /// Appends a note of `kind` to the task's history and returns the task with its notes.
@@ -641,12 +1065,89 @@ pub fn add_note(storage: &mut Storage, kind: NoteKind, request: AddNote) -> Comm
     Ok((&task).into())
 }
 
+/// Pauses an `in_progress` or `in_review` task as the app's Pause does and records the
+/// reason as a progress note. The task keeps its branch, worktree, herdr workspace, commit
+/// records, and pull request.
+pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Task> {
+    let reason = request.reason.trim();
+    if reason.is_empty() {
+        return Err(CommandError::invalid_input(
+            "reason must say why the work stops, e.g. {\"id\": 5, \"reason\": \"Waiting for the API design\"}",
+        ));
+    }
+    let task = get_task(storage, request.id)?;
+    match task.status {
+        TaskStatus::InProgress | TaskStatus::InReview => {}
+        TaskStatus::Planned => {
+            return Err(CommandError::rejected(format!(
+                "task {} is planned, so nobody works on it; call resume_task for a paused task or start_task to start it",
+                task.id.0
+            )));
+        }
+        TaskStatus::Done => {
+            return Err(CommandError::rejected(format!(
+                "task {} is done; create a follow-up task with create_task for more work",
+                task.id.0
+            )));
+        }
+    }
+    task_commands::pause(storage, request.id)?;
+    let task = storage.add_task_note(
+        request.id.into(),
+        NoteKind::Progress,
+        &format!("Paused: {reason}"),
+    )?;
+    Ok((&task).into())
+}
+
+/// Resumes a paused task (`planned` with a branch) as the app's Resume does: reopens its
+/// worktree and herdr workspace and moves it to `in_progress`. A given note is recorded as
+/// a progress note.
+pub fn resume_task(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: ResumeTask,
+) -> CommandResult<Task> {
+    let note = request
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|note| !note.is_empty());
+    let task = get_task(&lock(storage), request.id)?;
+    if task.status != TaskStatus::Planned || task.branch.is_none() {
+        let next = match task.status {
+            TaskStatus::Planned => "it was never started; call start_task to start it",
+            TaskStatus::InProgress | TaskStatus::InReview => {
+                "it is being worked on, not paused; keep working on it, or call pause_task to pause it"
+            }
+            TaskStatus::Done => "it is done; create a follow-up task with create_task",
+        };
+        return Err(CommandError::rejected(format!(
+            "task {} cannot be resumed: {next}",
+            task.id.0
+        )));
+    }
+    let id = request.id.into();
+    let resumed = match herdr_commands::start(storage, git, herdr, id) {
+        Ok(task) => task,
+        Err(error) => return Err(with_worktree_root_hint(&lock(storage), id, error)),
+    };
+    let Some(note) = note else {
+        return Ok((&resumed).into());
+    };
+    let task = lock(storage).add_task_note(id, NoteKind::Progress, &format!("Resumed: {note}"))?;
+    Ok((&task).into())
+}
+
 /// Starts or resumes a ready `planned` task as the app's Start does, then runs
-/// `agent_command` in the first pane of its herdr workspace.
+/// `agent_command` in the first pane of its herdr workspace, with the MCP server's URL and
+/// token in its environment (see [`with_mcp_env`]).
 pub fn start_task(
     storage: &StorageState,
     git: &Git,
     herdr: &Herdr,
+    server: &ServerStatus,
     request: StartTask,
 ) -> CommandResult<TaskStart> {
     let id = request.id.into();
@@ -693,13 +1194,27 @@ pub fn start_task(
     if let Some(command) = command {
         match panes.first() {
             None => started.pane_error = Some("herdr lists no pane of the task's workspace".into()),
-            Some(pane) => match herdr.run_in_pane(&pane.pane_id, command) {
+            Some(pane) => match herdr.run_in_pane(&pane.pane_id, &with_mcp_env(server, command)) {
                 Ok(()) => started.ran_in = Some(pane.pane_id.clone()),
                 Err(error) => started.pane_error = Some(error.to_string()),
             },
         }
     }
     Ok(started)
+}
+
+/// `command` after exporting `TOODO_MCP_URL` and `TOODO_MCP_TOKEN`, so the agent it starts
+/// can reach this server. The token is read from its file when the line runs, so it is
+/// never typed into the pane or its shell history.
+pub fn with_mcp_env(server: &ServerStatus, command: &str) -> String {
+    let Some(token_file) = &server.token_file else {
+        return command.to_owned();
+    };
+    format!(
+        "export TOODO_MCP_URL={}; export TOODO_MCP_TOKEN=\"$(cat {})\"; {command}",
+        shell_quote(&server.url),
+        shell_quote(&token_file.to_string_lossy()),
+    )
 }
 
 /// Tells the agent how to fix a start rejected because the task's machine has no worktree
@@ -783,6 +1298,19 @@ pub fn complete_task(
     Ok((&task).into())
 }
 
+/// A task concluded without merging, with the tasks that its conclusion leaves blocked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConcludedTask {
+    #[serde(flatten)]
+    pub task: Task,
+    /// Tasks that depend on the concluded task and stay blocked by it, since work that
+    /// was not adopted is not there to build on.
+    pub blocked_dependents: Vec<TaskLink>,
+    /// What the conclusion means for those tasks and what to do next.
+    pub message: String,
+}
+
 /// Concludes a task without merging as the app does, except that a task whose pull
 /// request is still open is rejected instead of closing it.
 pub fn conclude_task(
@@ -791,8 +1319,8 @@ pub fn conclude_task(
     github: &GitHub,
     herdr: &Herdr,
     request: ConcludeTask,
-) -> CommandResult<Task> {
-    Ok((&completion::conclude(
+) -> CommandResult<ConcludedTask> {
+    let concluded = completion::conclude(
         storage,
         git,
         github,
@@ -800,8 +1328,31 @@ pub fn conclude_task(
         request.id.into(),
         &request.note,
         OpenPullRequest::Reject,
-    )?)
-        .into())
+    )?;
+    let links = Links::load(&lock(storage))?;
+    let blocked_dependents = links.links(links.dependents(concluded.id).filter(|id| {
+        links
+            .tasks
+            .get(id)
+            .is_some_and(|task| task.status != crate::domain::status::TaskStatus::Done)
+    }));
+    Ok(ConcludedTask {
+        task: (&concluded).into(),
+        message: conclusion_message(concluded.id.0, &blocked_dependents),
+        blocked_dependents,
+    })
+}
+
+/// What concluding task `id` means for `dependents`, the tasks that depend on it.
+fn conclusion_message(id: i64, dependents: &[TaskLink]) -> String {
+    let Some(first) = dependents.first() else {
+        return format!("task {id} is done as not_adopted; no task depends on it.");
+    };
+    format!(
+        "task {id} is done as not_adopted, which blocks every task that depends on it: {}. For each, call remove_dependency (e.g. {{\"task_id\": {}, \"depends_on\": {id}}}) if it can go ahead without this work, or complete_task {id} with merged_with if another merged pull request shipped it.",
+        describe_links(dependents),
+        first.id.0
+    )
 }
 
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
@@ -852,6 +1403,12 @@ pub struct TaskDetails {
     pub commits: Vec<CommitRecord>,
     /// Tasks this task waits on.
     pub depends_on: Vec<TaskLink>,
+    /// Whether the task is planned and every task it depends on is done and adopted, so
+    /// start_task (or resume_task for a paused task) can begin it now.
+    pub ready: bool,
+    /// The tasks of `dependsOn` that keep it from starting: not done yet, or done as
+    /// not_adopted, which never unblocks it.
+    pub blocked_by: Vec<TaskLink>,
     /// Tasks that wait on this task.
     pub dependents: Vec<TaskLink>,
     /// Related tasks, which neither wait on this task nor block it.
@@ -934,6 +1491,17 @@ impl Links {
         })
     }
 
+    /// The tasks `task` depends on that keep it from starting: not done, or done as not
+    /// adopted.
+    fn blocked_by(&self, task: &model::Task) -> Vec<TaskLink> {
+        self.links(task.depends_on.iter().copied().filter(|id| {
+            self.tasks.get(id).is_some_and(|prerequisite| {
+                prerequisite.status != crate::domain::status::TaskStatus::Done
+                    || prerequisite.resolution == Some(model::TaskResolution::NotAdopted)
+            })
+        }))
+    }
+
     fn links(&self, ids: impl Iterator<Item = model::TaskId>) -> Vec<TaskLink> {
         ids.filter_map(|id| self.tasks.get(&id))
             .map(|task| TaskLink {
@@ -947,7 +1515,18 @@ impl Links {
     }
 }
 
-/// Tasks matching the query, best match first, each with its links.
+/// The task number a query consists of, e.g. `431` or `#431`.
+fn task_number(query: &str) -> Option<model::TaskId> {
+    let query = query.trim();
+    let digits = query.strip_prefix('#').unwrap_or(query);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().map(model::TaskId)
+}
+
+/// Tasks matching the query, best match first, each with its links. A query that is a
+/// task number puts that task first, in any workspace, ahead of the text matches.
 pub fn search_tasks(storage: &Storage, request: SearchTasks) -> CommandResult<Vec<SearchHit>> {
     if request.query.trim().is_empty() {
         return Err(CommandError::invalid_input("query must contain a word"));
@@ -957,16 +1536,29 @@ pub fn search_tasks(storage: &Storage, request: SearchTasks) -> CommandResult<Ve
             .get_workspace(workspace.into())?
             .ok_or(StorageError::WorkspaceNotFound(workspace.into()))?;
     }
-    let ids = storage.search_tasks(&TaskSearch {
+    let status = request.status.map(Into::into);
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_SEARCH_LIMIT)
+        .min(MAX_SEARCH_LIMIT);
+    let mut ids = storage.search_tasks(&TaskSearch {
         query: &request.query,
         workspace: request.workspace_id.map(Into::into),
-        status: request.status.map(Into::into),
-        limit: request
-            .limit
-            .unwrap_or(DEFAULT_SEARCH_LIMIT)
-            .clamp(1, MAX_SEARCH_LIMIT),
+        status,
+        limit,
     })?;
     let links = Links::load(storage)?;
+    let numbered = task_number(&request.query).filter(|id| {
+        links
+            .tasks
+            .get(id)
+            .is_some_and(|task| status.is_none_or(|status| task.status == status))
+    });
+    if let Some(id) = numbered {
+        ids.retain(|other| *other != id);
+        ids.insert(0, id);
+        ids.truncate(limit as usize);
+    }
     ids.into_iter().map(|id| links.hit(id)).collect()
 }
 
@@ -975,11 +1567,14 @@ pub fn task_details(storage: &Storage, request: GetTask) -> CommandResult<TaskDe
     let links = Links::load(storage)?;
     let id = request.id.into();
     let task = links.task(id)?;
+    let blocked_by = links.blocked_by(task);
     Ok(TaskDetails {
         task: task.into(),
         workspace: links.workspace(task),
         commits: types::map_all(&storage.list_commit_records(id)?),
         depends_on: links.links(task.depends_on.iter().copied()),
+        ready: is_ready(task, &blocked_by),
+        blocked_by,
         dependents: links.links(links.dependents(id)),
         related: links.links(links.related(id)),
     })
@@ -1072,6 +1667,7 @@ mod tests {
                 due_date: None,
                 criteria: Vec::new(),
                 merge_criterion: None,
+                request_id: None,
             },
             Some(NewCriterion::merge(true)),
         )
@@ -1126,10 +1722,45 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(removed.depends_on.is_empty());
+        assert!(removed.task.task.depends_on.is_empty());
+        assert!(removed.task.ready);
         assert_eq!(
-            add_dependencies(&mut storage, request).unwrap().depends_on,
+            add_dependencies(&mut storage, request)
+                .unwrap()
+                .task
+                .task
+                .depends_on,
             vec![second.id]
+        );
+    }
+
+    #[test]
+    fn removing_a_dependency_that_does_not_exist_removes_none() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let first = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        let other = create(&mut storage, workspace, "Docs", vec![]).unwrap();
+        let second = create(&mut storage, workspace, "API", vec![first.id]).unwrap();
+
+        let error = remove_dependency(
+            &mut storage,
+            Dependency {
+                task_id: second.id,
+                depends_on: vec![first.id, other.id],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+        assert!(
+            error.message.starts_with(&format!(
+                "task {} does not depend on {}; get_task {}",
+                second.id.0, other.id.0, second.id.0
+            )),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            get_task(&storage, second.id).unwrap().depends_on,
+            [first.id]
         );
     }
 
@@ -1157,7 +1788,76 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(updated.depends_on, vec![fix.id, docs.id]);
+        assert_eq!(updated.task.task.depends_on, vec![fix.id, docs.id]);
+        assert!(!updated.paused);
+        assert_eq!(
+            updated.message,
+            format!(
+                "task {} waits for #{} (planned), #{} (planned) before it can start.",
+                task.id.0, fix.id.0, docs.id.0
+            )
+        );
+    }
+
+    #[test]
+    fn a_done_task_gets_no_new_prerequisites() {
+        use crate::domain::status::TaskStatus;
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Verify", vec![]).unwrap();
+        let fix = create(&mut storage, workspace, "Fix login", vec![]).unwrap();
+        for status in [
+            TaskStatus::InProgress,
+            TaskStatus::InReview,
+            TaskStatus::Done,
+        ] {
+            storage.set_task_status(task.id.into(), status).unwrap();
+        }
+
+        let error = add_dependencies(
+            &mut storage,
+            AddDependencies {
+                task_id: task.id,
+                depends_on: vec![fix.id],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.ends_with(&format!(
+                "create a follow-up task with create_task and depends_on [{}]",
+                fix.id.0
+            )),
+            "{}",
+            error.message
+        );
+        assert!(get_task(&storage, task.id).unwrap().depends_on.is_empty());
+    }
+
+    #[test]
+    fn a_prerequisite_of_a_task_in_review_does_not_pause_it_and_says_so() {
+        use crate::domain::status::TaskStatus;
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Verify", vec![]).unwrap();
+        let fix = create(&mut storage, workspace, "Fix login", vec![]).unwrap();
+        for status in [TaskStatus::InProgress, TaskStatus::InReview] {
+            storage.set_task_status(task.id.into(), status).unwrap();
+        }
+
+        let reply = add_dependencies(
+            &mut storage,
+            AddDependencies {
+                task_id: task.id,
+                depends_on: vec![fix.id],
+            },
+        )
+        .unwrap();
+        assert!(!reply.paused);
+        assert_eq!(reply.task.task.status, types::TaskStatus::InReview);
+        assert!(
+            reply.message.contains("not paused") && reply.message.contains("call pause_task"),
+            "{}",
+            reply.message
+        );
     }
 
     #[test]
@@ -1173,7 +1873,7 @@ mod tests {
             .set_task_herdr_workspace(task.id.into(), "w1")
             .unwrap();
 
-        add_dependencies(
+        let reply = add_dependencies(
             &mut storage,
             AddDependencies {
                 task_id: task.id,
@@ -1185,6 +1885,41 @@ mod tests {
         let paused = storage.get_task(task.id.into()).unwrap().unwrap();
         assert_eq!(paused.status, TaskStatus::Planned);
         assert_eq!(paused.herdr_workspace_id.as_deref(), Some("w1"));
+        assert!(reply.paused);
+        assert!(!reply.task.ready);
+        assert_eq!(reply.task.depends_on[0].title, "Fix login");
+        assert_eq!(reply.task.blocked_by, reply.task.depends_on);
+        assert!(
+            reply.message.starts_with(&format!(
+                "task {} is paused until #{} (planned) is done",
+                task.id.0, fix.id.0
+            )),
+            "{}",
+            reply.message
+        );
+        let json = serde_json::to_value(&reply).unwrap();
+        assert_eq!(json["paused"], true);
+        assert_eq!(json["task"]["dependsOn"][0]["title"], "Fix login");
+        assert_eq!(json["task"]["blockedBy"][0]["status"], "planned");
+
+        // Removing the last blocker leaves a paused task that resume_task resumes.
+        let mut branched = paused;
+        branched.branch = Some("feat/verify-1".to_owned());
+        storage.update_task(&branched).unwrap();
+        let reply = remove_dependency(
+            &mut storage,
+            Dependency {
+                task_id: task.id,
+                depends_on: vec![fix.id],
+            },
+        )
+        .unwrap();
+        assert!(reply.task.ready);
+        assert!(
+            reply.message.ends_with("resume_task resumes it."),
+            "{}",
+            reply.message
+        );
     }
 
     #[test]
@@ -1203,6 +1938,7 @@ mod tests {
                 criteria: None,
                 remove_merge_criterion: false,
             },
+            None,
         )
         .unwrap();
         assert_eq!(updated.title, "Schema");
@@ -1210,8 +1946,96 @@ mod tests {
         assert_eq!(updated.description, "Add tables");
     }
 
+    #[test]
+    fn update_leaves_a_done_task_as_it_was_finished() {
+        use crate::domain::status::TaskStatus::{Done, InProgress, InReview};
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        for status in [InProgress, InReview, Done] {
+            storage.set_task_status(task.id.into(), status).unwrap();
+        }
+        let done = get_task(&storage, task.id).unwrap();
+
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "id": task.id, "title": "Renamed", "description": "Other" }),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("add_progress_note"),
+            "{}",
+            error.message
+        );
+        assert_eq!(get_task(&storage, task.id).unwrap(), done);
+    }
+
     fn update(storage: &mut Storage, request: serde_json::Value) -> CommandResult<Task> {
-        update_task(storage, serde_json::from_value(request).unwrap())
+        update_task(storage, serde_json::from_value(request).unwrap(), None)
+    }
+
+    #[test]
+    fn add_criterion_appends_one_and_keeps_the_others_with_their_evidence() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let add = |storage: &mut Storage, request: serde_json::Value| {
+            add_criterion(storage, serde_json::from_value(request).unwrap(), None)
+        };
+        let added = add(
+            &mut storage,
+            serde_json::json!({ "task_id": task.id, "text": "Tests pass", "kind": "command", "target": "npm test" }),
+        )
+        .unwrap();
+        assert_eq!(added.criteria.len(), 3);
+        assert_eq!(added.criteria[..2], task.criteria[..]);
+        assert_eq!(added.criteria[2].text, "Tests pass");
+        assert_eq!(added.criteria[2].target.as_deref(), Some("npm test"));
+        assert_eq!(added.criteria[2].state, types::CriterionState::Pending);
+
+        let error = add(
+            &mut storage,
+            serde_json::json!({ "task_id": task.id, "text": "Merged", "kind": "branch_merged_locally" }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(
+            error.message.contains("one merge criterion"),
+            "{}",
+            error.message
+        );
+        assert_eq!(get_task(&storage, task.id).unwrap().criteria.len(), 3);
+    }
+
+    #[test]
+    fn remove_criterion_deletes_only_that_one() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = task_with_checked_criterion(&mut storage, workspace);
+        let other = create(&mut storage, workspace, "Other", vec![]).unwrap();
+        let remove = |storage: &mut Storage, request: serde_json::Value| {
+            remove_criterion(storage, serde_json::from_value(request).unwrap())
+        };
+        let manual = task.criteria[1].id.0;
+        let error = remove(
+            &mut storage,
+            serde_json::json!({ "task_id": other.id, "criterion_id": manual }),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("belongs to task"),
+            "{}",
+            error.message
+        );
+        let error = remove(&mut storage, serde_json::json!({ "criterion_id": 999 })).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+
+        let removed = remove(&mut storage, serde_json::json!({ "id": manual })).unwrap();
+        assert_eq!(removed.criteria, task.criteria[..1]);
+        // Naming the merge criterion removes it deliberately.
+        let merge = task.criteria[0].id.0;
+        let removed = remove(&mut storage, serde_json::json!({ "criterion_id": merge })).unwrap();
+        assert!(removed.criteria.is_empty());
+        assert_eq!(get_task(&storage, other.id).unwrap().criteria.len(), 1);
     }
 
     fn check(storage: &mut Storage, request: serde_json::Value) -> CommandResult<Task> {
@@ -1402,13 +2226,13 @@ mod tests {
         };
         add_dependencies(&mut storage, add(serde_json::json!(fix.id))).unwrap();
         let both = add_dependencies(&mut storage, add(serde_json::json!([docs.id]))).unwrap();
-        assert_eq!(both.depends_on, vec![fix.id, docs.id]);
+        assert_eq!(both.task.task.depends_on, vec![fix.id, docs.id]);
         let one = remove_dependency(&mut storage, remove(serde_json::json!(fix.id))).unwrap();
-        assert_eq!(one.depends_on, vec![docs.id]);
+        assert_eq!(one.task.task.depends_on, vec![docs.id]);
         add_dependencies(&mut storage, add(serde_json::json!(fix.id))).unwrap();
         let none =
             remove_dependency(&mut storage, remove(serde_json::json!([fix.id, docs.id]))).unwrap();
-        assert!(none.depends_on.is_empty());
+        assert!(none.task.task.depends_on.is_empty());
 
         let error = serde_json::from_value::<Dependency>(
             serde_json::json!({ "task_id": 1, "depends_on": "2" }),
@@ -1447,7 +2271,7 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .extend(fields.as_object().unwrap().clone());
-            update_task(storage, serde_json::from_value(request).unwrap())
+            update_task(storage, serde_json::from_value(request).unwrap(), None)
         };
         let kept = update(&mut storage, serde_json::json!({ "title": "Tables" })).unwrap();
         assert_eq!(
@@ -1637,6 +2461,23 @@ mod tests {
         )
         .unwrap();
         assert!(unlinked.related.is_empty());
+        let error = remove_related(
+            &mut storage,
+            Related {
+                task_id: research.id,
+                related_id: tool.id,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::NotFound);
+        assert!(
+            error.message.ends_with(&format!(
+                "get_task {} lists its related tasks",
+                research.id.0
+            )),
+            "{}",
+            error.message
+        );
         let error = task_details(&storage, GetTask { id: TaskId(99) }).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
         let error = add_related(
@@ -1653,9 +2494,17 @@ mod tests {
     #[test]
     fn lists_tasks_of_one_workspace_or_all() {
         let (mut storage, workspace) = storage_with_workspace();
-        create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        let schema = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        create(&mut storage, workspace, "API", vec![schema.id]).unwrap();
         let all = list_tasks(&storage, ListTasks { workspace_id: None }).unwrap();
-        assert_eq!(all.len(), 1);
+        assert_eq!(all.len(), 2);
+        assert!(all[0].ready && all[0].blocked_by.is_empty());
+        assert!(!all[1].ready);
+        assert_eq!(all[1].blocked_by[0].id, schema.id);
+        let json = serde_json::to_value(&all[1]).unwrap();
+        assert_eq!(json["title"], "API");
+        assert_eq!(json["ready"], false);
+        assert_eq!(json["blockedBy"][0]["title"], "Schema");
         let error = list_tasks(
             &storage,
             ListTasks {
@@ -1681,6 +2530,7 @@ mod tests {
                 &storage,
                 CurrentTask {
                     cwd: cwd.to_owned(),
+                    machine: None,
                 },
             )
         };
@@ -1714,6 +2564,7 @@ mod tests {
                 storage,
                 CurrentTask {
                     cwd: r"D:\wt\toodo\feat-schema-1".to_owned(),
+                    machine: None,
                 },
             )
             .unwrap();
@@ -1751,11 +2602,172 @@ mod tests {
                 &storage,
                 CurrentTask {
                     cwd: cwd.to_owned(),
+                    machine: None,
                 },
             )
         };
         assert_eq!(find("/wt/app/feat-remote-1/src").unwrap().task.id, task.id);
         assert!(find("/WT/app/feat-remote-1").is_err());
+        assert_eq!(
+            find("/wt/app/other/../feat-remote-1/./src")
+                .unwrap()
+                .task
+                .id,
+            task.id
+        );
+        assert!(find("/wt/app/feat-remote-1/../outside").is_err());
+    }
+
+    #[test]
+    fn unknown_arguments_are_rejected_with_the_accepted_ones() {
+        let error = serde_json::from_value::<UpdateTask>(
+            serde_json::json!({"id": 1, "dueDate": "2026-11-01"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unknown field `dueDate`"), "{error}");
+        assert!(error.contains("`due_date`"), "{error}");
+    }
+
+    #[test]
+    fn patch_schemas_advertise_no_null_defaults() {
+        let schema = schemars::schema_for!(UpdateTask);
+        let properties = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        for (name, property) in properties {
+            assert_ne!(
+                property.get("default"),
+                Some(&serde_json::Value::Null),
+                "{name}: {property}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_number_finds_that_task_first_in_any_workspace() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let other = storage
+            .create_workspace(&NewWorkspace {
+                name: "server".to_owned(),
+                location: WorkspaceLocation::Ssh {
+                    machine: model::MachineLabel::parse("devbox").unwrap(),
+                    path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
+                },
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        let numbered = create(&mut storage, other.id.into(), "Deploy server", vec![]).unwrap();
+        let number = numbered.id.0;
+        let mention = create(
+            &mut storage,
+            workspace,
+            &format!("Follow up on {number}"),
+            vec![],
+        )
+        .unwrap();
+        let ids = |query: String, workspace_id, status| -> Vec<TaskId> {
+            search_tasks(
+                &storage,
+                SearchTasks {
+                    query,
+                    workspace_id,
+                    status,
+                    limit: None,
+                },
+            )
+            .unwrap()
+            .iter()
+            .map(|hit| hit.id)
+            .collect()
+        };
+        assert_eq!(
+            ids(format!("{number}"), None, None),
+            [numbered.id, mention.id]
+        );
+        assert_eq!(
+            ids(format!(" #{number} "), Some(workspace), None),
+            [numbered.id]
+        );
+        assert_eq!(
+            ids(format!("{number}"), Some(workspace), None),
+            [numbered.id, mention.id]
+        );
+        assert_eq!(
+            ids(format!("{number}"), None, Some(TaskStatus::Done)),
+            Vec::<TaskId>::new()
+        );
+        assert_eq!(ids("999".to_owned(), None, None), Vec::<TaskId>::new());
+    }
+
+    #[test]
+    fn a_search_limit_of_zero_returns_no_tasks() {
+        let (mut storage, workspace) = storage_with_workspace();
+        create(&mut storage, workspace, "Search schema", vec![]).unwrap();
+        let limited = |limit| {
+            search_tasks(
+                &storage,
+                SearchTasks {
+                    query: "schema".to_owned(),
+                    workspace_id: None,
+                    status: None,
+                    limit,
+                },
+            )
+            .unwrap()
+            .len()
+        };
+        assert_eq!(limited(Some(0)), 0);
+        assert_eq!(limited(None), 1);
+    }
+
+    #[test]
+    fn the_current_task_is_scoped_to_the_machine_the_agent_runs_on() {
+        let (mut storage, local) = storage_with_workspace();
+        let remote = storage
+            .create_workspace(&NewWorkspace {
+                name: "server".to_owned(),
+                location: WorkspaceLocation::Ssh {
+                    machine: model::MachineLabel::parse("devbox").unwrap(),
+                    path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
+                },
+                default_base_branch: "main".to_owned(),
+            })
+            .unwrap();
+        let here = create(&mut storage, local, "Here", vec![]).unwrap();
+        let there = create(&mut storage, remote.id.into(), "There", vec![]).unwrap();
+        for id in [here.id, there.id] {
+            set_worktree(
+                &mut storage,
+                id,
+                HostPath::Windows(WindowsPath::parse(r"D:\wt\shared").unwrap()),
+            );
+        }
+        let find = |machine: Option<&str>| {
+            current_task(
+                &storage,
+                CurrentTask {
+                    cwd: r"D:\wt\shared\src".to_owned(),
+                    machine: machine.map(str::to_owned),
+                },
+            )
+        };
+
+        let error = find(None).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("on devbox"), "{}", error.message);
+        assert_eq!(find(Some("local")).unwrap().task.id, here.id);
+        let found = find(Some("devbox")).unwrap();
+        assert_eq!(found.task.id, there.id);
+        assert_eq!(
+            serde_json::to_value(&found).unwrap()["machine"]["label"],
+            "devbox"
+        );
+        assert_eq!(
+            find(Some("gpu")).unwrap_err().kind,
+            CommandErrorKind::NotFound
+        );
     }
 
     type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
@@ -1837,6 +2849,30 @@ mod tests {
         task.timeline.last().map(|event| event.status)
     }
 
+    fn server_status() -> ServerStatus {
+        ServerStatus {
+            url: crate::mcp::url(47617),
+            token: Some("secret".to_owned()),
+            token_file: Some("/home/me/toodo data/mcp-token".into()),
+            instance: "0123456789ab".to_owned(),
+            error: None,
+            rejections: Default::default(),
+        }
+    }
+
+    #[test]
+    fn agent_commands_get_the_mcp_url_and_token_without_the_token_typed() {
+        let mut server = server_status();
+        assert_eq!(
+            with_mcp_env(&server, "claude"),
+            "export TOODO_MCP_URL='http://127.0.0.1:47617/mcp'; \
+             export TOODO_MCP_TOKEN=\"$(cat '/home/me/toodo data/mcp-token')\"; claude"
+        );
+        assert!(!with_mcp_env(&server, "claude").contains("secret"));
+        server.token_file = None;
+        assert_eq!(with_mcp_env(&server, "claude"), "claude");
+    }
+
     #[test]
     fn start_is_rejected_for_a_task_that_is_not_ready_or_not_planned() {
         let (storage, task, dependent) = started(false);
@@ -1847,9 +2883,11 @@ mod tests {
             &storage,
             &git,
             &herdr,
+            &server_status(),
             StartTask {
                 id: dependent.id,
                 agent_command: None,
+                request_id: None,
             },
         )
         .unwrap_err();
@@ -1863,9 +2901,11 @@ mod tests {
             &storage,
             &git,
             &herdr,
+            &server_status(),
             StartTask {
                 id: task.id,
                 agent_command: None,
+                request_id: None,
             },
         )
         .unwrap_err();
@@ -1873,6 +2913,68 @@ mod tests {
 
         assert!(git_runner.invocations.lock().unwrap().is_empty());
         assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, dependent.id), dependent);
+    }
+
+    #[test]
+    fn pause_keeps_the_work_and_records_the_reason() {
+        let (storage, task, _) = started(false);
+        let pause = |id, reason: &str| {
+            pause_task(
+                &mut crate::commands::lock(&storage),
+                PauseTask {
+                    id,
+                    reason: reason.to_owned(),
+                },
+            )
+        };
+
+        let error = pause(task.id, "  ").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert_eq!(stored(&storage, task.id), task);
+
+        let paused = pause(task.id, " Waiting for the API design ").unwrap();
+        assert_eq!(paused.status, TaskStatus::Planned);
+        assert_eq!(paused.branch.as_deref(), Some("feat/add-login-1"));
+        assert_eq!(paused.herdr_workspace_id.as_deref(), Some("w27"));
+        assert!(paused.milestones.paused_at.is_some());
+        let note = paused.notes.last().unwrap();
+        assert_eq!(note.kind, types::NoteKind::Progress);
+        assert_eq!(note.body, "Paused: Waiting for the API design");
+
+        let error = pause(task.id, "Again").unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("resume_task"), "{}", error.message);
+    }
+
+    #[test]
+    fn resume_is_rejected_for_a_task_that_is_not_paused() {
+        let (storage, task, dependent) = started(false);
+        let (git, git_runner) = fake(Git::new, vec![]);
+        let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
+        let resume = |id| {
+            resume_task(
+                &storage,
+                &git,
+                &herdr,
+                ResumeTask {
+                    id,
+                    note: Some("Continue".to_owned()),
+                },
+            )
+            .unwrap_err()
+        };
+
+        let error = resume(dependent.id);
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("start_task"), "{}", error.message);
+        let error = resume(task.id);
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("pause_task"), "{}", error.message);
+
+        assert!(git_runner.invocations.lock().unwrap().is_empty());
+        assert!(herdr_runner.invocations.lock().unwrap().is_empty());
+        assert_eq!(stored(&storage, task.id), task);
         assert_eq!(stored(&storage, dependent.id), dependent);
     }
 
@@ -2034,7 +3136,7 @@ mod tests {
             done.merged_with,
             Some(types::MergedWith {
                 task_id: Some(task.id),
-                pull_request_url: PR.to_owned(),
+                pull_request_url: Some(PR.to_owned()),
             })
         );
         assert_eq!(done.pull_request_merged_at, task.pull_request_merged_at);
@@ -2048,6 +3150,67 @@ mod tests {
             herdr_runner.invocations.lock().unwrap()[0].args,
             ["workspace", "close", "w28"]
         );
+    }
+
+    #[test]
+    fn complete_with_merged_with_ships_through_a_task_done_without_a_pull_request() {
+        for (resolution, expected) in [
+            (
+                model::TaskResolution::Completed,
+                types::TaskResolution::Completed,
+            ),
+            (model::TaskResolution::Merged, types::TaskResolution::Merged),
+        ] {
+            let (storage, _, extra) = shipped();
+            let target = {
+                let mut storage = crate::commands::lock(&storage);
+                let target =
+                    create(&mut storage, extra.workspace_id, "Deploy config", vec![]).unwrap();
+                let id = target.id.into();
+                storage
+                    .set_task_status(id, crate::domain::status::TaskStatus::InProgress)
+                    .unwrap();
+                match resolution {
+                    model::TaskResolution::Completed => {
+                        storage
+                            .complete_task_without_pull_request(id, "Deployed", &[])
+                            .unwrap();
+                    }
+                    _ => {
+                        // A recorded merge without a pull request URL.
+                        storage.complete_task(id, Some(1_000), None, &[]).unwrap();
+                    }
+                }
+                target.id
+            };
+            assert_eq!(
+                stored(&storage, target).resolution,
+                Some(expected),
+                "target done as {expected:?}"
+            );
+            let (git, _) = fake(Git::new, github_checkout());
+            let (github, _) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+            let (herdr, _) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
+
+            let done = complete_task(
+                &storage,
+                &git,
+                &github,
+                &herdr,
+                merged_with(extra.id, MergedWithRef::Task(target.0)),
+            )
+            .unwrap();
+
+            assert_eq!(done.resolution, Some(expected));
+            assert_eq!(
+                done.merged_with,
+                Some(types::MergedWith {
+                    task_id: Some(target),
+                    pull_request_url: None,
+                })
+            );
+            assert_eq!(stored(&storage, extra.id), done);
+        }
     }
 
     #[test]
@@ -2081,7 +3244,7 @@ mod tests {
             done.merged_with,
             Some(types::MergedWith {
                 task_id: Some(task.id),
-                pull_request_url: PR.to_owned(),
+                pull_request_url: Some(PR.to_owned()),
             })
         );
         assert_eq!(done.timeline, concluded.timeline);
@@ -2273,6 +3436,16 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(done.blocked_dependents[0].id, dependent.id);
+        assert!(
+            done.message.contains(&format!(
+                "call remove_dependency (e.g. {{\"task_id\": {}, \"depends_on\": {}}})",
+                dependent.id.0, task.id.0
+            )),
+            "{}",
+            done.message
+        );
+        let done = done.task;
         assert_eq!(done.status, types::TaskStatus::Done);
         assert_eq!(done.resolution, Some(types::TaskResolution::NotAdopted));
         assert_eq!(done.completion_note.as_deref(), Some("Duplicate of #7"));

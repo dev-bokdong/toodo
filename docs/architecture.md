@@ -105,7 +105,7 @@ A unit of work inside a workspace.
 | `issue` | GitHub issue of the workspace repository the task works on (number and URL), or `null`. Its pull request closes it on merge; see [workflow.md](workflow.md#2-plan-tasks). |
 | `pullRequestMergedAt` | Merge time reported by GitHub (`mergedAt`), stored when a merged pull request is recorded. |
 | `pullRequest` | Snapshot of the merged pull request taken when it completed the task: number, title, additions, deletions, changed files, merge commit SHA, submitted reviews and distinct reviewers other than its author, and the first review time. Stored in `pull_request_snapshots`; `null` for tasks completed before Toodo recorded it. |
-| `mergedWith` | For a task `done` as merged through the pull request of another task (see [workflow.md](workflow.md#7c-complete-through-another-tasks-pull-request)): that pull request's URL and the task that owns it (`null` once that task is deleted); `null` otherwise. |
+| `mergedWith` | For a task `done` through the pull request of another task (see [workflow.md](workflow.md#7c-complete-through-another-tasks-pull-request)): that pull request's URL and the task that owns it (`null` once that task is deleted), or only the task when it shipped without a recorded pull request; `null` otherwise. |
 | `completionNote` | What the user wrote about the outcome of a `done` task, for reviews; `null` until written. For a `not_adopted` task it is the required conclusion: why the work is not adopted. |
 | `criteria` | Completion criteria in order: text, check kind (`manual`, `pr_merged`, `pr_open_ci_green`, `branch_merged_locally`, `url`, `command`), target (URL or command), state (`pending`, `met`, `failed`), evidence, and who checked it when. Stored in `task_criteria`; see [workflow.md](workflow.md#completion-criteria). |
 | `timeline` | Status history of the task; see [Task Timeline](#task-timeline). |
@@ -133,8 +133,12 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   | `plannedAt` | The first event (task creation). |
   | `startedAt` | The first move to `in_progress`; resuming a paused task keeps it. |
   | `reviewAt` | The first move to `in_review` (pull request opened, or every criterion met with a manual one awaiting confirmation). |
-  | `completedAt` | The move to `done`. |
+  | `completedAt` | The latest move to `done`, cleared when the task is reopened after it. |
+  | `reopenedAt` | The latest move out of `done`, which only reopening makes (see [workflow.md](workflow.md#7d-reopen-a-done-task-or-correct-its-outcome)); each such event is marked `reopened`. |
   | `pausedAt` | The latest move back to `planned` after `startedAt`, cleared when the task is started again. |
+  | `lastReviewAt` | The latest move to `in_review`; later than `reviewAt` when the task went back to review. |
+  | `activeSeconds` | Seconds spent `in_progress` or `in_review` up to the latest status change, pauses left out. |
+  | `pauseCount` | How often the task moved back to `planned` after `startedAt`. |
 
   When a task became ready to start is not recorded: it is the `completedAt` of its last
   dependency to be done.
@@ -172,28 +176,6 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   from the lower task ID to the higher one, and deleting a task drops its links.
 - Related links are set through MCP only (`add_related` / `remove_related`); the app
   does not show them yet.
-
-### Project Memory
-
-Durable knowledge an agent reads before it acts and writes as it learns, so a restarted
-agent can continue from Toodo alone. Table `memory_entries`:
-
-| Field | Description |
-| --- | --- |
-| `workspace_id` | The workspace the entry is about; `NULL` for an entry shared by every workspace (standing preferences and cross-project rules). Deleting the workspace deletes its entries. |
-| `kind` | `decision` (a choice and why), `rule` (to follow), `note`, or `summary`. |
-| `title`, `body` | A one-line statement (required) and Markdown details. |
-| `task_id` | The task the entry came from, optional; for a workspace entry it must belong to that workspace. Deleting the task clears it. |
-| `created_at`, `updated_at` | Timestamps; editing moves `updated_at`. |
-| `superseded_by` | The entry that replaced this one; `NULL` while it is current. |
-
-- Editing rewrites a current entry in place, for fixes that keep its meaning.
-- Superseding adds the replacement in the same scope and points the old entry at it;
-  the old entry is kept as history and can no longer change. Lists show current
-  entries unless superseded ones are asked for.
-- The app shows it as the Memory view of each workspace (beside Tasks) and as Shared
-  memory in the sidebar: read, add, edit, supersede, and show superseded entries.
-  Commands `list_memory`, `add_memory`, `update_memory`, and `supersede_memory`.
 
 ### CommitRecord
 
@@ -425,22 +407,29 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     hex encoded, created once in `mcp-token` in the server's data directory. rmcp also
     rejects non-loopback `Host` headers against DNS rebinding.
   - Tools: `list_workspaces`, `list_tasks`, `current_task` (the task whose worktree
-    contains a given directory), `create_task` (with optional `depends_on`; unknown
+    contains a given directory, after resolving `.` and `..`; an optional `machine`
+    scopes it to one machine, and a path inside worktrees on several machines is
+    rejected without it), `restore_worktree` (the app's Restore worktree for an active
+    task whose worktree directory is gone), `create_task` (with optional `depends_on`; unknown
     prerequisites create nothing), `update_task`, `add_dependency` (several
     prerequisites in one call; it pauses an `in_progress` task they block but leaves its
     herdr workspace open, and the app asks the user whether to close it),
-    `remove_dependency`, and `add_progress_note` / `report_blocker`, which append a
+    `remove_dependency`, `pause_task` / `resume_task` (the app's Pause and Resume; the
+    pause reason and an optional resume note become progress notes), and
+    `add_progress_note` / `report_blocker`, which append a
     timestamped Markdown note (`progress` or `blocker`, table `task_notes`) to a task
     without changing its status. They reuse the storage rules, so cycles are rejected. The
     server instructions tell agents that work their task needs before it can finish is a
     prerequisite of their task, added last, and to note decisions and blockers as they
     work; Toodo never prompts agents itself. Notes show in the task list (latest) and the
     task details (all), and period reviews list the notes left during the period. Tool
-    failures come back as tool errors whose text the agent sees.
+    failures come back as tool errors whose text the agent sees; arguments a tool does
+    not know are rejected, naming the ones it accepts.
   - `search_tasks` finds earlier tasks of all workspaces (or one, or one status) by words
     in their title, description, completion note and notes, branch, and pull request
     title and URL; every word must appear, and results come best match first with
-    their `depends_on`, `dependents`, and `related` IDs. `get_task` returns one task
+    their `depends_on`, `dependents`, and `related` IDs; a task number alone (`431` or
+    `#431`) puts that task first, in any workspace. `get_task` returns one task
     with its whole history (timeline, notes, completion note, pull request, commits)
     and its linked tasks (id, title, status). `add_related` / `remove_related` set
     [related links](#related-tasks). The instructions and the `toodo` skill tell agents
@@ -454,16 +443,6 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     Every word is quoted (FTS5) or escaped (`LIKE`), so operators, `*`, quotes, and
     parentheses are plain text. Triggers on `tasks`, `task_notes`, and
     `pull_request_snapshots` keep the index in sync with every write.
-  - `list_memory`, `search_memory`, `get_memory`, `add_memory`, `update_memory`, and
-    `supersede_memory` read and write [project memory](#project-memory). They take an
-    optional `workspace_id` (none means the shared entries) and `include_shared` to add
-    the shared entries to a workspace's; `include_superseded` adds the history, and
-    `get_memory` returns the entries an entry replaced. Search matches every word as a
-    substring of the title or body (`LIKE`, escaped). Writes emit `MemoryChanged` so
-    the app refreshes. The instructions and the `toodo` skill tell agents to read a
-    workspace's memory with the shared entries before acting, to record durable
-    decisions and conventions, and to supersede an entry that no longer holds instead
-    of contradicting it.
   - `start_task`, `complete_task`, and `conclude_task` run the app's own commands
     (`commands::herdr::start`, `commands::completion::complete` and `conclude`) on a
     blocking thread, with the same adapters, checks, and status history, and emit
@@ -478,7 +457,11 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     `current_task` finds for them, since its pull request's merge completes it.
   - Deleting tasks is not exposed: it cannot be undone and stays in the app.
   - Agent access in Settings copies an MCP client config with the URL and token
-    (`mcp_server_info`).
+    (`mcp_server_info`), tests that the server accepts that token, and shows the server
+    instance and the last request `/mcp` turned away with its reason. `401` bodies at
+    `/mcp` and `/api` say why a request was turned away and name the next step.
+  - `start_task` exports `TOODO_MCP_URL` and `TOODO_MCP_TOKEN` (read from `mcp-token`
+    when the line runs) before the `agent_command` it runs in the task's pane.
   - Agents on SSH machines reach the server through reverse tunnels
     (`src-tauri/src/mcp/tunnels.rs`): while the server runs, Toodo keeps one
     `ssh -v -N -R 127.0.0.1:<port>:127.0.0.1:<port> -- <host>` (the server's own port) per machine with an SSH

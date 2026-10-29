@@ -8,6 +8,7 @@ import {
   CircleSlash,
   CircleX,
   Crosshair,
+  Flag,
   FolderGit2,
   GitMerge,
   GitPullRequest,
@@ -18,6 +19,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   SquareTerminal,
   StickyNote,
@@ -60,6 +62,7 @@ import type {
   NoteKind,
   Task,
   TaskId,
+  TaskResolution,
   TaskStatus,
   TaskType,
   Workspace,
@@ -78,6 +81,7 @@ import {
   usePullRequestStatuses,
   useCommitRecords,
   useCompleteTask,
+  useCompleteTaskMergedWith,
   useConcludeTask,
   useCreateBaseBranch,
   useCreateIssue,
@@ -93,9 +97,11 @@ import {
   useRefreshCommitRecords,
   useRemoveDependency,
   useRemoveRelation,
+  useReopenTask,
   useRestoreTaskWorktree,
   useSaveMachineSettings,
   useSetCompletionNote,
+  useSetTaskOutcome,
   useStartTask,
   useTaskRelations,
   useTasks,
@@ -111,7 +117,6 @@ import {
   freshnessWarning,
   isNotAdopted,
   isPaused,
-  pausesStartedTask,
   waitingPrerequisites,
   type TimelineScale,
 } from "@/lib/task-graph";
@@ -123,16 +128,26 @@ import {
   shownStatus,
   shownStatuses,
   taskGroupNames,
+  taskNumber,
+  toggleStatus,
   type ShownStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { needsAttention } from "@/lib/attention";
+import { needsAttention, openBlocker } from "@/lib/attention";
 import { formatFull, formatWhen, reachedMilestones } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { firstParagraph, markdownPreview } from "@/lib/markdown";
 import { dueState, dueStateLabels, formatEstimate, parseEstimateAmount } from "@/lib/plan";
 import { normalizePath, shortPath } from "@/lib/paths";
-import { statusNames, toneChip, toneOutline, tonePanel, toneText } from "@/lib/status-styles";
+import {
+  statusNames,
+  toneChip,
+  toneFill,
+  toneOutline,
+  tonePanel,
+  toneText,
+  type Tone,
+} from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { reachability, subscribeReachability } from "@/web/connection";
 
@@ -152,27 +167,27 @@ function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   return statusNames[shownStatus(task, byId)];
 }
 
-const statusStyles: Record<TaskStatus, string> = {
-  planned: toneChip.neutral,
-  in_progress: toneChip.progress,
-  in_review: toneChip.review,
-  done: toneChip.success,
+/** The tone of each shown status, shared by the status chips and the status filter. */
+const statusTones: Record<ShownStatus, Tone> = {
+  planned: "neutral",
+  ready: "attention",
+  paused: "neutral",
+  in_progress: "progress",
+  in_review: "review",
+  done: "success",
+  not_adopted: "neutral",
 };
 
 /** Not adopted is a valid end of research, not a failure: neutral, outlined to tell it from planned. */
 const notAdoptedStyle = cn(toneChip.neutral, "ring-1 ring-inset ring-muted-foreground/40");
 
-const readyStyle = toneChip.attention;
+/** The filled chip of a shown status. */
+function shownStatusStyle(status: ShownStatus): string {
+  return status === "not_adopted" ? notAdoptedStyle : toneChip[statusTones[status]];
+}
 
 function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
-  switch (shownStatus(task, byId)) {
-    case "not_adopted":
-      return notAdoptedStyle;
-    case "ready":
-      return readyStyle;
-    default:
-      return statusStyles[task.status];
-  }
+  return shownStatusStyle(shownStatus(task, byId));
 }
 
 /** What the task list needs to name tasks of other workspaces. */
@@ -240,9 +255,20 @@ export function TaskList({
     context.workspaceName(a).localeCompare(context.workspaceName(b)),
   );
   const filter = timelineWorkspace !== null && filterOptions.includes(timelineWorkspace) ? timelineWorkspace : null;
+  // A search for a task number finds that task in any workspace, shown first, ahead of the text matches.
+  const numberedId = taskNumber(taskFilter.query);
+  const numberedCandidate = numberedId === null ? undefined : context.byId.get(numberedId);
+  const numbered =
+    numberedCandidate !== undefined && matchesFilter(numberedCandidate, { ...taskFilter, query: "" }, context.byId)
+      ? numberedCandidate
+      : undefined;
   const filtered = tasks?.filter(
-    (task) => (!showTimeline || filter === null || task.workspaceId === filter) && matchesFilter(task, taskFilter, context.byId),
+    (task) =>
+      task !== numbered &&
+      (!showTimeline || filter === null || task.workspaceId === filter) &&
+      matchesFilter(task, taskFilter, context.byId),
   );
+  const timelineTasks = numbered === undefined ? (filtered ?? []) : [numbered, ...(filtered ?? [])];
   const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
   useEffect(() => {
     if (shownTaskData === undefined) {
@@ -260,7 +286,10 @@ export function TaskList({
     filter === null
       ? []
       : (tasks ?? []).filter(
-          (task) => task.workspaceId !== filter && filtered?.some((own) => own.dependsOn.includes(task.id)),
+          (task) =>
+            task !== numbered &&
+            task.workspaceId !== filter &&
+            timelineTasks.some((own) => own.dependsOn.includes(task.id)),
         );
 
   return (
@@ -336,7 +365,7 @@ export function TaskList({
             )}
             <TaskFilterBar filter={taskFilter} onChange={setTaskFilter} />
           </div>
-          {filtered.length === 0 ? (
+          {filtered.length === 0 && numbered === undefined ? (
             <EmptyState
               icon={<Search />}
               title="No tasks match the search and filters."
@@ -345,10 +374,28 @@ export function TaskList({
           ) : !showTimeline ? (
             <>
             <div role="region" aria-label="Tasks" className="flex flex-col gap-4">
+              {numbered && (
+                <section aria-label="Task number match" className="flex flex-col gap-2">
+                  <h3 className="text-sm font-medium text-muted-foreground">
+                    Task <span className="tabular-nums font-normal">#{numbered.id}</span>
+                  </h3>
+                  <ul aria-label="Task number match" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
+                    <TaskRow
+                      task={numbered}
+                      tasks={allTasks.data}
+                      context={context}
+                      showWorkspace={workspace === null || numbered.workspaceId !== workspace.id}
+                      onShowDetails={() => setDetailId(numbered.id)}
+                    />
+                  </ul>
+                </section>
+              )}
               {groupTasks(
                 filtered,
                 context.byId,
-                needsAttention(filtered, agentStatuses.data ?? [], pullRequestStatuses.data ?? []).map((item) => item.task.id),
+                needsAttention(filtered, agentStatuses.data ?? [], pullRequestStatuses.data ?? [], context.byId).map(
+                  (item) => item.task.id,
+                ),
               ).map(({ group, tasks: grouped }) => {
                 const collapsed = group === "done" && !(doneShown ?? isFilterActive(taskFilter));
                 const name = taskGroupNames[group];
@@ -407,7 +454,7 @@ export function TaskList({
           ) : (
             <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
               <TaskGraph
-                tasks={[...filtered, ...prerequisites]}
+                tasks={[...timelineTasks, ...prerequisites]}
                 allTasks={allTasks.data}
                 dimmed={new Set(prerequisites.map((task) => task.id))}
                 workspaceLabel={(task) =>
@@ -510,26 +557,40 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
       <input
         type="search"
         aria-label="Search tasks"
-        placeholder="Search title or description"
+        placeholder="Search title, description, or #number"
         className={cn(compactSelectClass, "w-56 max-md:col-span-2 max-md:w-full")}
         value={filter.query}
         onChange={(event) => onChange({ ...filter, query: event.target.value })}
       />
-      <select
-        aria-label="Status filter"
-        className={compactSelectClass}
-        value={filter.status ?? "all"}
-        onChange={(event) =>
-          onChange({ ...filter, status: event.target.value === "all" ? null : (event.target.value as ShownStatus) })
-        }
-      >
-        <option value="all">All statuses</option>
-        {shownStatuses.map((status) => (
-          <option key={status} value={status}>
-            {statusNames[status]}
-          </option>
-        ))}
-      </select>
+      <div role="group" aria-label="Status filter" className="flex flex-wrap gap-1 max-md:col-span-2 max-md:gap-2">
+        {shownStatuses.map((status) => {
+          const selected = filter.statuses.includes(status);
+          const tone = statusTones[status];
+          // Selected: filled like the status chip, with a check. Not selected: outlined in the
+          // same hue, with a dot.
+          return (
+            <button
+              key={status}
+              type="button"
+              className={cn(
+                "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11",
+                selected
+                  ? cn(shownStatusStyle(status), "border-transparent hover:brightness-95 dark:hover:brightness-125")
+                  : cn(toneOutline[tone], "bg-transparent hover:bg-muted"),
+              )}
+              aria-pressed={selected}
+              onClick={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
+            >
+              {selected ? (
+                <Check aria-hidden className="size-3" />
+              ) : (
+                <span aria-hidden className={cn("size-1.5 rounded-full", toneFill[tone])} />
+              )}
+              {statusNames[status]}
+            </button>
+          );
+        })}
+      </div>
       <select
         aria-label="Type filter"
         className={compactSelectClass}
@@ -645,6 +706,8 @@ function TaskRow({
   // The user chose to keep the herdr workspace of this paused task open for now.
   const [keepingWorkspace, setKeepingWorkspace] = useState(false);
   const [concluding, setConcluding] = useState(false);
+  // A form that changes how the task ends: reopening or correcting a done task, or completing it as shipped by another.
+  const [correcting, setCorrecting] = useState<"reopen" | "outcome" | "shipped" | null>(null);
   const [linkingIssue, setLinkingIssue] = useState(false);
   const [addingNote, setAddingNote] = useState(false);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
@@ -678,6 +741,8 @@ function TaskRow({
   const dependenciesEditable = dependencyEditableStatuses.includes(task.status);
   // A planned task can start (or a paused one resume) once these prerequisites are done.
   const waitingOn = waitingPrerequisites(task, context.byId);
+  // What an agent reported blocks the work, or the prerequisites a pause waits on.
+  const blocker = openBlocker(task, context.byId);
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
   const actionError =
     startTask.error ??
@@ -709,6 +774,13 @@ function TaskRow({
 
   // Actions in a fixed order; the first applicable of the main ones is the task's next action.
   const herdrBlocked = task.herdrWorkspaceId !== null && !herdrRunning;
+  // Why actions that need herdr are disabled, as their tooltip and as a note below them.
+  const herdrReason = herdrRunning
+    ? null
+    : herdr.isPending
+      ? "Checking whether herdr is running..."
+      : "herdr is not running on the server; start it there (`herdr status --json` shows whether it runs), then try again";
+  const needsHerdr = (title: string | undefined) => herdrReason ?? title;
   const start: Action | null =
     task.status === "planned"
       ? {
@@ -717,7 +789,7 @@ function TaskRow({
           ariaLabel: `${paused ? "Resume" : "Start"} #${task.id}`,
           icon: <Play />,
           title: startable
-            ? undefined
+            ? needsHerdr(undefined)
             : notAdopted.length > 0
               ? "A dependency was not adopted; remove it to start"
               : "Waits until all its dependencies are done",
@@ -732,7 +804,7 @@ function TaskRow({
           label: restoreWorktree.isPending ? "Restoring..." : "Restore worktree",
           ariaLabel: `Restore worktree of #${task.id}`,
           icon: <FolderGit2 />,
-          title: `Check out ${task.branch} into a new worktree and open it in herdr`,
+          title: needsHerdr(`Check out ${task.branch} into a new worktree and open it in herdr`),
           disabled: !herdrRunning || restoreWorktree.isPending,
           onSelect: () => restoreWorktree.mutate(task.id),
         }
@@ -743,7 +815,9 @@ function TaskRow({
         label: completeTask.isPending ? "Completing..." : "Confirm completion",
         ariaLabel: `Confirm completion of #${task.id}`,
         icon: <Check />,
-        title: "Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept",
+        title: herdrBlocked
+          ? needsHerdr(undefined)
+          : "Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept",
         disabled: finishing || herdrBlocked,
         onSelect: () => completeTask.mutate(task.id),
       }
@@ -766,8 +840,9 @@ function TaskRow({
           label: completeTask.isPending ? "Completing..." : "Complete",
           ariaLabel: `Complete #${task.id}`,
           icon: <Check />,
-          title:
-            task.criteria.length === 0
+          title: herdrBlocked
+            ? needsHerdr(undefined)
+            : task.criteria.length === 0
               ? "Complete the task; its herdr workspace is closed and the worktree kept"
               : "Check the criteria again and complete the task once all are met; its herdr workspace is closed and the worktree kept",
           disabled: finishing || herdrBlocked,
@@ -792,6 +867,7 @@ function TaskRow({
           label: "Open in herdr",
           ariaLabel: `Open #${task.id} in herdr`,
           icon: <SquareTerminal />,
+          title: needsHerdr(undefined),
           disabled: !herdrRunning || openTask.isPending,
           onSelect: () => openTask.mutate(task.id),
         }
@@ -803,7 +879,7 @@ function TaskRow({
           label: "Focus agent pane",
           ariaLabel: `Focus agent pane of #${task.id}`,
           icon: <Crosshair />,
-          title: "Focus the herdr pane of the agent working on this task",
+          title: needsHerdr("Focus the herdr pane of the agent working on this task"),
           disabled: !herdrRunning || focusAgent.isPending,
           onSelect: () => focusAgent.mutate(task.id),
         }
@@ -824,7 +900,9 @@ function TaskRow({
         label: "Conclude",
         ariaLabel: `Conclude #${task.id} without merging`,
         icon: <CircleSlash />,
-        title: "Finish without merging, e.g. research whose result is not adopted; an open pull request is closed",
+        title: herdrBlocked
+          ? needsHerdr(undefined)
+          : "Finish without merging, e.g. research whose result is not adopted; an open pull request is closed",
         disabled: finishing || herdrBlocked,
         onSelect: () => setConcluding(true),
       }
@@ -857,6 +935,36 @@ function TaskRow({
           onSelect: () => pauseTask.mutate(task.id),
         }
       : null,
+    final && isNotAdopted(task)
+      ? {
+          key: "shipped",
+          label: "Complete as shipped by...",
+          ariaLabel: `Complete #${task.id} as shipped by another task or pull request`,
+          icon: <GitMerge />,
+          title: "The work did ship, through another task or a merged pull request: mark it done as that one ended",
+          onSelect: () => setCorrecting("shipped"),
+        }
+      : null,
+    final
+      ? {
+          key: "outcome",
+          label: "Change outcome",
+          ariaLabel: `Change outcome of #${task.id}`,
+          icon: <Flag />,
+          title: "Correct how the task ended, e.g. merged work that was reverted; the change is kept as a note",
+          onSelect: () => setCorrecting("outcome"),
+        }
+      : null,
+    final
+      ? {
+          key: "reopen",
+          label: "Reopen",
+          ariaLabel: `Reopen #${task.id}`,
+          icon: <RotateCcw />,
+          title: "Reopen a task completed or concluded by mistake; it is paused and resumes on its branch",
+          onSelect: () => setCorrecting("reopen"),
+        }
+      : null,
     final && task.completionNote === null && !addingNote
       ? {
           key: "add-note",
@@ -873,7 +981,7 @@ function TaskRow({
           ariaLabel: `Delete #${task.id}`,
           icon: <Trash2 />,
           title: removableWorktree
-            ? "Delete the task and remove its worktree and herdr workspace; the branch is kept"
+            ? needsHerdr("Delete the task and remove its worktree and herdr workspace; the branch is kept")
             : "Delete",
           disabled: removableWorktree && !herdrRunning,
           destructive: true,
@@ -893,6 +1001,11 @@ function TaskRow({
     : null;
   // In the details sheet the main actions are buttons; in a row only the next action is.
   const menu = detailed ? secondary : [...(details ? [details] : []), ...others, ...secondary];
+  // A shown action is disabled because herdr is not running: say so next to it, not only on hover.
+  const shownActions = detailed ? [primary, ...others] : [primary];
+  const herdrNote =
+    herdrReason !== null &&
+    shownActions.some((action) => action?.disabled === true && action.title === herdrReason);
   const latest = reachedMilestones(task.milestones).at(-1);
   const metCriteria = task.criteria.filter((criterion) => criterion.state === "met").length;
   const failedCriteria = task.criteria.filter((criterion) => criterion.state === "failed").length;
@@ -954,6 +1067,16 @@ function TaskRow({
             )}
             {pullRequestStatus && <PullRequestBadges taskId={task.id} status={pullRequestStatus} />}
             {active && agentStatus && <AgentBadge taskId={task.id} status={agentStatus} />}
+            {blocker && (
+              <span
+                role="note"
+                aria-label={`Blocker on #${task.id}: ${blocker.body}`}
+                title={blocker.body}
+                className={cn("shrink-0 rounded-md px-1.5 text-xs font-medium", toneChip.attention)}
+              >
+                Blocker
+              </span>
+            )}
           </div>
           {detailed && <h3 className="break-words-keep text-base font-semibold leading-snug">{task.title}</h3>}
           {detailed && task.description.trim() && (
@@ -1002,7 +1125,7 @@ function TaskRow({
           pending={addDependency.isPending}
           onConfirm={() =>
             addDependency.mutate(
-              { id: task.id, dependsOn: confirmingPrerequisite },
+              { id: task.id, dependsOn: confirmingPrerequisite, confirmPause: true },
               { onSettled: () => setConfirmingPrerequisite(null) },
             )
           }
@@ -1059,11 +1182,11 @@ function TaskRow({
               onChange={(e) => {
                 if (e.target.value) {
                   const prerequisite = Number(e.target.value);
-                  if (pausesStartedTask(task, context.byId.get(prerequisite))) {
-                    setConfirmingPrerequisite(prerequisite);
-                  } else {
-                    addDependency.mutate({ id: task.id, dependsOn: prerequisite });
-                  }
+                  // The server tells whether it pauses this started task; then the user confirms it first.
+                  addDependency.mutate(
+                    { id: task.id, dependsOn: prerequisite, confirmPause: false },
+                    { onSuccess: (outcome) => outcome === "confirm_pause" && setConfirmingPrerequisite(prerequisite) },
+                  );
                 }
               }}
             >
@@ -1106,6 +1229,7 @@ function TaskRow({
         <OpenWorkspaceNote
           taskId={task.id}
           collapsed={keepingWorkspace}
+          blockedReason={herdrReason}
           disabled={!herdrRunning || closeWorkspace.isPending}
           onClose={() => closeWorkspace.mutate(task.id)}
           onKeep={() => setKeepingWorkspace(true)}
@@ -1161,8 +1285,27 @@ function TaskRow({
           {actionError.message}
         </p>
       )}
-      {concluding && !editing && <ConcludeForm task={task} onDone={() => setConcluding(false)} />}
-      {!editing && !concluding && (
+      {herdrNote && !editing && !concluding && correcting === null && (
+        <p role="note" aria-label={`herdr unavailable for #${task.id}`} className="text-xs text-muted-foreground">
+          {herdrReason}
+        </p>
+      )}
+      {concluding && !editing && (
+        <ConcludeForm
+          task={task}
+          onDone={() => setConcluding(false)}
+          onShipped={() => {
+            setConcluding(false);
+            setCorrecting("shipped");
+          }}
+        />
+      )}
+      {correcting === "shipped" && !editing && (
+        <ShippedByForm task={task} tasks={tasks} context={context} onDone={() => setCorrecting(null)} />
+      )}
+      {correcting === "outcome" && !editing && <OutcomeForm task={task} onDone={() => setCorrecting(null)} />}
+      {correcting === "reopen" && !editing && <ReopenForm task={task} onDone={() => setCorrecting(null)} />}
+      {!editing && !concluding && correcting === null && (
         <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
           {primary && actionButton(primary, detailed ? "default" : "outline")}
           {detailed && others.map((action) => actionButton(action, "outline"))}
@@ -1202,7 +1345,7 @@ function TaskRow({
                     size="xs"
                     variant="destructive"
                     aria-label={`Force delete #${task.id}`}
-                    title="Delete the task and discard the modified and untracked files of its worktree"
+                    title={needsHerdr("Delete the task and discard the modified and untracked files of its worktree")}
                     disabled={!herdrRunning}
                     onClick={() => setConfirming("force-delete")}
                   >
@@ -1334,6 +1477,9 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const [plan, setPlan] = useState<PlanDraft>(initialPlan);
   const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
   const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
+  // Checking "Done when merged" without a merge criterion asks the backend for the one of the repository.
+  const [addMerge, setAddMerge] = useState(false);
+  const hasMerge = criteria.some((draft) => isMergeKind(draft.kind));
   const estimate = planEstimate(plan);
   // Unchanged criteria are not sent, so a save never touches the ones checked so far.
   const criteriaChanged =
@@ -1347,7 +1493,8 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
     plan.estimate !== initialPlan.estimate ||
     plan.estimateUnit !== initialPlan.estimateUnit ||
     plan.dueDate !== initialPlan.dueDate ||
-    criteriaChanged;
+    criteriaChanged ||
+    addMerge;
   const guard = useDiscardGuard(dirty, onDone, updateTask.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -1363,6 +1510,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         dueDate: plan.dueDate || null,
         // The criteria of a done task cannot change.
         criteria: criteriaChanged && task.status !== "done" ? criterionInputs(criteria) : null,
+        mergeCriterion: addMerge && !hasMerge && task.status !== "done",
       },
       { onSuccess: onDone },
     );
@@ -1407,7 +1555,24 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
       <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} />
       {task.status !== "done" && (
         <div className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-muted-foreground">Completion criteria</span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="font-medium text-muted-foreground">Completion criteria</span>
+            <label
+              className="flex items-center gap-1.5 max-md:min-h-11"
+              title="Keep or add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
+            >
+              <input
+                type="checkbox"
+                aria-label={`Done when merged, #${task.id}`}
+                checked={hasMerge || addMerge}
+                onChange={(e) => {
+                  setAddMerge(e.target.checked && !hasMerge);
+                  if (!e.target.checked) setCriteria(criteria.filter((draft) => !isMergeKind(draft.kind)));
+                }}
+              />
+              Done when merged
+            </label>
+          </div>
           <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
         </div>
       )}
@@ -1441,7 +1606,7 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
  * Concludes an active task without merging: the conclusion, why the work is not adopted, is
  * required and becomes its completion note.
  */
-function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
+function ConcludeForm({ task, onDone, onShipped }: { task: Task; onDone: () => void; onShipped: () => void }) {
   const concludeTask = useConcludeTask();
   const [note, setNote] = useState("");
   const guard = useDiscardGuard(note.trim() !== "", onDone, concludeTask.isPending);
@@ -1489,6 +1654,19 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
             <CircleSlash />
             {concludeTask.isPending ? "Concluding..." : "Conclude without merge"}
           </Button>
+          {/* Work that shipped through another task's pull request is done, not concluded. */}
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            aria-label={`Complete #${task.id} as shipped by another task or pull request`}
+            title="The work shipped through another task or a merged pull request: complete the task instead"
+            disabled={concludeTask.isPending}
+            onClick={onShipped}
+          >
+            <GitMerge />
+            Complete as shipped by...
+          </Button>
           <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
             Back
           </Button>
@@ -1497,6 +1675,251 @@ function ConcludeForm({ task, onDone }: { task: Task; onDone: () => void }) {
       {concludeTask.isError && (
         <p role="alert" className="text-xs text-destructive">
           {concludeTask.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** What a form says about the outcome of a task. */
+const resolutionNames: Record<TaskResolution, string> = {
+  merged: "Merged",
+  completed: "Completed",
+  not_adopted: statusNames.not_adopted,
+};
+
+/**
+ * Reopens a done task completed or concluded by mistake. The reason is required and kept as
+ * a progress note with the earlier outcome.
+ */
+function ReopenForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const reopenTask = useReopenTask();
+  const [reason, setReason] = useState("");
+  const guard = useDiscardGuard(reason.trim() !== "", onDone, reopenTask.isPending);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    reopenTask.mutate({ id: task.id, reason: reason.trim() }, { onSuccess: onDone });
+  }
+
+  return (
+    <form onSubmit={submit} aria-label={`Reopen #${task.id}`} className="flex flex-col gap-1" onKeyDown={guard.onKeyDown}>
+      <p className="text-xs text-muted-foreground">
+        Reopen #{task.id}: it is paused with its branch and commits, and Resume continues the work. Its outcome and
+        completion note are cleared and kept, with your reason, as a progress note.
+      </p>
+      <textarea
+        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
+        aria-label={`Reason to reopen #${task.id}`}
+        placeholder="Why is the task not finished after all?"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        required
+        autoFocus
+      />
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard reason to reopen #${task.id}`}
+          question={`Discard your reason to reopen #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button changesData type="submit" size="xs" disabled={reopenTask.isPending || reason.trim() === ""}>
+            <RotateCcw />
+            {reopenTask.isPending ? "Reopening..." : "Reopen"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
+      {reopenTask.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {reopenTask.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/**
+ * Corrects how a done task ended without reopening it. The note is required and becomes its
+ * completion note; the earlier outcome is kept as a progress note.
+ */
+function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const setOutcome = useSetTaskOutcome();
+  const choices = (Object.keys(resolutionNames) as TaskResolution[]).filter((resolution) => resolution !== task.resolution);
+  const [resolution, setResolution] = useState<TaskResolution>(choices[0]);
+  const [note, setNote] = useState("");
+  const guard = useDiscardGuard(note.trim() !== "", onDone, setOutcome.isPending);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setOutcome.mutate({ id: task.id, resolution, note: note.trim() }, { onSuccess: onDone });
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      aria-label={`Outcome of #${task.id}`}
+      className="flex flex-col gap-1"
+      onKeyDown={guard.onKeyDown}
+    >
+      <p className="text-xs text-muted-foreground">
+        #{task.id} is done as {task.resolution === null ? "done" : resolutionNames[task.resolution].toLowerCase()}.
+        Correct how it ended; the earlier outcome and note are kept as a progress note. Tasks that depend on it wait
+        while it is not adopted.
+      </p>
+      <select
+        aria-label={`New outcome of #${task.id}`}
+        className={cn(inputClass, "w-40")}
+        value={resolution}
+        onChange={(e) => setResolution(e.target.value as TaskResolution)}
+      >
+        {choices.map((choice) => (
+          <option key={choice} value={choice}>
+            {resolutionNames[choice]}
+          </option>
+        ))}
+      </select>
+      <textarea
+        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
+        aria-label={`Outcome note of #${task.id}`}
+        placeholder="What happened, e.g. the change was reverted. This becomes the completion note."
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        required
+        autoFocus
+      />
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard outcome of #${task.id}`}
+          question={`Discard the new outcome of #${task.id}?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button changesData type="submit" size="xs" disabled={setOutcome.isPending || note.trim() === ""}>
+            <Flag />
+            {setOutcome.isPending ? "Saving..." : "Change outcome"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
+      {setOutcome.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {setOutcome.error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/**
+ * Completes a task whose work shipped through another task, one done as merged or
+ * completed, or through a merged pull request: an active task, or one concluded as not
+ * adopted, becomes done and its dependents can start.
+ */
+function ShippedByForm({
+  task,
+  tasks,
+  context,
+  onDone,
+}: {
+  task: Task;
+  tasks: Task[];
+  context: TaskContext;
+  onDone: () => void;
+}) {
+  const completeMergedWith = useCompleteTaskMergedWith();
+  // Only work that shipped can carry this task's work with it.
+  const shippers = tasks
+    .filter(
+      (other) =>
+        other.id !== task.id &&
+        other.status === "done" &&
+        (other.resolution === "merged" || other.resolution === "completed"),
+    )
+    .sort((a, b) => b.id - a.id);
+  const [shipper, setShipper] = useState("");
+  const [url, setUrl] = useState("");
+  const byTask = shipper !== "";
+  const ready = byTask || url.trim() !== "";
+  const guard = useDiscardGuard(ready, onDone, completeMergedWith.isPending);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    completeMergedWith.mutate(
+      {
+        id: task.id,
+        mergedWithTask: byTask ? Number(shipper) : null,
+        pullRequestUrl: byTask ? null : url.trim(),
+      },
+      { onSuccess: onDone },
+    );
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      aria-label={`Complete #${task.id} as shipped by`}
+      className="flex flex-col gap-1"
+      onKeyDown={guard.onKeyDown}
+    >
+      <p className="text-xs text-muted-foreground">
+        Complete #{task.id} as shipped by another task or a merged pull request into its base branch. It becomes done as
+        that one ended, and tasks that depend on it can start. An open pull request of its own must be closed first.
+      </p>
+      <select
+        aria-label={`Task that shipped #${task.id}`}
+        className={inputClass}
+        value={shipper}
+        onChange={(e) => setShipper(e.target.value)}
+        autoFocus
+      >
+        <option value="">A pull request URL instead</option>
+        {shippers.map((other) => (
+          <option key={other.id} value={other.id}>
+            {taskRef(other.id, task.workspaceId, context)} {other.title}
+          </option>
+        ))}
+      </select>
+      {!byTask && (
+        <input
+          className={inputClass}
+          type="url"
+          aria-label={`Pull request that shipped #${task.id}`}
+          placeholder="https://github.com/owner/repo/pull/123"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      )}
+      {guard.asking ? (
+        <DiscardConfirm
+          label={`Discard completion of #${task.id}`}
+          question={`Discard completing #${task.id} as shipped by another?`}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      ) : (
+        <div className="flex gap-1">
+          <Button changesData type="submit" size="xs" disabled={completeMergedWith.isPending || !ready}>
+            <GitMerge />
+            {completeMergedWith.isPending ? "Completing..." : "Complete as shipped"}
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
+            Back
+          </Button>
+        </div>
+      )}
+      {completeMergedWith.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {completeMergedWith.error.message}
         </p>
       )}
     </form>
@@ -1742,12 +2165,15 @@ function TaskIssue({
 function OpenWorkspaceNote({
   taskId,
   collapsed,
+  blockedReason,
   disabled,
   onClose,
   onKeep,
 }: {
   taskId: TaskId;
   collapsed: boolean;
+  /** Why closing needs herdr and cannot happen now; null while herdr runs. */
+  blockedReason: string | null;
   disabled: boolean;
   onClose: () => void;
   onKeep: () => void;
@@ -1757,7 +2183,7 @@ function OpenWorkspaceNote({
       size="xs"
       variant="destructive"
       aria-label={`Close herdr workspace of #${taskId}`}
-      title="Close the herdr workspace, which ends its agent session; the worktree is kept"
+      title={blockedReason ?? "Close the herdr workspace, which ends its agent session; the worktree is kept"}
       disabled={disabled}
       onClick={onClose}
     >
@@ -1794,7 +2220,10 @@ function OpenWorkspaceNote({
 }
 
 /** A labeled block of the task details sheet. */
-/** The pull request of another task that shipped a task done without one of its own. */
+/**
+ * The pull request, or the other task without a recorded one, that shipped a task done
+ * without a pull request of its own.
+ */
 function ShippedWith({
   task,
   mergedWith,
@@ -1806,12 +2235,28 @@ function ShippedWith({
   through: string | null;
   detailed: boolean;
 }) {
+  const url = mergedWith.pullRequestUrl;
+  if (url === null) {
+    // The other task shipped the work without a pull request Toodo recorded.
+    const label = `Shipped with task of #${task.id}`;
+    return detailed ? (
+      <DetailField label="Shipped with">
+        <span aria-label={label}>{through ?? "A deleted task"}</span>
+      </DetailField>
+    ) : (
+      <p className="flex min-w-0 items-center gap-1 text-xs">
+        <GitMerge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 text-muted-foreground">Shipped with</span>
+        <span aria-label={label}>{through ?? "a deleted task"}</span>
+      </p>
+    );
+  }
   const label = `Shipped with pull request of #${task.id}`;
   if (detailed) {
     return (
       <DetailField label="Shipped with">
         <span aria-label={label} className="break-all font-mono select-all">
-          {mergedWith.pullRequestUrl}
+          {url}
         </span>
         {through && <span className="text-muted-foreground">Pull request of {through}</span>}
       </DetailField>
@@ -1822,7 +2267,7 @@ function ShippedWith({
       <GitMerge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
       <span className="shrink-0 text-muted-foreground">Shipped with</span>
       <span aria-label={label} className="truncate select-all font-mono">
-        {mergedWith.pullRequestUrl}
+        {url}
       </span>
       {through && <span className="shrink-0 text-muted-foreground">of {through}</span>}
     </p>
@@ -2455,9 +2900,14 @@ const criterionKindLabels: Record<CheckKind, string> = {
 /**
  * Kinds the criteria editor offers. The merge criterion (`pr_merged`, or
  * `branch_merged_locally` in a repository without `origin`) comes from "Done when merged"
- * when the task is created and keeps its kind when the task is edited.
+ * in the new and edit forms and keeps its kind when the task is edited.
  */
 const editableCriterionKinds: CheckKind[] = ["manual", "url", "command", "pr_open_ci_green"];
+
+/** Kinds of the merge criterion, of which a task has at most one. */
+function isMergeKind(kind: CheckKind): boolean {
+  return kind === "pr_merged" || kind === "branch_merged_locally";
+}
 
 /** Kinds checked against a target their author gives: the URL to fetch or the command to run. */
 function takesTarget(kind: CheckKind): boolean {

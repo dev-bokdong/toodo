@@ -13,12 +13,12 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    BackupSettings, CriterionId, Machine, MachineSettings, MemoryContent, MemoryId, NewSshHost,
-    NewTask, NewWorkspace, TaskEdit, TaskId, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask, NewWorkspace,
+    TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, memory, review, tasks, workspaces,
+    herdr, issues, machines, mcp, review, tasks, workspaces,
 };
 
 /// What running a command gave.
@@ -216,16 +216,24 @@ commands!(s => {
     "check_criterion"(task_id: TaskId, criterion_id: CriterionId, met: bool, evidence: Option<String>) => sync Reply::result(
         tasks::check_criterion(State(&s.storage), task_id, criterion_id, met, evidence)
     );
-    "update_task"(task: TaskEdit) => sync Reply::result(tasks::update_task(State(&s.storage), task));
+    "update_task"(task: TaskEdit) => sync Reply::result(
+        tasks::update_task(State(&s.storage), State(&s.git), task)
+    );
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
         tasks::set_completion_note(State(&s.storage), id, note)
     );
+    "reopen_task"(id: TaskId, reason: String) => sync Reply::result(
+        tasks::reopen_task(State(&s.storage), id, reason)
+    );
+    "set_task_outcome"(id: TaskId, resolution: TaskResolution, note: String) => sync Reply::result(
+        tasks::set_task_outcome(State(&s.storage), id, resolution, note)
+    );
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
         tasks::delete_task(State(&s.storage), State(&s.herdr), id, force)
     );
-    "add_dependency"(task_id: TaskId, depends_on: TaskId) => sync Reply::result(
-        tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on)
+    "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
+        tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
     );
     "remove_dependency"(task_id: TaskId, depends_on: TaskId) => sync Reply::result(
         tasks::remove_dependency(State(&s.storage), task_id, depends_on)
@@ -264,6 +272,9 @@ commands!(s => {
     "conclude_task"(id: TaskId, note: String) => sync Reply::result(
         completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)
     );
+    "complete_task_merged_with"(id: TaskId, merged_with_task: Option<TaskId>, pull_request_url: Option<String>) => sync Reply::result(
+        completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url)
+    );
     "list_pull_request_statuses"() => sync Reply::value(
         completion::list_pull_request_statuses(State(&s.pull_request_statuses))
     );
@@ -292,19 +303,6 @@ commands!(s => {
     "list_backups"() => sync Reply::result(backup::list_backups(State(&s.backups)));
     "restore_backup"(name: String) => sync Reply::result(
         backup::restore_backup(State(&s.storage), State(&s.backups), name)
-    );
-
-    "list_memory"(workspace_id: Option<WorkspaceId>, include_superseded: bool) => sync Reply::result(
-        memory::list_memory(State(&s.storage), workspace_id, include_superseded)
-    );
-    "add_memory"(workspace_id: Option<WorkspaceId>, content: MemoryContent) => sync Reply::result(
-        memory::add_memory(State(&s.storage), workspace_id, content)
-    );
-    "update_memory"(id: MemoryId, content: MemoryContent) => sync Reply::result(
-        memory::update_memory(State(&s.storage), id, content)
-    );
-    "supersede_memory"(id: MemoryId, content: MemoryContent) => sync Reply::result(
-        memory::supersede_memory(State(&s.storage), id, content)
     );
 });
 

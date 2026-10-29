@@ -206,7 +206,8 @@ impl Storage {
     }
 
     /// Checks (`met`) or unchecks a manual criterion of a task that is not done, with what
-    /// shows it. A task in progress whose criteria are then all met awaits completion.
+    /// shows it; unchecking also forgets who checked it and when. A task in progress whose
+    /// criteria are then all met awaits completion.
     pub fn check_criterion(
         &mut self,
         id: TaskId,
@@ -233,15 +234,21 @@ impl Storage {
                 kind: known.kind,
             });
         }
-        let state = if met {
-            CriterionState::Met
+        let (state, checked_by, checked_at) = if met {
+            (CriterionState::Met, Some(by.as_str()), Some(at))
         } else {
-            CriterionState::Pending
+            (CriterionState::Pending, None, None)
         };
         tx.execute(
             "UPDATE task_criteria SET state = ?2, evidence = ?3, checked_by = ?4, checked_at = ?5
              WHERE id = ?1",
-            params![criterion.0, state.as_str(), evidence, by.as_str(), at],
+            params![
+                criterion.0,
+                state.as_str(),
+                evidence,
+                checked_by,
+                checked_at
+            ],
         )?;
         let task = await_completion(&tx, id, at)?;
         tx.commit()?;
@@ -302,6 +309,46 @@ impl Storage {
         let task = await_completion(&tx, id, at)?;
         tx.commit()?;
         Ok((task.clone(), changed || task.status != before))
+    }
+
+    /// Stores what checking met automatic criteria again before completion found: a
+    /// result that is not met replaces the met state, checked by Toodo. Results for
+    /// criteria that are not met or manual, and for a task that is done, are ignored.
+    pub fn record_criterion_rechecks(
+        &mut self,
+        id: TaskId,
+        checks: &[CriterionCheck],
+    ) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        if task.status == TaskStatus::Done {
+            return Ok(task);
+        }
+        for check in checks {
+            let rechecked = task
+                .criteria
+                .iter()
+                .any(|known| known.id == check.id && known.kind.is_automatic() && known.is_met());
+            if !rechecked || check.state == CriterionState::Met {
+                continue;
+            }
+            tx.execute(
+                "UPDATE task_criteria
+                 SET state = ?2, evidence = ?3, checked_by = ?4, checked_at = ?5
+                 WHERE id = ?1",
+                params![
+                    check.id.0,
+                    check.state.as_str(),
+                    check.evidence,
+                    CheckedBy::Toodo.as_str(),
+                    at
+                ],
+            )?;
+        }
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(task)
     }
 }
 
@@ -398,6 +445,8 @@ mod tests {
             .unwrap();
         assert_eq!(unchecked.status, TaskStatus::InReview);
         assert_eq!(unchecked.criteria[1].state, CriterionState::Pending);
+        assert_eq!(unchecked.criteria[1].checked_by, None);
+        assert_eq!(unchecked.criteria[1].checked_at, None);
     }
 
     #[test]

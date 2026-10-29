@@ -8,13 +8,12 @@ import {
   type CriterionId,
   type Machine,
   type MachineSettings,
-  type MemoryContent,
-  type MemoryId,
   type NewTask,
   type NewWorkspace,
   type Task,
   type TaskEdit,
   type TaskId,
+  type TaskResolution,
   type TaskAgentStatus,
   type TaskPullRequestStatus,
   type Timestamp,
@@ -65,52 +64,14 @@ export const queryKeys = {
   mcpTunnels: ["mcp-tunnels"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
   directories: (machine: Machine, path: string | null) => ["directories", machine, path] as const,
-  /** Memory entries of a workspace, or the shared ones for `null`. */
-  memory: (workspace: WorkspaceId | null, includeSuperseded: boolean) =>
-    ["memory", workspace, includeSuperseded] as const,
-  allMemory: ["memory"] as const,
 };
 
-export function useMemoryEntries(workspace: WorkspaceId | null, includeSuperseded: boolean) {
-  return useQuery({
-    queryKey: queryKeys.memory(workspace, includeSuperseded),
-    queryFn: () => unwrap(commands.listMemory(workspace, includeSuperseded)),
-  });
-}
-
-export function useAddMemory() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ workspace, content }: { workspace: WorkspaceId | null; content: MemoryContent }) =>
-      unwrap(commands.addMemory(workspace, content)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
-  });
-}
-
-export function useUpdateMemory() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, content }: { id: MemoryId; content: MemoryContent }) =>
-      unwrap(commands.updateMemory(id, content)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
-  });
-}
-
-export function useSupersedeMemory() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, content }: { id: MemoryId; content: MemoryContent }) =>
-      unwrap(commands.supersedeMemory(id, content)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
-  });
-}
-
-/** Where agents reach Toodo's MCP server; fixed while the app runs. */
+/** Where agents reach Toodo's MCP server, and the last request it turned away. */
 export function useMcpServerInfo() {
   return useQuery({
     queryKey: queryKeys.mcpServerInfo,
     queryFn: () => commands.mcpServerInfo(),
-    staleTime: Infinity,
+    refetchInterval: 5000,
   });
 }
 
@@ -391,7 +352,6 @@ export function useHerdrEvents() {
       events.workspacesChanged.listen(() =>
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
-      events.memoryChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory })),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),
@@ -522,6 +482,62 @@ export function useSetCompletionNote() {
   });
 }
 
+/**
+ * Reopens a done task completed or concluded by mistake: it becomes `planned` again, paused if it
+ * was started, and `reason` is kept as a progress note with the earlier outcome.
+ */
+export function useReopenTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: TaskId; reason: string }) => unwrap(commands.reopenTask(id, reason)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
+/** Corrects how a done task ended; `note` becomes its completion note and the change is kept as a progress note. */
+export function useSetTaskOutcome() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, resolution, note }: { id: TaskId; resolution: TaskResolution; note: string }) =>
+      unwrap(commands.setTaskOutcome(id, resolution, note)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
+/**
+ * Completes a task whose work shipped through another task or a merged pull request: exactly one of
+ * `mergedWithTask` and `pullRequestUrl`. An active task, or one concluded as not adopted, becomes done.
+ */
+export function useCompleteTaskMergedWith() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      mergedWithTask,
+      pullRequestUrl,
+    }: {
+      id: TaskId;
+      mergedWithTask: TaskId | null;
+      pullRequestUrl: string | null;
+    }) => unwrap(commands.completeTaskMergedWith(id, mergedWithTask, pullRequestUrl)),
+    // Completing records the commits of the branch.
+    onSuccess: (task) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
 /** Checks out the branch of an active task that lost its worktree into a new herdr worktree. */
 export function useRestoreTaskWorktree() {
   const queryClient = useQueryClient();
@@ -580,8 +596,15 @@ export function useDeleteTask() {
 /** The edge `id -> dependsOn`; `dependsOn` may be a task of another workspace. */
 type Dependency = { id: TaskId; dependsOn: TaskId };
 
+/**
+ * Adds the edge `id -> dependsOn`. Without `confirmPause`, a prerequisite that would pause the
+ * started task is not added and the outcome is `confirm_pause`: the server decides, so the
+ * user is asked before the pause even when the cached tasks are stale.
+ */
 export function useAddDependency() {
-  return useTasksMutation(({ id, dependsOn }: Dependency) => unwrap(commands.addDependency(id, dependsOn)));
+  return useTasksMutation(({ id, dependsOn, confirmPause }: Dependency & { confirmPause: boolean }) =>
+    unwrap(commands.addDependency(id, dependsOn, confirmPause)),
+  );
 }
 
 export function useRemoveDependency() {

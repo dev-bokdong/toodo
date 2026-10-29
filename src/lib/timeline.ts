@@ -6,6 +6,7 @@ const milestoneLabels: [keyof TaskMilestones, string][] = [
   ["startedAt", "Started"],
   ["reviewAt", statusNames.in_review],
   ["completedAt", "Completed"],
+  ["reopenedAt", "Reopened"],
   ["pausedAt", statusNames.paused],
 ];
 
@@ -49,9 +50,9 @@ export type WorkState = "in_progress" | "in_review" | "paused";
 export type WorkSegment = { state: WorkState; start: Timestamp; end: Timestamp | null };
 
 /**
- * The history of a task from its first start to its completion, oldest first: the stretches
- * it spent in progress, in review, and paused (back in `planned` after it started). Empty
- * when the history records no start.
+ * The history of a task from its first start to its latest completion, oldest first: the
+ * stretches it spent in progress, in review, and paused (back in `planned` after it started,
+ * which includes a reopening after it was done). Empty when the history records no start.
  */
 export function workSegments(timeline: TaskEvent[]): WorkSegment[] {
   const segments: WorkSegment[] = [];
@@ -61,7 +62,7 @@ export function workSegments(timeline: TaskEvent[]): WorkSegment[] {
       last.end = event.at;
     }
     if (event.status === "done") {
-      break;
+      continue;
     }
     if (event.status !== "planned") {
       segments.push({ state: event.status, start: event.at, end: null });
@@ -86,9 +87,12 @@ export function activeSeconds(timeline: TaskEvent[], now: Timestamp): number | n
     .reduce((total, segment) => total + Math.max((segment.end ?? now) - segment.start, 0), 0);
 }
 
+/** The milestones a task reached, oldest first, e.g. Completed after Reopened once it is done again. */
 export function reachedMilestones(milestones: TaskMilestones): { label: string; at: Timestamp }[] {
-  return milestoneLabels.flatMap(([key, label]) => {
-    const at = milestones[key];
-    return at === null ? [] : [{ label, at }];
-  });
+  return milestoneLabels
+    .flatMap(([key, label]) => {
+      const at = milestones[key];
+      return at === null ? [] : [{ label, at }];
+    })
+    .sort((a, b) => a.at - b.at);
 }

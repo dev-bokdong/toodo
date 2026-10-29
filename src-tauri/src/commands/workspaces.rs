@@ -138,16 +138,33 @@ fn prepare_workspace(
     existing: &[model::Workspace],
 ) -> CommandResult<storage::NewWorkspace> {
     ensure_unused(existing, &setup.location)?;
+    let path = location_path(&setup.location).to_owned();
     let location = match setup.source {
         WorkspaceSource::Clone { url } => {
-            git.clone_repository(&url, &setup.location)?;
+            git.clone_repository(&url, &setup.location)
+                .map_err(|error| setup_failed(error, || format!(
+                    "could not clone {url} into {path}"
+                ), "check the URL and your access to it (SSH key or gh auth), and that the directory does not exist yet or is empty"))?;
             setup.location
         }
-        WorkspaceSource::Open => git.repository_root(&setup.location)?,
+        WorkspaceSource::Open => git.repository_root(&setup.location).map_err(|error| {
+            setup_failed(
+                error,
+                || format!("could not open a git repository at {path}"),
+                "choose a directory inside an existing clone, clone the repository there instead (clone_url, or Clone in the app), or make it a new repository (init: true, or New repository in the app)",
+            )
+        })?,
         WorkspaceSource::Init => {
             let branch = setup.default_base_branch.as_deref().unwrap_or("main");
-            git.init_repository(&setup.location, branch)?;
-            git.repository_root(&setup.location)?
+            let failed = |error| {
+                setup_failed(
+                    error,
+                    || format!("could not make a new git repository at {path}"),
+                    "check that the parent directory exists and that you can write to it",
+                )
+            };
+            git.init_repository(&setup.location, branch).map_err(failed)?;
+            git.repository_root(&setup.location).map_err(failed)?
         }
     };
     ensure_unused(existing, &location)?;
@@ -165,6 +182,20 @@ fn prepare_workspace(
         location,
         default_base_branch,
     })
+}
+
+/// A git failure while setting up a workspace, as what was attempted and the next step,
+/// with git's own output last for diagnosis.
+fn setup_failed(
+    error: crate::adapters::git::GitError,
+    attempted: impl FnOnce() -> String,
+    next_step: &str,
+) -> CommandError {
+    let error = CommandError::from(error);
+    CommandError {
+        kind: error.kind,
+        message: format!("{}; {next_step}. git said: {}", attempted(), error.message),
+    }
 }
 
 /// Saves the name, default base branch, and agent merge policy of an existing workspace.

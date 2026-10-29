@@ -58,9 +58,9 @@ test("adds and removes a dependency", async ({ app, server }) => {
 test("rejects a dependency that would close a cycle", async ({ server }) => {
   const first = await createTask(server, { workspaceId: 1, title: "First" });
   const second = await createTask(server, { workspaceId: 1, title: "Second" });
-  await server.rpc("add_dependency", { taskId: second.id, dependsOn: first.id });
+  await server.rpc("add_dependency", { taskId: second.id, dependsOn: first.id, confirmPause: false });
 
-  await expect(server.rpc("add_dependency", { taskId: first.id, dependsOn: second.id })).rejects.toThrow(/cycle/i);
+  await expect(server.rpc("add_dependency", { taskId: first.id, dependsOn: second.id, confirmPause: false })).rejects.toThrow(/cycle/i);
 });
 
 test("links related tasks both ways for agents", async ({ server }) => {
