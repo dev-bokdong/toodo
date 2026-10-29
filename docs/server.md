@@ -153,7 +153,7 @@ toodo-server import FILE
 adds the data of another Toodo database, such as a Windows desktop app's (see
 [migrate-desktop-data.md](migrate-desktop-data.md)), to the data in `TOODO_DATA_DIR`, then
 exits. It imports workspaces, tasks (with dependencies, status history, commit records,
-notes, related links, criteria, and pull request snapshots), and project memory, in one
+notes, related links, criteria, and pull request snapshots) in one
 transaction, after writing a pre-restore backup into `<data>/backups/`. Devices, push
 subscriptions, chat messages, and machine settings (worktree roots) are not imported, and
 tasks lose their herdr workspace link. The file is checked and migrated to the latest

@@ -2631,22 +2631,17 @@ mod tests {
 
     #[test]
     fn patch_schemas_advertise_no_null_defaults() {
-        for schema in [
-            schemars::schema_for!(UpdateTask),
-            schemars::schema_for!(crate::mcp::memory::UpdateMemory),
-            schemars::schema_for!(crate::mcp::memory::SupersedeMemory),
-        ] {
-            let properties = schema
-                .get("properties")
-                .and_then(|p| p.as_object())
-                .unwrap();
-            for (name, property) in properties {
-                assert_ne!(
-                    property.get("default"),
-                    Some(&serde_json::Value::Null),
-                    "{name}: {property}"
-                );
-            }
+        let schema = schemars::schema_for!(UpdateTask);
+        let properties = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        for (name, property) in properties {
+            assert_ne!(
+                property.get("default"),
+                Some(&serde_json::Value::Null),
+                "{name}: {property}"
+            );
         }
     }
 

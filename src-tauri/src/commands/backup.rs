@@ -172,7 +172,7 @@ pub fn export_file_name(storage: &StorageState) -> String {
     backup::export_file_name(lock(storage).now())
 }
 
-/// Adds the workspaces, tasks, and memory of the Toodo database at `path`, such as one of
+/// Adds the workspaces and tasks of the Toodo database at `path`, such as one of
 /// the former desktop app, to the data (see [`storage::Storage::import`]), after saving
 /// the current data as a pre-restore backup, which is returned with what was added.
 pub fn import_file(

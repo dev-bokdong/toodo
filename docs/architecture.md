@@ -177,28 +177,6 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 - Related links are set through MCP only (`add_related` / `remove_related`); the app
   does not show them yet.
 
-### Project Memory
-
-Durable knowledge an agent reads before it acts and writes as it learns, so a restarted
-agent can continue from Toodo alone. Table `memory_entries`:
-
-| Field | Description |
-| --- | --- |
-| `workspace_id` | The workspace the entry is about; `NULL` for an entry shared by every workspace (standing preferences and cross-project rules). Deleting the workspace deletes its entries. |
-| `kind` | `decision` (a choice and why), `rule` (to follow), `note`, or `summary`. |
-| `title`, `body` | A one-line statement (required) and Markdown details. |
-| `task_id` | The task the entry came from, optional; for a workspace entry it must belong to that workspace. Deleting the task clears it. |
-| `created_at`, `updated_at` | Timestamps; editing moves `updated_at`. |
-| `superseded_by` | The entry that replaced this one; `NULL` while it is current. |
-
-- Editing rewrites a current entry in place, for fixes that keep its meaning.
-- Superseding adds the replacement in the same scope and points the old entry at it;
-  the old entry is kept as history and can no longer change. Lists show current
-  entries unless superseded ones are asked for.
-- The app shows it as the Memory view of each workspace (beside Tasks) and as Shared
-  memory in the sidebar: read, add, edit, supersede, and show superseded entries.
-  Commands `list_memory`, `add_memory`, `update_memory`, and `supersede_memory`.
-
 ### CommitRecord
 
 A commit produced while implementing a task.
@@ -465,16 +443,6 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     Every word is quoted (FTS5) or escaped (`LIKE`), so operators, `*`, quotes, and
     parentheses are plain text. Triggers on `tasks`, `task_notes`, and
     `pull_request_snapshots` keep the index in sync with every write.
-  - `list_memory`, `search_memory`, `get_memory`, `add_memory`, `update_memory`, and
-    `supersede_memory` read and write [project memory](#project-memory). They take an
-    optional `workspace_id` (none means the shared entries) and `include_shared` to add
-    the shared entries to a workspace's; `include_superseded` adds the history, and
-    `get_memory` returns the entries an entry replaced. Search matches every word as a
-    substring of the title or body (`LIKE`, escaped). Writes emit `MemoryChanged` so
-    the app refreshes. The instructions and the `toodo` skill tell agents to read a
-    workspace's memory with the shared entries before acting, to record durable
-    decisions and conventions, and to supersede an entry that no longer holds instead
-    of contradicting it.
   - `start_task`, `complete_task`, and `conclude_task` run the app's own commands
     (`commands::herdr::start`, `commands::completion::complete` and `conclude`) on a
     blocking thread, with the same adapters, checks, and status history, and emit

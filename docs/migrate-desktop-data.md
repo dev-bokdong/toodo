@@ -43,7 +43,7 @@ the file it reads, and the server's existing data stays.
    ```
 
 7. **Check the web app.** The imported workspaces show in the sidebar, and their tasks
-   keep their status history, commits, notes, criteria, and project memory.
+   keep their status history, commits, notes, and criteria.
 
 ## What Changes for Imported Data
 

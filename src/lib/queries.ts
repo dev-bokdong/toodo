@@ -8,8 +8,6 @@ import {
   type CriterionId,
   type Machine,
   type MachineSettings,
-  type MemoryContent,
-  type MemoryId,
   type NewTask,
   type NewWorkspace,
   type Task,
@@ -66,45 +64,7 @@ export const queryKeys = {
   mcpTunnels: ["mcp-tunnels"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
   directories: (machine: Machine, path: string | null) => ["directories", machine, path] as const,
-  /** Memory entries of a workspace, or the shared ones for `null`. */
-  memory: (workspace: WorkspaceId | null, includeSuperseded: boolean) =>
-    ["memory", workspace, includeSuperseded] as const,
-  allMemory: ["memory"] as const,
 };
-
-export function useMemoryEntries(workspace: WorkspaceId | null, includeSuperseded: boolean) {
-  return useQuery({
-    queryKey: queryKeys.memory(workspace, includeSuperseded),
-    queryFn: () => unwrap(commands.listMemory(workspace, includeSuperseded)),
-  });
-}
-
-export function useAddMemory() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ workspace, content }: { workspace: WorkspaceId | null; content: MemoryContent }) =>
-      unwrap(commands.addMemory(workspace, content)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
-  });
-}
-
-export function useUpdateMemory() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, content }: { id: MemoryId; content: MemoryContent }) =>
-      unwrap(commands.updateMemory(id, content)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
-  });
-}
-
-export function useSupersedeMemory() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, content }: { id: MemoryId; content: MemoryContent }) =>
-      unwrap(commands.supersedeMemory(id, content)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory }),
-  });
-}
 
 /** Where agents reach Toodo's MCP server, and the last request it turned away. */
 export function useMcpServerInfo() {
@@ -392,7 +352,6 @@ export function useHerdrEvents() {
       events.workspacesChanged.listen(() =>
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
-      events.memoryChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.allMemory })),
       events.agentStatusesChanged.listen(({ payload }) =>
         update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
       ),

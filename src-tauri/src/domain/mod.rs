@@ -5,7 +5,6 @@ pub mod criteria;
 pub mod dag;
 pub mod device;
 pub mod issue;
-pub mod memory;
 pub mod model;
 pub mod naming;
 pub mod path;

@@ -727,6 +727,13 @@ pub(super) const MIGRATIONS: &[&str] = &[
             SELECT * FROM task_search_source WHERE id = OLD.task_id;
     END;
     ",
+    // Version 26: project memory is gone. Its entries, shared and of each workspace, are
+    // dropped with their indexes; nothing else references them.
+    r"
+    DROP INDEX IF EXISTS memory_entries_workspace_id;
+    DROP INDEX IF EXISTS memory_entries_superseded_by;
+    DROP TABLE IF EXISTS memory_entries;
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -2128,5 +2135,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(found, 1);
+    }
+
+    #[test]
+    fn version_26_drops_project_memory_and_keeps_workspaces_and_tasks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..25] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 25).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', '/repo', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'feat', 'Plan', 'planned');
+             INSERT INTO memory_entries (workspace_id, kind, title, task_id, created_at, updated_at)
+                VALUES (NULL, 'rule', 'Reply in English', NULL, 1, 1);
+             INSERT INTO memory_entries (workspace_id, kind, title, task_id, created_at, updated_at)
+                VALUES (1, 'decision', 'Use SQLite in WAL mode', 1, 2, 2);
+             INSERT INTO memory_entries
+                 (workspace_id, kind, title, task_id, created_at, updated_at, superseded_by)
+                VALUES (1, 'decision', 'Use SQLite', 1, 1, 2, 2);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let memory: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'memory_entries%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(memory, 0);
+        let kept: (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM workspaces), (SELECT count(*) FROM tasks)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (1, 1));
     }
 }

@@ -5,16 +5,14 @@
 //! in the app data directory. Agents can read and add workspaces, read and set the
 //! worktree root of each machine, read tasks, search earlier tasks
 //! and read their history, create and edit tasks, connect dependencies and related
-//! links, leave progress and blocker notes in a task's history, read and keep project
-//! memory (decisions, rules, notes, and summaries of a workspace or shared by all), and
-//! start, complete, or conclude tasks and restore a lost worktree through the app's own
-//! commands; deleting tasks stays
+//! links, leave progress and blocker notes in a task's history, and start, complete, or
+//! conclude tasks and restore a lost worktree through the app's own commands; deleting
+//! tasks stays
 //! in the app. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
 //! as a resource, since not every client can read resources. Agents on SSH machines reach
 //! the server through the reverse tunnels of [`tunnels`].
 
-mod memory;
 mod tools;
 pub mod tunnels;
 
@@ -131,25 +129,12 @@ not_adopted means the work did not ship. A task already concluded that way can b
 completed with merged_with too. For work shipped without any pull request, call \
 complete_task with without_pull_request: true and a non-empty note: the result is \
 completed, pr_merged uses that note as evidence, and every other criterion must hold.
-8. Project memory keeps what a restarted agent needs to continue from Toodo alone: \
-decisions (the choice and why), rules to follow, notes, and summaries, for one \
-workspace or, without workspace_id, shared by every workspace (the user's standing \
-preferences and cross-project rules). Before you plan or act in a workspace, call \
-list_memory with its workspace_id and include_shared=true, and follow its rules; use \
-search_memory for a subject. When you learn something durable (a decision taken, a \
-convention the user stated, how the project is laid out), add it with add_memory, \
-linked to your task with task_id; one point per entry, a one-line title, the why in \
-the body. When an entry no longer holds, call supersede_memory with the new text \
-instead of adding a contradicting entry; it keeps the old one as history. \
-update_memory only fixes the wording of an entry that still holds. Task notes \
-(add_progress_note) record the history of one task; memory is what stays true \
-afterwards.
-9. start_task needs a worktree root, the directory that holds task worktrees, on the \
+8. start_task needs a worktree root, the directory that holds task worktrees, on the \
 machine of the task's workspace. list_machine_settings shows it for every machine. Set \
 a missing one with set_worktree_root to a directory the user named, or when start_task \
 reports it missing and the user tells you where worktrees go. Never change or clear a \
 root that is set unless the user asks.
-10. A task is done when its completion criteria are met. Toodo checks every kind but \
+9. A task is done when its completion criteria are met. Toodo checks every kind but \
 manual itself, about once a minute: pr_merged and pr_open_ci_green from the task's pull \
 request, branch_merged_locally from the repository (for workspaces without an origin \
 remote, where the task branch is merged into baseBranch locally and nothing is pushed), \
@@ -648,81 +633,6 @@ impl ToodoMcp {
         reply(result)
     }
 
-    /// Runs a tool that changes project memory and announces the change to the frontend.
-    fn change_memory<T: Serialize>(
-        &self,
-        apply: impl FnOnce(&mut crate::storage::Storage) -> CommandResult<T>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let result = apply(&mut lock(self.backend.storage()));
-        if result.is_ok() {
-            self.backend.memory_changed();
-        }
-        reply(result)
-    }
-
-    #[tool(
-        description = "List current project memory entries (decision, rule, note, summary), most recently changed first. With workspace_id: that workspace's entries, plus the shared ones when include_shared is true; without it: the entries shared by every workspace. Read it before you plan or act in a workspace. include_superseded adds replaced entries (history)."
-    )]
-    fn list_memory(
-        &self,
-        Parameters(request): Parameters<memory::ListMemory>,
-    ) -> Result<CallToolResult, ErrorData> {
-        reply(memory::list_memory(&lock(self.backend.storage()), request))
-    }
-
-    #[tool(
-        description = "Search project memory entries by words in their title and body; every word must appear, as a substring. Same scope as list_memory: workspace_id (plus shared ones with include_shared) or, without it, the shared entries."
-    )]
-    fn search_memory(
-        &self,
-        Parameters(request): Parameters<memory::SearchMemory>,
-    ) -> Result<CallToolResult, ErrorData> {
-        reply(memory::search_memory(
-            &lock(self.backend.storage()),
-            request,
-        ))
-    }
-
-    #[tool(
-        description = "Read one memory entry with its workspace name and the older entries it superseded, newest first. supersededBy set means the entry no longer holds; read that entry instead."
-    )]
-    fn get_memory(
-        &self,
-        Parameters(request): Parameters<memory::GetMemory>,
-    ) -> Result<CallToolResult, ErrorData> {
-        reply(memory::get_memory(&lock(self.backend.storage()), request))
-    }
-
-    #[tool(
-        description = "Add a project memory entry: something that stays true beyond one task. kind: decision (a choice and why), rule (to follow), note, or summary. Give workspace_id for knowledge of that workspace, omit it for knowledge shared by every workspace. Search first and supersede an existing entry instead of adding a contradicting one."
-    )]
-    fn add_memory(
-        &self,
-        Parameters(request): Parameters<memory::AddMemory>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.change_memory(|storage| memory::add_memory(storage, request))
-    }
-
-    #[tool(
-        description = "Fix the wording of a current memory entry in place; omitted fields stay. For a change of meaning use supersede_memory, which keeps the old text. Superseded entries cannot change."
-    )]
-    fn update_memory(
-        &self,
-        Parameters(request): Parameters<memory::UpdateMemory>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.change_memory(|storage| memory::update_memory(storage, request))
-    }
-
-    #[tool(
-        description = "Replace a current memory entry that no longer holds with a new one in the same scope; the old entry stays as history, pointing at the new one, and leaves list_memory. Returns the new entry."
-    )]
-    fn supersede_memory(
-        &self,
-        Parameters(request): Parameters<memory::SupersedeMemory>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.change_memory(|storage| memory::supersede_memory(storage, request))
-    }
-
     #[tool(
         description = "Find the Toodo task whose worktree contains the given directory, with its workspace's baseBranch, agentMerge, and machine. Paths are compared after resolving . and .. by their text. Pass machine (local, or the SSH host of a remote machine) when the same path may exist on several machines; without it, a directory inside worktrees on several machines is rejected, naming them."
     )]
@@ -1036,7 +946,6 @@ mod tests {
         server: ServerStatus,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
-        memory_changed: std::sync::Mutex<usize>,
     }
 
     type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
@@ -1065,7 +974,6 @@ mod tests {
                 },
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
-                memory_changed: std::sync::Mutex::default(),
             }
         }
     }
@@ -1076,9 +984,6 @@ mod tests {
         }
         fn workspaces_changed(&self) {
             *self.workspaces_changed.lock().unwrap() += 1;
-        }
-        fn memory_changed(&self) {
-            *self.memory_changed.lock().unwrap() += 1;
         }
         fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
         fn pull_request_statuses_changed(
@@ -1247,143 +1152,6 @@ mod tests {
     fn created_workspace(result: &serde_json::Value) -> serde_json::Value {
         assert_ne!(result["isError"], true, "{result}");
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
-    }
-
-    fn memory_call(
-        server: &ToodoMcp,
-        tool: &str,
-        arguments: serde_json::Value,
-    ) -> serde_json::Value {
-        fn args<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
-            serde_json::from_value(value).unwrap()
-        }
-        let result = match tool {
-            "list_memory" => server.list_memory(Parameters(args(arguments))),
-            "search_memory" => server.search_memory(Parameters(args(arguments))),
-            "get_memory" => server.get_memory(Parameters(args(arguments))),
-            "add_memory" => server.add_memory(Parameters(args(arguments))),
-            "update_memory" => server.update_memory(Parameters(args(arguments))),
-            "supersede_memory" => server.supersede_memory(Parameters(args(arguments))),
-            _ => panic!("unknown tool {tool}"),
-        };
-        serde_json::to_value(result.unwrap()).unwrap()
-    }
-
-    fn memory_titles(result: &serde_json::Value) -> Vec<String> {
-        created_workspace(result)
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["title"].as_str().unwrap().to_owned())
-            .collect()
-    }
-
-    #[test]
-    fn memory_tools_keep_workspace_and_shared_entries_and_their_history() {
-        let (storage, task) = storage_with_task(None);
-        let backend = Arc::new(TestBackend::new(storage));
-        let server = ToodoMcp::new(backend.clone());
-        let workspace = task.workspace_id.0;
-        let call = |tool, arguments| memory_call(&server, tool, arguments);
-
-        let shared = created_workspace(&call(
-            "add_memory",
-            serde_json::json!({ "kind": "rule", "title": "Write docs in English" }),
-        ));
-        assert_eq!(shared["workspaceId"], serde_json::Value::Null);
-        let decision = created_workspace(&call(
-            "add_memory",
-            serde_json::json!({
-                "workspace_id": workspace, "kind": "decision", "title": "Use make",
-                "body": "Simple.", "task_id": task.id.0
-            }),
-        ));
-        assert_eq!(decision["taskId"], task.id.0);
-        let replaced = created_workspace(&call(
-            "supersede_memory",
-            serde_json::json!({
-                "id": decision["id"], "title": "Use npm scripts", "body": "Runs on Windows."
-            }),
-        ));
-        assert_eq!(
-            (
-                &replaced["kind"],
-                &replaced["taskId"],
-                &replaced["workspaceId"]
-            ),
-            (
-                &serde_json::json!("decision"),
-                &serde_json::json!(task.id.0),
-                &serde_json::json!(workspace)
-            )
-        );
-
-        let list = |arguments| memory_titles(&call("list_memory", arguments));
-        assert_eq!(
-            list(serde_json::json!({ "workspace_id": workspace })),
-            ["Use npm scripts"]
-        );
-        assert_eq!(
-            list(serde_json::json!({ "workspace_id": workspace, "include_shared": true })),
-            ["Use npm scripts", "Write docs in English"]
-        );
-        assert_eq!(list(serde_json::json!({})), ["Write docs in English"]);
-        assert_eq!(
-            list(serde_json::json!({
-                "workspace_id": workspace, "include_superseded": true, "kind": "decision"
-            })),
-            ["Use npm scripts", "Use make"]
-        );
-        assert_eq!(
-            memory_titles(&call(
-                "search_memory",
-                serde_json::json!({
-                    "query": "windows NPM", "workspace_id": workspace, "include_shared": true
-                }),
-            )),
-            ["Use npm scripts"]
-        );
-
-        let details = created_workspace(&call(
-            "get_memory",
-            serde_json::json!({ "id": replaced["id"] }),
-        ));
-        assert_eq!(details["workspace"], "toodo");
-        assert_eq!(details["supersedes"][0]["title"], "Use make");
-        assert_eq!(details["supersedes"][0]["supersededBy"], replaced["id"]);
-
-        let fixed = created_workspace(&call(
-            "update_memory",
-            serde_json::json!({ "id": replaced["id"], "title": "Use npm scripts only", "task_id": null }),
-        ));
-        assert_eq!(
-            (&fixed["body"], &fixed["taskId"]),
-            (
-                &serde_json::json!("Runs on Windows."),
-                &serde_json::Value::Null
-            )
-        );
-        assert_eq!(*backend.memory_changed.lock().unwrap(), 4);
-
-        let old = error_text(&call(
-            "update_memory",
-            serde_json::json!({ "id": decision["id"], "title": "Again" }),
-        ))
-        .to_owned();
-        assert!(old.starts_with("Rejected:"), "{old}");
-        let blank = error_text(&call(
-            "add_memory",
-            serde_json::json!({ "kind": "note", "title": " " }),
-        ))
-        .to_owned();
-        assert!(blank.starts_with("InvalidInput:"), "{blank}");
-        let missing = error_text(&call(
-            "list_memory",
-            serde_json::json!({ "workspace_id": 99 }),
-        ))
-        .to_owned();
-        assert!(missing.starts_with("NotFound:"), "{missing}");
-        assert_eq!(*backend.memory_changed.lock().unwrap(), 4);
     }
 
     fn error_text(result: &serde_json::Value) -> &str {
@@ -1840,12 +1608,6 @@ mod tests {
             "get_task",
             "add_related",
             "remove_related",
-            "list_memory",
-            "search_memory",
-            "get_memory",
-            "add_memory",
-            "update_memory",
-            "supersede_memory",
         ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
         }

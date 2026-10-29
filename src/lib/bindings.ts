@@ -260,20 +260,6 @@ export const commands = {
 	/**  Backups in Toodo's backup directory, newest first. */
 	listBackups: () => typedError<BackupEntry[], CommandError>(invoke("list_backups")),
 	/**
-	 *  The entries of the workspace, or the shared ones when `workspace_id` is `null`; the
-	 *  superseded ones too when `include_superseded`. Most recently changed first.
-	 */
-	listMemory: (workspaceId: number | null, includeSuperseded: boolean) => typedError<MemoryEntry[], CommandError>(invoke("list_memory", { workspaceId, includeSuperseded })),
-	/**  Adds an entry to the workspace, or a shared one when `workspace_id` is `null`. */
-	addMemory: (workspaceId: number | null, content: MemoryContent) => typedError<MemoryEntry, CommandError>(invoke("add_memory", { workspaceId, content })),
-	/**  Rewrites a current entry, e.g. to fix a mistake. Superseded entries cannot change. */
-	updateMemory: (id: MemoryId, content: MemoryContent) => typedError<MemoryEntry, CommandError>(invoke("update_memory", { id, content })),
-	/**
-	 *  Replaces a current entry with a new one in the same scope and returns the new entry;
-	 *  the old one stays as history.
-	 */
-	supersedeMemory: (id: MemoryId, content: MemoryContent) => typedError<MemoryEntry, CommandError>(invoke("supersede_memory", { id, content })),
-	/**
 	 *  Replaces all data with the backup named `name` in Toodo's backup directory (see
 	 *  [`list_backups`]). The current data is first saved as a pre-restore backup, which is
 	 *  returned.
@@ -285,7 +271,6 @@ export const commands = {
 export const events = {
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
-	memoryChanged: makeEvent<MemoryChanged>("memory-changed"),
 	agentStatusesChanged: makeEvent<AgentStatusesChanged>("agent-statuses-changed"),
 	pullRequestStatusesChanged: makeEvent<PullRequestStatusesChanged>("pull-request-statuses-changed"),
 };
@@ -574,51 +559,6 @@ export type McpTunnel = {
 };
 
 export type McpTunnelState = "connecting" | "open" | "retrying";
-
-/**
- *  Project memory entries changed outside the app's own forms, e.g. by an agent through
- *  MCP.
- */
-export type MemoryChanged = null;
-
-/**  What a memory entry says, when it is added, edited, or replaced. */
-export type MemoryContent = {
-	kind: MemoryKind,
-	title: string,
-	/**  Markdown. */
-	body: string,
-	taskId: TaskId | null,
-};
-
-/**  A project memory entry: knowledge of one workspace, or shared by every workspace. */
-export type MemoryEntry = {
-	id: MemoryId,
-	/**  `null` for an entry shared by every workspace. */
-	workspaceId: WorkspaceId | null,
-	kind: MemoryKind,
-	title: string,
-	/**  Markdown. */
-	body: string,
-	/**  The task the entry came from. */
-	taskId: TaskId | null,
-	createdAt: Timestamp,
-	updatedAt: Timestamp,
-	/**  The entry that replaced this one; `null` while it is current. */
-	supersededBy: MemoryId | null,
-};
-
-export type MemoryId = number;
-
-/**  What a memory entry records. */
-export type MemoryKind = 
-/**  A choice that was made, and why. */
-"decision" | 
-/**  A standing rule to follow. */
-"rule" | 
-/**  Anything else worth knowing. */
-"note" | 
-/**  An overview, e.g. of the project's state or architecture. */
-"summary";
 
 /**
  *  Whether GitHub can merge a pull request into its base without conflicts; `unknown`
