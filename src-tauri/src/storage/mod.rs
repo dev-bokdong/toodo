@@ -12,7 +12,6 @@ mod commits;
 mod criteria;
 mod devices;
 mod import;
-mod memory;
 mod migrations;
 mod push;
 mod search;
@@ -31,7 +30,6 @@ use rusqlite::Connection;
 use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
-use crate::domain::memory::MemoryId;
 use crate::domain::model::{TaskId, TaskResolution, WorkspaceId};
 use crate::domain::status::TransitionError;
 
@@ -153,20 +151,9 @@ pub enum StorageError {
         criterion: CriterionId,
         kind: CheckKind,
     },
-    MemoryNotFound(MemoryId),
     DeviceNotFound(DeviceId),
     /// The device has not subscribed to push notifications.
     PushSubscriptionNotFound(DeviceId),
-    /// A memory entry that was replaced is history and cannot change.
-    MemorySuperseded {
-        id: MemoryId,
-        by: MemoryId,
-    },
-    /// A memory entry of a workspace can only come from a task of that workspace.
-    MemoryTaskMismatch {
-        task: TaskId,
-        workspace: WorkspaceId,
-    },
     /// The worktree path is not the kind of path (Windows or POSIX) of the repository path
     /// of the task's workspace.
     WorktreePathMismatch(TaskId),
@@ -256,20 +243,10 @@ impl fmt::Display for StorageError {
                 f,
                 "criterion {criterion} of task {task} is a {kind} criterion, which Toodo checks on its own; only manual criteria are checked by hand"
             ),
-            Self::MemoryNotFound(id) => write!(f, "memory entry {id} does not exist"),
             Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
             Self::PushSubscriptionNotFound(id) => {
                 write!(f, "device {id} has not subscribed to push notifications")
             }
-            Self::MemorySuperseded { id, by } => write!(
-                f,
-                "memory entry {id} was superseded by entry {by}; change entry {by} instead"
-            ),
-            Self::MemoryTaskMismatch { task, workspace } => write!(
-                f,
-                "task {task} does not belong to workspace {}, the workspace of the memory entry",
-                workspace.0
-            ),
             Self::WorktreePathMismatch(id) => write!(
                 f,
                 "worktree path of task {id} does not match the machine of its workspace"

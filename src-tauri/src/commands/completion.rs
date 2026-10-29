@@ -3166,8 +3166,6 @@ mod tests {
 
         fn workspaces_changed(&self) {}
 
-        fn memory_changed(&self) {}
-
         fn agent_statuses_changed(&self, _: &[types::TaskAgentStatus]) {}
 
         fn pull_request_statuses_changed(&self, statuses: &[types::TaskPullRequestStatus]) {

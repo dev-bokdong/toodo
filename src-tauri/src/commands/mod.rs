@@ -13,7 +13,6 @@ pub mod herdr;
 pub mod issues;
 pub mod machines;
 pub mod mcp;
-pub mod memory;
 pub mod review;
 pub mod tasks;
 pub mod types;
@@ -203,7 +202,6 @@ impl From<StorageError> for CommandError {
             StorageError::WorkspaceNotFound(_)
             | StorageError::TaskNotFound(_)
             | StorageError::CriterionNotFound { .. }
-            | StorageError::MemoryNotFound(_)
             | StorageError::DeviceNotFound(_)
             | StorageError::PushSubscriptionNotFound(_)
             | StorageError::DependencyNotFound { .. }
@@ -218,11 +216,9 @@ impl From<StorageError> for CommandError {
             | StorageError::DependenciesNotDone { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
-            | StorageError::AutomaticCriterion { .. }
-            | StorageError::MemorySuperseded { .. } => CommandErrorKind::Rejected,
+            | StorageError::AutomaticCriterion { .. } => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)
-            | StorageError::MemoryTaskMismatch { .. }
             | StorageError::CommitTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
             StorageError::Io(_) => CommandErrorKind::External,
