@@ -121,6 +121,7 @@ import {
   type TimelineScale,
 } from "@/lib/task-graph";
 import {
+  defaultTaskFilter,
   emptyTaskFilter,
   groupTasks,
   isFilterActive,
@@ -186,6 +187,12 @@ function shownStatusStyle(status: ShownStatus): string {
   return status === "not_adopted" ? notAdoptedStyle : toneChip[statusTones[status]];
 }
 
+/** The Complete button, in the colour of the done status it leads to; still tinted while disabled. */
+const completeStyle = cn(
+  shownStatusStyle("done"),
+  "border-transparent hover:bg-emerald-200 dark:hover:bg-emerald-900 disabled:bg-emerald-100 disabled:opacity-60 dark:disabled:bg-emerald-950",
+);
+
 function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   return shownStatusStyle(shownStatus(task, byId));
 }
@@ -236,7 +243,8 @@ export function TaskList({
   const workspaces = useWorkspaces();
   const [view, setView] = useState<"list" | "timeline">("timeline");
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
-  const [taskFilter, setTaskFilter] = useState<TaskFilter>(emptyTaskFilter);
+  // The filter the user set; until then the timeline leaves finished tasks out and the list shows every status.
+  const [chosenFilter, setTaskFilter] = useState<TaskFilter | null>(null);
   const agentStatuses = useAgentStatuses();
   const pullRequestStatuses = usePullRequestStatuses();
   // Done tasks are folded away until asked for, or while a search or filter is narrowing the list.
@@ -250,6 +258,7 @@ export function TaskList({
   const tasks =
     workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
   const showTimeline = workspace === null && view === "timeline";
+  const taskFilter = chosenFilter ?? (showTimeline ? defaultTaskFilter : emptyTaskFilter);
   // Workspaces the timeline can be narrowed to; a filter whose workspace has no tasks left falls back to all.
   const filterOptions = [...new Set(allTasks.data?.map((task) => task.workspaceId))].sort((a, b) =>
     context.workspaceName(a).localeCompare(context.workspaceName(b)),
@@ -276,9 +285,10 @@ export function TaskList({
     }
     setView("timeline");
     setTimelineWorkspace((current) => (current === shownTaskData.workspaceId ? current : null));
-    setTaskFilter((current) =>
-      matchesFilter(shownTaskData, current, context.byId) ? current : emptyTaskFilter,
-    );
+    setTaskFilter((chosen) => {
+      const current = chosen ?? defaultTaskFilter;
+      return matchesFilter(shownTaskData, current, context.byId) ? chosen : emptyTaskFilter;
+    });
     // Only a new request moves the view; later changes to the task do not.
   }, [shownTask, shownTaskData === undefined]);
   // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
@@ -724,6 +734,7 @@ function TaskRow({
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
   const criteriaMet = task.criteria.every((criterion) => criterion.state === "met");
+  const unmetCriteria = task.criteria.filter((criterion) => criterion.state !== "met").length;
   // Every criterion is met and one is checked by hand: the user confirms that the task is done.
   const awaitingConfirmation =
     inReview && task.criteria.length > 0 && criteriaMet && task.criteria.some((criterion) => criterion.kind === "manual");
@@ -840,12 +851,13 @@ function TaskRow({
           label: completeTask.isPending ? "Completing..." : "Complete",
           ariaLabel: `Complete #${task.id}`,
           icon: <Check />,
-          title: herdrBlocked
-            ? needsHerdr(undefined)
-            : task.criteria.length === 0
-              ? "Complete the task; its herdr workspace is closed and the worktree kept"
-              : "Check the criteria again and complete the task once all are met; its herdr workspace is closed and the worktree kept",
-          disabled: finishing || herdrBlocked,
+          className: completeStyle,
+          title: !criteriaMet
+            ? `${unmetCriteria} of ${task.criteria.length} criteria not met yet; check the manual ones under Criteria, Toodo checks the automatic ones every minute`
+            : herdrBlocked
+              ? needsHerdr(undefined)
+              : "Complete the task; its herdr workspace is closed and the worktree kept",
+          disabled: finishing || herdrBlocked || !criteriaMet,
           onSelect: () => completeTask.mutate(task.id),
         }
       : null;
@@ -1022,6 +1034,7 @@ function TaskRow({
         title={action.title}
         disabled={action.disabled}
         onClick={action.onSelect}
+        className={action.className}
       >
         {action.icon}
         {action.label}
