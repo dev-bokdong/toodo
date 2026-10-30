@@ -17,6 +17,8 @@ export type Action = {
   title?: string;
   /** Destroys data, such as deleting a task; drawn in the destructive style. */
   destructive?: boolean;
+  /** Extra classes of the action drawn as a button, such as the colour of the status it leads to. */
+  className?: string;
   /** Changes data, so it waits while the web app cannot reach the server (see `Button`). */
   changesData?: boolean;
 };

@@ -487,7 +487,10 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Timeline" })).toHaveAttribute("aria-pressed", "true");
     expect(await within(timeline).findByText("Add herdr API")).toBeInTheDocument();
     expect(await within(timeline).findByText("Add UI")).toBeInTheDocument();
-    expect(within(timeline).getByText("Add storage")).toBeInTheDocument();
+    // The timeline leaves finished tasks out until they are asked for.
+    expect(within(timeline).queryByText("Add storage")).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Done" }));
+    expect(await within(timeline).findByText("Add storage")).toBeInTheDocument();
     const unplaced = within(timeline).getByRole("complementary", { name: "Tasks without a planned date" });
     expect(within(unplaced).getByText("Write docs")).toBeInTheDocument();
     expect(within(timeline).getByRole("button", { name: "Week" })).toHaveAttribute("aria-pressed", "true");
@@ -636,6 +639,7 @@ describe("App", () => {
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const bars = timeline.querySelector(".react-flow__nodes") as HTMLElement;
     expect(await within(bars).findByText("Write docs")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Ready" }));
     expect(await within(bars).findByText("Add UI")).toBeInTheDocument();
     expect(within(bars).getByText("Ready")).toBeInTheDocument();
@@ -668,6 +672,8 @@ describe("App", () => {
         .getByText(title)
         .closest(".react-flow__node") as HTMLElement;
     await within(timeline).findByText("Add UI");
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Done" }));
+    await within(timeline).findByText("Add storage");
     expect(within(timeline).queryByRole("complementary", { name: "Task details" })).not.toBeInTheDocument();
 
     fireEvent.click(bar("Add UI"));
@@ -724,6 +730,8 @@ describe("App", () => {
         .getByText(title)
         .closest(".react-flow__node") as HTMLElement;
     await within(timeline).findByText("Write docs");
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Done" }));
+    await within(timeline).findByText("Add storage");
 
     fireEvent.mouseEnter(bar("Add storage"));
     const summary = await screen.findByRole("tooltip", { name: "Summary of #1" });
@@ -776,7 +784,8 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     expect(await within(timeline).findByLabelText("Agent of #1")).toHaveTextContent("Agent working");
-    expect(within(timeline).getByText("Add UI")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("group", { name: "Status filter" })).getByRole("button", { name: "Done" }));
+    expect(await within(timeline).findByText("Add UI")).toBeInTheDocument();
     expect(within(timeline).queryByLabelText("Agent of #2")).not.toBeInTheDocument();
 
     const [[onAgentStatuses]] = mockedEvents.agentStatusesChanged.listen.mock.calls;
@@ -1829,7 +1838,17 @@ describe("App", () => {
     expect(within(details).getByRole("button", { name: "Push #1 to its pull request" })).toBeInTheDocument();
     expect(mocked.openPullRequest).toHaveBeenCalledWith(1);
 
-    const done = { ...inReview, status: "done" as const };
+    // Complete waits until every criterion is met, here once the merge is seen.
+    expect(within(details).getByRole("button", { name: "Complete #1" })).toBeDisabled();
+    const merged = { ...inReview, criteria: inReview.criteria.map((each) => ({ ...each, state: "met" as const })) };
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [merged] });
+    const [[onTasksChanged]] = mockedEvents.tasksChanged.listen.mock.calls;
+    act(() => {
+      onTasksChanged({ event: "tasks-changed", id: 1, payload: { workspaceId: 1 } });
+    });
+    await waitFor(() => expect(within(details).getByRole("button", { name: "Complete #1" })).toBeEnabled());
+
+    const done = { ...merged, status: "done" as const };
     mocked.completeTask.mockResolvedValue({ status: "ok", data: done });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
     fireEvent.click(within(details).getByRole("button", { name: "Complete #1" }));
@@ -1948,7 +1967,7 @@ describe("App", () => {
     expect(within(pendingItem).queryByRole("img")).not.toBeInTheDocument();
   });
 
-  it("confirms the completion of a task whose criteria are all met", async () => {
+  it("completes a task whose criteria are all met with the enabled green Complete button", async () => {
     const met = { state: "met" as const, checkedAt: 1760000000 };
     const awaiting = task(1, 1, "Add search", {
       status: "in_review",
@@ -1969,13 +1988,15 @@ describe("App", () => {
 
     const tasks = await taskList();
     expect(within(row("Add search")).getByText("Awaiting completion")).toBeInTheDocument();
-    expect(within(tasks).queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
+    const complete = within(tasks).getByRole("button", { name: "Complete #1" });
+    expect(complete).toBeEnabled();
+    expect(complete).toHaveClass("bg-emerald-100");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
-    fireEvent.click(within(tasks).getByRole("button", { name: "Confirm completion of #1" }));
+    fireEvent.click(complete);
 
     expect(await within(tasks).findByRole("button", { name: "Done 1" })).toBeInTheDocument();
     expect(mocked.completeTask).toHaveBeenCalledWith(1);
-    expect(within(tasks).queryByRole("button", { name: "Confirm completion of #1" })).not.toBeInTheDocument();
+    expect(within(tasks).queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
   });
 
   it("shows which pull request of another task shipped a done task", async () => {
