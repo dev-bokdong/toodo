@@ -99,6 +99,12 @@ export type TaskFilter = {
 
 export const emptyTaskFilter: TaskFilter = { query: "", statuses: [], type: null };
 
+/** What the timeline opens with: every status but the finished ones, done and not adopted. */
+export const defaultTaskFilter: TaskFilter = {
+  ...emptyTaskFilter,
+  statuses: shownStatuses.filter((status) => status !== "done" && status !== "not_adopted"),
+};
+
 export function isFilterActive(filter: TaskFilter): boolean {
   return filter.query.trim() !== "" || filter.statuses.length > 0 || filter.type !== null;
 }
