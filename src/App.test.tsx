@@ -1967,7 +1967,7 @@ describe("App", () => {
     expect(within(pendingItem).queryByRole("img")).not.toBeInTheDocument();
   });
 
-  it("confirms the completion of a task whose criteria are all met", async () => {
+  it("completes a task whose criteria are all met with the enabled green Complete button", async () => {
     const met = { state: "met" as const, checkedAt: 1760000000 };
     const awaiting = task(1, 1, "Add search", {
       status: "in_review",
@@ -1988,13 +1988,15 @@ describe("App", () => {
 
     const tasks = await taskList();
     expect(within(row("Add search")).getByText("Awaiting completion")).toBeInTheDocument();
-    expect(within(tasks).queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
+    const complete = within(tasks).getByRole("button", { name: "Complete #1" });
+    expect(complete).toBeEnabled();
+    expect(complete).toHaveClass("bg-emerald-100");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
-    fireEvent.click(within(tasks).getByRole("button", { name: "Confirm completion of #1" }));
+    fireEvent.click(complete);
 
     expect(await within(tasks).findByRole("button", { name: "Done 1" })).toBeInTheDocument();
     expect(mocked.completeTask).toHaveBeenCalledWith(1);
-    expect(within(tasks).queryByRole("button", { name: "Confirm completion of #1" })).not.toBeInTheDocument();
+    expect(within(tasks).queryByRole("button", { name: "Complete #1" })).not.toBeInTheDocument();
   });
 
   it("shows which pull request of another task shipped a done task", async () => {

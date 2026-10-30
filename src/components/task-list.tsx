@@ -735,9 +735,6 @@ function TaskRow({
   const final = task.status === "done";
   const criteriaMet = task.criteria.every((criterion) => criterion.state === "met");
   const unmetCriteria = task.criteria.filter((criterion) => criterion.state !== "met").length;
-  // Every criterion is met and one is checked by hand: the user confirms that the task is done.
-  const awaitingConfirmation =
-    inReview && task.criteria.length > 0 && criteriaMet && task.criteria.some((criterion) => criterion.kind === "manual");
   // A started task completes once its criteria are met, or right away when it has none.
   const completable = inReview || (task.status === "in_progress" && criteriaMet);
   const paused = isPaused(task);
@@ -820,19 +817,6 @@ function TaskRow({
           onSelect: () => restoreWorktree.mutate(task.id),
         }
       : null;
-  const confirmCompletion: Action | null = awaitingConfirmation
-    ? {
-        key: "confirm", changesData: true,
-        label: completeTask.isPending ? "Completing..." : "Confirm completion",
-        ariaLabel: `Confirm completion of #${task.id}`,
-        icon: <Check />,
-        title: herdrBlocked
-          ? needsHerdr(undefined)
-          : "Every criterion is met: complete the task. Its herdr workspace is closed and the worktree kept",
-        disabled: finishing || herdrBlocked,
-        onSelect: () => completeTask.mutate(task.id),
-      }
-    : null;
   const openPr: Action | null =
     hasWorktree && !inReview
       ? {
@@ -845,7 +829,7 @@ function TaskRow({
         }
       : null;
   const complete: Action | null =
-    completable && !awaitingConfirmation
+    completable
       ? {
           key: "complete", changesData: true,
           label: completeTask.isPending ? "Completing..." : "Complete",
@@ -919,8 +903,8 @@ function TaskRow({
         onSelect: () => setConcluding(true),
       }
     : null;
-  const primary = [start, restore, confirmCompletion, openPr, complete, openInHerdr].find((action) => action !== null) ?? null;
-  const others = [start, restore, confirmCompletion, openPr, complete, push, openInHerdr, focusPane, refresh, conclude].filter(
+  const primary = [start, restore, openPr, complete, openInHerdr].find((action) => action !== null) ?? null;
+  const others = [start, restore, openPr, complete, push, openInHerdr, focusPane, refresh, conclude].filter(
     (action): action is Action => action !== null && action !== primary,
   );
   // Secondary actions always sit in the "More" menu, Delete last.
